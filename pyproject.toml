@@ -1,0 +1,25 @@
+[project]
+name = "ai-bank-pricing-engine"
+version = "0.1.0"
+description = "Synthetic retail bank balance sheet pricing engine for home loans and term deposits."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "pydantic>=2.5",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
