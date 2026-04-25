@@ -12,18 +12,23 @@ search optimizer.
 ## Quickstart
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
-pytest
-python examples/run_baseline.py
+python3 -m pip install --upgrade pip setuptools wheel
+python3 -m pip install -e ".[dev]"
+python3 -m pytest -q
+python3 examples/run_baseline.py
+python3 examples/train_response_models.py
 ```
+
+For a step-by-step walkthrough written for both business and technical users, see
+[docs/usage_guide.md](docs/usage_guide.md).
 
 ## Current Scope
 
 The current engine chooses one portfolio-level home loan rate and one portfolio-level term deposit
 rate. It maximizes expected risk-adjusted profit while penalizing funding shortfalls.
 
-Machine learning, FastAPI, and dashboards come later. The foundation starts with correct economics
-and testable synthetic behaviour.
-
+The project also includes a small diagnostic ML layer that trains response models on synthetic
+observed outcomes and checks whether learned predictions recover sensible rate-response behaviour.
+FastAPI, dashboards, and production model integration come later.

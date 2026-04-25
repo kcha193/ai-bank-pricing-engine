@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "ai-bank-pricing-engine"
 version = "0.1.0"
@@ -5,15 +9,18 @@ description = "Synthetic retail bank balance sheet pricing engine for home loans
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-    "numpy>=1.26",
+    "joblib>=1.4",
+    "numpy>=1.26,<2.0",
     "pandas>=2.1",
     "pydantic>=2.5",
     "pyyaml>=6.0",
+    "scikit-learn>=1.4",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "ruff>=0.8",
 ]
 
 [tool.pytest.ini_options]
