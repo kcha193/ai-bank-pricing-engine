@@ -7,6 +7,12 @@ from dataclasses import dataclass
 import pandas as pd
 
 from balance_pricing_engine.config import EngineConfig
+from balance_pricing_engine.diagnostics import (
+    BoundaryDiagnostics,
+    ObjectiveDecomposition,
+    evaluate_boundary_diagnostics,
+    objective_decomposition_from_result,
+)
 from balance_pricing_engine.optimization.grid_search import (
     OptimizationResult,
     build_rate_grid,
@@ -25,10 +31,15 @@ from balance_pricing_engine.utils.random import make_rng
 class ScenarioDiagnostics:
     best_result: OptimizationResult
     grid_results: pd.DataFrame
+    boundary_diagnostics: BoundaryDiagnostics
 
     def top_results(self, n: int = 5) -> pd.DataFrame:
         """Return the top objective rows for reporting."""
-        return self.grid_results.sort_values("objective_value", ascending=False).head(n).reset_index(drop=True)
+        return self.grid_results.sort_values("total_objective", ascending=False).head(n).reset_index(drop=True)
+
+    def winner_decomposition(self) -> ObjectiveDecomposition:
+        """Return an objective decomposition for the winning result."""
+        return objective_decomposition_from_result(self.best_result)
 
 
 def run_baseline_diagnostics(config: EngineConfig) -> ScenarioDiagnostics:
@@ -54,9 +65,15 @@ def run_baseline_diagnostics(config: EngineConfig) -> ScenarioDiagnostics:
         required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
         funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
     )
+    best_result = select_best_result(grid_results)
     return ScenarioDiagnostics(
-        best_result=select_best_result(grid_results),
+        best_result=best_result,
         grid_results=grid_results,
+        boundary_diagnostics=evaluate_boundary_diagnostics(
+            best_result,
+            loan_grid,
+            deposit_grid,
+        ),
     )
 
 

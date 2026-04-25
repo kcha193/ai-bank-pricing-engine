@@ -25,9 +25,28 @@ def expected_loan_income_after_losses(
     loan_rate: float,
 ) -> float:
     """Calculate expected annualized loan interest income after credit losses."""
+    return expected_loan_interest_income(
+        customers,
+        acceptance_probability,
+        loan_rate,
+    ) - expected_credit_loss(customers, acceptance_probability)
+
+
+def expected_loan_interest_income(
+    customers: pd.DataFrame,
+    acceptance_probability: np.ndarray,
+    loan_rate: float,
+) -> float:
+    """Calculate expected annualized gross loan interest income."""
+    balances = customers["loan_amount"].to_numpy()
+    return float(np.sum(acceptance_probability * balances * loan_rate))
+
+
+def expected_credit_loss(customers: pd.DataFrame, acceptance_probability: np.ndarray) -> float:
+    """Calculate expected annualized credit loss for accepted home loans."""
     balances = customers["loan_amount"].to_numpy()
     expected_loss = customers["expected_loss_rate"].to_numpy()
-    return float(np.sum(acceptance_probability * balances * (loan_rate - expected_loss)))
+    return float(np.sum(acceptance_probability * balances * expected_loss))
 
 
 def expected_deposit_cost(

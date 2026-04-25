@@ -48,6 +48,15 @@ def test_baseline_best_result_matches_max_grid_objective():
     config = load_config("configs/base.yaml")
 
     diagnostics = run_baseline_diagnostics(config)
-    max_objective = diagnostics.grid_results["objective_value"].max()
+    max_objective = diagnostics.grid_results["total_objective"].max()
 
     assert diagnostics.best_result.objective_value == pytest.approx(max_objective)
+
+
+def test_top_results_are_sorted_by_objective_descending():
+    config = load_config("configs/base.yaml")
+
+    diagnostics = run_baseline_diagnostics(config)
+    top_results = diagnostics.top_results(5)
+
+    assert top_results["total_objective"].is_monotonic_decreasing

@@ -9,9 +9,10 @@ import pandas as pd
 
 from balance_pricing_engine.pricing.balance_sheet import calculate_funding_result
 from balance_pricing_engine.pricing.profit import (
+    expected_credit_loss,
     expected_deposit_cost,
     expected_deposit_volume,
-    expected_loan_income_after_losses,
+    expected_loan_interest_income,
     expected_loan_volume,
     expected_wholesale_funding_cost,
 )
@@ -26,24 +27,46 @@ from balance_pricing_engine.synthetic.response import (
 class OptimizationResult:
     loan_rate: float
     deposit_rate: float
-    objective_value: float
-    loan_income_after_losses: float
-    deposit_cost: float
+    loan_interest_income: float
+    expected_credit_loss: float
+    deposit_interest_cost: float
     wholesale_funding_cost: float
-    funding_penalty: float
+    funding_shortfall_penalty: float
+    total_objective: float
     expected_loan_volume: float
     expected_deposit_volume: float
     funding_shortfall: float
+
+    @property
+    def objective_value(self) -> float:
+        """Backward-compatible alias for the total objective."""
+        return self.total_objective
+
+    @property
+    def loan_income_after_losses(self) -> float:
+        """Loan interest income after expected credit loss."""
+        return self.loan_interest_income - self.expected_credit_loss
+
+    @property
+    def deposit_cost(self) -> float:
+        """Backward-compatible alias for deposit interest cost."""
+        return self.deposit_interest_cost
+
+    @property
+    def funding_penalty(self) -> float:
+        """Backward-compatible alias for funding shortfall penalty."""
+        return self.funding_shortfall_penalty
 
 
 GRID_RESULT_COLUMNS = [
     "loan_rate",
     "deposit_rate",
-    "objective_value",
-    "loan_income_after_losses",
-    "deposit_cost",
+    "loan_interest_income",
+    "expected_credit_loss",
+    "deposit_interest_cost",
     "wholesale_funding_cost",
-    "funding_penalty",
+    "funding_shortfall_penalty",
+    "total_objective",
     "expected_loan_volume",
     "expected_deposit_volume",
     "funding_shortfall",
@@ -81,11 +104,12 @@ def evaluate_joint_rate_grid(
             loan_competitor_gap_elasticity,
         )
         loan_volume = expected_loan_volume(loan_customers, loan_probs)
-        loan_income_after_losses = expected_loan_income_after_losses(
+        loan_interest_income = expected_loan_interest_income(
             loan_customers,
             loan_probs,
             float(loan_rate),
         )
+        credit_loss = expected_credit_loss(loan_customers, loan_probs)
 
         for deposit_rate in deposit_rate_grid:
             deposit_probs = deposit_uptake_probability(
@@ -108,8 +132,9 @@ def evaluate_joint_rate_grid(
                 required_deposit_funding_ratio,
                 funding_shortfall_penalty_rate,
             )
-            objective_value = (
-                loan_income_after_losses
+            total_objective = (
+                loan_interest_income
+                - credit_loss
                 - deposit_cost
                 - wholesale_funding_cost
                 - funding.funding_penalty
@@ -119,11 +144,12 @@ def evaluate_joint_rate_grid(
                 {
                     "loan_rate": float(loan_rate),
                     "deposit_rate": float(deposit_rate),
-                    "objective_value": objective_value,
-                    "loan_income_after_losses": loan_income_after_losses,
-                    "deposit_cost": deposit_cost,
+                    "loan_interest_income": loan_interest_income,
+                    "expected_credit_loss": credit_loss,
+                    "deposit_interest_cost": deposit_cost,
                     "wholesale_funding_cost": wholesale_funding_cost,
-                    "funding_penalty": funding.funding_penalty,
+                    "funding_shortfall_penalty": funding.funding_penalty,
+                    "total_objective": total_objective,
                     "expected_loan_volume": loan_volume,
                     "expected_deposit_volume": deposit_volume,
                     "funding_shortfall": funding.funding_shortfall,
@@ -140,11 +166,12 @@ def optimization_result_from_row(row: pd.Series) -> OptimizationResult:
     return OptimizationResult(
         loan_rate=float(row["loan_rate"]),
         deposit_rate=float(row["deposit_rate"]),
-        objective_value=float(row["objective_value"]),
-        loan_income_after_losses=float(row["loan_income_after_losses"]),
-        deposit_cost=float(row["deposit_cost"]),
+        loan_interest_income=float(row["loan_interest_income"]),
+        expected_credit_loss=float(row["expected_credit_loss"]),
+        deposit_interest_cost=float(row["deposit_interest_cost"]),
         wholesale_funding_cost=float(row["wholesale_funding_cost"]),
-        funding_penalty=float(row["funding_penalty"]),
+        funding_shortfall_penalty=float(row["funding_shortfall_penalty"]),
+        total_objective=float(row["total_objective"]),
         expected_loan_volume=float(row["expected_loan_volume"]),
         expected_deposit_volume=float(row["expected_deposit_volume"]),
         funding_shortfall=float(row["funding_shortfall"]),
@@ -155,7 +182,7 @@ def select_best_result(grid_results: pd.DataFrame) -> OptimizationResult:
     """Select the highest-objective pricing result from evaluated grid results."""
     if grid_results.empty:
         raise ValueError("At least one loan rate and one deposit rate are required.")
-    best_row = grid_results.loc[grid_results["objective_value"].idxmax()]
+    best_row = grid_results.loc[grid_results["total_objective"].idxmax()]
     return optimization_result_from_row(best_row)
 
 
