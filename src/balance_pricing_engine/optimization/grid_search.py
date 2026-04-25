@@ -36,13 +36,27 @@ class OptimizationResult:
     funding_shortfall: float
 
 
+GRID_RESULT_COLUMNS = [
+    "loan_rate",
+    "deposit_rate",
+    "objective_value",
+    "loan_income_after_losses",
+    "deposit_cost",
+    "wholesale_funding_cost",
+    "funding_penalty",
+    "expected_loan_volume",
+    "expected_deposit_volume",
+    "funding_shortfall",
+]
+
+
 def build_rate_grid(start: float, stop: float, step: float) -> np.ndarray:
     """Build an inclusive decimal rate grid with stable rounding."""
     n_steps = int(round((stop - start) / step))
     return np.round(start + np.arange(n_steps + 1) * step, 6)
 
 
-def optimize_joint_rates(
+def evaluate_joint_rate_grid(
     loan_customers: pd.DataFrame,
     deposit_customers: pd.DataFrame,
     market: MarketState,
@@ -54,9 +68,9 @@ def optimize_joint_rates(
     deposit_competitor_gap_elasticity: float,
     required_deposit_funding_ratio: float,
     funding_shortfall_penalty_rate: float,
-) -> OptimizationResult:
-    """Optimize portfolio-level loan and deposit rates by exhaustive grid search."""
-    best_result: OptimizationResult | None = None
+) -> pd.DataFrame:
+    """Evaluate every loan and deposit rate pair in the joint pricing grid."""
+    rows: list[dict[str, float]] = []
 
     for loan_rate in loan_rate_grid:
         loan_probs = loan_acceptance_probability(
@@ -101,21 +115,75 @@ def optimize_joint_rates(
                 - funding.funding_penalty
             )
 
-            result = OptimizationResult(
-                loan_rate=float(loan_rate),
-                deposit_rate=float(deposit_rate),
-                objective_value=objective_value,
-                loan_income_after_losses=loan_income_after_losses,
-                deposit_cost=deposit_cost,
-                wholesale_funding_cost=wholesale_funding_cost,
-                funding_penalty=funding.funding_penalty,
-                expected_loan_volume=loan_volume,
-                expected_deposit_volume=deposit_volume,
-                funding_shortfall=funding.funding_shortfall,
+            rows.append(
+                {
+                    "loan_rate": float(loan_rate),
+                    "deposit_rate": float(deposit_rate),
+                    "objective_value": objective_value,
+                    "loan_income_after_losses": loan_income_after_losses,
+                    "deposit_cost": deposit_cost,
+                    "wholesale_funding_cost": wholesale_funding_cost,
+                    "funding_penalty": funding.funding_penalty,
+                    "expected_loan_volume": loan_volume,
+                    "expected_deposit_volume": deposit_volume,
+                    "funding_shortfall": funding.funding_shortfall,
+                }
             )
-            if best_result is None or result.objective_value > best_result.objective_value:
-                best_result = result
 
-    if best_result is None:
+    if not rows:
         raise ValueError("At least one loan rate and one deposit rate are required.")
-    return best_result
+    return pd.DataFrame(rows, columns=GRID_RESULT_COLUMNS)
+
+
+def optimization_result_from_row(row: pd.Series) -> OptimizationResult:
+    """Convert a grid result row into the public optimization result dataclass."""
+    return OptimizationResult(
+        loan_rate=float(row["loan_rate"]),
+        deposit_rate=float(row["deposit_rate"]),
+        objective_value=float(row["objective_value"]),
+        loan_income_after_losses=float(row["loan_income_after_losses"]),
+        deposit_cost=float(row["deposit_cost"]),
+        wholesale_funding_cost=float(row["wholesale_funding_cost"]),
+        funding_penalty=float(row["funding_penalty"]),
+        expected_loan_volume=float(row["expected_loan_volume"]),
+        expected_deposit_volume=float(row["expected_deposit_volume"]),
+        funding_shortfall=float(row["funding_shortfall"]),
+    )
+
+
+def select_best_result(grid_results: pd.DataFrame) -> OptimizationResult:
+    """Select the highest-objective pricing result from evaluated grid results."""
+    if grid_results.empty:
+        raise ValueError("At least one loan rate and one deposit rate are required.")
+    best_row = grid_results.loc[grid_results["objective_value"].idxmax()]
+    return optimization_result_from_row(best_row)
+
+
+def optimize_joint_rates(
+    loan_customers: pd.DataFrame,
+    deposit_customers: pd.DataFrame,
+    market: MarketState,
+    loan_rate_grid: np.ndarray,
+    deposit_rate_grid: np.ndarray,
+    loan_rate_elasticity: float,
+    loan_competitor_gap_elasticity: float,
+    deposit_rate_elasticity: float,
+    deposit_competitor_gap_elasticity: float,
+    required_deposit_funding_ratio: float,
+    funding_shortfall_penalty_rate: float,
+) -> OptimizationResult:
+    """Optimize portfolio-level loan and deposit rates by exhaustive grid search."""
+    grid_results = evaluate_joint_rate_grid(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=market,
+        loan_rate_grid=loan_rate_grid,
+        deposit_rate_grid=deposit_rate_grid,
+        loan_rate_elasticity=loan_rate_elasticity,
+        loan_competitor_gap_elasticity=loan_competitor_gap_elasticity,
+        deposit_rate_elasticity=deposit_rate_elasticity,
+        deposit_competitor_gap_elasticity=deposit_competitor_gap_elasticity,
+        required_deposit_funding_ratio=required_deposit_funding_ratio,
+        funding_shortfall_penalty_rate=funding_shortfall_penalty_rate,
+    )
+    return select_best_result(grid_results)

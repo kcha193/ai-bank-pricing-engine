@@ -8,12 +8,13 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from balance_pricing_engine.config import load_config
-from balance_pricing_engine.scenarios.runner import run_baseline_scenario
+from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
 
 
 def main() -> None:
     config = load_config(Path("configs/base.yaml"))
-    result = run_baseline_scenario(config)
+    diagnostics = run_baseline_diagnostics(config)
+    result = diagnostics.best_result
 
     print("Best joint pricing decision")
     print(f"  Home loan rate:          {result.loan_rate:.2%}")
@@ -26,6 +27,17 @@ def main() -> None:
     print(f"  Expected loan volume:    ${result.expected_loan_volume:,.0f}")
     print(f"  Expected deposit volume: ${result.expected_deposit_volume:,.0f}")
     print(f"  Funding shortfall:       ${result.funding_shortfall:,.0f}")
+    print()
+    print("Top 5 pricing candidates")
+    for rank, row in diagnostics.top_results(5).iterrows():
+        print(
+            f"  {rank + 1}. loan={row.loan_rate:.2%}, "
+            f"deposit={row.deposit_rate:.2%}, "
+            f"objective=${row.objective_value:,.0f}, "
+            f"loans=${row.expected_loan_volume:,.0f}, "
+            f"deposits=${row.expected_deposit_volume:,.0f}, "
+            f"shortfall=${row.funding_shortfall:,.0f}"
+        )
 
 
 if __name__ == "__main__":
