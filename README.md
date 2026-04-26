@@ -21,8 +21,16 @@ python3 examples/run_baseline.py
 python3 examples/train_response_models.py
 ```
 
+If your environment cannot download build dependencies, see the restricted-network setup notes in
+[docs/usage_guide.md](docs/usage_guide.md#restricted-network-setup).
+
 For a step-by-step walkthrough written for both business and technical users, see
 [docs/usage_guide.md](docs/usage_guide.md).
+
+For model-risk and architecture notes, see:
+
+- [docs/model_governance.md](docs/model_governance.md)
+- [docs/architecture.md](docs/architecture.md)
 
 ## Current Scope
 

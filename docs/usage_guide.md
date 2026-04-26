@@ -35,6 +35,17 @@ total objective
 - funding shortfall penalty
 ```
 
+Wholesale funding cost and the funding shortfall penalty are intentionally additive. Wholesale
+funding cost is the economic interest expense on lending balances not funded by deposits. The
+shortfall penalty is a separate policy overlay for missing the required deposit-funding ratio. If
+the policy overlay is meant to replace, rather than supplement, wholesale funding cost in a future
+scenario, adjust the objective before relying on results.
+
+When the first-pass winner lands on the edge of the configured grid, baseline diagnostics
+automatically expand the hit boundary and rerun the grid search before accepting the result. The
+same follow-up is applied to sensitivity runs. Boundary warnings that remain after expansion mean
+the optimizer is still trying to move outside the explored search range.
+
 ## 2. Plain-English Workflow
 
 Use this workflow if you mainly want to understand or review the pricing output.
@@ -95,24 +106,24 @@ The report prints five sections:
 
 ### Step 4: Read The Best Pricing Decision
 
-The current baseline result is:
+The current adaptive baseline result is:
 
 ```text
 Home loan rate:          8.00%
-Term deposit rate:       5.10%
+Term deposit rate:       5.15%
 Objective value:         about $12.5M
 Expected loan volume:    about $605M
-Expected deposit volume: about $384M
-Funding shortfall:       about $9.1M
+Expected deposit volume: about $394M
+Funding shortfall:       $0
 ```
 
 Interpretation:
 
 - The model expects the best tested home loan rate to be `8.00%`.
-- The best tested term deposit rate is `5.10%`.
+- The best tested term deposit rate is `5.15%`.
 - The expected economic objective is about `$12.5M`.
-- The model still has a funding shortfall, but the optimizer prefers this tradeoff over paying
-  a higher deposit rate or booking less lending.
+- The adaptive follow-up widened the original grid and found a nearby deposit rate that removes the
+  funding shortfall with a slightly better objective.
 
 ### Step 5: Read The Top 5 Candidates
 
@@ -166,8 +177,8 @@ Possible causes include:
 - Funding penalty too weak or strong.
 - Competitor effects too small.
 
-The current baseline has no boundary warning. Some sensitivity cases do produce boundary warnings,
-which is useful for model risk review.
+The current adaptive baseline has no final boundary warning. Sensitivity cases also run adaptive
+follow-ups, so a final warning means the expanded range was still not enough.
 
 ### Step 8: Review Sensitivity Summary
 
@@ -229,6 +240,31 @@ The first command matters on macOS because the `pip` bundled into a new virtual 
 too old for editable installs from a modern `pyproject.toml` project. If you see an error mentioning
 missing `setup.py` or `setup.cfg`, upgrade `pip`, `setuptools`, and `wheel`, then rerun the install.
 
+### Restricted-Network Setup
+
+Editable installs need build tools and project dependencies. In an offline or proxied environment,
+prepare a wheelhouse on a machine with network access:
+
+```bash
+mkdir -p wheelhouse
+python3 -m pip download --dest wheelhouse "setuptools>=64" wheel
+python3 -m pip download --dest wheelhouse -e ".[dev]"
+```
+
+Copy `wheelhouse/` to the restricted machine, then install without reaching the network:
+
+```bash
+python3 -m pip install --no-index --find-links wheelhouse --upgrade setuptools wheel
+python3 -m pip install --no-index --find-links wheelhouse -e ".[dev]"
+```
+
+If editable install is unavailable but you only need to run scripts from a checked-out repo, use:
+
+```bash
+PYTHONPATH=src python3 examples/run_baseline.py
+PYTHONPATH=src python3 examples/train_response_models.py
+```
+
 ### Step 4: Run Tests
 
 ```bash
@@ -238,7 +274,7 @@ python3 -m pytest -q
 Expected result:
 
 ```text
-19 passed
+all tests pass
 ```
 
 ### Step 5: Run Linting
@@ -298,21 +334,21 @@ The baseline report currently starts with:
 ```text
 Best joint pricing decision
   Home loan rate:          8.00%
-  Term deposit rate:       5.10%
-  Objective value:         $12,495,061
+  Term deposit rate:       5.15%
+  Objective value:         $12,496,386
   Expected loan volume:    $604,819,814
-  Expected deposit volume: $384,040,808
-  Funding shortfall:       $9,092,071
+  Expected deposit volume: $393,936,646
+  Funding shortfall:       $0
 ```
 
 Plain-English interpretation:
 
 - The optimizer tested all configured home loan and term deposit rate pairs.
-- The best tested pair is an `8.00%` home loan rate and a `5.10%` term deposit rate.
+- The best tested pair is an `8.00%` home loan rate and a `5.15%` term deposit rate.
 - The expected economic value of that decision is about `$12.5M`.
 - The model expects about `$605M` of accepted home loans.
 - The model expects about `$384M` of term deposits raised.
-- There is still a funding shortfall of about `$9.1M`.
+- There is no final funding shortfall after the adaptive boundary follow-up.
 
 The recommendation is not saying "this is the true market price." It is saying "given the current
 synthetic customers, elasticity assumptions, competitor rates, funding costs, and configured search
@@ -325,10 +361,10 @@ The winner decomposition currently looks like this:
 ```text
 Loan interest income:      $48,385,585
 Expected credit loss:      $4,108,330
-Deposit interest cost:     $19,586,081
-Wholesale funding cost:    $12,032,456
-Funding shortfall penalty: $163,657
-Total objective:           $12,495,061
+Deposit interest cost:     $20,287,737
+Wholesale funding cost:    $11,493,133
+Funding shortfall penalty: $0
+Total objective:           $12,496,386
 ```
 
 The arithmetic is:
@@ -336,9 +372,9 @@ The arithmetic is:
 ```text
 $48.39M loan interest income
 - $4.11M expected credit loss
-- $19.59M deposit interest cost
-- $12.03M wholesale funding cost
-- $0.16M funding shortfall penalty
+- $20.29M deposit interest cost
+- $11.49M wholesale funding cost
+- $0 funding shortfall penalty
 = $12.50M total objective
 ```
 
@@ -355,12 +391,12 @@ For the winning result:
 ```text
 Expected loan volume:    about $604.8M
 Required deposit funding: about $393.1M
-Expected deposit volume: about $384.0M
-Funding shortfall:       about $9.1M
+Expected deposit volume: about $393.9M
+Funding shortfall:       $0
 ```
 
-The model accepts this shortfall because paying a higher deposit rate or choosing a lower-margin
-loan rate produces a lower total objective under the current assumptions.
+The adaptive follow-up found a slightly higher deposit rate that raises enough deposits to meet the
+funding-ratio target under the current assumptions.
 
 ### Top 5 Candidates
 
@@ -368,13 +404,11 @@ The top 5 section shows the nearest economic alternatives.
 
 Current interpretation:
 
-- Rank 1, `8.00%` loan and `5.10%` deposit, is best overall.
-- Rank 2, `8.00%` loan and `4.90%` deposit, has a lower deposit rate but a much larger funding
+- Rank 1, `8.00%` loan and `5.15%` deposit, is best overall.
+- Rank 2, `8.00%` loan and `5.10%` deposit, has a slightly lower deposit cost but leaves a funding
   shortfall.
-- Rank 3, `7.80%` loan and `5.10%` deposit, books more loan volume but gives up too much margin and
-  creates a much bigger funding shortfall.
-- Rank 4, `8.00%` loan and `5.30%` deposit, has zero funding shortfall, but the higher deposit cost
-  reduces the objective.
+- Rank 3, `8.05%` loan and `5.05%` deposit, has a higher loan rate but lower expected loan volume.
+- Rank 4, `8.05%` loan and `5.00%` deposit, leaves a smaller funding shortfall but lower objective.
 - Rank 5 is close, but still worse than the winner on the current objective.
 
 This section is useful for business review because the mathematically best answer is not always the
@@ -406,16 +440,15 @@ was allowed to search. Possible causes are:
 
 The sensitivity summary reruns the optimizer after changing one assumption at a time.
 
-Important examples from the current output:
+Important examples from the current adaptive output:
 
 ```text
-loan_elasticity_weaker: loan=8.20%, ... boundary_warning=yes
-competitor_loan_rate_higher: loan=8.20%, ... boundary_warning=yes
+loan_elasticity_weaker: loan=8.25%, deposit=5.10%, boundary_warning=no
+competitor_loan_rate_higher: loan=8.20%, deposit=5.15%, boundary_warning=no
 ```
 
-These two cases push the home loan rate to the maximum tested grid value. That is a model risk
-review flag. It suggests you may need to widen the loan-rate grid or challenge the elasticity and
-competitor assumptions.
+These cases initially put pressure on the configured grid, then the adaptive follow-up searches a
+wider range before accepting a recommendation.
 
 Other examples:
 
@@ -426,14 +459,49 @@ Other examples:
 - `wholesale_funding_rate_higher` lowers the objective because wholesale-funded lending becomes
   more expensive.
 
+The sensitivity framework includes both one-at-a-time cases and two-way stresses such as:
+
+- stronger loan elasticity with a higher funding penalty
+- higher competitor loan rates with a higher wholesale funding rate
+- lower competitor deposit rates with a higher funding penalty
+
 Big-picture interpretation:
 
 ```text
-The baseline result is economically coherent, but loan pricing is somewhat sensitive to demand and
-competitor assumptions.
+The baseline result is economically coherent after adaptive grid expansion, but pricing remains
+sensitive to demand, funding, and competitor assumptions.
 ```
 
 That is exactly what the diagnostics layer is designed to reveal.
+
+### Persisting Regression Artifacts
+
+Use `ScenarioDiagnostics.write_artifacts()` when you want versioned outputs for regression
+monitoring:
+
+```python
+from pathlib import Path
+
+from balance_pricing_engine.config import load_config
+from balance_pricing_engine.diagnostics import run_sensitivity_analysis
+from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
+
+config = load_config("configs/base.yaml")
+diagnostics = run_baseline_diagnostics(config)
+sensitivity = run_sensitivity_analysis(config)
+
+diagnostics.write_artifacts(
+    Path("artifacts/baseline"),
+    sensitivity=sensitivity,
+)
+```
+
+This writes:
+
+- `grid_results.csv`
+- `top_results.csv`
+- `sensitivity.csv`, if provided
+- `summary.json`
 
 ## 5. ML Response Modelling Workflow
 

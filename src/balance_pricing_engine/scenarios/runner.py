@@ -3,28 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+from pathlib import Path
 
 import pandas as pd
-import numpy as np
 
 from balance_pricing_engine.config import EngineConfig
 from balance_pricing_engine.diagnostics import (
     BoundaryDiagnostics,
     ObjectiveDecomposition,
-    evaluate_boundary_diagnostics,
+    evaluate_adaptive_joint_rate_grid,
     objective_decomposition_from_result,
 )
 from balance_pricing_engine.optimization.grid_search import (
     OptimizationResult,
-    build_rate_grid,
-    evaluate_joint_rate_grid,
-    select_best_result,
 )
-from balance_pricing_engine.market import (
-    MarketRates,
-    SpreadGridConfig,
-    build_market_relative_grid,
-)
+from balance_pricing_engine.rate_grids import build_configured_rate_grids
 from balance_pricing_engine.synthetic.customers import (
     generate_deposit_customers,
     generate_loan_customers,
@@ -38,6 +32,8 @@ class ScenarioDiagnostics:
     best_result: OptimizationResult
     grid_results: pd.DataFrame
     boundary_diagnostics: BoundaryDiagnostics
+    initial_boundary_diagnostics: BoundaryDiagnostics
+    expansion_rounds: int = 0
 
     def top_results(self, n: int = 5) -> pd.DataFrame:
         """Return the top objective rows for reporting."""
@@ -47,8 +43,42 @@ class ScenarioDiagnostics:
         """Return an objective decomposition for the winning result."""
         return objective_decomposition_from_result(self.best_result)
 
+    def write_artifacts(
+        self,
+        output_dir: str | Path,
+        sensitivity: pd.DataFrame | None = None,
+        top_n: int = 5,
+    ) -> None:
+        """Persist scenario outputs for regression monitoring."""
+        path = Path(output_dir)
+        path.mkdir(parents=True, exist_ok=True)
 
-def run_baseline_diagnostics(config: EngineConfig) -> ScenarioDiagnostics:
+        self.grid_results.to_csv(path / "grid_results.csv", index=False)
+        self.top_results(top_n).to_csv(path / "top_results.csv", index=False)
+        if sensitivity is not None:
+            sensitivity.to_csv(path / "sensitivity.csv", index=False)
+
+        summary = {
+            "best_loan_rate": self.best_result.loan_rate,
+            "best_deposit_rate": self.best_result.deposit_rate,
+            "objective_value": self.best_result.total_objective,
+            "expected_loan_volume": self.best_result.expected_loan_volume,
+            "expected_deposit_volume": self.best_result.expected_deposit_volume,
+            "funding_shortfall": self.best_result.funding_shortfall,
+            "boundary_warning_flag": self.boundary_diagnostics.has_warning,
+            "initial_boundary_warning_flag": self.initial_boundary_diagnostics.has_warning,
+            "expansion_rounds": self.expansion_rounds,
+        }
+        (path / "summary.json").write_text(
+            json.dumps(summary, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+
+def run_baseline_diagnostics(
+    config: EngineConfig,
+    max_boundary_expansions: int = 2,
+) -> ScenarioDiagnostics:
     """Run the baseline scenario and keep all evaluated pricing candidates."""
     rng = make_rng(config.random_seed)
     loan_customers = generate_loan_customers(config.simulation.n_loan_customers, rng)
@@ -57,7 +87,7 @@ def run_baseline_diagnostics(config: EngineConfig) -> ScenarioDiagnostics:
 
     loan_grid, deposit_grid = build_configured_rate_grids(config)
 
-    grid_results = evaluate_joint_rate_grid(
+    diagnostics = evaluate_adaptive_joint_rate_grid(
         loan_customers=loan_customers,
         deposit_customers=deposit_customers,
         market=market,
@@ -71,44 +101,18 @@ def run_baseline_diagnostics(config: EngineConfig) -> ScenarioDiagnostics:
         funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
         home_loan_reference_rate=config.market.home_loan_reference_rate,
         term_deposit_reference_rate=config.market.term_deposit_reference_rate,
+        max_boundary_expansions=max_boundary_expansions,
     )
-    best_result = select_best_result(grid_results)
+
     return ScenarioDiagnostics(
-        best_result=best_result,
-        grid_results=grid_results,
-        boundary_diagnostics=evaluate_boundary_diagnostics(
-            best_result,
-            loan_grid,
-            deposit_grid,
-        ),
+        best_result=diagnostics.best_result,
+        grid_results=diagnostics.grid_results,
+        boundary_diagnostics=diagnostics.boundary_diagnostics,
+        initial_boundary_diagnostics=diagnostics.initial_boundary_diagnostics,
+        expansion_rounds=diagnostics.expansion_rounds,
     )
 
 
 def run_baseline_scenario(config: EngineConfig) -> OptimizationResult:
     """Run the baseline synthetic pricing scenario."""
     return run_baseline_diagnostics(config).best_result
-
-
-def build_configured_rate_grids(config: EngineConfig) -> tuple[np.ndarray, np.ndarray]:
-    """Build pricing grids from market-relative spreads, falling back to absolute grids."""
-    if config.pricing_strategy is not None:
-        market_rates = MarketRates(
-            home_loan_reference_rate=float(config.market.home_loan_reference_rate),
-            term_deposit_reference_rate=float(config.market.term_deposit_reference_rate),
-        )
-        return build_market_relative_grid(
-            market_rates=market_rates,
-            home_loan_spread_bps=SpreadGridConfig(
-                **config.pricing_strategy.home_loan_spread_bps.model_dump()
-            ),
-            term_deposit_spread_bps=SpreadGridConfig(
-                **config.pricing_strategy.term_deposit_spread_bps.model_dump()
-            ),
-        )
-
-    if config.products is None:
-        raise ValueError("Either pricing_strategy or products rate grids must be provided.")
-    return (
-        build_rate_grid(**config.products.loan_rate_grid.model_dump()),
-        build_rate_grid(**config.products.deposit_rate_grid.model_dump()),
-    )
