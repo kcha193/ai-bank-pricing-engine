@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-import sys
 
 import pandas as pd
 from sklearn.model_selection import train_test_split
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.modelling.datasets import (

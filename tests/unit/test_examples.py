@@ -9,3 +9,10 @@ def test_run_baseline_reports_market_relative_pricing_section():
     assert "Home loan spread to market" in script
     assert "Market term deposit reference rate" in script
     assert "Term deposit spread to market" in script
+
+
+def test_examples_do_not_mutate_python_import_path():
+    for script_path in Path("examples").glob("*.py"):
+        script = script_path.read_text(encoding="utf-8")
+
+        assert "sys.path" not in script
