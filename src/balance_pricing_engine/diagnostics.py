@@ -9,6 +9,11 @@ import numpy as np
 import pandas as pd
 
 from balance_pricing_engine.config import EngineConfig
+from balance_pricing_engine.market import (
+    MarketRates,
+    SpreadGridConfig,
+    build_market_relative_grid,
+)
 from balance_pricing_engine.optimization.grid_search import (
     OptimizationResult,
     build_rate_grid,
@@ -223,8 +228,7 @@ def run_sensitivity_analysis(
     rng = make_rng(config.random_seed)
     loan_customers = generate_loan_customers(config.simulation.n_loan_customers, rng)
     deposit_customers = generate_deposit_customers(config.simulation.n_deposit_customers, rng)
-    loan_grid = build_rate_grid(**config.products.loan_rate_grid.model_dump())
-    deposit_grid = build_rate_grid(**config.products.deposit_rate_grid.model_dump())
+    loan_grid, deposit_grid = _build_configured_rate_grids(config)
 
     rows: list[dict[str, float | str | bool]] = []
     selected_cases = cases if cases is not None else build_default_sensitivity_cases(config)
@@ -247,6 +251,8 @@ def run_sensitivity_analysis(
             deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
             required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
             funding_shortfall_penalty_rate=case.funding_shortfall_penalty_rate,
+            home_loan_reference_rate=config.market.home_loan_reference_rate,
+            term_deposit_reference_rate=config.market.term_deposit_reference_rate,
         )
         best_result = select_best_result(grid_results)
         boundary_diagnostics = evaluate_boundary_diagnostics(
@@ -268,6 +274,29 @@ def run_sensitivity_analysis(
         )
 
     return pd.DataFrame(rows, columns=SENSITIVITY_RESULT_COLUMNS)
+
+
+def _build_configured_rate_grids(config: EngineConfig) -> tuple[np.ndarray, np.ndarray]:
+    if config.pricing_strategy is not None:
+        return build_market_relative_grid(
+            market_rates=MarketRates(
+                home_loan_reference_rate=float(config.market.home_loan_reference_rate),
+                term_deposit_reference_rate=float(config.market.term_deposit_reference_rate),
+            ),
+            home_loan_spread_bps=SpreadGridConfig(
+                **config.pricing_strategy.home_loan_spread_bps.model_dump()
+            ),
+            term_deposit_spread_bps=SpreadGridConfig(
+                **config.pricing_strategy.term_deposit_spread_bps.model_dump()
+            ),
+        )
+
+    if config.products is None:
+        raise ValueError("Either pricing_strategy or products rate grids must be provided.")
+    return (
+        build_rate_grid(**config.products.loan_rate_grid.model_dump()),
+        build_rate_grid(**config.products.deposit_rate_grid.model_dump()),
+    )
 
 
 def _rate_boundary_warnings(

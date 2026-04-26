@@ -7,6 +7,11 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from balance_pricing_engine.market import (
+    MarketRates,
+    SpreadGridConfig,
+    build_market_relative_grid,
+)
 from balance_pricing_engine.pricing.balance_sheet import calculate_funding_result
 from balance_pricing_engine.pricing.profit import (
     expected_credit_loss,
@@ -36,6 +41,8 @@ class OptimizationResult:
     expected_loan_volume: float
     expected_deposit_volume: float
     funding_shortfall: float
+    home_loan_spread_to_market_bps: float = float("nan")
+    term_deposit_spread_to_market_bps: float = float("nan")
 
     @property
     def objective_value(self) -> float:
@@ -61,6 +68,8 @@ class OptimizationResult:
 GRID_RESULT_COLUMNS = [
     "loan_rate",
     "deposit_rate",
+    "home_loan_spread_to_market_bps",
+    "term_deposit_spread_to_market_bps",
     "loan_interest_income",
     "expected_credit_loss",
     "deposit_interest_cost",
@@ -91,6 +100,8 @@ def evaluate_joint_rate_grid(
     deposit_competitor_gap_elasticity: float,
     required_deposit_funding_ratio: float,
     funding_shortfall_penalty_rate: float,
+    home_loan_reference_rate: float | None = None,
+    term_deposit_reference_rate: float | None = None,
 ) -> pd.DataFrame:
     """Evaluate every loan and deposit rate pair in the joint pricing grid."""
     rows: list[dict[str, float]] = []
@@ -110,6 +121,10 @@ def evaluate_joint_rate_grid(
             float(loan_rate),
         )
         credit_loss = expected_credit_loss(loan_customers, loan_probs)
+        home_loan_spread_to_market_bps = _spread_to_market_bps(
+            float(loan_rate),
+            home_loan_reference_rate,
+        )
 
         for deposit_rate in deposit_rate_grid:
             deposit_probs = deposit_uptake_probability(
@@ -139,11 +154,17 @@ def evaluate_joint_rate_grid(
                 - wholesale_funding_cost
                 - funding.funding_penalty
             )
+            term_deposit_spread_to_market_bps = _spread_to_market_bps(
+                float(deposit_rate),
+                term_deposit_reference_rate,
+            )
 
             rows.append(
                 {
                     "loan_rate": float(loan_rate),
                     "deposit_rate": float(deposit_rate),
+                    "home_loan_spread_to_market_bps": home_loan_spread_to_market_bps,
+                    "term_deposit_spread_to_market_bps": term_deposit_spread_to_market_bps,
                     "loan_interest_income": loan_interest_income,
                     "expected_credit_loss": credit_loss,
                     "deposit_interest_cost": deposit_cost,
@@ -166,6 +187,8 @@ def optimization_result_from_row(row: pd.Series) -> OptimizationResult:
     return OptimizationResult(
         loan_rate=float(row["loan_rate"]),
         deposit_rate=float(row["deposit_rate"]),
+        home_loan_spread_to_market_bps=float(row["home_loan_spread_to_market_bps"]),
+        term_deposit_spread_to_market_bps=float(row["term_deposit_spread_to_market_bps"]),
         loan_interest_income=float(row["loan_interest_income"]),
         expected_credit_loss=float(row["expected_credit_loss"]),
         deposit_interest_cost=float(row["deposit_interest_cost"]),
@@ -198,6 +221,8 @@ def optimize_joint_rates(
     deposit_competitor_gap_elasticity: float,
     required_deposit_funding_ratio: float,
     funding_shortfall_penalty_rate: float,
+    home_loan_reference_rate: float | None = None,
+    term_deposit_reference_rate: float | None = None,
 ) -> OptimizationResult:
     """Optimize portfolio-level loan and deposit rates by exhaustive grid search."""
     grid_results = evaluate_joint_rate_grid(
@@ -212,5 +237,50 @@ def optimize_joint_rates(
         deposit_competitor_gap_elasticity=deposit_competitor_gap_elasticity,
         required_deposit_funding_ratio=required_deposit_funding_ratio,
         funding_shortfall_penalty_rate=funding_shortfall_penalty_rate,
+        home_loan_reference_rate=home_loan_reference_rate,
+        term_deposit_reference_rate=term_deposit_reference_rate,
     )
     return select_best_result(grid_results)
+
+
+def optimize_joint_market_relative_rates(
+    loan_customers: pd.DataFrame,
+    deposit_customers: pd.DataFrame,
+    market: MarketState,
+    market_rates: MarketRates,
+    home_loan_spread_bps: SpreadGridConfig,
+    term_deposit_spread_bps: SpreadGridConfig,
+    loan_rate_elasticity: float,
+    loan_competitor_gap_elasticity: float,
+    deposit_rate_elasticity: float,
+    deposit_competitor_gap_elasticity: float,
+    required_deposit_funding_ratio: float,
+    funding_shortfall_penalty_rate: float,
+) -> OptimizationResult:
+    """Optimize rates over spreads to reference market rates."""
+    loan_rate_grid, deposit_rate_grid = build_market_relative_grid(
+        market_rates=market_rates,
+        home_loan_spread_bps=home_loan_spread_bps,
+        term_deposit_spread_bps=term_deposit_spread_bps,
+    )
+    return optimize_joint_rates(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=market,
+        loan_rate_grid=loan_rate_grid,
+        deposit_rate_grid=deposit_rate_grid,
+        loan_rate_elasticity=loan_rate_elasticity,
+        loan_competitor_gap_elasticity=loan_competitor_gap_elasticity,
+        deposit_rate_elasticity=deposit_rate_elasticity,
+        deposit_competitor_gap_elasticity=deposit_competitor_gap_elasticity,
+        required_deposit_funding_ratio=required_deposit_funding_ratio,
+        funding_shortfall_penalty_rate=funding_shortfall_penalty_rate,
+        home_loan_reference_rate=market_rates.home_loan_reference_rate,
+        term_deposit_reference_rate=market_rates.term_deposit_reference_rate,
+    )
+
+
+def _spread_to_market_bps(rate: float, reference_rate: float | None) -> float:
+    if reference_rate is None:
+        return float("nan")
+    return round((rate - reference_rate) * 10_000, 6)

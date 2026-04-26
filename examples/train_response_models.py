@@ -29,7 +29,7 @@ from balance_pricing_engine.modelling.models import (
     build_logistic_regression_model,
     fit_response_model,
 )
-from balance_pricing_engine.optimization.grid_search import build_rate_grid
+from balance_pricing_engine.scenarios.runner import build_configured_rate_grids
 from balance_pricing_engine.synthetic.customers import (
     generate_deposit_customers,
     generate_loan_customers,
@@ -43,8 +43,7 @@ def main() -> None:
 
     loan_customers = generate_loan_customers(config.simulation.n_loan_customers, rng)
     deposit_customers = generate_deposit_customers(config.simulation.n_deposit_customers, rng)
-    loan_grid = build_rate_grid(**config.products.loan_rate_grid.model_dump())
-    deposit_grid = build_rate_grid(**config.products.deposit_rate_grid.model_dump())
+    loan_grid, deposit_grid = build_configured_rate_grids(config)
 
     loan_dataset = build_loan_response_dataset(
         loan_customers,
