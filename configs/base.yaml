@@ -7,15 +7,17 @@ market:
   wholesale_funding_spread: 0.012
   competitor_loan_rate: 0.0675
   competitor_deposit_rate: 0.045
-products:
-  loan_rate_grid:
-    start: 0.058
-    stop: 0.082
-    step: 0.002
-  deposit_rate_grid:
-    start: 0.035
-    stop: 0.058
-    step: 0.002
+  home_loan_reference_rate: 0.0525
+  term_deposit_reference_rate: 0.0400
+pricing_strategy:
+  home_loan_spread_bps:
+    min: -50
+    max: 50
+    step: 5
+  term_deposit_spread_bps:
+    min: -40
+    max: 40
+    step: 5
 balance_sheet:
   required_deposit_funding_ratio: 0.65
   funding_shortfall_penalty_rate: 0.018

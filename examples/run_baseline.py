@@ -29,6 +29,26 @@ def main() -> None:
     print(f"  Expected deposit volume: ${result.expected_deposit_volume:,.0f}")
     print(f"  Funding shortfall:       ${result.funding_shortfall:,.0f}")
     print()
+    print("Market-Relative Pricing Recommendation")
+    print(
+        "  Market home loan reference rate:       "
+        f"{_format_rate(config.market.home_loan_reference_rate)}"
+    )
+    print(f"  Recommended home loan rate:            {result.loan_rate:.2%}")
+    print(
+        "  Home loan spread to market:            "
+        f"{_format_bps(result.home_loan_spread_to_market_bps)}"
+    )
+    print(
+        "  Market term deposit reference rate:    "
+        f"{_format_rate(config.market.term_deposit_reference_rate)}"
+    )
+    print(f"  Recommended term deposit rate:         {result.deposit_rate:.2%}")
+    print(
+        "  Term deposit spread to market:         "
+        f"{_format_bps(result.term_deposit_spread_to_market_bps)}"
+    )
+    print()
     print("Top 5 pricing candidates")
     for rank, row in diagnostics.top_results(5).iterrows():
         print(
@@ -70,6 +90,17 @@ def main() -> None:
             f"shortfall=${row.funding_shortfall:,.0f}, "
             f"boundary_warning={warning}"
         )
+
+def _format_rate(rate: float | None) -> str:
+    if rate is None:
+        return "n/a"
+    return f"{rate:.2%}"
+
+
+def _format_bps(spread_bps: float) -> str:
+    if spread_bps != spread_bps:
+        return "n/a"
+    return f"{spread_bps:.0f} bps"
 
 
 if __name__ == "__main__":
