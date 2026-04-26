@@ -9,10 +9,8 @@ from balance_pricing_engine.optimization.grid_search import (
     evaluate_joint_rate_grid,
     select_best_result,
 )
-from balance_pricing_engine.scenarios.runner import (
-    build_configured_rate_grids,
-    run_baseline_diagnostics,
-)
+from balance_pricing_engine.rate_grids import build_configured_rate_grids
+from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
 from balance_pricing_engine.synthetic.market import MarketState
 
 
@@ -56,6 +54,10 @@ def test_baseline_diagnostics_include_every_grid_candidate():
     assert len(loan_grid) == expected_loan_rates
     assert len(deposit_grid) == expected_deposit_rates
     assert len(diagnostics.grid_results) == expected_loan_rates * expected_deposit_rates
+    assert sorted(diagnostics.grid_results["loan_rate"].unique()) == pytest.approx(loan_grid)
+    assert sorted(diagnostics.grid_results["deposit_rate"].unique()) == pytest.approx(
+        deposit_grid
+    )
 
 
 def test_pricing_strategy_grid_takes_precedence_over_absolute_product_grid():

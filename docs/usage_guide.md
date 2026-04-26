@@ -35,16 +35,17 @@ total objective
 - funding shortfall penalty
 ```
 
-Wholesale funding cost and the funding shortfall penalty are intentionally additive. Wholesale
-funding cost is the economic interest expense on lending balances not funded by deposits. The
-shortfall penalty is a separate policy overlay for missing the required deposit-funding ratio. If
-the policy overlay is meant to replace, rather than supplement, wholesale funding cost in a future
-scenario, adjust the objective before relying on results.
+Wholesale funding cost and the funding shortfall penalty are intentionally additive under the
+canonical governance assumption in [docs/model_governance.md](model_governance.md). Wholesale
+funding cost is the base marginal cost of lending balances not funded by deposits. The shortfall
+penalty is an additional shadow cost for missing the required deposit-funding ratio. This is a
+modelling assumption for management analysis, not an accounting identity.
 
 When the first-pass winner lands on the edge of the configured grid, baseline diagnostics
 automatically expand the hit boundary and rerun the grid search before accepting the result. The
 same follow-up is applied to sensitivity runs. Boundary warnings that remain after expansion mean
-the optimizer is still trying to move outside the explored search range.
+the optimizer is still trying to move outside the explored search range, so the result should not
+be treated as fully remediated.
 
 ## 2. Plain-English Workflow
 
@@ -415,6 +416,12 @@ This section is useful for business review because the mathematically best answe
 management-preferred answer. A lower-ranked candidate might be preferred if it has less funding risk
 or better strategic fit.
 
+If two candidates have exactly the same objective value, the current optimizer resolves the tie
+deterministically using its grid-result ordering: the first row with the maximum objective is
+selected. That makes runs reproducible, but it is not yet a business-specific tie-break policy. A
+future governed rule could prefer lower funding shortfall, less rate movement, or a specific
+product strategy when exact ties occur.
+
 ### Boundary Diagnostics
 
 The baseline currently prints:
@@ -435,6 +442,18 @@ was allowed to search. Possible causes are:
 - Objective over-rewarding margin.
 - Funding penalty too weak or strong.
 - Competitor effects too small.
+
+The boundary metadata separates the first-pass problem from the final accepted result:
+
+- `initial_boundary_warning_flag`: `True` if the first pass on the configured grid selected a rate
+  on a grid boundary.
+- `expansion_rounds`: number of adaptive expansion rounds run before accepting the result.
+- `boundary_warning_flag`: `True` if the final accepted result is still on the final searched
+  boundary.
+
+If the final `boundary_warning_flag` remains `True` after expansion, the optimum may lie outside
+the searched domain. Treat that as an unresolved warning for model-governance review rather than a
+successfully remediated boundary issue.
 
 ### Sensitivity Summary
 
@@ -464,6 +483,12 @@ The sensitivity framework includes both one-at-a-time cases and two-way stresses
 - stronger loan elasticity with a higher funding penalty
 - higher competitor loan rates with a higher wholesale funding rate
 - lower competitor deposit rates with a higher funding penalty
+
+Each sensitivity case expands its search grid independently when needed. That means each case is
+optimized over its own final search domain, not necessarily the same final grid as the baseline or
+other sensitivities. Compare objective values with awareness of differing `expansion_rounds` and
+final boundary flags, and review those fields alongside the optimized rates before ranking cases by
+objective value alone.
 
 Big-picture interpretation:
 
@@ -502,6 +527,10 @@ This writes:
 - `top_results.csv`
 - `sensitivity.csv`, if provided
 - `summary.json`
+
+These filenames are fixed. If you reuse the same output directory, the existing files with those
+names are overwritten. For reproducible experiment records, write each run to a run-specific
+directory, for example a path containing the run date, scenario name, or commit SHA.
 
 ## 5. ML Response Modelling Workflow
 
@@ -706,7 +735,9 @@ objective_value
 expected_loan_volume
 expected_deposit_volume
 funding_shortfall
+initial_boundary_warning_flag
 boundary_warning_flag
+expansion_rounds
 ```
 
 ### Response Model Usage

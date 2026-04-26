@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pandas as pd
 
@@ -5,11 +7,13 @@ from balance_pricing_engine.config import load_config
 from balance_pricing_engine.diagnostics import (
     BOUNDARY_WARNING_CAUSES,
     SENSITIVITY_RESULT_COLUMNS,
+    evaluate_adaptive_joint_rate_grid,
     evaluate_boundary_diagnostics,
     expand_rate_grids_for_boundary,
     run_sensitivity_analysis,
 )
 from balance_pricing_engine.optimization.grid_search import OptimizationResult
+from balance_pricing_engine.synthetic.market import MarketState
 from balance_pricing_engine.scenarios.runner import (
     build_configured_rate_grids,
     run_baseline_diagnostics,
@@ -97,6 +101,52 @@ def test_baseline_diagnostics_runs_boundary_follow_up_before_accepting_result():
     assert diagnostics.grid_results["deposit_rate"].max() > max(initial_deposit_grid)
 
 
+def test_capped_adaptive_expansion_preserves_final_boundary_warning():
+    loan_customers = pd.DataFrame(
+        {
+            "loan_amount": [1_000_000.0],
+            "expected_loss_rate": [0.0],
+            "risk_score": [0.0],
+            "credit_score": [700.0],
+            "lvr": [0.75],
+        }
+    )
+    deposit_customers = pd.DataFrame(
+        {
+            "deposit_amount": [1_000.0],
+            "rate_sensitivity": [0.0],
+            "relationship_years": [0.0],
+            "digital_engagement": [0.0],
+        }
+    )
+
+    diagnostics = evaluate_adaptive_joint_rate_grid(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=MarketState(
+            cash_rate=0.0,
+            wholesale_funding_spread=0.0,
+            competitor_loan_rate=0.05,
+            competitor_deposit_rate=0.03,
+        ),
+        loan_rate_grid=np.array([0.04, 0.05, 0.06]),
+        deposit_rate_grid=np.array([0.02, 0.03, 0.04]),
+        loan_rate_elasticity=0.0,
+        loan_competitor_gap_elasticity=0.0,
+        deposit_rate_elasticity=0.0,
+        deposit_competitor_gap_elasticity=0.0,
+        required_deposit_funding_ratio=0.0,
+        funding_shortfall_penalty_rate=0.0,
+        max_boundary_expansions=0,
+    )
+
+    assert diagnostics.expansion_rounds == 0
+    assert diagnostics.initial_boundary_diagnostics.has_warning
+    assert diagnostics.boundary_diagnostics.has_warning
+    assert diagnostics.best_result.loan_rate == 0.06
+    assert diagnostics.best_result.deposit_rate == 0.02
+
+
 def test_sensitivity_runner_returns_expected_columns():
     config = load_config("configs/base.yaml")
 
@@ -113,13 +163,19 @@ def test_default_sensitivity_includes_two_way_stresses():
     config = load_config("configs/base.yaml")
 
     sensitivity = run_sensitivity_analysis(config)
+    scenario_names = set(sensitivity["scenario_name"])
 
-    assert "loan_elasticity_stronger__funding_penalty_higher" in set(
-        sensitivity["scenario_name"]
+    assert any(
+        "elasticity" in scenario_name and "__" not in scenario_name
+        for scenario_name in scenario_names
     )
-    assert "competitor_loan_rate_higher__wholesale_funding_rate_higher" in set(
-        sensitivity["scenario_name"]
+    assert any(
+        "funding" in scenario_name and "__" not in scenario_name
+        for scenario_name in scenario_names
     )
+    assert "loan_elasticity_stronger__funding_penalty_higher" in scenario_names
+    assert "competitor_loan_rate_higher__wholesale_funding_rate_higher" in scenario_names
+    assert "competitor_deposit_rate_lower__funding_penalty_higher" in scenario_names
 
 
 def test_scenario_diagnostics_can_persist_regression_artifacts(tmp_path):
@@ -132,10 +188,25 @@ def test_scenario_diagnostics_can_persist_regression_artifacts(tmp_path):
     grid_results = pd.read_csv(tmp_path / "grid_results.csv")
     top_results = pd.read_csv(tmp_path / "top_results.csv")
     saved_sensitivity = pd.read_csv(tmp_path / "sensitivity.csv")
-    summary = (tmp_path / "summary.json").read_text(encoding="utf-8")
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
 
     assert len(grid_results) == len(diagnostics.grid_results)
     assert len(top_results) == 5
     assert len(saved_sensitivity) == 2
-    assert '"best_loan_rate"' in summary
-    assert '"expansion_rounds": 0' in summary
+    assert {
+        "best_loan_rate",
+        "best_deposit_rate",
+        "objective_value",
+        "boundary_warning_flag",
+        "initial_boundary_warning_flag",
+        "expansion_rounds",
+    } <= set(summary)
+    assert summary["best_loan_rate"] == diagnostics.best_result.loan_rate
+    assert summary["best_deposit_rate"] == diagnostics.best_result.deposit_rate
+    assert summary["objective_value"] == diagnostics.best_result.total_objective
+    assert summary["boundary_warning_flag"] is diagnostics.boundary_diagnostics.has_warning
+    assert (
+        summary["initial_boundary_warning_flag"]
+        is diagnostics.initial_boundary_diagnostics.has_warning
+    )
+    assert summary["expansion_rounds"] == 0

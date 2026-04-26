@@ -66,6 +66,8 @@ maximum expansion count is reached.
 
 The final `boundary_warning_flag` reports the accepted result after expansion. The
 `initial_boundary_warning_flag` and `expansion_rounds` fields show whether remediation was needed.
+If the final flag remains true, the optimum may still sit outside the searched domain and the
+boundary issue should remain open for review.
 
 ## Artifact Flow
 
@@ -75,3 +77,6 @@ The final `boundary_warning_flag` reports the accepted result after expansion. T
 - `top_results.csv`: highest objective candidates
 - `sensitivity.csv`: sensitivity output, when provided
 - `summary.json`: accepted recommendation and boundary metadata
+
+The artifact filenames are fixed. Reusing an output directory overwrites the prior files, so
+run-specific directories are recommended for reproducible records.

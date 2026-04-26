@@ -25,6 +25,52 @@ Before any production use, replace synthetic assumptions with governed calibrati
 Each calibration update should record source data, sample window, transformations, validation
 results, approval owner, and effective date.
 
+## Canonical Funding Economics Assumption
+
+Wholesale funding cost and funding shortfall penalty are intentionally additive in the current
+objective. This is a modelling assumption for management analysis, not an accounting identity.
+
+Wholesale funding cost represents the base marginal cost of externally funded lending balances:
+when expected loan volume exceeds expected deposit volume, the unfunded balance is charged at the
+wholesale funding rate.
+
+The funding shortfall penalty is a separate shadow cost for falling short of the target
+deposit-funding ratio. It represents management's risk appetite for deposit-funded lending and can
+be interpreted as a liquidity, franchise, or balance-sheet steering penalty. It does not replace
+the wholesale funding cost unless a future model version explicitly changes the objective and
+documents that policy choice.
+
+## Optimization Diagnostics Governance
+
+Adaptive boundary remediation starts from the configured rate grids. If the first selected result
+lands on a minimum or maximum grid boundary, the hit boundary is expanded and the grid search is
+rerun until the result moves inside the searched domain or the maximum expansion count is reached.
+
+Review the boundary fields together:
+
+- `initial_boundary_warning_flag`: whether the first pass on the configured grid selected a rate
+  on a grid boundary.
+- `expansion_rounds`: how many adaptive expansion rounds were actually run before accepting the
+  reported result.
+- `boundary_warning_flag`: whether the final accepted result still sits on the final searched
+  boundary after expansion.
+
+A final `boundary_warning_flag` of `True` means the optimum may still lie outside the searched
+domain. Treat that as unresolved model-risk evidence, not as fully remediated by the adaptive
+follow-up. The appropriate response is governance review of the grid range, elasticities, funding
+parameters, and competitor assumptions before relying on the recommendation.
+
+Exact objective ties are resolved deterministically by the optimizer's current grid ordering: the
+first row with the maximum objective is selected. This is reproducible and adequate for the
+prototype. A business-specific tie-break policy, such as preferring lower funding shortfall or
+smaller rate movement, can be added later if it becomes a governed decision rule.
+
+Sensitivity cases also run adaptive grid expansion independently. Each sensitivity result is
+optimized over its own final searched domain, so objective values should be compared alongside
+`expansion_rounds`, `initial_boundary_warning_flag`, `boundary_warning_flag`, and the final
+optimized rates. A case that required more expansion, or still ended with a boundary warning, is
+not directly comparable to a clean interior optimum without that qualification.
+
 ## Validation Cadence
 
 For prototype development, run the test suite and examples after pricing-model changes:
@@ -41,15 +87,19 @@ components, and sensitivity outputs against prior approved baselines. Use
 `ScenarioDiagnostics.write_artifacts()` to persist grid results, top candidates, sensitivity
 summaries, and the accepted recommendation.
 
+`ScenarioDiagnostics.write_artifacts()` uses fixed filenames in the requested output directory:
+`grid_results.csv`, `top_results.csv`, optional `sensitivity.csv`, and `summary.json`. Reusing the
+same directory overwrites those files. Use run-specific output directories, such as a dated or
+commit-specific path, when artifacts need to be reproducible experiment records.
+
 ## Key Model-Risk Checks
 
 - Boundary behavior: final recommendations should not remain at expanded grid boundaries without
   review.
 - Elasticity uncertainty: challenger elasticity assumptions should not reverse recommendations
   without explanation.
-- Funding interpretation: wholesale funding cost and shortfall penalty are additive by design.
-  Document any scenario where the shortfall penalty is intended to replace rather than supplement
-  wholesale funding cost.
+- Funding interpretation: wholesale funding cost and shortfall penalty follow the canonical
+  additive modelling assumption above.
 - Synthetic circularity: ML diagnostics trained on synthetic outcomes do not validate real customer
   behavior.
 - Conduct scope: portfolio-level pricing does not remove the need for future fairness and conduct
