@@ -1,31 +1,50 @@
 import pytest
 import numpy as np
+import pandas as pd
 
 from balance_pricing_engine.config import EngineConfig, load_config
-from balance_pricing_engine.optimization.grid_search import GRID_RESULT_COLUMNS
+from balance_pricing_engine.optimization.grid_search import (
+    GRID_RESULT_COLUMNS,
+    build_rate_grid,
+    select_best_result,
+)
 from balance_pricing_engine.scenarios.runner import (
     build_configured_rate_grids,
     run_baseline_diagnostics,
-    run_baseline_scenario,
 )
 
 
 def test_baseline_optimizer_returns_valid_joint_rates():
     config = load_config("configs/base.yaml")
 
-    result = run_baseline_scenario(config)
-    loan_grid, deposit_grid = build_configured_rate_grids(config)
+    diagnostics = run_baseline_diagnostics(config)
+    result = diagnostics.best_result
 
-    assert min(loan_grid) <= result.loan_rate <= max(loan_grid)
-    assert min(deposit_grid) <= result.deposit_rate <= max(deposit_grid)
+    assert diagnostics.grid_results["loan_rate"].min() <= result.loan_rate
+    assert result.loan_rate <= diagnostics.grid_results["loan_rate"].max()
+    assert diagnostics.grid_results["deposit_rate"].min() <= result.deposit_rate
+    assert result.deposit_rate <= diagnostics.grid_results["deposit_rate"].max()
     assert result.expected_loan_volume > 0
     assert result.expected_deposit_volume > 0
+
+
+@pytest.mark.parametrize(
+    ("start", "stop", "step", "message"),
+    [
+        (0.03, 0.04, 0, "step"),
+        (0.03, 0.04, -0.005, "step"),
+        (0.04, 0.03, 0.005, "stop"),
+    ],
+)
+def test_build_rate_grid_rejects_invalid_inputs(start, stop, step, message):
+    with pytest.raises(ValueError, match=message):
+        build_rate_grid(start=start, stop=stop, step=step)
 
 
 def test_baseline_diagnostics_include_every_grid_candidate():
     config = load_config("configs/base.yaml")
 
-    diagnostics = run_baseline_diagnostics(config)
+    diagnostics = run_baseline_diagnostics(config, max_boundary_expansions=0)
     loan_grid, deposit_grid = build_configured_rate_grids(config)
 
     expected_loan_rates = _expected_spread_count(config.pricing_strategy.home_loan_spread_bps)
@@ -42,7 +61,7 @@ def test_pricing_strategy_grid_takes_precedence_over_absolute_product_grid():
     config = EngineConfig.model_validate(raw_config)
 
     loan_grid, deposit_grid = build_configured_rate_grids(config)
-    diagnostics = run_baseline_diagnostics(config)
+    diagnostics = run_baseline_diagnostics(config, max_boundary_expansions=0)
 
     assert list(loan_grid) == pytest.approx([0.0520, 0.0525, 0.0530])
     assert list(deposit_grid) == pytest.approx([0.0395, 0.0400, 0.0405])
@@ -61,6 +80,22 @@ def test_baseline_best_result_matches_max_grid_objective():
     max_objective = diagnostics.grid_results["total_objective"].max()
 
     assert diagnostics.best_result.objective_value == pytest.approx(max_objective)
+
+
+def test_select_best_result_uses_first_grid_row_when_objectives_tie():
+    tied_results = np.array(
+        [
+            [0.050, 0.030, 0.0, 0.0, 100.0, 10.0, 5.0, 1.0, 1.0, 83.0, 1_000.0, 500.0, 250.0],
+            [0.055, 0.035, 50.0, 50.0, 110.0, 20.0, 5.0, 1.0, 1.0, 83.0, 900.0, 600.0, 100.0],
+        ],
+        dtype=float,
+    )
+    grid_results = pd.DataFrame(tied_results, columns=GRID_RESULT_COLUMNS)
+
+    result = select_best_result(grid_results)
+
+    assert result.loan_rate == pytest.approx(0.050)
+    assert result.deposit_rate == pytest.approx(0.030)
 
 
 def test_optimizer_output_contains_spread_to_market_fields():

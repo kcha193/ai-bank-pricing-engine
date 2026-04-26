@@ -84,6 +84,10 @@ GRID_RESULT_COLUMNS = [
 
 def build_rate_grid(start: float, stop: float, step: float) -> np.ndarray:
     """Build an inclusive decimal rate grid with stable rounding."""
+    if step <= 0:
+        raise ValueError("Grid step must be greater than zero.")
+    if stop < start:
+        raise ValueError("Grid stop must be greater than or equal to start.")
     n_steps = int(round((stop - start) / step))
     return np.round(start + np.arange(n_steps + 1) * step, 6)
 
