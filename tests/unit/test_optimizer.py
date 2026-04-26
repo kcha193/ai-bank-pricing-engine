@@ -5,10 +5,14 @@ import pandas as pd
 from balance_pricing_engine.config import EngineConfig, load_config
 from balance_pricing_engine.optimization.grid_search import (
     GRID_RESULT_COLUMNS,
+    OptimizationResult,
     build_rate_grid,
     evaluate_joint_rate_grid,
+    optimize_joint_market_relative_rates,
+    optimize_joint_rates,
     select_best_result,
 )
+from balance_pricing_engine.market import MarketRates, SpreadGridConfig
 from balance_pricing_engine.rate_grids import build_configured_rate_grids
 from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
 from balance_pricing_engine.synthetic.market import MarketState
@@ -39,6 +43,19 @@ def test_baseline_optimizer_returns_valid_joint_rates():
 def test_build_rate_grid_rejects_invalid_inputs(start, stop, step, message):
     with pytest.raises(ValueError, match=message):
         build_rate_grid(start=start, stop=stop, step=step)
+
+
+def test_build_configured_rate_grids_uses_absolute_product_grid_fallback():
+    raw_config = _market_relative_config_with_stale_absolute_grid()
+    del raw_config["pricing_strategy"]
+    del raw_config["market"]["home_loan_reference_rate"]
+    del raw_config["market"]["term_deposit_reference_rate"]
+    config = EngineConfig.model_validate(raw_config)
+
+    loan_grid, deposit_grid = build_configured_rate_grids(config)
+
+    assert list(loan_grid) == pytest.approx([0.10, 0.11])
+    assert list(deposit_grid) == pytest.approx([0.08, 0.09])
 
 
 def test_baseline_diagnostics_include_every_grid_candidate():
@@ -86,6 +103,27 @@ def test_baseline_best_result_matches_max_grid_objective():
     assert diagnostics.best_result.objective_value == pytest.approx(max_objective)
 
 
+def test_optimization_result_alias_properties_return_canonical_fields():
+    result = OptimizationResult(
+        loan_rate=0.07,
+        deposit_rate=0.04,
+        loan_interest_income=1_000.0,
+        expected_credit_loss=100.0,
+        deposit_interest_cost=50.0,
+        wholesale_funding_cost=25.0,
+        funding_shortfall_penalty=10.0,
+        total_objective=815.0,
+        expected_loan_volume=10_000.0,
+        expected_deposit_volume=8_000.0,
+        funding_shortfall=0.0,
+    )
+
+    assert result.objective_value == result.total_objective
+    assert result.loan_income_after_losses == 900.0
+    assert result.deposit_cost == result.deposit_interest_cost
+    assert result.funding_penalty == result.funding_shortfall_penalty
+
+
 def test_select_best_result_uses_first_grid_row_when_objectives_tie():
     tied_results = np.array(
         [
@@ -102,24 +140,39 @@ def test_select_best_result_uses_first_grid_row_when_objectives_tie():
     assert result.deposit_rate == pytest.approx(0.030)
 
 
+def test_select_best_result_rejects_empty_grid_results():
+    empty_results = pd.DataFrame(columns=GRID_RESULT_COLUMNS)
+
+    with pytest.raises(ValueError, match="At least one loan rate"):
+        select_best_result(empty_results)
+
+
+def test_evaluate_joint_rate_grid_rejects_empty_rate_grid():
+    loan_customers, deposit_customers = _single_customer_portfolios()
+
+    with pytest.raises(ValueError, match="At least one loan rate"):
+        evaluate_joint_rate_grid(
+            loan_customers=loan_customers,
+            deposit_customers=deposit_customers,
+            market=MarketState(
+                cash_rate=0.0,
+                wholesale_funding_spread=0.0,
+                competitor_loan_rate=0.05,
+                competitor_deposit_rate=0.03,
+            ),
+            loan_rate_grid=np.array([]),
+            deposit_rate_grid=np.array([0.03]),
+            loan_rate_elasticity=0.0,
+            loan_competitor_gap_elasticity=0.0,
+            deposit_rate_elasticity=0.0,
+            deposit_competitor_gap_elasticity=0.0,
+            required_deposit_funding_ratio=0.0,
+            funding_shortfall_penalty_rate=0.0,
+        )
+
+
 def test_monotonic_objective_selects_highest_loan_and_lowest_deposit_rates():
-    loan_customers = pd.DataFrame(
-        {
-            "loan_amount": [1_000_000.0],
-            "expected_loss_rate": [0.0],
-            "risk_score": [0.0],
-            "credit_score": [700.0],
-            "lvr": [0.75],
-        }
-    )
-    deposit_customers = pd.DataFrame(
-        {
-            "deposit_amount": [500_000.0],
-            "rate_sensitivity": [0.0],
-            "relationship_years": [0.0],
-            "digital_engagement": [0.0],
-        }
-    )
+    loan_customers, deposit_customers = _single_customer_portfolios()
 
     grid_results = evaluate_joint_rate_grid(
         loan_customers=loan_customers,
@@ -144,6 +197,64 @@ def test_monotonic_objective_selects_highest_loan_and_lowest_deposit_rates():
 
     assert result.loan_rate == pytest.approx(0.06)
     assert result.deposit_rate == pytest.approx(0.02)
+
+
+def test_optimize_joint_rates_returns_highest_objective_result():
+    loan_customers, deposit_customers = _single_customer_portfolios()
+
+    result = optimize_joint_rates(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=MarketState(
+            cash_rate=0.0,
+            wholesale_funding_spread=0.0,
+            competitor_loan_rate=0.05,
+            competitor_deposit_rate=0.03,
+        ),
+        loan_rate_grid=np.array([0.04, 0.06]),
+        deposit_rate_grid=np.array([0.02, 0.04]),
+        loan_rate_elasticity=0.0,
+        loan_competitor_gap_elasticity=0.0,
+        deposit_rate_elasticity=0.0,
+        deposit_competitor_gap_elasticity=0.0,
+        required_deposit_funding_ratio=0.0,
+        funding_shortfall_penalty_rate=0.0,
+    )
+
+    assert result.loan_rate == pytest.approx(0.06)
+    assert result.deposit_rate == pytest.approx(0.02)
+
+
+def test_optimize_joint_market_relative_rates_builds_spread_grids():
+    loan_customers, deposit_customers = _single_customer_portfolios()
+
+    result = optimize_joint_market_relative_rates(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=MarketState(
+            cash_rate=0.0,
+            wholesale_funding_spread=0.0,
+            competitor_loan_rate=0.05,
+            competitor_deposit_rate=0.03,
+        ),
+        market_rates=MarketRates(
+            home_loan_reference_rate=0.0500,
+            term_deposit_reference_rate=0.0300,
+        ),
+        home_loan_spread_bps=SpreadGridConfig(min=-100, max=100, step=100),
+        term_deposit_spread_bps=SpreadGridConfig(min=-100, max=100, step=100),
+        loan_rate_elasticity=0.0,
+        loan_competitor_gap_elasticity=0.0,
+        deposit_rate_elasticity=0.0,
+        deposit_competitor_gap_elasticity=0.0,
+        required_deposit_funding_ratio=0.0,
+        funding_shortfall_penalty_rate=0.0,
+    )
+
+    assert result.loan_rate == pytest.approx(0.06)
+    assert result.deposit_rate == pytest.approx(0.02)
+    assert result.home_loan_spread_to_market_bps == pytest.approx(100.0)
+    assert result.term_deposit_spread_to_market_bps == pytest.approx(-100.0)
 
 
 def test_optimizer_output_contains_spread_to_market_fields():
@@ -183,6 +294,27 @@ def test_top_results_are_sorted_by_objective_descending():
 
 def _expected_spread_count(spread_config) -> int:
     return round((spread_config.max - spread_config.min) / spread_config.step) + 1
+
+
+def _single_customer_portfolios() -> tuple[pd.DataFrame, pd.DataFrame]:
+    loan_customers = pd.DataFrame(
+        {
+            "loan_amount": [1_000_000.0],
+            "expected_loss_rate": [0.0],
+            "risk_score": [0.0],
+            "credit_score": [700.0],
+            "lvr": [0.75],
+        }
+    )
+    deposit_customers = pd.DataFrame(
+        {
+            "deposit_amount": [500_000.0],
+            "rate_sensitivity": [0.0],
+            "relationship_years": [0.0],
+            "digital_engagement": [0.0],
+        }
+    )
+    return loan_customers, deposit_customers
 
 
 def _market_relative_config_with_stale_absolute_grid() -> dict:

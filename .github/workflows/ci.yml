@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: ["master", "main"]
+  pull_request:
+    branches: ["master", "main"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -e ".[dev]"
+
+      - name: Ruff
+        run: python -m ruff check .
+
+      - name: Unit tests with coverage
+        run: >
+          python -m pytest
+          --cov=balance_pricing_engine
+          --cov-report=term-missing
+          --cov-fail-under=95
+          -q
+
+      - name: Baseline example
+        run: python examples/run_baseline.py
+
+      - name: Response model example
+        run: python examples/train_response_models.py

@@ -40,6 +40,22 @@ def test_market_relative_config_requires_reference_rates():
         EngineConfig.model_validate(config)
 
 
+def test_market_relative_config_requires_term_deposit_reference_rate():
+    config = _minimal_market_relative_config()
+    del config["market"]["term_deposit_reference_rate"]
+
+    with pytest.raises(ValidationError, match="term_deposit_reference_rate"):
+        EngineConfig.model_validate(config)
+
+
+def test_config_requires_pricing_strategy_or_absolute_product_grid():
+    config = _minimal_market_relative_config()
+    del config["pricing_strategy"]
+
+    with pytest.raises(ValidationError, match="pricing_strategy or products"):
+        EngineConfig.model_validate(config)
+
+
 def test_base_config_validates_successfully():
     validated = EngineConfig.model_validate(_minimal_market_relative_config())
 
@@ -72,12 +88,46 @@ def test_market_relative_config_rejects_generated_negative_rates():
         EngineConfig.model_validate(config)
 
 
+def test_market_relative_config_rejects_generated_negative_home_loan_rates():
+    config = _minimal_market_relative_config()
+    config["market"]["home_loan_reference_rate"] = 0.001
+    config["pricing_strategy"]["home_loan_spread_bps"]["min"] = -20
+
+    with pytest.raises(ValidationError, match="negative rates"):
+        EngineConfig.model_validate(config)
+
+
 def test_build_market_relative_grid_rejects_invalid_spread_inputs():
     with pytest.raises(ValueError, match="step"):
         build_market_relative_grid(
             market_rates=MarketRates(0.05, 0.04),
             home_loan_spread_bps=SpreadGridConfig(min=-10, max=10, step=0),
             term_deposit_spread_bps=SpreadGridConfig(min=-10, max=10, step=5),
+        )
+
+
+@pytest.mark.parametrize(
+    "market_rates",
+    [
+        MarketRates(home_loan_reference_rate=-0.001, term_deposit_reference_rate=0.0400),
+        MarketRates(home_loan_reference_rate=0.0500, term_deposit_reference_rate=-0.001),
+    ],
+)
+def test_build_market_relative_grid_rejects_negative_reference_rates(market_rates):
+    with pytest.raises(ValueError, match="reference rate"):
+        build_market_relative_grid(
+            market_rates=market_rates,
+            home_loan_spread_bps=SpreadGridConfig(min=-10, max=10, step=10),
+            term_deposit_spread_bps=SpreadGridConfig(min=-10, max=10, step=10),
+        )
+
+
+def test_build_market_relative_grid_rejects_reversed_spread_inputs():
+    with pytest.raises(ValueError, match="max"):
+        build_market_relative_grid(
+            market_rates=MarketRates(0.05, 0.04),
+            home_loan_spread_bps=SpreadGridConfig(min=10, max=-10, step=10),
+            term_deposit_spread_bps=SpreadGridConfig(min=-10, max=10, step=10),
         )
 
 
