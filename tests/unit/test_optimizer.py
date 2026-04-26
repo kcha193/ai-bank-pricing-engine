@@ -6,12 +6,14 @@ from balance_pricing_engine.config import EngineConfig, load_config
 from balance_pricing_engine.optimization.grid_search import (
     GRID_RESULT_COLUMNS,
     build_rate_grid,
+    evaluate_joint_rate_grid,
     select_best_result,
 )
 from balance_pricing_engine.scenarios.runner import (
     build_configured_rate_grids,
     run_baseline_diagnostics,
 )
+from balance_pricing_engine.synthetic.market import MarketState
 
 
 def test_baseline_optimizer_returns_valid_joint_rates():
@@ -96,6 +98,50 @@ def test_select_best_result_uses_first_grid_row_when_objectives_tie():
 
     assert result.loan_rate == pytest.approx(0.050)
     assert result.deposit_rate == pytest.approx(0.030)
+
+
+def test_monotonic_objective_selects_highest_loan_and_lowest_deposit_rates():
+    loan_customers = pd.DataFrame(
+        {
+            "loan_amount": [1_000_000.0],
+            "expected_loss_rate": [0.0],
+            "risk_score": [0.0],
+            "credit_score": [700.0],
+            "lvr": [0.75],
+        }
+    )
+    deposit_customers = pd.DataFrame(
+        {
+            "deposit_amount": [500_000.0],
+            "rate_sensitivity": [0.0],
+            "relationship_years": [0.0],
+            "digital_engagement": [0.0],
+        }
+    )
+
+    grid_results = evaluate_joint_rate_grid(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=MarketState(
+            cash_rate=0.0,
+            wholesale_funding_spread=0.0,
+            competitor_loan_rate=0.05,
+            competitor_deposit_rate=0.03,
+        ),
+        loan_rate_grid=np.array([0.04, 0.05, 0.06]),
+        deposit_rate_grid=np.array([0.02, 0.03, 0.04]),
+        loan_rate_elasticity=0.0,
+        loan_competitor_gap_elasticity=0.0,
+        deposit_rate_elasticity=0.0,
+        deposit_competitor_gap_elasticity=0.0,
+        required_deposit_funding_ratio=0.0,
+        funding_shortfall_penalty_rate=0.0,
+    )
+
+    result = select_best_result(grid_results)
+
+    assert result.loan_rate == pytest.approx(0.06)
+    assert result.deposit_rate == pytest.approx(0.02)
 
 
 def test_optimizer_output_contains_spread_to_market_fields():

@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.diagnostics import run_sensitivity_analysis
