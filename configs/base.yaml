@@ -18,6 +18,31 @@ pricing_strategy:
     min: -40
     max: 40
     step: 5
+competitor_rates:
+  enabled: false
+  source_file: data/processed/competitor_rates/latest.json
+  selected_banks:
+    - ANZ
+    - ASB
+    - Westpac
+    - BNZ
+    - Kiwibank
+  max_staleness_hours: 48
+  strict: true
+  mortgage:
+    strategy: market_average
+    term_months: 12
+    include_specials: true
+    require_min_20_percent_equity: true
+  term_deposit:
+    strategy: market_average
+    term_months: 12
+    product_type: term_deposit
+    interest_payment_frequency_preference:
+      - at_maturity
+      - annually
+      - quarterly
+      - monthly
 balance_sheet:
   required_deposit_funding_ratio: 0.65
   funding_shortfall_penalty_rate: 0.018

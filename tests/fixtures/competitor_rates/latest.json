@@ -1,0 +1,61 @@
+{
+  "run_id": "fixture-run",
+  "captured_at_utc": "2026-04-27T00:00:00Z",
+  "parser_version": "competitor-rates-v1",
+  "source_urls_attempted": [
+    "https://www.anz.co.nz/rates-fees-agreements/home-loans/",
+    "https://www.anz.co.nz/rates-fees-agreements/term-deposits/",
+    "https://www.asb.co.nz/home-loans-mortgages/interest-rates-fees.html",
+    "https://www.asb.co.nz/term-investments/term-investment-rates.html",
+    "https://www.westpac.co.nz/home-loans-mortgages/interest-rates/",
+    "https://www.westpac.co.nz/kiwisaver-investments/term-deposits-pie-investments/term-deposit-pie-investment-interest-rates/",
+    "https://www.bnz.co.nz/personal-banking/home-loans/compare-bnz-home-loan-rates",
+    "https://www.bnz.co.nz/personal-banking/investments/rates",
+    "https://www.kiwibank.co.nz/personal-banking/home-loans/rates-and-fees/",
+    "https://www.kiwibank.co.nz/personal-banking/investments/rates-and-charges/"
+  ],
+  "source_attempts": [
+    {"bank": "ANZ", "product_type": "home_loan", "source_url": "https://www.anz.co.nz/rates-fees-agreements/home-loans/", "success": true, "records_extracted": 1},
+    {"bank": "ANZ", "product_type": "term_deposit", "source_url": "https://www.anz.co.nz/rates-fees-agreements/term-deposits/", "success": true, "records_extracted": 1},
+    {"bank": "ASB", "product_type": "home_loan", "source_url": "https://www.asb.co.nz/home-loans-mortgages/interest-rates-fees.html", "success": true, "records_extracted": 1},
+    {"bank": "ASB", "product_type": "term_deposit", "source_url": "https://www.asb.co.nz/term-investments/term-investment-rates.html", "success": true, "records_extracted": 1},
+    {"bank": "Westpac", "product_type": "home_loan", "source_url": "https://www.westpac.co.nz/home-loans-mortgages/interest-rates/", "success": true, "records_extracted": 1},
+    {"bank": "Westpac", "product_type": "term_deposit", "source_url": "https://www.westpac.co.nz/kiwisaver-investments/term-deposits-pie-investments/term-deposit-pie-investment-interest-rates/", "success": true, "records_extracted": 1},
+    {"bank": "BNZ", "product_type": "home_loan", "source_url": "https://www.bnz.co.nz/personal-banking/home-loans/compare-bnz-home-loan-rates", "success": true, "records_extracted": 1},
+    {"bank": "BNZ", "product_type": "term_deposit", "source_url": "https://www.bnz.co.nz/personal-banking/investments/rates", "success": true, "records_extracted": 1},
+    {"bank": "Kiwibank", "product_type": "home_loan", "source_url": "https://www.kiwibank.co.nz/personal-banking/home-loans/rates-and-fees/", "success": true, "records_extracted": 1},
+    {"bank": "Kiwibank", "product_type": "term_deposit", "source_url": "https://www.kiwibank.co.nz/personal-banking/investments/rates-and-charges/", "success": true, "records_extracted": 1}
+  ],
+  "validation_summary": {
+    "status": "valid",
+    "total_records": 10,
+    "valid_records": 10,
+    "warning_count": 0,
+    "error_count": 0,
+    "issues": []
+  },
+  "counts_by_bank_product_type": {
+    "ANZ|home_loan": 1,
+    "ANZ|term_deposit": 1,
+    "ASB|home_loan": 1,
+    "ASB|term_deposit": 1,
+    "Westpac|home_loan": 1,
+    "Westpac|term_deposit": 1,
+    "BNZ|home_loan": 1,
+    "BNZ|term_deposit": 1,
+    "Kiwibank|home_loan": 1,
+    "Kiwibank|term_deposit": 1
+  },
+  "records": [
+    {"bank": "ANZ", "product_type": "home_loan", "product_name": "Fixed special", "rate_category": "special", "term_label_raw": "1 year", "term_months_normalised": 12, "advertised_rate_pct": 5.50, "interest_payment_frequency": "unknown", "lvr_condition": "min_20_percent_equity", "source_url": "https://www.anz.co.nz/rates-fees-agreements/home-loans/", "captured_at_utc": "2026-04-27T00:00:00Z", "raw_text_context": "ANZ 1 year special 5.50%", "raw_html_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "parser_version": "competitor-rates-v1", "validation_status": "valid", "validation_warnings": []},
+    {"bank": "ANZ", "product_type": "term_deposit", "product_name": "Term deposit", "rate_category": "term_deposit", "term_label_raw": "1 year", "term_months_normalised": 12, "advertised_rate_pct": 4.10, "interest_payment_frequency": "at_maturity", "min_balance_or_deposit": 5000, "source_url": "https://www.anz.co.nz/rates-fees-agreements/term-deposits/", "captured_at_utc": "2026-04-27T00:00:00Z", "raw_text_context": "ANZ 1 year TD 4.10%", "raw_html_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "parser_version": "competitor-rates-v1", "validation_status": "valid", "validation_warnings": []},
+    {"bank": "ASB", "product_type": "home_loan", "product_name": "Fixed special", "rate_category": "special", "term_label_raw": "1 year", "term_months_normalised": 12, "advertised_rate_pct": 5.70, "interest_payment_frequency": "unknown", "lvr_condition": "min_20_percent_equity", "source_url": "https://www.asb.co.nz/home-loans-mortgages/interest-rates-fees.html", "captured_at_utc": "2026-04-27T00:00:00Z", "raw_text_context": "ASB 1 year special 5.70%", "raw_html_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "parser_version": "competitor-rates-v1", "validation_status": "valid", "validation_warnings": []},
+    {"bank": "ASB", "product_type": "term_deposit", "product_name": "Term deposit", "rate_category": "term_deposit", "term_label_raw": "1 year", "term_months_normalised": 12, "advertised_rate_pct": 4.30, "interest_payment_frequency": "annually", "min_balance_or_deposit": 5000, "source_url": "https://www.asb.co.nz/term-investments/term-investment-rates.html", "captured_at_utc": "2026-04-27T00:00:00Z", "raw_text_context": "ASB 1 year TD 4.30%", "raw_html_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "parser_version": "competitor-rates-v1", "validation_status": "valid", "validation_warnings": []},
+    {"bank": "Westpac", "product_type": "home_loan", "product_name": "Fixed standard", "rate_category": "standard", "term_label_raw": "1 year", "term_months_normalised": 12, "advertised_rate_pct": 5.90, "interest_payment_frequency": "unknown", "lvr_condition": "standard", "source_url": "https://www.westpac.co.nz/home-loans-mortgages/interest-rates/", "captured_at_utc": "2026-04-27T00:00:00Z", "raw_text_context": "Westpac 1 year standard 5.90%", "raw_html_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "parser_version": "competitor-rates-v1", "validation_status": "valid", "validation_warnings": []},
+    {"bank": "Westpac", "product_type": "term_deposit", "product_name": "Term deposit", "rate_category": "term_deposit", "term_label_raw": "1 year", "term_months_normalised": 12, "advertised_rate_pct": 4.40, "interest_payment_frequency": "quarterly", "min_balance_or_deposit": 5000, "source_url": "https://www.westpac.co.nz/kiwisaver-investments/term-deposits-pie-investments/term-deposit-pie-investment-interest-rates/", "captured_at_utc": "2026-04-27T00:00:00Z", "raw_text_context": "Westpac 1 year TD 4.40%", "raw_html_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "parser_version": "competitor-rates-v1", "validation_status": "valid", "validation_warnings": []},
+    {"bank": "BNZ", "product_type": "home_loan", "product_name": "Fixed special", "rate_category": "special", "term_label_raw": "1 year", "term_months_normalised": 12, "advertised_rate_pct": 5.60, "interest_payment_frequency": "unknown", "lvr_condition": "min_20_percent_equity", "source_url": "https://www.bnz.co.nz/personal-banking/home-loans/compare-bnz-home-loan-rates", "captured_at_utc": "2026-04-27T00:00:00Z", "raw_text_context": "BNZ 1 year special 5.60%", "raw_html_sha256": "1111111111111111111111111111111111111111111111111111111111111111", "parser_version": "competitor-rates-v1", "validation_status": "valid", "validation_warnings": []},
+    {"bank": "BNZ", "product_type": "term_deposit", "product_name": "Term deposit", "rate_category": "term_deposit", "term_label_raw": "1 year", "term_months_normalised": 12, "advertised_rate_pct": 4.20, "interest_payment_frequency": "at_maturity", "min_balance_or_deposit": 5000, "source_url": "https://www.bnz.co.nz/personal-banking/investments/rates", "captured_at_utc": "2026-04-27T00:00:00Z", "raw_text_context": "BNZ 1 year TD 4.20%", "raw_html_sha256": "2222222222222222222222222222222222222222222222222222222222222222", "parser_version": "competitor-rates-v1", "validation_status": "valid", "validation_warnings": []},
+    {"bank": "Kiwibank", "product_type": "home_loan", "product_name": "Fixed special", "rate_category": "special", "term_label_raw": "1 year", "term_months_normalised": 12, "advertised_rate_pct": 5.80, "interest_payment_frequency": "unknown", "lvr_condition": "min_20_percent_equity", "source_url": "https://www.kiwibank.co.nz/personal-banking/home-loans/rates-and-fees/", "captured_at_utc": "2026-04-27T00:00:00Z", "raw_text_context": "Kiwibank 1 year special 5.80%", "raw_html_sha256": "3333333333333333333333333333333333333333333333333333333333333333", "parser_version": "competitor-rates-v1", "validation_status": "valid", "validation_warnings": []},
+    {"bank": "Kiwibank", "product_type": "term_deposit", "product_name": "Term deposit", "rate_category": "term_deposit", "term_label_raw": "1 year", "term_months_normalised": 12, "advertised_rate_pct": 4.50, "interest_payment_frequency": "monthly", "min_balance_or_deposit": 5000, "source_url": "https://www.kiwibank.co.nz/personal-banking/investments/rates-and-charges/", "captured_at_utc": "2026-04-27T00:00:00Z", "raw_text_context": "Kiwibank 1 year TD 4.50%", "raw_html_sha256": "4444444444444444444444444444444444444444444444444444444444444444", "parser_version": "competitor-rates-v1", "validation_status": "valid", "validation_warnings": []}
+  ]
+}

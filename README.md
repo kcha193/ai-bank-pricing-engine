@@ -31,6 +31,7 @@ For model-risk and architecture notes, see:
 
 - [docs/model_governance.md](docs/model_governance.md)
 - [docs/architecture.md](docs/architecture.md)
+- [docs/competitor_rate_ingestion.md](docs/competitor_rate_ingestion.md)
 
 ## Current Scope
 
