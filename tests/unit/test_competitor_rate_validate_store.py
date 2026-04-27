@@ -1,9 +1,11 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRun
 from balance_pricing_engine.competitor_rates.store import load_rate_run, write_rate_run
-from balance_pricing_engine.competitor_rates.validate import validate_rate_run
+from balance_pricing_engine.competitor_rates.validate import validate_rate_run, validate_staleness
 
 
 FIXTURE = Path("tests/fixtures/competitor_rates/latest.json")
@@ -84,3 +86,58 @@ def test_load_rate_run_preserves_utc_capture_timestamp():
     run = load_rate_run(FIXTURE)
 
     assert run.captured_at_utc == datetime(2026, 4, 27, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize(("rate", "strict", "status"), [(16.0, True, "failed"), (-0.1, False, "warning")])
+def test_validate_rate_run_flags_out_of_range_rates(rate, strict, status):
+    run = load_rate_run(FIXTURE)
+    changed = run.model_copy(
+        update={"records": [run.records[0].model_copy(update={"advertised_rate_pct": rate})]}
+    )
+
+    summary = validate_rate_run(changed, strict=strict)
+
+    assert summary.status == status
+    assert any("outside expected range" in issue.message for issue in summary.issues)
+
+
+def test_validate_staleness_returns_no_issue_for_fresh_runs():
+    run = load_rate_run(FIXTURE)
+
+    issues = validate_staleness(
+        run,
+        max_staleness_hours=1,
+        strict=True,
+        now=datetime(2026, 4, 27, 0, 30, tzinfo=timezone.utc),
+    )
+
+    assert issues == []
+
+
+def test_validate_staleness_warns_in_non_strict_mode():
+    run = load_rate_run(FIXTURE)
+
+    issues = validate_staleness(
+        run,
+        max_staleness_hours=1,
+        strict=False,
+        now=datetime(2026, 4, 27, 3, 0, tzinfo=timezone.utc),
+    )
+
+    assert len(issues) == 1
+    assert issues[0].severity == "warning"
+
+
+def test_validate_rate_run_ignores_historical_records_without_matching_key():
+    run = load_rate_run(FIXTURE)
+    previous = run.model_copy(
+        update={
+            "records": [
+                run.records[0].model_copy(update={"bank": "Different Bank", "advertised_rate_pct": 1.0})
+            ]
+        }
+    )
+
+    summary = validate_rate_run(run, previous_run=previous, strict=False)
+
+    assert not any("movement" in issue.message for issue in summary.issues)

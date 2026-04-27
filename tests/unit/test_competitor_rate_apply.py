@@ -1,9 +1,11 @@
 import pytest
 
 from balance_pricing_engine.competitor_rates.apply import (
+    _resolve_strategy,
     apply_competitor_rates_to_config,
     load_and_resolve_competitor_rates,
 )
+from balance_pricing_engine.competitor_rates.store import load_rate_run
 from balance_pricing_engine.config import EngineConfig
 from balance_pricing_engine.scenarios.runner import run_baseline_scenario
 
@@ -85,6 +87,90 @@ def test_engine_runs_with_fixture_competitor_rates_applied():
 
     assert result.loan_rate > 0
     assert result.deposit_rate > 0
+
+
+def test_strict_stale_competitor_rate_file_fails(tmp_path):
+    run = load_rate_run(FIXTURE)
+    source_file = tmp_path / "latest.json"
+    source_file.write_text(run.model_dump_json(), encoding="utf-8")
+    raw = _base_config()
+    raw["competitor_rates"]["source_file"] = str(source_file)
+    raw["competitor_rates"]["max_staleness_hours"] = 1
+    config = EngineConfig.model_validate(raw)
+
+    with pytest.raises(ValueError, match="stale"):
+        load_and_resolve_competitor_rates(config.competitor_rates)
+
+
+def test_strict_failed_validation_status_fails(tmp_path):
+    run = load_rate_run(FIXTURE)
+    failed = run.model_copy(
+        update={
+            "validation_summary": run.validation_summary.model_copy(
+                update={"status": "failed", "error_count": 1}
+            )
+        }
+    )
+    source_file = tmp_path / "failed.json"
+    source_file.write_text(failed.model_dump_json(), encoding="utf-8")
+    raw = _base_config()
+    raw["competitor_rates"]["source_file"] = str(source_file)
+    config = EngineConfig.model_validate(raw)
+
+    with pytest.raises(ValueError, match="failed validation"):
+        load_and_resolve_competitor_rates(config.competitor_rates)
+
+
+def test_no_matching_records_fails_clearly():
+    raw = _base_config()
+    raw["competitor_rates"]["selected_banks"] = ["Missing Bank"]
+    config = EngineConfig.model_validate(raw)
+
+    with pytest.raises(ValueError, match="No competitor rates matched"):
+        load_and_resolve_competitor_rates(config.competitor_rates)
+
+
+def test_bank_specific_strategy_requires_bank():
+    raw = _base_config()
+    raw["competitor_rates"]["mortgage"]["strategy"] = "bank_specific"
+    raw["competitor_rates"]["mortgage"].pop("bank", None)
+    config = EngineConfig.model_validate(raw)
+
+    with pytest.raises(ValueError, match="requires bank"):
+        load_and_resolve_competitor_rates(config.competitor_rates)
+
+
+def test_unsupported_strategy_fails_clearly():
+    run = load_rate_run(FIXTURE)
+
+    with pytest.raises(ValueError, match="Unsupported"):
+        _resolve_strategy(run.records[:1], "bespoke", None)
+
+
+def test_term_deposit_frequency_selection_falls_back_to_first_available():
+    raw = _base_config()
+    raw["competitor_rates"]["selected_banks"] = ["Kiwibank"]
+    raw["competitor_rates"]["term_deposit"]["interest_payment_frequency_preference"] = [
+        "at_maturity"
+    ]
+    config = EngineConfig.model_validate(raw)
+
+    resolved = load_and_resolve_competitor_rates(config.competitor_rates)
+
+    assert resolved.term_deposit_records[0].bank == "Kiwibank"
+    assert resolved.term_deposit_records[0].interest_payment_frequency == "monthly"
+
+
+def test_mortgage_filter_can_exclude_special_rates():
+    raw = _base_config()
+    raw["competitor_rates"]["mortgage"]["include_specials"] = False
+    raw["competitor_rates"]["mortgage"]["require_min_20_percent_equity"] = False
+    config = EngineConfig.model_validate(raw)
+
+    resolved = load_and_resolve_competitor_rates(config.competitor_rates)
+
+    assert [record.bank for record in resolved.mortgage_records] == ["Westpac"]
+    assert resolved.mortgage_reference_rate == pytest.approx(0.059)
 
 
 def _base_config(enabled: bool = True) -> dict:
