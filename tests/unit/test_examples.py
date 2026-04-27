@@ -16,3 +16,11 @@ def test_examples_do_not_mutate_python_import_path():
         script = script_path.read_text(encoding="utf-8")
 
         assert "sys.path" not in script
+
+
+def test_competitor_rate_example_reports_reference_metadata():
+    script = Path("examples/run_with_competitor_rates.py").read_text(encoding="utf-8")
+
+    assert "Competitor rate inputs" in script
+    assert "Mortgage competitor reference" in script
+    assert "Term deposit competitor reference" in script

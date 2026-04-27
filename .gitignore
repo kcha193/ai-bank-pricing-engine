@@ -6,5 +6,6 @@ __pycache__/
 .ruff_cache/
 .DS_Store
 data/raw/
+data/processed/competitor_rates/
 data/synthetic/
 data/outputs/

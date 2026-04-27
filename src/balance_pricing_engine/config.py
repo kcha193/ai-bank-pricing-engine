@@ -8,6 +8,7 @@ from typing import Optional
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+from balance_pricing_engine.competitor_rates.models import CompetitorRatesConfig
 from balance_pricing_engine.market import bps_to_rate
 
 
@@ -81,6 +82,7 @@ class EngineConfig(BaseModel):
     market: MarketConfig
     products: Optional[ProductConfig] = None
     pricing_strategy: Optional[PricingStrategyConfig] = None
+    competitor_rates: Optional[CompetitorRatesConfig] = None
     balance_sheet: BalanceSheetConfig
     response: ResponseConfig
 
