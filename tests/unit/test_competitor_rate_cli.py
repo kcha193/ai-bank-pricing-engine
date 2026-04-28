@@ -1,3 +1,4 @@
+import pytest
 import yaml
 
 from balance_pricing_engine.competitor_rates import cli
@@ -52,7 +53,7 @@ def test_apply_command_writes_generated_config_when_requested(tmp_path):
     generated = list(output_dir.glob("with_competitor_rates_*.yaml"))
     assert len(generated) == 1
     raw = yaml.safe_load(generated[0].read_text(encoding="utf-8"))
-    assert raw["market"]["competitor_loan_rate"] == 0.565 / 10
+    assert raw["market"]["competitor_loan_rate"] == pytest.approx(0.565 / 10)
 
 
 def test_apply_command_reports_disabled_config_without_source_override(tmp_path, capsys):
