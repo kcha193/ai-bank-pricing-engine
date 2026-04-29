@@ -44,6 +44,7 @@ def test_training_agent_trains_candidates_and_writes_registry(tmp_path):
     assert result.recommended_model_name in {"elasticity_baseline", "logistic"}
     assert len(result.records) == 2
     assert (tmp_path / "model_registry.json").exists()
+    assert result.report_path.endswith(".json")
 
 
 def test_scoring_agent_fallback_when_artifact_missing(tmp_path):
@@ -78,6 +79,7 @@ def test_training_is_reproducible_with_fixed_seed(tmp_path):
     metric1 = next(item for item in result1.report["models"] if item["name"] == "logistic")["metrics"]["log_loss"]
     metric2 = next(item for item in result2.report["models"] if item["name"] == "logistic")["metrics"]["log_loss"]
     assert metric1 == metric2
+    assert result1.report_path != result2.report_path
 
 
 def test_registry_append_and_latest_lookup(tmp_path):

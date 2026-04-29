@@ -117,6 +117,7 @@ class ModelRegistry:
 @dataclass(frozen=True)
 class TrainingResult:
     report: dict[str, Any]
+    report_path: str
     records: list[ModelRecord]
     recommended_model_name: str
 
@@ -208,9 +209,15 @@ class ModelTrainingAgent:
             "recommendation_reason": reason,
             "human_approval_required": True,
         }
-        report_path = self.reports_dir / "training_report.json"
+        report_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        report_path = self.reports_dir / f"training_report_{report_timestamp}.json"
         report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-        return TrainingResult(report=report, records=records, recommended_model_name=recommended)
+        return TrainingResult(
+            report=report,
+            report_path=str(report_path),
+            records=records,
+            recommended_model_name=recommended,
+        )
 
     @staticmethod
     def _validate_schema(dataset: pd.DataFrame, feature_columns: list[str], target_column: str) -> None:
