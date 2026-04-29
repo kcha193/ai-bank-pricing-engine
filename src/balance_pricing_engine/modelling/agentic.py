@@ -315,7 +315,7 @@ class ModelTrainingAgent:
                 }
             )
             artifact_path = self.model_dir / f"{name}.joblib"
-            save_model(model, artifact_path)
+            save_model(_scoring_artifact(model), artifact_path)
             record = ModelRecord(
                 model_name=name,
                 model_type=type(model).__name__,
@@ -505,7 +505,10 @@ class ModelScoringAgent:
         used_fallback = False
         if model_artifact_path is not None and Path(model_artifact_path).exists():
             model = load_model(model_artifact_path)
-            probabilities = predict_response_probability(model, dataset, self.feature_columns)
+            if hasattr(model, "predict_probability"):
+                probabilities = model.predict_probability(dataset, self.feature_columns)
+            else:
+                probabilities = predict_response_probability(model, dataset, self.feature_columns)
             model_name = "LoadedLogisticModel"
         else:
             used_fallback = True
@@ -616,6 +619,12 @@ def _score_result(
 def _stable_hash(payload: dict[str, Any]) -> str:
     serialized = json.dumps(payload, sort_keys=True)
     return sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _scoring_artifact(model: ResponseModel) -> Any:
+    """Return an artifact object compatible with scoring-time loading."""
+    fitted_model = getattr(model, "fitted_model", None)
+    return fitted_model if fitted_model is not None else model
 
 
 def _timestamp_slug() -> str:
