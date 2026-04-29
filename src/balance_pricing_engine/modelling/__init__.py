@@ -1,12 +1,15 @@
-"""Machine-learning response modelling utilities."""
+"""Machine-learning response modelling and governed agentic workflow utilities."""
 
 from balance_pricing_engine.modelling.agentic import (
-    ElasticityBaselineModel as ElasticityBaselineModel,
-    LogisticResponseModel as LogisticResponseModel,
-    ModelRegistry as ModelRegistry,
-    ModelScoringAgent as ModelScoringAgent,
-    ModelTrainingAgent as ModelTrainingAgent,
-    TrainingConfig as TrainingConfig,
+    ElasticityBaselineModel,
+    ElasticityResponseModel,
+    LogisticResponseModel,
+    ModelRecord,
+    ModelRegistry,
+    ModelScoringAgent,
+    ModelTrainingAgent,
+    TrainingConfig,
+    TrainingResult,
 )
 from balance_pricing_engine.modelling.datasets import (
     DEPOSIT_FEATURE_COLUMNS,
@@ -31,11 +34,14 @@ from balance_pricing_engine.utils.random import make_rng
 
 __all__ = [
     "ElasticityBaselineModel",
+    "ElasticityResponseModel",
     "LogisticResponseModel",
+    "ModelRecord",
     "ModelRegistry",
     "ModelScoringAgent",
     "ModelTrainingAgent",
     "TrainingConfig",
+    "TrainingResult",
     "DEPOSIT_FEATURE_COLUMNS",
     "DEPOSIT_TARGET_COLUMN",
     "LOAN_FEATURE_COLUMNS",

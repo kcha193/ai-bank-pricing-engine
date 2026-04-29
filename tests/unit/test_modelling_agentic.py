@@ -1,6 +1,9 @@
 import numpy as np
 
 from balance_pricing_engine.modelling.agentic import (
+    ElasticityResponseModel,
+    LogisticResponseModel,
+    ModelRecord,
     ModelRegistry,
     ModelScoringAgent,
     ModelTrainingAgent,
@@ -49,6 +52,7 @@ def test_training_agent_trains_and_recommends(tmp_path):
         "ElasticityBaselineModel",
         "LogisticResponseModel",
     }
+    assert report["report_path"].endswith(".json")
 
 
 def test_scoring_agent_schema_and_fallback(tmp_path):
@@ -60,11 +64,33 @@ def test_scoring_agent_schema_and_fallback(tmp_path):
     assert len(result["probabilities"]) == len(dataset)
 
 
-def test_registry_round_trip(tmp_path):
+def test_registry_round_trip_and_latest_lookup(tmp_path):
     registry = ModelRegistry(tmp_path / "registry.json")
     registry.register({"model_name": "m1", "version": "v1"})
+    registry.register({"model_name": "m1", "version": "v2"})
     payload = registry.load()
     assert payload["models"][0]["model_name"] == "m1"
+    assert registry.latest_for_model("m1")["version"] == "v2"
+
+
+def test_registry_append_accepts_model_record(tmp_path):
+    registry = ModelRegistry(tmp_path / "model_registry.json")
+    record = ModelRecord(
+        model_name="elasticity_baseline",
+        model_type="ElasticityResponseModel",
+        version="v1",
+        trained_at_utc="2026-04-29T00:00:00+00:00",
+        artifact_path="/tmp/fake.joblib",
+        metrics={"auc": 0.5, "log_loss": 0.69, "brier_score": 0.25},
+        calibration_mae=0.02,
+        governance_status="pending_human_approval",
+        champion_status="challenger",
+        config_hash="abc",
+    )
+    registry.append(record)
+    latest = registry.latest_for_model("elasticity_baseline")
+    assert latest is not None
+    assert latest["version"] == "v1"
 
 
 def test_training_reproducible_with_fixed_seed(tmp_path):
@@ -75,11 +101,56 @@ def test_training_reproducible_with_fixed_seed(tmp_path):
     metrics_a = {c["model_name"]: c["metrics"] for c in report_a["candidates"]}
     metrics_b = {c["model_name"]: c["metrics"] for c in report_b["candidates"]}
     assert metrics_a == metrics_b
+    assert report_a["report_path"] != report_b["report_path"]
+
+
+def test_lower_level_training_api_returns_versioned_result(tmp_path):
+    dataset = _loan_dataset()
+    candidates = {
+        "elasticity_baseline": ElasticityResponseModel(),
+        "logistic": LogisticResponseModel(random_state=21),
+    }
+
+    result = ModelTrainingAgent(artifacts_dir=tmp_path, random_seed=21).train(
+        dataset,
+        LOAN_FEATURE_COLUMNS,
+        LOAN_TARGET_COLUMN,
+        candidates,
+    )
+
+    assert result.recommended_model_name in {"elasticity_baseline", "logistic"}
+    assert len(result.records) == 2
+    assert result.report_path.endswith(".json")
+
+
+def test_challenger_not_promoted_when_improvement_threshold_not_met(tmp_path):
+    dataset = _loan_dataset(seed=999)
+    result = ModelTrainingAgent(artifacts_dir=tmp_path, random_seed=123).train(
+        dataset,
+        LOAN_FEATURE_COLUMNS,
+        LOAN_TARGET_COLUMN,
+        {
+            "elasticity_baseline": ElasticityResponseModel(),
+            "logistic": LogisticResponseModel(random_state=123),
+        },
+        min_log_loss_improvement=5.0,
+    )
+    assert result.recommended_model_name == "elasticity_baseline"
 
 
 def test_scoring_fallback_uses_positive_slope_for_deposits(tmp_path):
     dataset = _loan_dataset().head(20).rename(columns={"loan_amount": "deposit_amount"})
-    dataset = dataset.drop(columns=["risk_score", "expected_loss_rate", "lvr", "risk_segment", "credit_score", "income", "ground_truth_probability"])
+    dataset = dataset.drop(
+        columns=[
+            "risk_score",
+            "expected_loss_rate",
+            "lvr",
+            "risk_segment",
+            "credit_score",
+            "income",
+            "ground_truth_probability",
+        ]
+    )
     dataset["relationship_years"] = 3
     dataset["digital_engagement"] = 0.5
     dataset["rate_sensitivity"] = 0.3
