@@ -138,6 +138,26 @@ def test_challenger_not_promoted_when_improvement_threshold_not_met(tmp_path):
     assert result.recommended_model_name == "elasticity_baseline"
 
 
+def test_lower_level_training_artifacts_are_scoreable(tmp_path):
+    dataset = _loan_dataset()
+    result = ModelTrainingAgent(artifacts_dir=tmp_path, random_seed=21).train(
+        dataset,
+        LOAN_FEATURE_COLUMNS,
+        LOAN_TARGET_COLUMN,
+        {"logistic": LogisticResponseModel(random_state=21)},
+    )
+
+    logistic_record = next(record for record in result.records if record.model_name == "logistic")
+    scored = ModelScoringAgent(feature_columns=LOAN_FEATURE_COLUMNS).score(
+        dataset.head(10),
+        model_artifact_path=logistic_record.artifact_path,
+        run_name="score-logistic",
+    )
+
+    assert scored["used_fallback"] is False
+    assert len(scored["probabilities"]) == 10
+
+
 def test_scoring_fallback_uses_positive_slope_for_deposits(tmp_path):
     dataset = _loan_dataset().head(20).rename(columns={"loan_amount": "deposit_amount"})
     dataset = dataset.drop(
