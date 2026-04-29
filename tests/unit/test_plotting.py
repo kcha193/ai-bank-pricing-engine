@@ -1,0 +1,263 @@
+from types import SimpleNamespace
+
+import numpy as np
+import pandas as pd
+
+from balance_pricing_engine import plotting
+
+
+class FakeAxisFormatters:
+    def __init__(self) -> None:
+        self.formatters = []
+
+    def set_major_formatter(self, formatter) -> None:
+        self.formatters.append(formatter)
+
+
+class FakeAxis:
+    def __init__(self) -> None:
+        self.calls = []
+        self.xaxis = FakeAxisFormatters()
+        self.yaxis = FakeAxisFormatters()
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+
+        def method(*args, **kwargs):
+            self.calls.append((name, args, kwargs))
+            return f"{name}-result"
+
+        return method
+
+
+class FakeFigure:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def colorbar(self, *args, **kwargs) -> None:
+        self.calls.append(("colorbar", args, kwargs))
+
+    def suptitle(self, *args, **kwargs) -> None:
+        self.calls.append(("suptitle", args, kwargs))
+
+
+class FakePyplot:
+    def __init__(self) -> None:
+        self.figures = []
+        self.axes = []
+        self.tight_layout_calls = 0
+        self.show_calls = 0
+
+    def subplots(self, rows=1, cols=1, figsize=None):
+        figure = FakeFigure()
+        self.figures.append(figure)
+        if rows == 1 and cols == 1:
+            axis = FakeAxis()
+            self.axes.append(axis)
+            return figure, axis
+
+        if rows == 1:
+            axes = np.array([FakeAxis() for _ in range(cols)], dtype=object)
+            self.axes.extend(axes.tolist())
+            return figure, axes
+        if cols == 1:
+            axes = np.array([FakeAxis() for _ in range(rows)], dtype=object)
+            self.axes.extend(axes.tolist())
+            return figure, axes
+
+        axes = np.array([[FakeAxis() for _ in range(cols)] for _ in range(rows)], dtype=object)
+        self.axes.extend(axes.flatten().tolist())
+        return figure, axes
+
+    def tight_layout(self) -> None:
+        self.tight_layout_calls += 1
+
+    def show(self) -> None:
+        self.show_calls += 1
+
+
+def fake_formatter(*args, **kwargs):
+    return {"args": args, "kwargs": kwargs}
+
+
+def install_fake_plotting(monkeypatch) -> FakePyplot:
+    fake_plt = FakePyplot()
+    monkeypatch.setattr(
+        plotting,
+        "get_plotting_tools",
+        lambda: (fake_plt, fake_formatter, fake_formatter),
+    )
+    return fake_plt
+
+
+def test_plot_customer_profiles_draws_synthetic_portfolio_histograms(monkeypatch):
+    fake_plt = install_fake_plotting(monkeypatch)
+    hist_calls = []
+
+    def fake_hist(series, ax, bins, color, edgecolor, alpha):
+        hist_calls.append(
+            {
+                "series": series.name,
+                "ax": ax,
+                "bins": bins,
+                "color": color,
+                "edgecolor": edgecolor,
+                "alpha": alpha,
+            }
+        )
+        return ax
+
+    monkeypatch.setattr(pd.Series, "hist", fake_hist)
+    loan_customers = pd.DataFrame(
+        {
+            "loan_amount": [100_000, 200_000],
+            "credit_score": [700, 720],
+            "lvr": [0.6, 0.8],
+        }
+    )
+    deposit_customers = pd.DataFrame(
+        {
+            "deposit_amount": [50_000, 75_000],
+            "rate_sensitivity": [0.2, 0.4],
+            "relationship_years": [2.0, 5.0],
+        }
+    )
+
+    plotting.plot_customer_profiles(loan_customers, deposit_customers)
+
+    assert [call["series"] for call in hist_calls] == [
+        "loan_amount",
+        "credit_score",
+        "lvr",
+        "deposit_amount",
+        "rate_sensitivity",
+        "relationship_years",
+    ]
+    assert fake_plt.tight_layout_calls == 1
+    assert fake_plt.show_calls == 1
+
+
+def test_plot_objective_decomposition_draws_positive_and_negative_components(monkeypatch):
+    fake_plt = install_fake_plotting(monkeypatch)
+    objective_decomposition = pd.DataFrame(
+        {
+            "component": ["income", "cost", "total objective"],
+            "amount": [100.0, -25.0, 75.0],
+        }
+    )
+
+    plotting.plot_objective_decomposition(objective_decomposition)
+
+    axis = fake_plt.axes[0]
+    called_methods = [call[0] for call in axis.calls]
+    assert "barh" in called_methods
+    assert called_methods.count("text") == 2
+    assert fake_plt.show_calls == 1
+
+
+def test_plot_grid_search_results_draws_surface_and_candidate_views(monkeypatch):
+    fake_plt = install_fake_plotting(monkeypatch)
+    grid_results = pd.DataFrame(
+        {
+            "loan_rate": [0.05, 0.05, 0.06, 0.06],
+            "deposit_rate": [0.03, 0.04, 0.03, 0.04],
+            "total_objective": [10.0, 15.0, 20.0, 25.0],
+            "funding_shortfall": [0.0, 5.0, 0.0, 10.0],
+        }
+    )
+    best_by_loan_rate = pd.DataFrame(
+        {"loan_rate": [0.05, 0.06], "total_objective": [15.0, 25.0]}
+    )
+    best_by_deposit_rate = pd.DataFrame(
+        {"deposit_rate": [0.03, 0.04], "total_objective": [20.0, 25.0]}
+    )
+    top_candidates = grid_results.sort_values("total_objective", ascending=False)
+    result = SimpleNamespace(loan_rate=0.06, deposit_rate=0.04)
+
+    plotting.plot_grid_search_results(
+        grid_results,
+        best_by_loan_rate,
+        best_by_deposit_rate,
+        top_candidates,
+        result,
+    )
+
+    called_methods = [call[0] for axis in fake_plt.axes for call in axis.calls]
+    assert "imshow" in called_methods
+    assert called_methods.count("scatter") >= 2
+    assert called_methods.count("plot") == 2
+    assert fake_plt.figures[0].calls[0][0] == "colorbar"
+    assert fake_plt.show_calls == 1
+
+
+def test_plot_sensitivity_summary_draws_objective_and_rate_movements(monkeypatch):
+    fake_plt = install_fake_plotting(monkeypatch)
+    sensitivity_summary = pd.DataFrame(
+        {
+            "scenario_name": ["baseline", "stress"],
+            "objective_change_vs_baseline": [0.0, -10.0],
+            "loan_rate_change_vs_baseline": [0.0, 0.001],
+            "deposit_rate_change_vs_baseline": [0.0, -0.001],
+        }
+    )
+
+    plotting.plot_sensitivity_summary(sensitivity_summary)
+
+    called_methods = [call[0] for axis in fake_plt.axes for call in axis.calls]
+    assert called_methods.count("barh") == 3
+    assert "set_yticklabels" in called_methods
+    assert fake_plt.show_calls == 1
+
+
+def test_plot_response_model_report_draws_calibration_and_response_curves(monkeypatch):
+    fake_plt = install_fake_plotting(monkeypatch)
+    calibration = pd.DataFrame(
+        {
+            "mean_predicted_probability": [0.2, 0.8],
+            "observed_rate": [0.25, 0.75],
+            "count": [10, 20],
+        }
+    )
+    loan_model_report = {"calibration": calibration}
+    deposit_model_report = {"calibration": calibration}
+    loan_response_check = SimpleNamespace(
+        rate_response=pd.DataFrame(
+            {"offered_rate": [0.05, 0.06], "mean_predicted_probability": [0.8, 0.7]}
+        )
+    )
+    deposit_response_check = SimpleNamespace(
+        rate_response=pd.DataFrame(
+            {"offered_rate": [0.03, 0.04], "mean_predicted_probability": [0.3, 0.4]}
+        )
+    )
+
+    plotting.plot_response_model_report(
+        loan_model_report,
+        deposit_model_report,
+        loan_response_check,
+        deposit_response_check,
+        competitor_loan_rate=0.055,
+        competitor_deposit_rate=0.035,
+    )
+
+    called_methods = [call[0] for axis in fake_plt.axes for call in axis.calls]
+    assert called_methods.count("scatter") == 2
+    assert called_methods.count("plot") == 4
+    assert fake_plt.show_calls == 1
+
+
+def test_plotting_functions_return_without_matplotlib_tools(monkeypatch):
+    monkeypatch.setattr(plotting, "get_plotting_tools", lambda: None)
+
+    plotting.plot_customer_profiles(pd.DataFrame(), pd.DataFrame())
+    plotting.plot_objective_decomposition(pd.DataFrame())
+    plotting.plot_grid_search_results(
+        pd.DataFrame(),
+        pd.DataFrame(),
+        pd.DataFrame(),
+        pd.DataFrame(),
+        SimpleNamespace(loan_rate=0.0, deposit_rate=0.0),
+    )
+    plotting.plot_sensitivity_summary(pd.DataFrame())
+    plotting.plot_response_model_report({}, {}, SimpleNamespace(), SimpleNamespace(), 0.0, 0.0)
