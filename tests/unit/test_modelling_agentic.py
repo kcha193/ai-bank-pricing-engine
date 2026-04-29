@@ -7,6 +7,7 @@ from balance_pricing_engine.modelling.agentic import (
     TrainingConfig,
 )
 from balance_pricing_engine.modelling.datasets import (
+    DEPOSIT_FEATURE_COLUMNS,
     LOAN_FEATURE_COLUMNS,
     LOAN_TARGET_COLUMN,
     build_loan_response_dataset,
@@ -74,3 +75,38 @@ def test_training_reproducible_with_fixed_seed(tmp_path):
     metrics_a = {c["model_name"]: c["metrics"] for c in report_a["candidates"]}
     metrics_b = {c["model_name"]: c["metrics"] for c in report_b["candidates"]}
     assert metrics_a == metrics_b
+
+
+def test_scoring_fallback_uses_positive_slope_for_deposits(tmp_path):
+    dataset = _loan_dataset().head(20).rename(columns={"loan_amount": "deposit_amount"})
+    dataset = dataset.drop(columns=["risk_score", "expected_loss_rate", "lvr", "risk_segment", "credit_score", "income", "ground_truth_probability"])
+    dataset["relationship_years"] = 3
+    dataset["digital_engagement"] = 0.5
+    dataset["rate_sensitivity"] = 0.3
+    dataset["wealth_segment"] = 1
+
+    scoring_agent = ModelScoringAgent(feature_columns=DEPOSIT_FEATURE_COLUMNS)
+    result = scoring_agent.score(dataset, model_artifact_path=tmp_path / "missing.joblib", run_name="deposit")
+
+    ordered = dataset.assign(prob=np.array(result["probabilities"]))[["offered_rate", "prob"]].sort_values("offered_rate")
+    assert ordered["prob"].iloc[-1] >= ordered["prob"].iloc[0]
+
+
+def test_registry_labels_failed_challenger_correctly(tmp_path):
+    dataset = _loan_dataset(999)
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=4,
+            max_calibration_error=0.0,
+        ),
+        artifacts_dir=tmp_path,
+    )
+
+    agent.train_and_recommend(dataset, run_name="loan")
+    records = ModelRegistry(tmp_path / "model_registry.json").load()["models"]
+    by_name = {record["model_name"]: record for record in records}
+
+    assert by_name["ElasticityBaselineModel"]["champion_status"] == "baseline_champion"
+    assert by_name["LogisticResponseModel"]["champion_status"] == "challenger_candidate"

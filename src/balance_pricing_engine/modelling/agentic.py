@@ -72,7 +72,8 @@ class ElasticityBaselineModel:
         if "offered_rate" not in data.columns:
             raise ValueError("Elasticity baseline requires offered_rate when ground truth is unavailable.")
         # Deterministic fallback proxy when ground-truth column is absent.
-        centered = (data["offered_rate"].to_numpy(dtype=float) - data["offered_rate"].mean()) * -40
+        slope = 40.0 if "deposit_amount" in data.columns and "loan_amount" not in data.columns else -40.0
+        centered = (data["offered_rate"].to_numpy(dtype=float) - data["offered_rate"].mean()) * slope
         return 1 / (1 + np.exp(-np.clip(centered, -40, 40)))
 
 
@@ -182,17 +183,20 @@ class ModelTrainingAgent:
                     "calibration_error": candidate["calibration_error"],
                     "governance_score": candidate["governance_score"],
                     "passed_validation": candidate["passed_validation"],
-                    "champion_status": (
-                        "recommended_challenger"
-                        if candidate["model_name"] == recommendation["recommended_model"]
-                        else "baseline_champion"
-                    ),
+                    "champion_status": self._champion_status(candidate["model_name"], recommendation),
                     "artifact_path": candidate["artifact_path"],
                     "config_hash": report["config_hash"],
                 }
             )
         return report
 
+
+    def _champion_status(self, model_name: str, recommendation: dict[str, Any]) -> str:
+        if model_name == "ElasticityBaselineModel":
+            return "baseline_champion"
+        if recommendation["recommended_model"] == model_name:
+            return "recommended_challenger"
+        return "challenger_candidate"
     def _validate_schema(self, dataset: pd.DataFrame) -> None:
         required = set(self.config.feature_columns + [self.config.target_column])
         missing = sorted(required - set(dataset.columns))
