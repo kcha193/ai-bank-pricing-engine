@@ -535,17 +535,21 @@ class ModelScoringAgent:
         self._validate_scoring_schema(dataset, feature_columns)
         match = self.registry.latest_for_model(model_name)
         used_fallback = False
+        scored_model_name = model_name
         if match is None or match.get("artifact_path") is None:
             model = fallback_model
             model_version = "fallback"
             used_fallback = True
+            scored_model_name = _model_name(fallback_model)
         elif not Path(str(match["artifact_path"])).exists():
             model = fallback_model
             model_version = "fallback"
             used_fallback = True
+            scored_model_name = _model_name(fallback_model)
         else:
             model = load_model(str(match["artifact_path"]))
             model_version = str(match.get("version", "registered"))
+            scored_model_name = str(match.get("model_name", model_name))
 
         if hasattr(model, "predict_probability"):
             probabilities = model.predict_probability(dataset, feature_columns)
@@ -554,7 +558,7 @@ class ModelScoringAgent:
 
         return _score_result(
             run_name=model_name,
-            model_name=model_name,
+            model_name=scored_model_name,
             model_version=model_version,
             rows=len(dataset),
             probabilities=probabilities,

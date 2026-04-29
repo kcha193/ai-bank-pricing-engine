@@ -93,6 +93,29 @@ def test_registry_append_accepts_model_record(tmp_path):
     assert latest["version"] == "v1"
 
 
+def test_registered_scoring_reports_fallback_model_when_artifact_missing(tmp_path):
+    dataset = _loan_dataset().head(10)
+    registry_path = tmp_path / "model_registry.json"
+    registry = ModelRegistry(registry_path)
+    registry.register(
+        {
+            "model_name": "missing_registered_model",
+            "version": "v5",
+            "artifact_path": str(tmp_path / "does_not_exist.joblib"),
+        }
+    )
+    scoring_agent = ModelScoringAgent(registry_path=registry_path)
+    result = scoring_agent._score_registered(
+        model_name="missing_registered_model",
+        dataset=dataset,
+        feature_columns=LOAN_FEATURE_COLUMNS,
+        fallback_model=ElasticityResponseModel(),
+    )
+
+    assert result["used_fallback"] is True
+    assert result["model_used"] == "ElasticityResponseModel"
+
+
 def test_training_reproducible_with_fixed_seed(tmp_path):
     dataset = _loan_dataset(555)
     config = TrainingConfig(feature_columns=LOAN_FEATURE_COLUMNS, target_column=LOAN_TARGET_COLUMN, random_seed=9)
