@@ -84,64 +84,96 @@ def format_result_table(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_config_summary(config: EngineConfig) -> pd.DataFrame:
     """Summarise the baseline configuration for walkthrough display."""
+    section_explanations = {
+        "simulation": "Defines the size of the synthetic customer portfolio used by the model.",
+        "market": "Sets the external interest-rate environment the bank is pricing against.",
+        "balance sheet": "Sets how the bank funds loans and how costly under-funding is.",
+        "response": "Controls how customer demand reacts when rates move.",
+    }
+
+    def row(section: str, assumption: str, value: Any, assumption_explanation: str) -> dict[str, Any]:
+        return {
+            "section": section,
+            "section_explanation": section_explanations[section],
+            "assumption": assumption,
+            "value": value,
+            "assumption_explanation": assumption_explanation,
+        }
+
     return pd.DataFrame(
         [
-            {
-                "section": "simulation",
-                "assumption": "loan customers",
-                "value": config.simulation.n_loan_customers,
-            },
-            {
-                "section": "simulation",
-                "assumption": "deposit customers",
-                "value": config.simulation.n_deposit_customers,
-            },
-            {"section": "market", "assumption": "cash rate", "value": fmt_rate(config.market.cash_rate)},
-            {
-                "section": "market",
-                "assumption": "wholesale funding spread",
-                "value": fmt_rate(config.market.wholesale_funding_spread),
-            },
-            {
-                "section": "market",
-                "assumption": "competitor loan rate",
-                "value": fmt_rate(config.market.competitor_loan_rate),
-            },
-            {
-                "section": "market",
-                "assumption": "competitor deposit rate",
-                "value": fmt_rate(config.market.competitor_deposit_rate),
-            },
-            {
-                "section": "market",
-                "assumption": "home loan reference rate",
-                "value": fmt_rate(config.market.home_loan_reference_rate),
-            },
-            {
-                "section": "market",
-                "assumption": "term deposit reference rate",
-                "value": fmt_rate(config.market.term_deposit_reference_rate),
-            },
-            {
-                "section": "balance sheet",
-                "assumption": "required deposit funding ratio",
-                "value": fmt_rate(config.balance_sheet.required_deposit_funding_ratio),
-            },
-            {
-                "section": "balance sheet",
-                "assumption": "funding shortfall penalty rate",
-                "value": fmt_rate(config.balance_sheet.funding_shortfall_penalty_rate),
-            },
-            {
-                "section": "response",
-                "assumption": "loan rate elasticity",
-                "value": config.response.loan_rate_elasticity,
-            },
-            {
-                "section": "response",
-                "assumption": "deposit rate elasticity",
-                "value": config.response.deposit_rate_elasticity,
-            },
+            row(
+                "simulation",
+                "loan customers",
+                config.simulation.n_loan_customers,
+                "Number of synthetic home loan customers used in the simulation.",
+            ),
+            row(
+                "simulation",
+                "deposit customers",
+                config.simulation.n_deposit_customers,
+                "Number of synthetic term deposit customers used in the simulation.",
+            ),
+            row(
+                "market",
+                "cash rate",
+                fmt_rate(config.market.cash_rate),
+                "Baseline central bank cash rate used as the starting point for market pricing.",
+            ),
+            row(
+                "market",
+                "wholesale funding spread",
+                fmt_rate(config.market.wholesale_funding_spread),
+                "Extra funding cost the bank pays above the cash rate when it needs wholesale funding.",
+            ),
+            row(
+                "market",
+                "competitor loan rate",
+                fmt_rate(config.market.competitor_loan_rate),
+                "Typical home loan rate offered by competitors, used to estimate how attractive this bank's loan rate is.",
+            ),
+            row(
+                "market",
+                "competitor deposit rate",
+                fmt_rate(config.market.competitor_deposit_rate),
+                "Typical term deposit rate offered by competitors, used to estimate how attractive this bank's deposit rate is.",
+            ),
+            row(
+                "market",
+                "home loan reference rate",
+                fmt_rate(config.market.home_loan_reference_rate),
+                "Starting home loan rate before the strategy grid tests higher or lower loan rates.",
+            ),
+            row(
+                "market",
+                "term deposit reference rate",
+                fmt_rate(config.market.term_deposit_reference_rate),
+                "Starting term deposit rate before the strategy grid tests higher or lower deposit rates.",
+            ),
+            row(
+                "balance sheet",
+                "required deposit funding ratio",
+                fmt_rate(config.balance_sheet.required_deposit_funding_ratio),
+                "Minimum share of expected loans the bank wants to fund with customer deposits.",
+            ),
+            row(
+                "balance sheet",
+                "funding shortfall penalty rate",
+                fmt_rate(config.balance_sheet.funding_shortfall_penalty_rate),
+                "Penalty rate applied when expected deposits are too low to meet the required funding ratio.",
+            ),
+            row(
+                "response",
+                "loan rate elasticity",
+                config.response.loan_rate_elasticity,
+                "How strongly expected home loan demand changes when this bank changes its loan rate.",
+            ),
+            row(
+                "response",
+                "deposit rate elasticity",
+                config.response.deposit_rate_elasticity,
+                "How strongly expected term deposit balances change when this bank changes its deposit rate.",
+            ),
         ]
     )
 

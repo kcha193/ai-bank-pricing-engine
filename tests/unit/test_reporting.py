@@ -109,9 +109,39 @@ def test_build_config_summary_uses_beginner_assumption_rows():
 
     summary = build_config_summary(config)
 
-    assert list(summary.columns) == ["section", "assumption", "value"]
+    assert list(summary.columns) == [
+        "section",
+        "section_explanation",
+        "assumption",
+        "value",
+        "assumption_explanation",
+    ]
     assert summary.loc[summary["assumption"] == "cash rate", "value"].item() == "4.00%"
     assert summary.loc[summary["assumption"] == "loan customers", "value"].item() == 10
+    assert summary["section_explanation"].notna().all()
+    assert summary["assumption_explanation"].notna().all()
+    assert all(summary["section_explanation"].str.len() > 20)
+    assert all(summary["assumption_explanation"].str.len() > 20)
+    assert (
+        summary.loc[summary["section"] == "simulation", "section_explanation"].unique().tolist()
+        == ["Defines the size of the synthetic customer portfolio used by the model."]
+    )
+    assert (
+        summary.loc[summary["section"] == "market", "section_explanation"].unique().tolist()
+        == ["Sets the external interest-rate environment the bank is pricing against."]
+    )
+    assert (
+        summary.loc[summary["assumption"] == "loan customers", "assumption_explanation"].item()
+        == "Number of synthetic home loan customers used in the simulation."
+    )
+    assert (
+        summary.loc[summary["assumption"] == "cash rate", "assumption_explanation"].item()
+        == "Baseline central bank cash rate used as the starting point for market pricing."
+    )
+    assert (
+        summary.loc[summary["assumption"] == "loan rate elasticity", "assumption_explanation"].item()
+        == "How strongly expected home loan demand changes when this bank changes its loan rate."
+    )
 
 
 def test_rate_grid_and_decomposition_tables_match_notebook_shape():
