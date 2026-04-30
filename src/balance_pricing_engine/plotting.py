@@ -117,13 +117,13 @@ def plot_workflow_map() -> None:
     plt, _, _ = plotting
 
     steps = [
-        ("1. Assumptions", "Read the YAML config"),
-        ("2. Synthetic customers", "Create safe fake portfolios"),
-        ("3. Rate grid", "List prices to test"),
-        ("4. Optimizer", "Score every rate pair"),
-        ("5. Diagnostics", "Explain the winner"),
-        ("6. Response models", "Check learned behaviour"),
-        ("7. Governance", "Record, review, and score"),
+        ("1", "Assumptions", "Read the YAML config"),
+        ("2", "Synthetic customers", "Create safe fake portfolios"),
+        ("3", "Rate grid", "List prices to test"),
+        ("4", "Optimizer", "Score every rate pair"),
+        ("5", "Diagnostics", "Explain the winner"),
+        ("6", "Response models", "Check learned behaviour"),
+        ("7", "Governance", "Record, review, and score"),
     ]
     colors = [
         CHART_COLORS["neutral"],
@@ -135,11 +135,12 @@ def plot_workflow_map() -> None:
         CHART_COLORS["positive"],
     ]
 
-    fig, ax = plt.subplots(figsize=(15, 3.8))
-    for index, ((title, subtitle), color) in enumerate(zip(steps, colors)):
+    fig, ax = plt.subplots(figsize=(15, 4.4))
+    for index, ((number, title, subtitle), color) in enumerate(zip(steps, colors)):
         ax.scatter(index, 0, s=900, color=color, edgecolor="black", linewidth=0.8, zorder=3)
-        ax.text(index, 0.04, title, ha="center", va="center", color="white", fontweight="bold")
-        ax.text(index, -0.34, subtitle, ha="center", va="top", fontsize=9)
+        ax.text(index, 0, number, ha="center", va="center", color="white", fontweight="bold", fontsize=11)
+        ax.text(index, -0.28, title, ha="center", va="top", color="#111827", fontweight="bold", fontsize=9)
+        ax.text(index, -0.43, subtitle, ha="center", va="top", fontsize=9)
         if index < len(steps) - 1:
             ax.annotate(
                 "",
@@ -150,7 +151,7 @@ def plot_workflow_map() -> None:
 
     ax.set_title("Notebook workflow map")
     ax.set_xlim(-0.6, len(steps) - 0.4)
-    ax.set_ylim(-0.75, 0.45)
+    ax.set_ylim(-0.82, 0.45)
     ax.axis("off")
     plt.tight_layout()
     plt.show()

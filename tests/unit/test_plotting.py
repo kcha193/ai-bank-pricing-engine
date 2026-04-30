@@ -327,6 +327,32 @@ def test_beginner_visual_helpers_draw_expected_charts(monkeypatch):
     assert fake_plt.show_calls == 6
 
 
+def test_plot_workflow_map_keeps_step_names_readable(monkeypatch):
+    fake_plt = install_fake_plotting(monkeypatch)
+
+    plotting.plot_workflow_map()
+
+    axis = fake_plt.axes[0]
+    text_calls = [call for call in axis.calls if call[0] == "text"]
+    circle_labels = [call[1][2] for call in text_calls if call[2].get("color") == "white"]
+    visible_titles = [
+        call[1][2]
+        for call in text_calls
+        if call[2].get("fontweight") == "bold" and call[2].get("color") != "white"
+    ]
+
+    assert circle_labels == ["1", "2", "3", "4", "5", "6", "7"]
+    assert visible_titles == [
+        "Assumptions",
+        "Synthetic customers",
+        "Rate grid",
+        "Optimizer",
+        "Diagnostics",
+        "Response models",
+        "Governance",
+    ]
+
+
 def test_plotting_functions_return_without_matplotlib_tools(monkeypatch):
     monkeypatch.setattr(plotting, "get_plotting_tools", lambda: None)
 
