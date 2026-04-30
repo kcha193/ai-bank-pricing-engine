@@ -247,11 +247,95 @@ def test_plot_response_model_report_draws_calibration_and_response_curves(monkey
     assert fake_plt.show_calls == 1
 
 
+def test_beginner_visual_helpers_draw_expected_charts(monkeypatch):
+    fake_plt = install_fake_plotting(monkeypatch)
+    loan_customers = pd.DataFrame(
+        {
+            "loan_amount": [100_000, 200_000, 300_000],
+            "credit_score": [700, 720, 740],
+            "lvr": [0.6, 0.7, 0.8],
+            "risk_score": [0.1, 0.2, 0.3],
+        }
+    )
+    deposit_customers = pd.DataFrame(
+        {
+            "deposit_amount": [50_000, 75_000, 90_000],
+            "rate_sensitivity": [0.2, 0.4, 0.6],
+            "relationship_years": [2.0, 5.0, 8.0],
+        }
+    )
+    grid_results = pd.DataFrame(
+        {
+            "loan_rate": [0.05, 0.05, 0.06, 0.06],
+            "deposit_rate": [0.03, 0.04, 0.03, 0.04],
+            "total_objective": [10.0, 15.0, 20.0, 25.0],
+            "expected_loan_volume": [100.0, 100.0, 90.0, 90.0],
+            "expected_deposit_volume": [70.0, 80.0, 70.0, 80.0],
+            "funding_shortfall": [30.0, 20.0, 20.0, 10.0],
+        }
+    )
+    loan_dataset = pd.DataFrame(
+        {
+            "offered_rate": [0.05, 0.05, 0.06, 0.06],
+            "accepted": [1, 1, 0, 1],
+            "ground_truth_probability": [0.8, 0.7, 0.5, 0.4],
+        }
+    )
+    deposit_dataset = pd.DataFrame(
+        {
+            "offered_rate": [0.03, 0.03, 0.04, 0.04],
+            "opened": [0, 1, 1, 1],
+            "ground_truth_probability": [0.4, 0.5, 0.7, 0.8],
+        }
+    )
+    candidate_summary = pd.DataFrame(
+        {
+            "product": ["Home loan", "Home loan"],
+            "candidate": ["ElasticityBaselineModel", "LogisticResponseModel"],
+            "log_loss": [0.4, 0.35],
+            "governance_score": [0.9, 0.8],
+        }
+    )
+    recommendations = pd.DataFrame({"recommend_as": ["baseline_champion"]})
+    registry = pd.DataFrame({"champion_status": ["baseline_champion", "challenger_candidate"]})
+    score_result = {
+        "rows": 10,
+        "mean_probability": 0.42,
+        "used_fallback": True,
+    }
+
+    plotting.plot_workflow_map()
+    plotting.plot_rate_grid_story(np.array([0.05, 0.06]), np.array([0.03, 0.04]), 0.055, 0.035)
+    plotting.plot_customer_relationships(loan_customers, deposit_customers)
+    plotting.plot_volume_and_funding_story(
+        grid_results,
+        SimpleNamespace(loan_rate=0.06, deposit_rate=0.04),
+    )
+    plotting.plot_response_dataset_overview(loan_dataset, deposit_dataset)
+    plotting.plot_governed_modelling_summary(
+        candidate_summary,
+        recommendations,
+        registry,
+        score_result,
+    )
+
+    called_methods = [call[0] for axis in fake_plt.axes for call in axis.calls]
+    assert "annotate" in called_methods
+    assert called_methods.count("scatter") >= 4
+    assert called_methods.count("bar") >= 6
+    assert called_methods.count("plot") >= 6
+    assert fake_plt.show_calls == 6
+
+
 def test_plotting_functions_return_without_matplotlib_tools(monkeypatch):
     monkeypatch.setattr(plotting, "get_plotting_tools", lambda: None)
 
     plotting.plot_customer_profiles(pd.DataFrame(), pd.DataFrame())
+    plotting.plot_workflow_map()
+    plotting.plot_rate_grid_story(np.array([]), np.array([]), 0.0, 0.0)
+    plotting.plot_customer_relationships(pd.DataFrame(), pd.DataFrame())
     plotting.plot_objective_decomposition(pd.DataFrame())
+    plotting.plot_volume_and_funding_story(pd.DataFrame(), SimpleNamespace())
     plotting.plot_grid_search_results(
         pd.DataFrame(),
         pd.DataFrame(),
@@ -259,5 +343,7 @@ def test_plotting_functions_return_without_matplotlib_tools(monkeypatch):
         pd.DataFrame(),
         SimpleNamespace(loan_rate=0.0, deposit_rate=0.0),
     )
+    plotting.plot_response_dataset_overview(pd.DataFrame(), pd.DataFrame())
     plotting.plot_sensitivity_summary(pd.DataFrame())
+    plotting.plot_governed_modelling_summary(pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {})
     plotting.plot_response_model_report({}, {}, SimpleNamespace(), SimpleNamespace(), 0.0, 0.0)
