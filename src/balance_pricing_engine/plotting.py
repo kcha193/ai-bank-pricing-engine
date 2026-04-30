@@ -17,6 +17,8 @@ CHART_COLORS = {
     "negative": "#b85757",
     "highlight": "#d9902f",
     "neutral": "#6b7280",
+    "purple": "#7c5cc4",
+    "sky": "#5aa6c8",
 }
 
 
@@ -107,6 +109,150 @@ def plot_customer_profiles(loan_customers: pd.DataFrame, deposit_customers: pd.D
     plt.show()
 
 
+def plot_workflow_map() -> None:
+    """Plot a beginner-oriented map of the notebook workflow."""
+    plotting = get_plotting_tools()
+    if plotting is None:
+        return
+    plt, _, _ = plotting
+
+    steps = [
+        ("1. Assumptions", "Read the YAML config"),
+        ("2. Synthetic customers", "Create safe fake portfolios"),
+        ("3. Rate grid", "List prices to test"),
+        ("4. Optimizer", "Score every rate pair"),
+        ("5. Diagnostics", "Explain the winner"),
+        ("6. Response models", "Check learned behaviour"),
+        ("7. Governance", "Record, review, and score"),
+    ]
+    colors = [
+        CHART_COLORS["neutral"],
+        CHART_COLORS["loan"],
+        CHART_COLORS["deposit"],
+        CHART_COLORS["highlight"],
+        CHART_COLORS["sky"],
+        CHART_COLORS["purple"],
+        CHART_COLORS["positive"],
+    ]
+
+    fig, ax = plt.subplots(figsize=(15, 3.8))
+    for index, ((title, subtitle), color) in enumerate(zip(steps, colors)):
+        ax.scatter(index, 0, s=900, color=color, edgecolor="black", linewidth=0.8, zorder=3)
+        ax.text(index, 0.04, title, ha="center", va="center", color="white", fontweight="bold")
+        ax.text(index, -0.34, subtitle, ha="center", va="top", fontsize=9)
+        if index < len(steps) - 1:
+            ax.annotate(
+                "",
+                xy=(index + 0.72, 0),
+                xytext=(index + 0.28, 0),
+                arrowprops={"arrowstyle": "->", "color": CHART_COLORS["neutral"], "lw": 1.6},
+            )
+
+    ax.set_title("Notebook workflow map")
+    ax.set_xlim(-0.6, len(steps) - 0.4)
+    ax.set_ylim(-0.75, 0.45)
+    ax.axis("off")
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_rate_grid_story(
+    loan_grid: np.ndarray,
+    deposit_grid: np.ndarray,
+    competitor_loan_rate: float,
+    competitor_deposit_rate: float,
+) -> None:
+    """Plot candidate rates as simple rulers with competitor reference markers."""
+    plotting = get_plotting_tools()
+    if plotting is None:
+        return
+    plt, _, percent_formatter = plotting
+
+    fig, axes = plt.subplots(2, 1, figsize=(13, 5.8))
+    specs = [
+        (
+            axes[0],
+            loan_grid,
+            competitor_loan_rate,
+            "Home loan candidate-rate ruler",
+            "Candidate home loan rates",
+            CHART_COLORS["loan"],
+        ),
+        (
+            axes[1],
+            deposit_grid,
+            competitor_deposit_rate,
+            "Term deposit candidate-rate ruler",
+            "Candidate term deposit rates",
+            CHART_COLORS["deposit"],
+        ),
+    ]
+
+    for ax, rates, competitor_rate, title, xlabel, color in specs:
+        y = np.zeros(len(rates))
+        ax.scatter(rates, y, s=85, color=color, edgecolor="white", zorder=3)
+        ax.axvline(
+            competitor_rate,
+            color=CHART_COLORS["highlight"],
+            linestyle="--",
+            linewidth=2,
+            label="competitor reference",
+        )
+        ax.set_title(title)
+        ax.set_xlabel(xlabel)
+        ax.set_yticks([])
+        ax.xaxis.set_major_formatter(rate_axis_formatter(percent_formatter))
+        ax.legend(loc="upper left")
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_customer_relationships(loan_customers: pd.DataFrame, deposit_customers: pd.DataFrame) -> None:
+    """Plot simple relationships in the synthetic customer portfolios."""
+    plotting = get_plotting_tools()
+    if plotting is None:
+        return
+    plt, func_formatter, percent_formatter = plotting
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5.2))
+    loan_sample = loan_customers.head(1_500)
+    deposit_sample = deposit_customers.head(1_500)
+
+    loan_scatter = axes[0].scatter(
+        loan_sample["credit_score"],
+        loan_sample["lvr"],
+        c=loan_sample["risk_score"],
+        cmap="YlOrRd",
+        s=18,
+        alpha=0.7,
+        edgecolor="none",
+    )
+    axes[0].set_title("Home loan risk picture")
+    axes[0].set_xlabel("Credit score")
+    axes[0].set_ylabel("Loan-to-value ratio")
+    axes[0].yaxis.set_major_formatter(rate_axis_formatter(percent_formatter))
+    fig.colorbar(loan_scatter, ax=axes[0], label="Risk score")
+
+    deposit_scatter = axes[1].scatter(
+        deposit_sample["deposit_amount"],
+        deposit_sample["rate_sensitivity"],
+        c=deposit_sample["relationship_years"],
+        cmap="viridis",
+        s=18,
+        alpha=0.7,
+        edgecolor="none",
+    )
+    axes[1].set_title("Term deposit behaviour picture")
+    axes[1].set_xlabel("Deposit amount")
+    axes[1].set_ylabel("Rate sensitivity")
+    axes[1].xaxis.set_major_formatter(money_axis_formatter(func_formatter))
+    fig.colorbar(deposit_scatter, ax=axes[1], label="Relationship years")
+
+    plt.tight_layout()
+    plt.show()
+
+
 def plot_objective_decomposition(objective_decomposition: pd.DataFrame) -> None:
     """Plot the winning objective decomposition as a horizontal bar chart."""
     plotting = get_plotting_tools()
@@ -134,6 +280,87 @@ def plot_objective_decomposition(objective_decomposition: pd.DataFrame) -> None:
         label_x = amount + label_offset if amount >= 0 else amount - label_offset
         alignment = "left" if amount >= 0 else "right"
         ax.text(label_x, row_number, fmt_money(amount), va="center", ha=alignment)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_volume_and_funding_story(grid_results: pd.DataFrame, result: Any) -> None:
+    """Plot how rates connect to volumes, objective, and funding shortfall."""
+    plotting = get_plotting_tools()
+    if plotting is None:
+        return
+    plt, func_formatter, percent_formatter = plotting
+
+    loan_volume = (
+        grid_results.groupby("loan_rate", as_index=False)["expected_loan_volume"]
+        .mean()
+        .sort_values("loan_rate")
+    )
+    deposit_volume = (
+        grid_results.groupby("deposit_rate", as_index=False)["expected_deposit_volume"]
+        .mean()
+        .sort_values("deposit_rate")
+    )
+    top = grid_results.sort_values("total_objective", ascending=False).head(12).copy()
+    top["candidate_label"] = [f"#{rank}" for rank in range(1, len(top) + 1)]
+
+    fig, axes = plt.subplots(2, 2, figsize=(15, 9))
+
+    axes[0, 0].plot(
+        loan_volume["loan_rate"],
+        loan_volume["expected_loan_volume"],
+        marker="o",
+        color=CHART_COLORS["loan"],
+    )
+    axes[0, 0].axvline(result.loan_rate, color=CHART_COLORS["highlight"], linestyle="--", label="winner")
+    axes[0, 0].set_title("Higher home loan rates usually reduce accepted lending")
+    axes[0, 0].set_xlabel("Home loan rate")
+    axes[0, 0].set_ylabel("Expected loan volume")
+    axes[0, 0].xaxis.set_major_formatter(rate_axis_formatter(percent_formatter))
+    axes[0, 0].yaxis.set_major_formatter(money_axis_formatter(func_formatter))
+    axes[0, 0].legend()
+
+    axes[0, 1].plot(
+        deposit_volume["deposit_rate"],
+        deposit_volume["expected_deposit_volume"],
+        marker="o",
+        color=CHART_COLORS["deposit"],
+    )
+    axes[0, 1].axvline(
+        result.deposit_rate,
+        color=CHART_COLORS["highlight"],
+        linestyle="--",
+        label="winner",
+    )
+    axes[0, 1].set_title("Higher deposit rates usually attract more funding")
+    axes[0, 1].set_xlabel("Term deposit rate")
+    axes[0, 1].set_ylabel("Expected deposit volume")
+    axes[0, 1].xaxis.set_major_formatter(rate_axis_formatter(percent_formatter))
+    axes[0, 1].yaxis.set_major_formatter(money_axis_formatter(func_formatter))
+    axes[0, 1].legend()
+
+    axes[1, 0].bar(
+        top["candidate_label"],
+        top["total_objective"],
+        color=CHART_COLORS["highlight"],
+        alpha=0.9,
+    )
+    axes[1, 0].set_title("Top candidates by objective")
+    axes[1, 0].set_xlabel("Ranked candidate")
+    axes[1, 0].set_ylabel("Objective")
+    axes[1, 0].yaxis.set_major_formatter(money_axis_formatter(func_formatter))
+
+    axes[1, 1].bar(
+        top["candidate_label"],
+        top["funding_shortfall"],
+        color=CHART_COLORS["negative"],
+        alpha=0.85,
+    )
+    axes[1, 1].set_title("Funding shortfall for the same candidates")
+    axes[1, 1].set_xlabel("Ranked candidate")
+    axes[1, 1].set_ylabel("Funding shortfall")
+    axes[1, 1].yaxis.set_major_formatter(money_axis_formatter(func_formatter))
 
     plt.tight_layout()
     plt.show()
@@ -264,6 +491,66 @@ def plot_grid_search_results(
     plt.show()
 
 
+def plot_response_dataset_overview(
+    loan_dataset: pd.DataFrame,
+    deposit_dataset: pd.DataFrame,
+) -> None:
+    """Plot observed synthetic response rates before model fitting."""
+    plotting = get_plotting_tools()
+    if plotting is None:
+        return
+    plt, _, percent_formatter = plotting
+
+    loan_observed = _observed_response_by_rate(loan_dataset, "accepted")
+    deposit_observed = _observed_response_by_rate(deposit_dataset, "opened")
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5.2))
+    axes[0].plot(
+        loan_observed["offered_rate"],
+        loan_observed["observed_response_rate"],
+        marker="o",
+        color=CHART_COLORS["loan"],
+        label="observed acceptance",
+    )
+    axes[0].plot(
+        loan_observed["offered_rate"],
+        loan_observed["mean_ground_truth_probability"],
+        linestyle="--",
+        color=CHART_COLORS["neutral"],
+        label="ground truth probability",
+    )
+    axes[0].set_title("Observed home loan acceptance by offered rate")
+    axes[0].set_xlabel("Offered home loan rate")
+    axes[0].set_ylabel("Acceptance rate")
+    axes[0].xaxis.set_major_formatter(rate_axis_formatter(percent_formatter))
+    axes[0].yaxis.set_major_formatter(rate_axis_formatter(percent_formatter))
+    axes[0].legend()
+
+    axes[1].plot(
+        deposit_observed["offered_rate"],
+        deposit_observed["observed_response_rate"],
+        marker="o",
+        color=CHART_COLORS["deposit"],
+        label="observed uptake",
+    )
+    axes[1].plot(
+        deposit_observed["offered_rate"],
+        deposit_observed["mean_ground_truth_probability"],
+        linestyle="--",
+        color=CHART_COLORS["neutral"],
+        label="ground truth probability",
+    )
+    axes[1].set_title("Observed term deposit uptake by offered rate")
+    axes[1].set_xlabel("Offered term deposit rate")
+    axes[1].set_ylabel("Uptake rate")
+    axes[1].xaxis.set_major_formatter(rate_axis_formatter(percent_formatter))
+    axes[1].yaxis.set_major_formatter(rate_axis_formatter(percent_formatter))
+    axes[1].legend()
+
+    plt.tight_layout()
+    plt.show()
+
+
 def plot_sensitivity_summary(sensitivity_summary: pd.DataFrame) -> None:
     """Plot sensitivity objective changes and rate movements."""
     plotting = get_plotting_tools()
@@ -310,6 +597,80 @@ def plot_sensitivity_summary(sensitivity_summary: pd.DataFrame) -> None:
     axes[1].set_title("Recommended rate movement")
     axes[1].set_xlabel("Change vs baseline (bps)")
     axes[1].legend()
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_governed_modelling_summary(
+    candidate_summary: pd.DataFrame,
+    recommendations: pd.DataFrame,
+    registry: pd.DataFrame,
+    score_result: dict[str, Any],
+) -> None:
+    """Plot beginner-friendly governed modelling diagnostics."""
+    plotting = get_plotting_tools()
+    if plotting is None:
+        return
+    plt, _, percent_formatter = plotting
+
+    candidates = candidate_summary.copy()
+    candidates["label"] = candidates["product"] + "\n" + candidates["candidate"]
+    status_counts = registry["champion_status"].fillna("unknown").value_counts()
+    recommendation_counts = recommendations["recommend_as"].fillna("unknown").value_counts()
+
+    fig, axes = plt.subplots(2, 2, figsize=(15, 9))
+    axes[0, 0].bar(
+        candidates["label"],
+        candidates["log_loss"],
+        color=CHART_COLORS["purple"],
+        alpha=0.9,
+    )
+    axes[0, 0].set_title("Candidate probability error")
+    axes[0, 0].set_ylabel("Log loss (lower is better)")
+    axes[0, 0].tick_params(axis="x", rotation=20)
+
+    axes[0, 1].bar(
+        candidates["label"],
+        candidates["governance_score"],
+        color=CHART_COLORS["positive"],
+        alpha=0.9,
+    )
+    axes[0, 1].set_title("Governance score")
+    axes[0, 1].set_ylabel("Score")
+    axes[0, 1].tick_params(axis="x", rotation=20)
+
+    axes[1, 0].bar(
+        status_counts.index.astype(str),
+        status_counts.to_numpy(),
+        color=CHART_COLORS["sky"],
+        alpha=0.9,
+    )
+    axes[1, 0].set_title("Registry champion/challenger labels")
+    axes[1, 0].set_ylabel("Registry records")
+    axes[1, 0].tick_params(axis="x", rotation=20)
+
+    axes[1, 1].bar(
+        recommendation_counts.index.astype(str),
+        recommendation_counts.to_numpy(),
+        color=CHART_COLORS["highlight"],
+        alpha=0.9,
+    )
+    axes[1, 1].set_title("Recommendation types")
+    axes[1, 1].set_ylabel("Products")
+    axes[1, 1].tick_params(axis="x", rotation=20)
+    axes[1, 1].text(
+        0.02,
+        0.92,
+        (
+            f"Scored rows: {score_result['rows']}\n"
+            f"Mean probability: {fmt_rate(score_result['mean_probability'])}\n"
+            f"Fallback used: {score_result['used_fallback']}"
+        ),
+        transform=axes[1, 1].transAxes,
+        va="top",
+        bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "edgecolor": CHART_COLORS["neutral"]},
+    )
 
     plt.tight_layout()
     plt.show()
@@ -405,3 +766,16 @@ def _plot_calibration(ax: Any, report: dict[str, Any], title: str, percent_forma
     ax.xaxis.set_major_formatter(rate_axis_formatter(percent_formatter))
     ax.yaxis.set_major_formatter(rate_axis_formatter(percent_formatter))
     ax.legend()
+
+
+def _observed_response_by_rate(dataset: pd.DataFrame, target_column: str) -> pd.DataFrame:
+    grouped = (
+        dataset.groupby("offered_rate", as_index=False)
+        .agg(
+            observed_response_rate=(target_column, "mean"),
+            mean_ground_truth_probability=("ground_truth_probability", "mean"),
+            observations=(target_column, "size"),
+        )
+        .sort_values("offered_rate")
+    )
+    return grouped
