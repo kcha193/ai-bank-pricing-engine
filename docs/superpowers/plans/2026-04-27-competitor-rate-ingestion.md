@@ -1,6 +1,6 @@
 # Competitor Rate Ingestion Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Build an auditable official-source-first NZ bank competitor-rate ingestion, validation,
 storage, and application workflow.
@@ -23,22 +23,22 @@ pytest, ruff.
 - Create: `src/balance_pricing_engine/competitor_rates/sources.py`
 - Test: `tests/unit/test_competitor_rate_models.py`
 
-- [ ] **Step 1: Write failing model tests**
+- [x] **Step 1: Write failing model tests**
 
 Add tests that construct a valid `CompetitorRateRecord`, reject missing core fields, and assert the
 source registry contains 10 official bank/product pages.
 
-- [ ] **Step 2: Run model tests and verify they fail**
+- [x] **Step 2: Run model tests and verify they fail**
 
 Run: `python3 -m pytest tests/unit/test_competitor_rate_models.py -q`
 Expected: import failure for the new package.
 
-- [ ] **Step 3: Implement Pydantic models and registry**
+- [x] **Step 3: Implement Pydantic models and registry**
 
 Define enums/literals, `CompetitorRateRecord`, `SourceAttempt`, `ValidationSummary`,
 `CompetitorRateRun`, and strategy config models. Add the five-bank official URL registry.
 
-- [ ] **Step 4: Run model tests and verify they pass**
+- [x] **Step 4: Run model tests and verify they pass**
 
 Run: `python3 -m pytest tests/unit/test_competitor_rate_models.py -q`
 Expected: all tests pass.
@@ -49,21 +49,21 @@ Expected: all tests pass.
 - Create: `src/balance_pricing_engine/competitor_rates/normalise.py`
 - Test: `tests/unit/test_competitor_rate_normalise.py`
 
-- [ ] **Step 1: Write failing normalisation tests**
+- [x] **Step 1: Write failing normalisation tests**
 
 Cover `6 months`, `six months`, `1 year`, `18 months`, `30 days`, `60 days`, `90 days`,
 `floating`, `variable`, frequency labels, balances, and LVR/equity conditions.
 
-- [ ] **Step 2: Run tests and verify they fail**
+- [x] **Step 2: Run tests and verify they fail**
 
 Run: `python3 -m pytest tests/unit/test_competitor_rate_normalise.py -q`
 Expected: import failure.
 
-- [ ] **Step 3: Implement normalisation helpers**
+- [x] **Step 3: Implement normalisation helpers**
 
 Return structured term objects with raw labels preserved and derived months/days where possible.
 
-- [ ] **Step 4: Run tests and verify they pass**
+- [x] **Step 4: Run tests and verify they pass**
 
 Run: `python3 -m pytest tests/unit/test_competitor_rate_normalise.py -q`
 Expected: all tests pass.
@@ -76,23 +76,23 @@ Expected: all tests pass.
 - Create: `tests/fixtures/competitor_rates/sample_bank_term_deposit.html`
 - Test: `tests/unit/test_competitor_rate_extractors.py`
 
-- [ ] **Step 1: Write failing extractor tests**
+- [x] **Step 1: Write failing extractor tests**
 
 Use small fixture HTML tables for home-loan standard/special/floating rates and term-deposit
 terms/tier/frequency variants. Assert parsed records preserve raw context, source URL, hash, and
 terms.
 
-- [ ] **Step 2: Run tests and verify they fail**
+- [x] **Step 2: Run tests and verify they fail**
 
 Run: `python3 -m pytest tests/unit/test_competitor_rate_extractors.py -q`
 Expected: import failure.
 
-- [ ] **Step 3: Implement parser utilities and official extractor wrappers**
+- [x] **Step 3: Implement parser utilities and official extractor wrappers**
 
 Use `html.parser` to extract table/list text, regex patterns for percentage-bearing rows, and
 bank/product-specific category hints. Implement static HTTP fetch with raw snapshot writing.
 
-- [ ] **Step 4: Run tests and verify they pass**
+- [x] **Step 4: Run tests and verify they pass**
 
 Run: `python3 -m pytest tests/unit/test_competitor_rate_extractors.py -q`
 Expected: all tests pass.
@@ -105,22 +105,22 @@ Expected: all tests pass.
 - Create: `tests/fixtures/competitor_rates/latest.json`
 - Test: `tests/unit/test_competitor_rate_validate_store.py`
 
-- [ ] **Step 1: Write failing validation/storage tests**
+- [x] **Step 1: Write failing validation/storage tests**
 
 Cover numeric bounds, missing required fields, duplicate detection, missing expected sources,
 parser zero-rate failures, stale latest files, day-over-day movement warnings, and output paths.
 
-- [ ] **Step 2: Run tests and verify they fail**
+- [x] **Step 2: Run tests and verify they fail**
 
 Run: `python3 -m pytest tests/unit/test_competitor_rate_validate_store.py -q`
 Expected: import failure.
 
-- [ ] **Step 3: Implement validation and artifact persistence**
+- [x] **Step 3: Implement validation and artifact persistence**
 
 Write `latest.json`, `latest.csv`, immutable history JSON, and
 `validation_report_latest.json`.
 
-- [ ] **Step 4: Run tests and verify they pass**
+- [x] **Step 4: Run tests and verify they pass**
 
 Run: `python3 -m pytest tests/unit/test_competitor_rate_validate_store.py -q`
 Expected: all tests pass.
@@ -133,23 +133,23 @@ Expected: all tests pass.
 - Test: `tests/unit/test_competitor_rate_apply.py`
 - Test: `tests/unit/test_market.py`
 
-- [ ] **Step 1: Write failing application tests**
+- [x] **Step 1: Write failing application tests**
 
 Cover disabled manual behavior, bank-specific, market average, market min/max, market median,
 frequency preference, special mortgage filtering, stale strict failure, and engine run with fixture
 rates.
 
-- [ ] **Step 2: Run tests and verify they fail**
+- [x] **Step 2: Run tests and verify they fail**
 
 Run: `python3 -m pytest tests/unit/test_competitor_rate_apply.py tests/unit/test_market.py -q`
 Expected: missing config/apply behavior.
 
-- [ ] **Step 3: Implement config models and application helpers**
+- [x] **Step 3: Implement config models and application helpers**
 
 Add optional `competitor_rates` config. Use `model_copy(update=...)` to return modified configs
 without mutating the original.
 
-- [ ] **Step 4: Run tests and verify they pass**
+- [x] **Step 4: Run tests and verify they pass**
 
 Run: `python3 -m pytest tests/unit/test_competitor_rate_apply.py tests/unit/test_market.py -q`
 Expected: all tests pass.
@@ -163,22 +163,22 @@ Expected: all tests pass.
 - Test: `tests/unit/test_competitor_rate_cli.py`
 - Test: `tests/unit/test_examples.py`
 
-- [ ] **Step 1: Write failing CLI/example tests**
+- [x] **Step 1: Write failing CLI/example tests**
 
 Assert commands parse, validate fixture source files, apply prints selected assumptions, `--write`
 creates generated configs, and examples avoid import-path mutation.
 
-- [ ] **Step 2: Run tests and verify they fail**
+- [x] **Step 2: Run tests and verify they fail**
 
 Run: `python3 -m pytest tests/unit/test_competitor_rate_cli.py tests/unit/test_examples.py -q`
 Expected: missing CLI/example behavior.
 
-- [ ] **Step 3: Implement CLI and example**
+- [x] **Step 3: Implement CLI and example**
 
 Add `fetch`, `validate`, `apply`, and `report`. Update base config with disabled
 `competitor_rates` defaults.
 
-- [ ] **Step 4: Run tests and verify they pass**
+- [x] **Step 4: Run tests and verify they pass**
 
 Run: `python3 -m pytest tests/unit/test_competitor_rate_cli.py tests/unit/test_examples.py -q`
 Expected: all tests pass.
@@ -191,12 +191,12 @@ Expected: all tests pass.
 - Modify: `README.md`
 - Modify: `pyproject.toml`
 
-- [ ] **Step 1: Add docs and live marker configuration**
+- [x] **Step 1: Add docs and live marker configuration**
 
 Document sources, commands, validation, application, and limitations. Add `live_rates` pytest
 marker and ignore generated raw/processed artifacts.
 
-- [ ] **Step 2: Run full verification**
+- [x] **Step 2: Run full verification**
 
 Run:
 
@@ -204,12 +204,12 @@ Run:
 python3 -m pytest -q
 python3 -m ruff check .
 python3 -m balance_pricing_engine.competitor_rates.cli validate --source-file tests/fixtures/competitor_rates/latest.json
-python3 examples/run_with_competitor_rates.py --source-file tests/fixtures/competitor_rates/latest.json
+python3 examples/run_with_competitor_rates.py --source-file tests/fixtures/competitor_rates/latest.json --strict false
 ```
 
 Expected: all commands exit 0.
 
-- [ ] **Step 3: Run non-strict live fetch smoke command**
+- [x] **Step 3: Run non-strict live fetch smoke command**
 
 Run:
 

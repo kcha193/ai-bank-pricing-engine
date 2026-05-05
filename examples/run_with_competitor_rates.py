@@ -18,12 +18,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run baseline scenario with competitor rates")
     parser.add_argument("--config", default="configs/base.yaml")
     parser.add_argument("--source-file", default="data/processed/competitor_rates/latest.json")
+    parser.add_argument(
+        "--strict",
+        type=lambda v: v.lower() not in {"false", "0", "no"},
+        default=True,
+        metavar="BOOL",
+        help="Fail on stale or invalid data (default: true). Pass 'false' to warn only.",
+    )
     args = parser.parse_args()
 
     config = load_config(Path(args.config))
     competitor_config = config.competitor_rates or CompetitorRatesConfig()
     competitor_config = competitor_config.model_copy(
-        update={"enabled": True, "source_file": args.source_file}
+        update={"enabled": True, "source_file": args.source_file, "strict": args.strict}
     )
     config = config.model_copy(update={"competitor_rates": competitor_config})
     resolved = load_and_resolve_competitor_rates(competitor_config)
