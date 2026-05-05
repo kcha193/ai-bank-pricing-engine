@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 
 from balance_pricing_engine.config import EngineConfig, load_config
+from balance_pricing_engine.diagnostics import evaluate_adaptive_joint_rate_grid
+from balance_pricing_engine.optimization import grid_search as grid_search_module
 from balance_pricing_engine.optimization.grid_search import (
     GRID_RESULT_COLUMNS,
     OptimizationResult,
@@ -13,9 +15,15 @@ from balance_pricing_engine.optimization.grid_search import (
     select_best_result,
 )
 from balance_pricing_engine.market import MarketRates, SpreadGridConfig
+from balance_pricing_engine.pricing.balance_sheet import calculate_funding_result
 from balance_pricing_engine.rate_grids import build_configured_rate_grids
 from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
+from balance_pricing_engine.synthetic.customers import (
+    generate_deposit_customers,
+    generate_loan_customers,
+)
 from balance_pricing_engine.synthetic.market import MarketState
+from balance_pricing_engine.utils.random import make_rng
 
 
 def test_baseline_optimizer_returns_valid_joint_rates():
@@ -101,6 +109,92 @@ def test_baseline_best_result_matches_max_grid_objective():
     max_objective = diagnostics.grid_results["total_objective"].max()
 
     assert diagnostics.best_result.objective_value == pytest.approx(max_objective)
+
+
+def test_evaluate_joint_rate_grid_reuses_deposit_precompute(monkeypatch):
+    loan_customers, deposit_customers = _single_customer_portfolios()
+    loan_grid = np.array([0.04, 0.05])
+    deposit_grid = np.array([0.02, 0.03, 0.04])
+    call_count = 0
+    original = grid_search_module.deposit_uptake_probability
+
+    def counting_deposit_uptake_probability(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        grid_search_module,
+        "deposit_uptake_probability",
+        counting_deposit_uptake_probability,
+    )
+
+    evaluate_joint_rate_grid(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=MarketState(
+            cash_rate=0.0,
+            wholesale_funding_spread=0.0,
+            competitor_loan_rate=0.05,
+            competitor_deposit_rate=0.03,
+        ),
+        loan_rate_grid=loan_grid,
+        deposit_rate_grid=deposit_grid,
+        loan_rate_elasticity=0.0,
+        loan_competitor_gap_elasticity=0.0,
+        deposit_rate_elasticity=0.0,
+        deposit_competitor_gap_elasticity=0.0,
+        required_deposit_funding_ratio=0.0,
+        funding_shortfall_penalty_rate=0.0,
+    )
+
+    assert call_count == len(deposit_grid)
+
+
+def test_baseline_grid_results_match_unhoisted_reference():
+    config = load_config("configs/base.yaml")
+    rng = make_rng(config.random_seed)
+    loan_customers = generate_loan_customers(config.simulation.n_loan_customers, rng)
+    deposit_customers = generate_deposit_customers(config.simulation.n_deposit_customers, rng)
+    market = MarketState(**config.market.model_dump())
+    loan_grid, deposit_grid = build_configured_rate_grids(config)
+
+    current = evaluate_adaptive_joint_rate_grid(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=market,
+        loan_rate_grid=loan_grid,
+        deposit_rate_grid=deposit_grid,
+        loan_rate_elasticity=config.response.loan_rate_elasticity,
+        loan_competitor_gap_elasticity=config.response.loan_competitor_gap_elasticity,
+        deposit_rate_elasticity=config.response.deposit_rate_elasticity,
+        deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
+        required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
+        funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
+        home_loan_reference_rate=config.market.home_loan_reference_rate,
+        term_deposit_reference_rate=config.market.term_deposit_reference_rate,
+    )
+    reference = _evaluate_adaptive_joint_rate_grid_unhoisted(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=market,
+        loan_rate_grid=loan_grid,
+        deposit_rate_grid=deposit_grid,
+        loan_rate_elasticity=config.response.loan_rate_elasticity,
+        loan_competitor_gap_elasticity=config.response.loan_competitor_gap_elasticity,
+        deposit_rate_elasticity=config.response.deposit_rate_elasticity,
+        deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
+        required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
+        funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
+        home_loan_reference_rate=config.market.home_loan_reference_rate,
+        term_deposit_reference_rate=config.market.term_deposit_reference_rate,
+    )
+
+    pd.testing.assert_frame_equal(
+        current.grid_results,
+        reference.grid_results,
+        check_exact=True,
+    )
 
 
 def test_optimization_result_alias_properties_return_canonical_fields():
@@ -367,3 +461,114 @@ def _market_relative_config_with_stale_absolute_grid() -> dict:
             "deposit_competitor_gap_elasticity": 75.0,
         },
     }
+
+
+def _evaluate_adaptive_joint_rate_grid_unhoisted(**kwargs):
+    original = grid_search_module.evaluate_joint_rate_grid
+    try:
+        grid_search_module.evaluate_joint_rate_grid = _evaluate_joint_rate_grid_unhoisted
+        import balance_pricing_engine.diagnostics as diagnostics_module
+
+        diagnostics_module.evaluate_joint_rate_grid = _evaluate_joint_rate_grid_unhoisted
+        return evaluate_adaptive_joint_rate_grid(**kwargs)
+    finally:
+        grid_search_module.evaluate_joint_rate_grid = original
+        diagnostics_module.evaluate_joint_rate_grid = original
+
+
+def _evaluate_joint_rate_grid_unhoisted(
+    loan_customers,
+    deposit_customers,
+    market,
+    loan_rate_grid,
+    deposit_rate_grid,
+    loan_rate_elasticity,
+    loan_competitor_gap_elasticity,
+    deposit_rate_elasticity,
+    deposit_competitor_gap_elasticity,
+    required_deposit_funding_ratio,
+    funding_shortfall_penalty_rate,
+    home_loan_reference_rate=None,
+    term_deposit_reference_rate=None,
+):
+    rows = []
+    for loan_rate in loan_rate_grid:
+        loan_probs = grid_search_module.loan_acceptance_probability(
+            loan_customers,
+            float(loan_rate),
+            market.competitor_loan_rate,
+            loan_rate_elasticity,
+            loan_competitor_gap_elasticity,
+        )
+        loan_volume = grid_search_module.expected_loan_volume(loan_customers, loan_probs)
+        loan_interest_income = grid_search_module.expected_loan_interest_income(
+            loan_customers,
+            loan_probs,
+            float(loan_rate),
+        )
+        credit_loss = grid_search_module.expected_credit_loss(loan_customers, loan_probs)
+        home_loan_spread_to_market_bps = grid_search_module._spread_to_market_bps(
+            float(loan_rate),
+            home_loan_reference_rate,
+        )
+
+        for deposit_rate in deposit_rate_grid:
+            deposit_probs = grid_search_module.deposit_uptake_probability(
+                deposit_customers,
+                float(deposit_rate),
+                market.competitor_deposit_rate,
+                deposit_rate_elasticity,
+                deposit_competitor_gap_elasticity,
+            )
+            deposit_volume = grid_search_module.expected_deposit_volume(
+                deposit_customers,
+                deposit_probs,
+            )
+            deposit_cost = grid_search_module.expected_deposit_cost(
+                deposit_customers,
+                deposit_probs,
+                float(deposit_rate),
+            )
+            wholesale_funding_cost = grid_search_module.expected_wholesale_funding_cost(
+                loan_volume,
+                deposit_volume,
+                market.wholesale_funding_rate,
+            )
+            funding = calculate_funding_result(
+                loan_volume,
+                deposit_volume,
+                required_deposit_funding_ratio,
+                funding_shortfall_penalty_rate,
+            )
+            total_objective = (
+                loan_interest_income
+                - credit_loss
+                - deposit_cost
+                - wholesale_funding_cost
+                - funding.funding_penalty
+            )
+            term_deposit_spread_to_market_bps = grid_search_module._spread_to_market_bps(
+                float(deposit_rate),
+                term_deposit_reference_rate,
+            )
+            rows.append(
+                {
+                    "loan_rate": float(loan_rate),
+                    "deposit_rate": float(deposit_rate),
+                    "home_loan_spread_to_market_bps": home_loan_spread_to_market_bps,
+                    "term_deposit_spread_to_market_bps": term_deposit_spread_to_market_bps,
+                    "loan_interest_income": loan_interest_income,
+                    "expected_credit_loss": credit_loss,
+                    "deposit_interest_cost": deposit_cost,
+                    "wholesale_funding_cost": wholesale_funding_cost,
+                    "funding_shortfall_penalty": funding.funding_penalty,
+                    "total_objective": total_objective,
+                    "expected_loan_volume": loan_volume,
+                    "expected_deposit_volume": deposit_volume,
+                    "funding_shortfall": funding.funding_shortfall,
+                }
+            )
+
+    if not rows:
+        raise ValueError("At least one loan rate and one deposit rate are required.")
+    return pd.DataFrame(rows, columns=GRID_RESULT_COLUMNS)

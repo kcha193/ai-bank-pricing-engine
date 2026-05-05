@@ -31,7 +31,7 @@
 - Add `hypothesis` to dev deps in `pyproject.toml`.
 - Risks addressed: R24.
 
-### [ ] A3. Tie-break policy
+### [x] A3. Tie-break policy
 **Goal:** Make optimiser tiebreaker explicit and documented.
 
 - Edit `select_best_result` in `src/balance_pricing_engine/optimization/grid_search.py`: ties resolve to lowest `funding_shortfall`, then lowest `|home_loan_spread_to_market_bps| + |term_deposit_spread_to_market_bps|`.
@@ -83,7 +83,7 @@
 
 ## Stage C — pricing objective correctness
 
-### [ ] C1. Hoist deposit pre-compute (perf, byte-equal)
+### [x] C1. Hoist deposit pre-compute (perf, byte-equal)
 **Goal:** ~10–20× speedup on the inner loop with byte-equal output.
 
 - Refactor `evaluate_joint_rate_grid` in `src/balance_pricing_engine/optimization/grid_search.py` to compute `deposit_probs / volume / cost` once per `deposit_rate` outside the loan loop.

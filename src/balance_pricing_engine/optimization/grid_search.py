@@ -109,6 +109,34 @@ def evaluate_joint_rate_grid(
 ) -> pd.DataFrame:
     """Evaluate every loan and deposit rate pair in the joint pricing grid."""
     rows: list[dict[str, float]] = []
+    deposit_precomputes: list[tuple[float, float, float, float]] = []
+
+    for deposit_rate in deposit_rate_grid:
+        deposit_probs = deposit_uptake_probability(
+            deposit_customers,
+            float(deposit_rate),
+            market.competitor_deposit_rate,
+            deposit_rate_elasticity,
+            deposit_competitor_gap_elasticity,
+        )
+        deposit_volume = expected_deposit_volume(deposit_customers, deposit_probs)
+        deposit_cost = expected_deposit_cost(
+            deposit_customers,
+            deposit_probs,
+            float(deposit_rate),
+        )
+        term_deposit_spread_to_market_bps = _spread_to_market_bps(
+            float(deposit_rate),
+            term_deposit_reference_rate,
+        )
+        deposit_precomputes.append(
+            (
+                float(deposit_rate),
+                deposit_volume,
+                deposit_cost,
+                term_deposit_spread_to_market_bps,
+            )
+        )
 
     for loan_rate in loan_rate_grid:
         loan_probs = loan_acceptance_probability(
@@ -130,16 +158,12 @@ def evaluate_joint_rate_grid(
             home_loan_reference_rate,
         )
 
-        for deposit_rate in deposit_rate_grid:
-            deposit_probs = deposit_uptake_probability(
-                deposit_customers,
-                float(deposit_rate),
-                market.competitor_deposit_rate,
-                deposit_rate_elasticity,
-                deposit_competitor_gap_elasticity,
-            )
-            deposit_volume = expected_deposit_volume(deposit_customers, deposit_probs)
-            deposit_cost = expected_deposit_cost(deposit_customers, deposit_probs, float(deposit_rate))
+        for (
+            deposit_rate,
+            deposit_volume,
+            deposit_cost,
+            term_deposit_spread_to_market_bps,
+        ) in deposit_precomputes:
             wholesale_funding_cost = expected_wholesale_funding_cost(
                 loan_volume,
                 deposit_volume,
@@ -158,15 +182,11 @@ def evaluate_joint_rate_grid(
                 - wholesale_funding_cost
                 - funding.funding_penalty
             )
-            term_deposit_spread_to_market_bps = _spread_to_market_bps(
-                float(deposit_rate),
-                term_deposit_reference_rate,
-            )
 
             rows.append(
                 {
                     "loan_rate": float(loan_rate),
-                    "deposit_rate": float(deposit_rate),
+                    "deposit_rate": deposit_rate,
                     "home_loan_spread_to_market_bps": home_loan_spread_to_market_bps,
                     "term_deposit_spread_to_market_bps": term_deposit_spread_to_market_bps,
                     "loan_interest_income": loan_interest_income,
