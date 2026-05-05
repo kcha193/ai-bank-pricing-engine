@@ -44,7 +44,7 @@
 
 ## Stage B — explainability + boundary diagnostics
 
-### [ ] B1. Per-cause boundary warning + expansion-cap flag
+### [x] B1. Per-cause boundary warning + expansion-cap flag
 **Goal:** Replace static cause text with diagnostic heuristic; flag when expansion was capped.
 
 - Replace `BOUNDARY_WARNING_CAUSES` static tuple in `src/balance_pricing_engine/diagnostics.py` with a heuristic that inspects the winning `ObjectiveDecomposition`: dominant gradient (income vs penalty), competitor gap magnitude, funding-ratio proximity.
@@ -53,7 +53,7 @@
 - Files: `diagnostics.py`, `scenarios/runner.py`, tests.
 - Risks addressed: R12, R13.
 
-### [ ] B2. Spread-policy band breach flag
+### [x] B2. Spread-policy band breach flag
 **Goal:** Surface when adaptive expansion pushed the winner outside the user's configured spread-bps band.
 
 - Track the original configured spread-bps band; emit `policy_band_breached: bool` on summary.
