@@ -34,6 +34,10 @@ Wholesale funding cost represents the base marginal cost of externally funded le
 when expected loan volume exceeds expected deposit volume, the unfunded balance is charged at the
 wholesale funding rate.
 
+When expected deposit volume exceeds expected loan volume, the surplus balance is credited at the
+cash rate as `excess_deposit_income`. This keeps excess deposits from being treated as pure
+interest expense while preserving the transparent component-level objective.
+
 The funding shortfall penalty is a separate shadow cost for falling short of the target
 deposit-funding ratio. It represents management's risk appetite for deposit-funded lending and can
 be interpreted as a liquidity, franchise, or balance-sheet steering penalty. It does not replace

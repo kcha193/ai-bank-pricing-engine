@@ -9,7 +9,8 @@ from balance_pricing_engine.modelling.evaluation import (
     CALIBRATION_COLUMNS,
     METRIC_KEYS,
     check_rate_response_direction,
-    evaluate_binary_classifier,
+    evaluate_model,
+    evaluate_probabilities,
     evaluate_calibration,
 )
 from balance_pricing_engine.modelling.models import (
@@ -53,7 +54,7 @@ def test_evaluation_metrics_and_calibration_return_expected_outputs():
         DEPOSIT_TARGET_COLUMN,
     )
 
-    metrics = evaluate_binary_classifier(
+    metrics = evaluate_model(
         model,
         dataset,
         DEPOSIT_FEATURE_COLUMNS,
@@ -70,6 +71,16 @@ def test_evaluation_metrics_and_calibration_return_expected_outputs():
     assert list(metrics.keys()) == METRIC_KEYS
     assert list(calibration.columns) == CALIBRATION_COLUMNS
     assert calibration["count"].sum() == len(dataset)
+
+
+def test_evaluate_probabilities_returns_binary_classifier_metrics():
+    y_true = np.array([0, 0, 1, 1])
+    y_probability = np.array([0.1, 0.2, 0.8, 0.9])
+
+    metrics = evaluate_probabilities(y_true, y_probability)
+
+    assert list(metrics.keys()) == METRIC_KEYS
+    assert metrics["auc"] == 1.0
 
 
 def test_rate_response_sanity_check_detects_expected_direction():

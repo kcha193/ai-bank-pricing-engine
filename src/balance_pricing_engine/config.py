@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
+import warnings
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
@@ -69,11 +70,35 @@ class BalanceSheetConfig(BaseModel):
     funding_shortfall_penalty_rate: float = Field(ge=0)
 
 
+class LoanResponseCoefficientsConfig(BaseModel):
+    intercept: float = 1.10
+    rate_anchor: float = 0.065
+    risk_score_coef: float = -1.20
+    credit_score_coef: float = 0.35
+    lvr_coef: float = -0.25
+
+
+class DepositResponseCoefficientsConfig(BaseModel):
+    intercept: float = -0.65
+    rate_anchor: float = 0.045
+    rate_sensitivity_coef: float = 0.60
+    relationship_coef: float = 0.04
+    digital_coef: float = -0.20
+
+
+class ResponseCoefficientsConfig(BaseModel):
+    loan: LoanResponseCoefficientsConfig = Field(default_factory=LoanResponseCoefficientsConfig)
+    deposit: DepositResponseCoefficientsConfig = Field(
+        default_factory=DepositResponseCoefficientsConfig
+    )
+
+
 class ResponseConfig(BaseModel):
     loan_rate_elasticity: float
     loan_competitor_gap_elasticity: float
     deposit_rate_elasticity: float
     deposit_competitor_gap_elasticity: float
+    coefficients: ResponseCoefficientsConfig = Field(default_factory=ResponseCoefficientsConfig)
 
 
 class EngineConfig(BaseModel):
@@ -107,7 +132,48 @@ class EngineConfig(BaseModel):
                 raise ValueError("pricing_strategy.home_loan_spread_bps generates negative rates.")
             if min_term_deposit_rate < 0:
                 raise ValueError("pricing_strategy.term_deposit_spread_bps generates negative rates.")
+            self._warn_if_spread_band_is_narrow()
+        self._warn_for_business_sanity()
         return self
+
+    def _warn_for_business_sanity(self) -> None:
+        if self.market.wholesale_funding_spread < 0:
+            warnings.warn(
+                "negative wholesale_funding_spread may imply below-cash wholesale funding.",
+                stacklevel=2,
+            )
+        if (
+            self.balance_sheet.funding_shortfall_penalty_rate
+            < self.market.wholesale_funding_spread
+        ):
+            warnings.warn(
+                "funding_shortfall_penalty_rate is below wholesale_funding_spread; "
+                "penalty dominated by wholesale funding economics.",
+                stacklevel=2,
+            )
+        if (
+            self.simulation.n_loan_customers < 1000
+            or self.simulation.n_deposit_customers < 1000
+        ):
+            warnings.warn(
+                "n_loan_customers or n_deposit_customers below 1000 may create high MC variance.",
+                stacklevel=2,
+            )
+
+    def _warn_if_spread_band_is_narrow(self) -> None:
+        if self.pricing_strategy is None:
+            return
+        spread_bands = {
+            "home_loan_spread_bps": self.pricing_strategy.home_loan_spread_bps,
+            "term_deposit_spread_bps": self.pricing_strategy.term_deposit_spread_bps,
+        }
+        for name, spread_band in spread_bands.items():
+            if spread_band.max - spread_band.min < 50:
+                warnings.warn(
+                    f"configured {name} band width is less than 50 bps; "
+                    "likely to expand past policy.",
+                    stacklevel=2,
+                )
 
 
 def load_config(path: str | Path) -> EngineConfig:

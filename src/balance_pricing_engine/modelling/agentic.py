@@ -14,8 +14,8 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 from balance_pricing_engine.modelling.evaluation import (
-    evaluate_binary_classifier,
-    evaluate_calibration,
+    build_calibration_table,
+    evaluate_probabilities,
 )
 from balance_pricing_engine.modelling.models import (
     build_logistic_regression_model,
@@ -193,100 +193,53 @@ class ModelTrainingAgent:
         self.reports_dir = self.report_dir
         self.registry = ModelRegistry(self.artifacts_dir / "model_registry.json")
 
-    def train_and_recommend(self, dataset: pd.DataFrame, run_name: str) -> dict[str, Any]:
-        if self.config is None:
-            raise ValueError("TrainingConfig is required for train_and_recommend.")
-
-        self._validate_schema(dataset)
-        train, validation, test = self._split_dataset(dataset)
-
-        baseline = ElasticityBaselineModel()
-        logistic = LogisticResponseModel(self.config.random_seed)
-        logistic.fit(train, self.config.feature_columns, self.config.target_column)
-
-        baseline_result = self._evaluate_candidate(
-            baseline,
-            validation,
-            artifact_path=None,
-        )
-        logistic_artifact = self.model_dir / f"{run_name}_logistic.joblib"
-        save_model(logistic.fitted_model, logistic_artifact)
-        logistic_result = self._evaluate_candidate(
-            logistic,
-            validation,
-            artifact_path=str(logistic_artifact),
-        )
-
-        recommendation = self._recommend(baseline_result, logistic_result)
-        timestamp = datetime.now(timezone.utc).isoformat()
-        report_path = self.report_dir / f"{run_name}_training_report_{_timestamp_slug()}.json"
-        report = {
-            "run_name": run_name,
-            "timestamp_utc": timestamp,
-            "training_config": asdict(self.config),
-            "config_hash": self._config_hash(),
-            "data": {
-                "rows": len(dataset),
-                "train_rows": len(train),
-                "validation_rows": len(validation),
-                "test_rows": len(test),
-            },
-            "candidates": [asdict(baseline_result), asdict(logistic_result)],
-            "recommendation": recommendation,
-            "required_human_approval": True,
-            "report_path": str(report_path),
-        }
-        self.report_dir.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
-
-        for candidate in report["candidates"]:
-            self.registry.register(
-                {
-                    "model_name": candidate["model_name"],
-                    "run_name": run_name,
-                    "version": _timestamp_slug(),
-                    "timestamp_utc": timestamp,
-                    "metrics": candidate["metrics"],
-                    "calibration_error": candidate["calibration_error"],
-                    "governance_score": candidate["governance_score"],
-                    "passed_validation": candidate["passed_validation"],
-                    "governance_status": "pending_human_approval",
-                    "champion_status": self._champion_status(
-                        candidate["model_name"],
-                        recommendation,
-                    ),
-                    "artifact_path": candidate["artifact_path"],
-                    "config_hash": report["config_hash"],
-                    "report_path": str(report_path),
-                }
-            )
-        return report
-
     def train(
         self,
+        *,
         dataset: pd.DataFrame,
-        feature_columns: list[str],
-        target_column: str,
-        candidate_models: dict[str, ResponseModel],
-        min_log_loss_improvement: float = 0.01,
+        candidates: dict[str, ResponseModel],
+        registry: ModelRegistry,
+        feature_columns: list[str] | None = None,
+        target_column: str | None = None,
+        run_name: str = "training",
+        min_log_loss_improvement: float | None = None,
     ) -> TrainingResult:
-        """Lower-level candidate training API retained for branch compatibility."""
+        """Train candidate response models and write one governed training result."""
+        feature_columns = feature_columns or (
+            None if self.config is None else self.config.feature_columns
+        )
+        target_column = target_column or (None if self.config is None else self.config.target_column)
+        if feature_columns is None or target_column is None:
+            raise ValueError("feature_columns and target_column are required.")
+        min_log_loss_improvement = (
+            min_log_loss_improvement
+            if min_log_loss_improvement is not None
+            else (
+                self.config.min_log_loss_improvement
+                if self.config is not None
+                else 0.01
+            )
+        )
         self._validate_explicit_schema(dataset, feature_columns, target_column)
-        train_df, temp_df = train_test_split(
-            dataset,
-            test_size=0.4,
-            random_state=self.random_seed,
-            stratify=dataset[target_column],
-        )
-        valid_df, test_df = train_test_split(
-            temp_df,
-            test_size=0.5,
-            random_state=self.random_seed,
-            stratify=temp_df[target_column],
-        )
+        if self.config is not None:
+            train_df, valid_df, test_df = self._split_dataset(dataset)
+        else:
+            train_df, temp_df = train_test_split(
+                dataset,
+                test_size=0.4,
+                random_state=self.random_seed,
+                stratify=dataset[target_column],
+            )
+            valid_df, test_df = train_test_split(
+                temp_df,
+                test_size=0.5,
+                random_state=self.random_seed,
+                stratify=temp_df[target_column],
+            )
 
         records: list[ModelRecord] = []
         model_rows: list[dict[str, Any]] = []
+        candidate_results: list[ModelCandidateResult] = []
         baseline_log_loss: float | None = None
         timestamp = datetime.now(timezone.utc).isoformat()
         config_hash = _stable_hash(
@@ -297,10 +250,10 @@ class ModelTrainingAgent:
             }
         )
 
-        for name, model in candidate_models.items():
+        for name, model in candidates.items():
             model.fit(train_df, feature_columns, target_column)
             val_pred = model.predict_probability(valid_df, feature_columns)
-            metrics = evaluate_binary_classifier_proxy(valid_df[target_column].to_numpy(), val_pred)
+            metrics = evaluate_probabilities(valid_df[target_column].to_numpy(), val_pred)
             calibration_error = _calibration_error(valid_df[target_column].to_numpy(), val_pred)
 
             if name == "elasticity_baseline":
@@ -314,10 +267,37 @@ class ModelTrainingAgent:
                     "calibration_mae": calibration_error,
                 }
             )
-            artifact_path = self.model_dir / f"{name}.joblib"
+            artifact_path = self.model_dir / f"{run_name}_{name}.joblib"
             save_model(_scoring_artifact(model), artifact_path)
+            candidate_result = ModelCandidateResult(
+                model_name=_model_name(model),
+                metrics=metrics,
+                calibration_error=calibration_error,
+                governance_score=_governance_score(model, calibration_error),
+                artifact_path=str(artifact_path),
+                passed_validation=(
+                    calibration_error
+                    <= (
+                        self.config.max_calibration_error
+                        if self.config is not None
+                        else 0.10
+                    )
+                    and bool(np.isfinite(metrics["log_loss"]))
+                ),
+                recommendation_notes=[
+                    f"log_loss={metrics['log_loss']:.4f}",
+                    f"calibration_error={calibration_error:.4f}",
+                    (
+                        "transparent baseline"
+                        if _model_name(model) == "ElasticityBaselineModel"
+                        else "learned model"
+                    ),
+                ],
+            )
+            candidate_results.append(candidate_result)
+            record_model_name = _model_name(model) if self.config is not None else name
             record = ModelRecord(
-                model_name=name,
+                model_name=record_model_name,
                 model_type=type(model).__name__,
                 version=_timestamp_slug(),
                 trained_at_utc=timestamp,
@@ -328,7 +308,7 @@ class ModelTrainingAgent:
                 champion_status="challenger",
                 config_hash=config_hash,
             )
-            self.registry.append(record)
+            registry.append(record)
             records.append(record)
 
         recommended = "elasticity_baseline"
@@ -344,18 +324,58 @@ class ModelTrainingAgent:
                     break
 
         report_path = self.report_dir / f"training_report_{_timestamp_slug()}.json"
+        recommendation = {
+            "recommended_model": _recommended_report_name(
+                recommended,
+                candidates,
+                config_mode=self.config is not None,
+            ),
+            "recommend_as": (
+                "baseline_champion"
+                if recommended == "elasticity_baseline"
+                else "challenger_candidate"
+            ),
+            "reason": reason,
+            "log_loss_improvement_vs_baseline": _recommended_improvement(
+                baseline_log_loss,
+                model_rows,
+                recommended,
+            ),
+        }
         report = {
+            "run_name": run_name,
+            "timestamp_utc": timestamp,
+            "training_config": None if self.config is None else asdict(self.config),
+            "config_hash": config_hash,
             "train_rows": len(train_df),
             "validation_rows": len(valid_df),
             "test_rows": len(test_df),
             "models": model_rows,
+            "candidates": [asdict(result) for result in candidate_results],
             "recommended_model": recommended,
             "recommendation_reason": reason,
+            "recommendation": recommendation,
             "human_approval_required": True,
+            "required_human_approval": True,
             "report_path": str(report_path),
         }
         self.report_dir.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+        payload = registry.load()
+        trained_names = {record.model_name for record in records}
+        for record in payload.get("models", []):
+            if record.get("model_name") not in trained_names:
+                continue
+            record["run_name"] = run_name
+            record["report_path"] = str(report_path)
+            record["champion_status"] = self._champion_status(
+                str(record["model_name"]),
+                recommendation,
+            )
+        registry.registry_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
         return TrainingResult(
             report=report,
             report_path=str(report_path),
@@ -417,7 +437,7 @@ class ModelTrainingAgent:
         if self.config is None:
             raise ValueError("TrainingConfig is required for candidate evaluation.")
         probabilities = model.predict_probability(validation, self.config.feature_columns)
-        metrics = evaluate_binary_classifier_proxy(
+        metrics = evaluate_probabilities(
             validation[self.config.target_column].to_numpy(),
             probabilities,
         )
@@ -425,11 +445,7 @@ class ModelTrainingAgent:
             validation[self.config.target_column].to_numpy(),
             probabilities,
         )
-        governance_score = float(
-            1.0
-            - min(1.0, calibration_error * 5)
-            - (0.0 if _model_name(model) == "ElasticityBaselineModel" else 0.1)
-        )
+        governance_score = _governance_score(model, calibration_error)
         passed = bool(calibration_error <= self.config.max_calibration_error)
         passed = passed and bool(np.isfinite(metrics["log_loss"]))
         notes = [
@@ -574,17 +590,8 @@ class ModelScoringAgent:
             raise ValueError(f"Missing required scoring columns: {missing}")
 
 
-def evaluate_binary_classifier_proxy(y_true: np.ndarray, y_probability: np.ndarray) -> dict[str, float]:
-    """Evaluate probabilities without requiring an estimator object."""
-    frame = pd.DataFrame({"target": y_true, "p": y_probability})
-    model = _StaticProbabilityModel(frame["p"].to_numpy())
-    return evaluate_binary_classifier(model, frame.rename(columns={"target": "y"}), ["p"], "y")
-
-
 def _calibration_error(y_true: np.ndarray, y_probability: np.ndarray) -> float:
-    frame = pd.DataFrame({"target": y_true, "p": y_probability})
-    model = _StaticProbabilityModel(frame["p"].to_numpy())
-    calibration = evaluate_calibration(model, frame, ["p"], "target", n_bins=5)
+    calibration = build_calibration_table(y_true, y_probability, n_bins=5)
     delta = calibration["observed_rate"] - calibration["mean_predicted_probability"]
     return float(delta.abs().mean())
 
@@ -639,10 +646,32 @@ def _model_name(model: ResponseModel) -> str:
     return getattr(model, "name", type(model).__name__)
 
 
-class _StaticProbabilityModel:
-    def __init__(self, probabilities: np.ndarray):
-        self._probabilities = np.asarray(probabilities)
+def _governance_score(model: ResponseModel, calibration_error: float) -> float:
+    return float(
+        1.0
+        - min(1.0, calibration_error * 5)
+        - (0.0 if _model_name(model) == "ElasticityBaselineModel" else 0.1)
+    )
 
-    def predict_proba(self, x: pd.DataFrame) -> np.ndarray:
-        p = self._probabilities[: len(x)]
-        return np.column_stack([1 - p, p])
+
+def _recommended_report_name(
+    recommended: str,
+    candidates: dict[str, ResponseModel],
+    config_mode: bool,
+) -> str:
+    if config_mode and recommended in candidates:
+        return _model_name(candidates[recommended])
+    return recommended
+
+
+def _recommended_improvement(
+    baseline_log_loss: float | None,
+    model_rows: list[dict[str, Any]],
+    recommended: str,
+) -> float | None:
+    if baseline_log_loss is None:
+        return None
+    for row in model_rows:
+        if row["name"] == recommended:
+            return baseline_log_loss - row["metrics"]["log_loss"]
+    return None

@@ -7,6 +7,7 @@ from balance_pricing_engine.synthetic.response import (
     loan_acceptance_probability,
 )
 from balance_pricing_engine.utils.random import make_rng
+from balance_pricing_engine.config import load_config
 
 
 def test_home_loan_acceptance_decreases_when_rate_increases():
@@ -46,3 +47,43 @@ def test_competitor_rates_influence_customer_response():
 
     assert loan_response_when_competitor_is_cheap < loan_response_when_competitor_is_expensive
     assert deposit_response_when_competitor_is_cheap < deposit_response_when_competitor_is_expensive
+
+
+def test_configured_response_coefficients_match_legacy_defaults():
+    config = load_config("configs/base.yaml")
+    loan_customers = generate_loan_customers(1000, make_rng(13))
+    deposit_customers = generate_deposit_customers(1000, make_rng(14))
+
+    legacy_loan = loan_acceptance_probability(
+        loan_customers,
+        0.066,
+        0.0675,
+        config.response.loan_rate_elasticity,
+        config.response.loan_competitor_gap_elasticity,
+    )
+    configured_loan = loan_acceptance_probability(
+        loan_customers,
+        0.066,
+        0.0675,
+        config.response.loan_rate_elasticity,
+        config.response.loan_competitor_gap_elasticity,
+        coefficients=config.response.coefficients.loan,
+    )
+    legacy_deposit = deposit_uptake_probability(
+        deposit_customers,
+        0.046,
+        0.045,
+        config.response.deposit_rate_elasticity,
+        config.response.deposit_competitor_gap_elasticity,
+    )
+    configured_deposit = deposit_uptake_probability(
+        deposit_customers,
+        0.046,
+        0.045,
+        config.response.deposit_rate_elasticity,
+        config.response.deposit_competitor_gap_elasticity,
+        coefficients=config.response.coefficients.deposit,
+    )
+
+    assert configured_loan.tolist() == legacy_loan.tolist()
+    assert configured_deposit.tolist() == legacy_deposit.tolist()

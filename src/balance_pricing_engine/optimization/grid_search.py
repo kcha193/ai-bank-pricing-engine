@@ -12,11 +12,13 @@ from balance_pricing_engine.market import (
     SpreadGridConfig,
     build_market_relative_grid,
 )
+from balance_pricing_engine.config import ResponseCoefficientsConfig
 from balance_pricing_engine.pricing.balance_sheet import calculate_funding_result
 from balance_pricing_engine.pricing.profit import (
     expected_credit_loss,
     expected_deposit_cost,
     expected_deposit_volume,
+    expected_excess_deposit_income,
     expected_loan_interest_income,
     expected_loan_volume,
     expected_wholesale_funding_cost,
@@ -36,6 +38,7 @@ class OptimizationResult:
     expected_credit_loss: float
     deposit_interest_cost: float
     wholesale_funding_cost: float
+    excess_deposit_income: float
     funding_shortfall_penalty: float
     total_objective: float
     expected_loan_volume: float
@@ -74,6 +77,7 @@ GRID_RESULT_COLUMNS = [
     "expected_credit_loss",
     "deposit_interest_cost",
     "wholesale_funding_cost",
+    "excess_deposit_income",
     "funding_shortfall_penalty",
     "total_objective",
     "expected_loan_volume",
@@ -106,10 +110,12 @@ def evaluate_joint_rate_grid(
     funding_shortfall_penalty_rate: float,
     home_loan_reference_rate: float | None = None,
     term_deposit_reference_rate: float | None = None,
+    response_coefficients: ResponseCoefficientsConfig | None = None,
 ) -> pd.DataFrame:
     """Evaluate every loan and deposit rate pair in the joint pricing grid."""
     rows: list[dict[str, float]] = []
     deposit_precomputes: list[tuple[float, float, float, float]] = []
+    response_coefficients = response_coefficients or ResponseCoefficientsConfig()
 
     for deposit_rate in deposit_rate_grid:
         deposit_probs = deposit_uptake_probability(
@@ -118,6 +124,7 @@ def evaluate_joint_rate_grid(
             market.competitor_deposit_rate,
             deposit_rate_elasticity,
             deposit_competitor_gap_elasticity,
+            coefficients=response_coefficients.deposit,
         )
         deposit_volume = expected_deposit_volume(deposit_customers, deposit_probs)
         deposit_cost = expected_deposit_cost(
@@ -145,6 +152,7 @@ def evaluate_joint_rate_grid(
             market.competitor_loan_rate,
             loan_rate_elasticity,
             loan_competitor_gap_elasticity,
+            coefficients=response_coefficients.loan,
         )
         loan_volume = expected_loan_volume(loan_customers, loan_probs)
         loan_interest_income = expected_loan_interest_income(
@@ -169,6 +177,11 @@ def evaluate_joint_rate_grid(
                 deposit_volume,
                 market.wholesale_funding_rate,
             )
+            excess_deposit_income = expected_excess_deposit_income(
+                loan_volume,
+                deposit_volume,
+                market.cash_rate,
+            )
             funding = calculate_funding_result(
                 loan_volume,
                 deposit_volume,
@@ -181,6 +194,7 @@ def evaluate_joint_rate_grid(
                 - deposit_cost
                 - wholesale_funding_cost
                 - funding.funding_penalty
+                + excess_deposit_income
             )
 
             rows.append(
@@ -193,6 +207,7 @@ def evaluate_joint_rate_grid(
                     "expected_credit_loss": credit_loss,
                     "deposit_interest_cost": deposit_cost,
                     "wholesale_funding_cost": wholesale_funding_cost,
+                    "excess_deposit_income": excess_deposit_income,
                     "funding_shortfall_penalty": funding.funding_penalty,
                     "total_objective": total_objective,
                     "expected_loan_volume": loan_volume,
@@ -217,6 +232,7 @@ def optimization_result_from_row(row: pd.Series) -> OptimizationResult:
         expected_credit_loss=float(row["expected_credit_loss"]),
         deposit_interest_cost=float(row["deposit_interest_cost"]),
         wholesale_funding_cost=float(row["wholesale_funding_cost"]),
+        excess_deposit_income=float(row["excess_deposit_income"]),
         funding_shortfall_penalty=float(row["funding_shortfall_penalty"]),
         total_objective=float(row["total_objective"]),
         expected_loan_volume=float(row["expected_loan_volume"]),
@@ -259,6 +275,7 @@ def optimize_joint_rates(
     funding_shortfall_penalty_rate: float,
     home_loan_reference_rate: float | None = None,
     term_deposit_reference_rate: float | None = None,
+    response_coefficients: ResponseCoefficientsConfig | None = None,
 ) -> OptimizationResult:
     """Optimize portfolio-level loan and deposit rates by exhaustive grid search."""
     grid_results = evaluate_joint_rate_grid(
@@ -275,6 +292,7 @@ def optimize_joint_rates(
         funding_shortfall_penalty_rate=funding_shortfall_penalty_rate,
         home_loan_reference_rate=home_loan_reference_rate,
         term_deposit_reference_rate=term_deposit_reference_rate,
+        response_coefficients=response_coefficients,
     )
     return select_best_result(grid_results)
 
@@ -292,6 +310,7 @@ def optimize_joint_market_relative_rates(
     deposit_competitor_gap_elasticity: float,
     required_deposit_funding_ratio: float,
     funding_shortfall_penalty_rate: float,
+    response_coefficients: ResponseCoefficientsConfig | None = None,
 ) -> OptimizationResult:
     """Optimize rates over spreads to reference market rates."""
     loan_rate_grid, deposit_rate_grid = build_market_relative_grid(
@@ -313,6 +332,7 @@ def optimize_joint_market_relative_rates(
         funding_shortfall_penalty_rate=funding_shortfall_penalty_rate,
         home_loan_reference_rate=market_rates.home_loan_reference_rate,
         term_deposit_reference_rate=market_rates.term_deposit_reference_rate,
+        response_coefficients=response_coefficients,
     )
 
 

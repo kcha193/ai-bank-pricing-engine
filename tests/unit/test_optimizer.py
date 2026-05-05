@@ -151,6 +151,44 @@ def test_evaluate_joint_rate_grid_reuses_deposit_precompute(monkeypatch):
     assert call_count == len(deposit_grid)
 
 
+def test_evaluate_joint_rate_grid_credits_excess_deposits_at_cash_rate():
+    loan_customers, deposit_customers = _single_customer_portfolios()
+
+    grid_results = evaluate_joint_rate_grid(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=MarketState(
+            cash_rate=0.04,
+            wholesale_funding_spread=0.0,
+            competitor_loan_rate=0.05,
+            competitor_deposit_rate=0.03,
+        ),
+        loan_rate_grid=np.array([0.05]),
+        deposit_rate_grid=np.array([0.02]),
+        loan_rate_elasticity=0.0,
+        loan_competitor_gap_elasticity=0.0,
+        deposit_rate_elasticity=0.0,
+        deposit_competitor_gap_elasticity=0.0,
+        required_deposit_funding_ratio=0.0,
+        funding_shortfall_penalty_rate=0.0,
+    )
+    row = grid_results.iloc[0]
+    expected_surplus_income = max(
+        row["expected_deposit_volume"] - row["expected_loan_volume"],
+        0.0,
+    ) * 0.04
+
+    assert row["excess_deposit_income"] == pytest.approx(expected_surplus_income)
+    assert row["total_objective"] == pytest.approx(
+        row["loan_interest_income"]
+        - row["expected_credit_loss"]
+        - row["deposit_interest_cost"]
+        - row["wholesale_funding_cost"]
+        - row["funding_shortfall_penalty"]
+        + row["excess_deposit_income"]
+    )
+
+
 def test_baseline_grid_results_match_unhoisted_reference():
     config = load_config("configs/base.yaml")
     rng = make_rng(config.random_seed)
@@ -205,6 +243,7 @@ def test_optimization_result_alias_properties_return_canonical_fields():
         expected_credit_loss=100.0,
         deposit_interest_cost=50.0,
         wholesale_funding_cost=25.0,
+        excess_deposit_income=0.0,
         funding_shortfall_penalty=10.0,
         total_objective=815.0,
         expected_loan_volume=10_000.0,
@@ -221,8 +260,38 @@ def test_optimization_result_alias_properties_return_canonical_fields():
 def test_select_best_result_prefers_lower_funding_shortfall_when_objectives_tie():
     tied_results = np.array(
         [
-            [0.050, 0.030, 0.0, 0.0, 100.0, 10.0, 5.0, 1.0, 1.0, 83.0, 1_000.0, 500.0, 250.0],
-            [0.055, 0.035, 50.0, 50.0, 110.0, 20.0, 5.0, 1.0, 1.0, 83.0, 900.0, 600.0, 100.0],
+            [
+                0.050,
+                0.030,
+                0.0,
+                0.0,
+                100.0,
+                10.0,
+                5.0,
+                1.0,
+                0.0,
+                1.0,
+                83.0,
+                1_000.0,
+                500.0,
+                250.0,
+            ],
+            [
+                0.055,
+                0.035,
+                50.0,
+                50.0,
+                110.0,
+                20.0,
+                5.0,
+                1.0,
+                0.0,
+                1.0,
+                83.0,
+                900.0,
+                600.0,
+                100.0,
+            ],
         ],
         dtype=float,
     )
@@ -237,8 +306,38 @@ def test_select_best_result_prefers_lower_funding_shortfall_when_objectives_tie(
 def test_select_best_result_prefers_smaller_market_spread_when_shortfall_ties():
     tied_results = np.array(
         [
-            [0.050, 0.030, -75.0, 50.0, 100.0, 10.0, 5.0, 1.0, 1.0, 83.0, 1_000.0, 500.0, 100.0],
-            [0.055, 0.035, 25.0, -25.0, 110.0, 20.0, 5.0, 1.0, 1.0, 83.0, 900.0, 600.0, 100.0],
+            [
+                0.050,
+                0.030,
+                -75.0,
+                50.0,
+                100.0,
+                10.0,
+                5.0,
+                1.0,
+                0.0,
+                1.0,
+                83.0,
+                1_000.0,
+                500.0,
+                100.0,
+            ],
+            [
+                0.055,
+                0.035,
+                25.0,
+                -25.0,
+                110.0,
+                20.0,
+                5.0,
+                1.0,
+                0.0,
+                1.0,
+                83.0,
+                900.0,
+                600.0,
+                100.0,
+            ],
         ],
         dtype=float,
     )
@@ -490,6 +589,7 @@ def _evaluate_joint_rate_grid_unhoisted(
     funding_shortfall_penalty_rate,
     home_loan_reference_rate=None,
     term_deposit_reference_rate=None,
+    response_coefficients=None,
 ):
     rows = []
     for loan_rate in loan_rate_grid:
@@ -499,6 +599,7 @@ def _evaluate_joint_rate_grid_unhoisted(
             market.competitor_loan_rate,
             loan_rate_elasticity,
             loan_competitor_gap_elasticity,
+            coefficients=None if response_coefficients is None else response_coefficients.loan,
         )
         loan_volume = grid_search_module.expected_loan_volume(loan_customers, loan_probs)
         loan_interest_income = grid_search_module.expected_loan_interest_income(
@@ -519,6 +620,9 @@ def _evaluate_joint_rate_grid_unhoisted(
                 market.competitor_deposit_rate,
                 deposit_rate_elasticity,
                 deposit_competitor_gap_elasticity,
+                coefficients=(
+                    None if response_coefficients is None else response_coefficients.deposit
+                ),
             )
             deposit_volume = grid_search_module.expected_deposit_volume(
                 deposit_customers,
@@ -534,6 +638,11 @@ def _evaluate_joint_rate_grid_unhoisted(
                 deposit_volume,
                 market.wholesale_funding_rate,
             )
+            excess_deposit_income = grid_search_module.expected_excess_deposit_income(
+                loan_volume,
+                deposit_volume,
+                market.cash_rate,
+            )
             funding = calculate_funding_result(
                 loan_volume,
                 deposit_volume,
@@ -546,6 +655,7 @@ def _evaluate_joint_rate_grid_unhoisted(
                 - deposit_cost
                 - wholesale_funding_cost
                 - funding.funding_penalty
+                + excess_deposit_income
             )
             term_deposit_spread_to_market_bps = grid_search_module._spread_to_market_bps(
                 float(deposit_rate),
@@ -561,6 +671,7 @@ def _evaluate_joint_rate_grid_unhoisted(
                     "expected_credit_loss": credit_loss,
                     "deposit_interest_cost": deposit_cost,
                     "wholesale_funding_cost": wholesale_funding_cost,
+                    "excess_deposit_income": excess_deposit_income,
                     "funding_shortfall_penalty": funding.funding_penalty,
                     "total_objective": total_objective,
                     "expected_loan_volume": loan_volume,

@@ -29,21 +29,35 @@ class RateResponseCheck:
     violations: int
 
 
+def evaluate_probabilities(y_true: np.ndarray, y_probability: np.ndarray) -> dict[str, float]:
+    """Evaluate binary response probabilities with ranking and calibration metrics."""
+    return {
+        "auc": float(roc_auc_score(y_true, y_probability)),
+        "log_loss": float(log_loss(y_true, y_probability, labels=[0, 1])),
+        "brier_score": float(brier_score_loss(y_true, y_probability)),
+    }
+
+
+def evaluate_model(
+    model: Any,
+    dataset: pd.DataFrame,
+    feature_columns: list[str],
+    target_column: str,
+) -> dict[str, float]:
+    """Evaluate a fitted binary classifier model."""
+    y_true = dataset[target_column].to_numpy()
+    y_probability = predict_response_probability(model, dataset, feature_columns)
+    return evaluate_probabilities(y_true, y_probability)
+
+
 def evaluate_binary_classifier(
     model: Any,
     dataset: pd.DataFrame,
     feature_columns: list[str],
     target_column: str,
 ) -> dict[str, float]:
-    """Evaluate a binary classifier with ranking, likelihood, and calibration metrics."""
-    y_true = dataset[target_column].to_numpy()
-    y_probability = predict_response_probability(model, dataset, feature_columns)
-
-    return {
-        "auc": float(roc_auc_score(y_true, y_probability)),
-        "log_loss": float(log_loss(y_true, y_probability, labels=[0, 1])),
-        "brier_score": float(brier_score_loss(y_true, y_probability)),
-    }
+    """Backward-compatible alias for evaluate_model."""
+    return evaluate_model(model, dataset, feature_columns, target_column)
 
 
 def build_calibration_table(

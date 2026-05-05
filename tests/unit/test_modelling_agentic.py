@@ -1,6 +1,7 @@
 import numpy as np
 
 from balance_pricing_engine.modelling.agentic import (
+    ElasticityBaselineModel,
     ElasticityResponseModel,
     LogisticResponseModel,
     ModelRecord,
@@ -44,15 +45,24 @@ def test_training_agent_trains_and_recommends(tmp_path):
         artifacts_dir=tmp_path,
     )
 
-    report = agent.train_and_recommend(dataset, run_name="loan")
+    result = agent.train(
+        dataset=dataset,
+        candidates={
+            "elasticity_baseline": ElasticityBaselineModel(),
+            "logistic": LogisticResponseModel(random_state=7),
+        },
+        registry=agent.registry,
+        run_name="loan",
+    )
 
-    assert report["required_human_approval"] is True
-    assert len(report["candidates"]) == 2
-    assert {c["model_name"] for c in report["candidates"]} == {
+    assert not hasattr(agent, "train_and_recommend")
+    assert result.report["required_human_approval"] is True
+    assert len(result.report["candidates"]) == 2
+    assert {c["model_name"] for c in result.report["candidates"]} == {
         "ElasticityBaselineModel",
         "LogisticResponseModel",
     }
-    assert report["report_path"].endswith(".json")
+    assert result.report_path.endswith(".json")
 
 
 def test_scoring_agent_schema_and_fallback(tmp_path):
@@ -119,12 +129,30 @@ def test_registered_scoring_reports_fallback_model_when_artifact_missing(tmp_pat
 def test_training_reproducible_with_fixed_seed(tmp_path):
     dataset = _loan_dataset(555)
     config = TrainingConfig(feature_columns=LOAN_FEATURE_COLUMNS, target_column=LOAN_TARGET_COLUMN, random_seed=9)
-    report_a = ModelTrainingAgent(config=config, artifacts_dir=tmp_path / "a").train_and_recommend(dataset, "run")
-    report_b = ModelTrainingAgent(config=config, artifacts_dir=tmp_path / "b").train_and_recommend(dataset, "run")
-    metrics_a = {c["model_name"]: c["metrics"] for c in report_a["candidates"]}
-    metrics_b = {c["model_name"]: c["metrics"] for c in report_b["candidates"]}
+    agent_a = ModelTrainingAgent(config=config, artifacts_dir=tmp_path / "a")
+    agent_b = ModelTrainingAgent(config=config, artifacts_dir=tmp_path / "b")
+    result_a = agent_a.train(
+        dataset=dataset,
+        candidates={
+            "elasticity_baseline": ElasticityBaselineModel(),
+            "logistic": LogisticResponseModel(random_state=9),
+        },
+        registry=agent_a.registry,
+        run_name="run",
+    )
+    result_b = agent_b.train(
+        dataset=dataset,
+        candidates={
+            "elasticity_baseline": ElasticityBaselineModel(),
+            "logistic": LogisticResponseModel(random_state=9),
+        },
+        registry=agent_b.registry,
+        run_name="run",
+    )
+    metrics_a = {c["model_name"]: c["metrics"] for c in result_a.report["candidates"]}
+    metrics_b = {c["model_name"]: c["metrics"] for c in result_b.report["candidates"]}
     assert metrics_a == metrics_b
-    assert report_a["report_path"] != report_b["report_path"]
+    assert result_a.report_path != result_b.report_path
 
 
 def test_lower_level_training_api_returns_versioned_result(tmp_path):
@@ -134,11 +162,13 @@ def test_lower_level_training_api_returns_versioned_result(tmp_path):
         "logistic": LogisticResponseModel(random_state=21),
     }
 
-    result = ModelTrainingAgent(artifacts_dir=tmp_path, random_seed=21).train(
-        dataset,
-        LOAN_FEATURE_COLUMNS,
-        LOAN_TARGET_COLUMN,
-        candidates,
+    agent = ModelTrainingAgent(artifacts_dir=tmp_path, random_seed=21)
+    result = agent.train(
+        dataset=dataset,
+        feature_columns=LOAN_FEATURE_COLUMNS,
+        target_column=LOAN_TARGET_COLUMN,
+        candidates=candidates,
+        registry=agent.registry,
     )
 
     assert result.recommended_model_name in {"elasticity_baseline", "logistic"}
@@ -148,14 +178,16 @@ def test_lower_level_training_api_returns_versioned_result(tmp_path):
 
 def test_challenger_not_promoted_when_improvement_threshold_not_met(tmp_path):
     dataset = _loan_dataset(seed=999)
-    result = ModelTrainingAgent(artifacts_dir=tmp_path, random_seed=123).train(
-        dataset,
-        LOAN_FEATURE_COLUMNS,
-        LOAN_TARGET_COLUMN,
-        {
-            "elasticity_baseline": ElasticityResponseModel(),
+    agent = ModelTrainingAgent(artifacts_dir=tmp_path, random_seed=123)
+    result = agent.train(
+        dataset=dataset,
+        feature_columns=LOAN_FEATURE_COLUMNS,
+        target_column=LOAN_TARGET_COLUMN,
+        candidates={
+            "elasticity_baseline": ElasticityBaselineModel(),
             "logistic": LogisticResponseModel(random_state=123),
         },
+        registry=agent.registry,
         min_log_loss_improvement=5.0,
     )
     assert result.recommended_model_name == "elasticity_baseline"
@@ -163,11 +195,13 @@ def test_challenger_not_promoted_when_improvement_threshold_not_met(tmp_path):
 
 def test_lower_level_training_artifacts_are_scoreable(tmp_path):
     dataset = _loan_dataset()
-    result = ModelTrainingAgent(artifacts_dir=tmp_path, random_seed=21).train(
-        dataset,
-        LOAN_FEATURE_COLUMNS,
-        LOAN_TARGET_COLUMN,
-        {"logistic": LogisticResponseModel(random_state=21)},
+    agent = ModelTrainingAgent(artifacts_dir=tmp_path, random_seed=21)
+    result = agent.train(
+        dataset=dataset,
+        feature_columns=LOAN_FEATURE_COLUMNS,
+        target_column=LOAN_TARGET_COLUMN,
+        candidates={"logistic": LogisticResponseModel(random_state=21)},
+        registry=agent.registry,
     )
 
     logistic_record = next(record for record in result.records if record.model_name == "logistic")
@@ -218,7 +252,15 @@ def test_registry_labels_failed_challenger_correctly(tmp_path):
         artifacts_dir=tmp_path,
     )
 
-    agent.train_and_recommend(dataset, run_name="loan")
+    agent.train(
+        dataset=dataset,
+        candidates={
+            "elasticity_baseline": ElasticityBaselineModel(),
+            "logistic": LogisticResponseModel(random_state=4),
+        },
+        registry=agent.registry,
+        run_name="loan",
+    )
     records = ModelRegistry(tmp_path / "model_registry.json").load()["models"]
     by_name = {record["model_name"]: record for record in records}
 

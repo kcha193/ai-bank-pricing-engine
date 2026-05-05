@@ -22,6 +22,7 @@ from balance_pricing_engine.reporting import (
     build_scenario_comparison_table,
     build_sensitivity_change_table,
     build_sensitivity_summary_table,
+    build_sensitivity_tornado_table,
     format_result_table,
     fmt_bps,
     fmt_money,
@@ -261,3 +262,20 @@ def test_sensitivity_and_scenario_tables_calculate_notebook_comparisons():
     assert summary_table.loc[1, "deposit_rate_change_vs_baseline"] == "-20 bps"
     assert summary_table.loc[1, "objective_change_vs_baseline"] == "$-100"
     assert scenario_table["scenario"].tolist() == ["baseline", "higher funding penalty"]
+
+
+def test_sensitivity_tornado_table_sorts_by_absolute_objective_delta():
+    sensitivity = pd.DataFrame(
+        {
+            "scenario_name": ["baseline", "small", "large"],
+            "parameter_family": ["funding", "elasticity", "competitor"],
+            "delta_loan_rate_bps": [0.0, 5.0, -10.0],
+            "delta_deposit_rate_bps": [0.0, 0.0, 15.0],
+            "delta_objective_pct": [0.0, -0.02, 0.10],
+        }
+    )
+
+    tornado = build_sensitivity_tornado_table(sensitivity)
+
+    assert tornado["scenario_name"].tolist() == ["large", "small"]
+    assert tornado["delta_objective_pct"].tolist() == ["+10.00%", "-2.00%"]

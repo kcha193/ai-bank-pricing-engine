@@ -51,3 +51,16 @@ response:
   loan_competitor_gap_elasticity: -65.0
   deposit_rate_elasticity: 95.0
   deposit_competitor_gap_elasticity: 75.0
+  coefficients:
+    loan:
+      intercept: 1.10
+      rate_anchor: 0.065
+      risk_score_coef: -1.20
+      credit_score_coef: 0.35
+      lvr_coef: -0.25
+    deposit:
+      intercept: -0.65
+      rate_anchor: 0.045
+      rate_sensitivity_coef: 0.60
+      relationship_coef: 0.04
+      digital_coef: -0.20

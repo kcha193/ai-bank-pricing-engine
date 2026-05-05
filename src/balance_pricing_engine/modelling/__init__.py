@@ -1,4 +1,7 @@
-"""Machine-learning response modelling and governed agentic workflow utilities."""
+"""Trained models in this package are diagnostic only and are NOT consumed by the optimiser.
+
+See docs/model_governance.md.
+"""
 
 from balance_pricing_engine.modelling.agentic import (
     ElasticityBaselineModel,

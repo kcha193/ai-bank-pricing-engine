@@ -2,6 +2,7 @@ import json
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.diagnostics import (
@@ -31,6 +32,7 @@ def test_objective_decomposition_components_reconcile_to_total_objective():
         - grid_results["deposit_interest_cost"]
         - grid_results["wholesale_funding_cost"]
         - grid_results["funding_shortfall_penalty"]
+        + grid_results["excess_deposit_income"]
     )
 
     assert np.allclose(reconciled_objective, grid_results["total_objective"])
@@ -44,6 +46,7 @@ def test_boundary_diagnostics_trigger_when_optimum_is_at_grid_edge():
         expected_credit_loss=50_000,
         deposit_interest_cost=100_000,
         wholesale_funding_cost=75_000,
+        excess_deposit_income=0.0,
         funding_shortfall_penalty=25_000,
         total_objective=750_000,
         expected_loan_volume=10_000_000,
@@ -71,6 +74,7 @@ def test_boundary_warning_heuristic_categorises_each_cause_branch():
         expected_credit_loss=100_000,
         deposit_interest_cost=100_000,
         wholesale_funding_cost=50_000,
+        excess_deposit_income=0.0,
         funding_shortfall_penalty=50_000,
         total_objective=700_000,
         expected_loan_volume=10_000_000,
@@ -103,6 +107,7 @@ def test_boundary_warning_heuristic_categorises_each_cause_branch():
         expected_credit_loss=10_000,
         deposit_interest_cost=100_000,
         wholesale_funding_cost=50_000,
+        excess_deposit_income=0.0,
         funding_shortfall_penalty=200_000,
         total_objective=-260_000,
         expected_loan_volume=10_000_000,
@@ -124,6 +129,7 @@ def test_boundary_warning_heuristic_categorises_each_cause_branch():
         expected_credit_loss=100_000,
         deposit_interest_cost=100_000,
         wholesale_funding_cost=50_000,
+        excess_deposit_income=0.0,
         funding_shortfall_penalty=50_000,
         total_objective=700_000,
         expected_loan_volume=10_000_000,
@@ -150,6 +156,7 @@ def test_boundary_expansion_extends_only_hit_boundaries():
         expected_credit_loss=50_000,
         deposit_interest_cost=100_000,
         wholesale_funding_cost=75_000,
+        excess_deposit_income=0.0,
         funding_shortfall_penalty=25_000,
         total_objective=750_000,
         expected_loan_volume=10_000_000,
@@ -261,6 +268,16 @@ def test_sensitivity_runner_returns_expected_columns():
     assert sensitivity["boundary_warning_flag"].isin([True, False]).all()
     assert sensitivity["initial_boundary_warning_flag"].isin([True, False]).all()
     assert (sensitivity["expansion_rounds"] >= 0).all()
+    assert {
+        "delta_loan_rate_bps",
+        "delta_deposit_rate_bps",
+        "delta_objective_pct",
+        "parameter_family",
+    } <= set(sensitivity.columns)
+    assert sensitivity["parameter_family"].isin(
+        ["elasticity", "funding", "competitor", "wholesale"]
+    ).all()
+    assert (sensitivity["delta_objective_pct"].abs() > 0).any()
 
 
 def test_default_sensitivity_includes_two_way_stresses():
@@ -282,6 +299,39 @@ def test_default_sensitivity_includes_two_way_stresses():
     assert "competitor_deposit_rate_lower__funding_penalty_higher" in scenario_names
 
 
+def test_default_sensitivity_includes_gap_elasticity_and_feature_coefficient_stresses():
+    config = load_config("configs/base.yaml")
+
+    sensitivity = run_sensitivity_analysis(config)
+    scenario_names = set(sensitivity["scenario_name"])
+
+    expected = {
+        "loan_competitor_gap_elasticity_weaker",
+        "loan_competitor_gap_elasticity_stronger",
+        "deposit_competitor_gap_elasticity_weaker",
+        "deposit_competitor_gap_elasticity_stronger",
+        "loan_risk_score_coef_weaker",
+        "loan_risk_score_coef_stronger",
+        "deposit_rate_sensitivity_coef_weaker",
+        "deposit_rate_sensitivity_coef_stronger",
+    }
+    assert expected <= scenario_names
+    assert set(
+        sensitivity.loc[sensitivity["scenario_name"].isin(expected), "parameter_family"]
+    ) == {"elasticity"}
+
+
+def test_sensitivity_analysis_can_average_over_multiple_customer_seeds():
+    config = load_config("configs/base.yaml")
+
+    sensitivity = run_sensitivity_analysis(config, n_seeds=3)
+
+    assert "objective_value_mean" in sensitivity.columns
+    assert "objective_value_std_error" in sensitivity.columns
+    assert sensitivity["objective_value_mean"].notna().all()
+    assert (sensitivity["objective_value_std_error"] >= 0).all()
+
+
 def test_scenario_diagnostics_can_persist_regression_artifacts(tmp_path):
     config = load_config("configs/base.yaml")
     diagnostics = run_baseline_diagnostics(config, max_boundary_expansions=0)
@@ -301,6 +351,7 @@ def test_scenario_diagnostics_can_persist_regression_artifacts(tmp_path):
         "best_loan_rate",
         "best_deposit_rate",
         "objective_value",
+        "excess_deposit_income",
         "boundary_warning_flag",
         "initial_boundary_warning_flag",
         "expansion_rounds",
@@ -318,3 +369,43 @@ def test_scenario_diagnostics_can_persist_regression_artifacts(tmp_path):
     assert summary["expansion_rounds"] == 0
     assert summary["expansion_capped"] is diagnostics.expansion_capped
     assert summary["policy_band_breached"] is diagnostics.policy_band_breached
+
+
+def test_counterfactual_decompositions_return_reconciled_top_rows(tmp_path):
+    config = load_config("configs/base.yaml")
+    diagnostics = run_baseline_diagnostics(config, max_boundary_expansions=0)
+
+    decompositions = diagnostics.counterfactual_decompositions(top_n=2)
+    diagnostics.write_artifacts(tmp_path, top_n=2)
+
+    assert len(decompositions) == 2
+    for decomposition in decompositions:
+        assert decomposition.total_objective == pytest.approx(
+            decomposition.reconciled_total_objective
+        )
+    saved = pd.read_csv(tmp_path / "counterfactuals.csv")
+    assert len(saved) == 2
+    assert "total_objective" in saved.columns
+
+
+def test_cohort_attribution_reconciles_segment_volumes(tmp_path):
+    config = load_config("configs/base.yaml")
+    diagnostics = run_baseline_diagnostics(config, max_boundary_expansions=0)
+
+    attribution = diagnostics.cohort_attribution()
+    diagnostics.write_artifacts(tmp_path)
+
+    assert set(attribution["loan_volume_by_risk_segment"]) == {"low", "medium", "high"}
+    assert set(attribution["deposit_volume_by_wealth_segment"]) == {
+        "low",
+        "medium",
+        "high",
+    }
+    assert sum(attribution["loan_volume_by_risk_segment"].values()) == pytest.approx(
+        diagnostics.best_result.expected_loan_volume
+    )
+    assert sum(attribution["deposit_volume_by_wealth_segment"].values()) == pytest.approx(
+        diagnostics.best_result.expected_deposit_volume
+    )
+    saved = pd.read_csv(tmp_path / "cohort_attribution.csv")
+    assert {"segment_type", "segment", "expected_volume"} <= set(saved.columns)

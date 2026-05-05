@@ -23,6 +23,7 @@ NUMERIC_KEYS = {
     "expected_loan_volume",
     "expected_deposit_volume",
     "funding_shortfall",
+    "excess_deposit_income",
 }
 BOOL_KEYS = {
     "boundary_warning_flag",
@@ -39,6 +40,7 @@ def _build_summary(diag) -> dict:
         "best_loan_rate": r.loan_rate,
         "best_deposit_rate": r.deposit_rate,
         "objective_value": r.total_objective,
+        "excess_deposit_income": r.excess_deposit_income,
         "expected_loan_volume": r.expected_loan_volume,
         "expected_deposit_volume": r.expected_deposit_volume,
         "funding_shortfall": r.funding_shortfall,

@@ -18,6 +18,7 @@ MONEY_COLUMNS = [
     "expected_credit_loss",
     "deposit_interest_cost",
     "wholesale_funding_cost",
+    "excess_deposit_income",
     "funding_shortfall_penalty",
     "expected_loan_volume",
     "expected_deposit_volume",
@@ -314,6 +315,29 @@ def build_sensitivity_summary_table(sensitivity: pd.DataFrame) -> pd.DataFrame:
     ].map(fmt_money)
     formatted["funding_shortfall"] = formatted["funding_shortfall"].map(fmt_money)
     return formatted
+
+
+def build_sensitivity_tornado_table(sensitivity: pd.DataFrame) -> pd.DataFrame:
+    """Build a tornado-style sensitivity table sorted by objective impact."""
+    tornado = sensitivity.copy()
+    tornado = tornado[tornado["delta_objective_pct"].abs() > 0].copy()
+    tornado["_abs_delta_objective_pct"] = tornado["delta_objective_pct"].abs()
+    tornado = tornado.sort_values("_abs_delta_objective_pct", ascending=False)
+    tornado = tornado[
+        [
+            "scenario_name",
+            "parameter_family",
+            "delta_loan_rate_bps",
+            "delta_deposit_rate_bps",
+            "delta_objective_pct",
+        ]
+    ].reset_index(drop=True)
+    for column in ["delta_loan_rate_bps", "delta_deposit_rate_bps"]:
+        tornado[column] = tornado[column].map(lambda value: f"{value:+.0f} bps")
+    tornado["delta_objective_pct"] = tornado["delta_objective_pct"].map(
+        lambda value: f"{value:+.2%}"
+    )
+    return tornado
 
 
 def build_scenario_comparison_table(baseline_result: Any, scenario_result: Any) -> pd.DataFrame:

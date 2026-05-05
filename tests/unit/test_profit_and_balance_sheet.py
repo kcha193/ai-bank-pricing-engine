@@ -1,8 +1,10 @@
 import numpy as np
 
+from balance_pricing_engine.diagnostics import ObjectiveDecomposition
 from balance_pricing_engine.pricing.balance_sheet import calculate_funding_result
 from balance_pricing_engine.pricing.profit import (
-    expected_loan_profit,
+    expected_credit_loss,
+    expected_loan_interest_income,
     expected_wholesale_funding_cost,
 )
 from balance_pricing_engine.synthetic.customers import generate_loan_customers
@@ -13,13 +15,42 @@ def test_expected_credit_loss_reduces_loan_profit():
     customers = generate_loan_customers(100, make_rng(10))
     probabilities = np.ones(len(customers))
 
-    base_profit = expected_loan_profit(customers, probabilities, 0.07, 0.055)
+    base_decomposition = ObjectiveDecomposition(
+        loan_interest_income=expected_loan_interest_income(customers, probabilities, 0.07),
+        expected_credit_loss=expected_credit_loss(customers, probabilities),
+        deposit_interest_cost=0.0,
+        wholesale_funding_cost=0.0,
+        excess_deposit_income=0.0,
+        funding_shortfall_penalty=0.0,
+        total_objective=0.0,
+        expected_loan_volume=0.0,
+        expected_deposit_volume=0.0,
+        funding_shortfall=0.0,
+    )
 
     higher_loss_customers = customers.copy()
     higher_loss_customers["expected_loss_rate"] = customers["expected_loss_rate"] + 0.01
-    higher_loss_profit = expected_loan_profit(higher_loss_customers, probabilities, 0.07, 0.055)
+    higher_loss_decomposition = ObjectiveDecomposition(
+        loan_interest_income=expected_loan_interest_income(
+            higher_loss_customers,
+            probabilities,
+            0.07,
+        ),
+        expected_credit_loss=expected_credit_loss(higher_loss_customers, probabilities),
+        deposit_interest_cost=0.0,
+        wholesale_funding_cost=0.0,
+        excess_deposit_income=0.0,
+        funding_shortfall_penalty=0.0,
+        total_objective=0.0,
+        expected_loan_volume=0.0,
+        expected_deposit_volume=0.0,
+        funding_shortfall=0.0,
+    )
 
-    assert higher_loss_profit < base_profit
+    assert (
+        higher_loss_decomposition.reconciled_total_objective
+        < base_decomposition.reconciled_total_objective
+    )
 
 
 def test_funding_shortfall_creates_penalty():

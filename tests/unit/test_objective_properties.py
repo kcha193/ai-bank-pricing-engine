@@ -21,6 +21,7 @@ _nonneg = st.floats(allow_nan=False, allow_infinity=False, min_value=0.0, max_va
     ecl=_nonneg,
     deposit_cost=_nonneg,
     wholesale_cost=_nonneg,
+    excess_income=_nonneg,
     penalty=_nonneg,
     loan_volume=_nonneg,
     deposit_volume=_nonneg,
@@ -28,16 +29,17 @@ _nonneg = st.floats(allow_nan=False, allow_infinity=False, min_value=0.0, max_va
 )
 @settings(max_examples=500)
 def test_decomposition_reconciled_total_equals_arithmetic_formula(
-    income, ecl, deposit_cost, wholesale_cost, penalty,
+    income, ecl, deposit_cost, wholesale_cost, excess_income, penalty,
     loan_volume, deposit_volume, shortfall,
 ):
     """T3: reconciled_total_objective always equals the explicit income–cost formula."""
-    expected = income - ecl - deposit_cost - wholesale_cost - penalty
+    expected = income - ecl - deposit_cost - wholesale_cost - penalty + excess_income
     decomp = ObjectiveDecomposition(
         loan_interest_income=income,
         expected_credit_loss=ecl,
         deposit_interest_cost=deposit_cost,
         wholesale_funding_cost=wholesale_cost,
+        excess_deposit_income=excess_income,
         funding_shortfall_penalty=penalty,
         total_objective=expected,
         expected_loan_volume=loan_volume,
@@ -52,6 +54,7 @@ def test_decomposition_reconciled_total_equals_arithmetic_formula(
     ecl=_nonneg,
     deposit_cost=_nonneg,
     wholesale_cost=_nonneg,
+    excess_income=_nonneg,
     penalty=_nonneg,
     loan_volume=_nonneg,
     deposit_volume=_nonneg,
@@ -59,11 +62,11 @@ def test_decomposition_reconciled_total_equals_arithmetic_formula(
 )
 @settings(max_examples=500)
 def test_objective_decomposition_from_result_reconciles(
-    income, ecl, deposit_cost, wholesale_cost, penalty,
+    income, ecl, deposit_cost, wholesale_cost, excess_income, penalty,
     loan_volume, deposit_volume, shortfall,
 ):
     """T3: objective_decomposition_from_result preserves component consistency."""
-    total = income - ecl - deposit_cost - wholesale_cost - penalty
+    total = income - ecl - deposit_cost - wholesale_cost - penalty + excess_income
     result = OptimizationResult(
         loan_rate=0.07,
         deposit_rate=0.04,
@@ -71,6 +74,7 @@ def test_objective_decomposition_from_result_reconciles(
         expected_credit_loss=ecl,
         deposit_interest_cost=deposit_cost,
         wholesale_funding_cost=wholesale_cost,
+        excess_deposit_income=excess_income,
         funding_shortfall_penalty=penalty,
         total_objective=total,
         expected_loan_volume=loan_volume,

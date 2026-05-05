@@ -6,19 +6,6 @@ import numpy as np
 import pandas as pd
 
 
-def expected_loan_profit(
-    customers: pd.DataFrame,
-    acceptance_probability: np.ndarray,
-    loan_rate: float,
-    funding_rate: float,
-) -> float:
-    """Calculate expected annualized risk-adjusted home loan profit."""
-    balances = customers["loan_amount"].to_numpy()
-    expected_loss = customers["expected_loss_rate"].to_numpy()
-    margin = loan_rate - funding_rate - expected_loss
-    return float(np.sum(acceptance_probability * balances * margin))
-
-
 def expected_loan_income_after_losses(
     customers: pd.DataFrame,
     acceptance_probability: np.ndarray,
@@ -77,3 +64,13 @@ def expected_wholesale_funding_cost(
     """Calculate funding cost for loans not funded by term deposits."""
     wholesale_funded_volume = max(loan_volume - deposit_volume, 0.0)
     return wholesale_funded_volume * wholesale_funding_rate
+
+
+def expected_excess_deposit_income(
+    loan_volume: float,
+    deposit_volume: float,
+    cash_rate: float,
+) -> float:
+    """Calculate cash-rate income earned on deposits raised above loan volume."""
+    excess_deposit_volume = max(deposit_volume - loan_volume, 0.0)
+    return excess_deposit_volume * cash_rate

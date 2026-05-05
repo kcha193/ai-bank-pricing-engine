@@ -2,6 +2,7 @@
   "best_deposit_rate": 0.0515,
   "best_loan_rate": 0.08,
   "boundary_warning_flag": false,
+  "excess_deposit_income": 0.0,
   "expansion_capped": false,
   "expansion_rounds": 2,
   "expected_deposit_volume": 393936646.4845102,

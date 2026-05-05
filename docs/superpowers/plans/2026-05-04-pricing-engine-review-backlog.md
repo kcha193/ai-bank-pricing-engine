@@ -61,7 +61,7 @@
 - Files: `diagnostics.py`, `scenarios/runner.py`, tests.
 - Risks addressed: R14.
 
-### [ ] B3. Counterfactual decomposition
+### [x] B3. Counterfactual decomposition
 **Goal:** Reviewer-grade "what if we held the runner-up rate fixed" view.
 
 - New method `ScenarioDiagnostics.counterfactual_decompositions(top_n: int = 3)`: for each of the top N rate pairs, hold one rate fixed, re-optimise the partner, return decompositions.
@@ -70,7 +70,7 @@
 - Files: `diagnostics.py`, `scenarios/runner.py`, test.
 - Risks addressed: R30.
 
-### [ ] B4. Cohort attribution
+### [x] B4. Cohort attribution
 **Goal:** Show which customer segments drove the chosen rates.
 
 - New method `ScenarioDiagnostics.cohort_attribution()` returning loan-volume share by `risk_segment` and deposit-volume share by `wealth_segment` at the winning rates.
@@ -91,7 +91,7 @@
 - Files: `grid_search.py`, test.
 - Risks addressed: R34.
 
-### [ ] C2. OCR offset on excess deposits
+### [x] C2. OCR offset on excess deposits
 **Goal:** Stop charging excess deposits as pure cost.
 
 - When `deposit_volume > loan_volume`, credit the excess at `cash_rate` (or a configurable `surplus_investment_rate`).
@@ -101,7 +101,7 @@
 - Files: `pricing/profit.py`, `grid_search.py`, runner artefacts, golden test refresh, model-card update.
 - Risks addressed: R7, assumption #7.
 
-### [ ] C3. Remove or wire-in `expected_loan_profit`
+### [x] C3. Remove or wire-in `expected_loan_profit`
 **Goal:** Eliminate divergent dead-code formulation.
 
 - Recommended: delete `expected_loan_profit` from `src/balance_pricing_engine/pricing/profit.py`.
@@ -114,7 +114,7 @@
 
 ## Stage D — config + governance hygiene
 
-### [ ] D1. Move response coefficients to YAML + model card
+### [x] D1. Move response coefficients to YAML + model card
 **Goal:** Surface hard-coded intercepts/anchors/feature coefficients.
 
 - Add `response.coefficients:` block to `configs/base.yaml` (loan: intercept, rate_anchor, risk_score_coef, credit_score_coef, lvr_coef; deposit: intercept, rate_anchor, rate_sensitivity_coef, relationship_coef, digital_coef).
@@ -125,7 +125,7 @@
 - Refresh A1 golden if numeric path changes.
 - Risks addressed: R5, R6, R29.
 
-### [ ] D2. Business-sanity config validators
+### [x] D2. Business-sanity config validators
 **Goal:** Catch silent gotchas at load time.
 
 - In `src/balance_pricing_engine/config.py`, add `model_validator` checks (errors or warnings per item):
@@ -137,7 +137,7 @@
 - Files: `config.py`, test additions.
 - Risks addressed: R20, R21, R22, R23.
 
-### [ ] D3. Competitor-rate `apply` integration test
+### [x] D3. Competitor-rate `apply` integration test
 **Goal:** End-to-end confirmation that `competitor_rates.enabled: true` actually mutates engine market state.
 
 - New: `tests/unit/test_competitor_rate_apply_engine.py` (T8). Write fake `latest.json`, set `competitor_rates.enabled: true`, run `run_baseline_diagnostics`, assert in-engine competitor rates match the file and grids rebuild accordingly.
@@ -148,7 +148,7 @@
 
 ## Stage E — sensitivity & explainability
 
-### [ ] E1. Delta-from-baseline columns + parameter-type tag
+### [x] E1. Delta-from-baseline columns + parameter-type tag
 **Goal:** Tornado-style sensitivity output.
 
 - Extend `run_sensitivity_analysis` in `src/balance_pricing_engine/diagnostics.py` to add `delta_loan_rate_bps`, `delta_deposit_rate_bps`, `delta_objective_pct`, and `parameter_family` column ("elasticity" / "funding" / "competitor" / "wholesale").
@@ -157,14 +157,14 @@
 - Files: `diagnostics.py`, `reporting.py`, tests.
 - Risks addressed: R16, R19, R32.
 
-### [ ] E2. Stress competitor-gap elasticities + customer-feature coefficients
+### [x] E2. Stress competitor-gap elasticities + customer-feature coefficients
 **Goal:** Close the gap-elasticity and feature-coef stress-test holes.
 
 - After D1 lands (so feature coefficients are in config), extend `build_default_sensitivity_cases` to perturb the four elasticities AND a couple of customer-feature coefficients (e.g. `risk_score_coef`, `rate_sensitivity_coef`) by ±25%.
 - Files: `diagnostics.py`, tests.
 - Risks addressed: R7, R18.
 
-### [ ] E3. Optional Monte Carlo over seeds
+### [x] E3. Optional Monte Carlo over seeds
 **Goal:** Capture customer-cohort uncertainty for governed comparisons.
 
 - Extend signature: `run_sensitivity_analysis(..., n_seeds: int = 1)`. For `n_seeds > 1`, regenerate customer cohorts under multiple seeds and emit mean + standard error per case.
@@ -176,7 +176,7 @@
 
 ## Stage F — modelling layer cleanup (lower urgency)
 
-### [ ] F1. Refactor `agentic.py` to one training pipeline
+### [x] F1. Refactor `agentic.py` to one training pipeline
 **Goal:** Eliminate dual-API confusion for model-risk reviewers.
 
 - Collapse `train_and_recommend` and `train` in `src/balance_pricing_engine/modelling/agentic.py` into a single `train(*, dataset, candidates, registry, ...)` returning a `TrainingResult` with optional report.
@@ -187,7 +187,7 @@
 - Files: `modelling/agentic.py`, `modelling/evaluation.py`, tests.
 - Risks addressed: R33, R35, R36.
 
-### [ ] F2. Document "ML diagnostic only" boundary
+### [x] F2. Document "ML diagnostic only" boundary
 **Goal:** Doc-only banner for reviewers reading the modelling layer.
 
 - Add a docstring to `src/balance_pricing_engine/modelling/__init__.py` stating "trained models are NOT consumed by the optimiser today" with a link to `docs/model_governance.md`.
