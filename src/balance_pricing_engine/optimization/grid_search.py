@@ -209,7 +209,19 @@ def select_best_result(grid_results: pd.DataFrame) -> OptimizationResult:
     """Select the highest-objective pricing result from evaluated grid results."""
     if grid_results.empty:
         raise ValueError("At least one loan rate and one deposit rate are required.")
-    best_row = grid_results.loc[grid_results["total_objective"].idxmax()]
+    market_spread_distance = (
+        grid_results["home_loan_spread_to_market_bps"].abs()
+        + grid_results["term_deposit_spread_to_market_bps"].abs()
+    )
+    best_row = (
+        grid_results.assign(_market_spread_distance=market_spread_distance)
+        .sort_values(
+            by=["total_objective", "funding_shortfall", "_market_spread_distance"],
+            ascending=[False, True, True],
+            kind="mergesort",
+        )
+        .iloc[0]
+    )
     return optimization_result_from_row(best_row)
 
 

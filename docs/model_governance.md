@@ -60,10 +60,11 @@ domain. Treat that as unresolved model-risk evidence, not as fully remediated by
 follow-up. The appropriate response is governance review of the grid range, elasticities, funding
 parameters, and competitor assumptions before relying on the recommendation.
 
-Exact objective ties are resolved deterministically by the optimizer's current grid ordering: the
-first row with the maximum objective is selected. This is reproducible and adequate for the
-prototype. A business-specific tie-break policy, such as preferring lower funding shortfall or
-smaller rate movement, can be added later if it becomes a governed decision rule.
+Exact objective ties are resolved deterministically by a governed tie-break policy. The optimizer
+first chooses the tied row with the lowest `funding_shortfall`. If funding shortfall also ties, it
+chooses the tied row with the lowest combined absolute market spread:
+`|home_loan_spread_to_market_bps| + |term_deposit_spread_to_market_bps|`. Remaining ties retain the
+stable grid-search ordering.
 
 Sensitivity cases also run adaptive grid expansion independently. Each sensitivity result is
 optimized over its own final searched domain, so objective values should be compared alongside

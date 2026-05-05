@@ -22,6 +22,7 @@ dev = [
     "ipykernel>=6.29",
     "notebook>=7.0",
     "matplotlib>=3.8",
+    "hypothesis>=6.100",
     "pytest>=8.0",
     "pytest-cov>=6.0",
     "ruff>=0.8",
