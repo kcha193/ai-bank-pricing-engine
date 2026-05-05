@@ -124,7 +124,7 @@ def test_optimization_result_alias_properties_return_canonical_fields():
     assert result.funding_penalty == result.funding_shortfall_penalty
 
 
-def test_select_best_result_uses_first_grid_row_when_objectives_tie():
+def test_select_best_result_prefers_lower_funding_shortfall_when_objectives_tie():
     tied_results = np.array(
         [
             [0.050, 0.030, 0.0, 0.0, 100.0, 10.0, 5.0, 1.0, 1.0, 83.0, 1_000.0, 500.0, 250.0],
@@ -136,8 +136,24 @@ def test_select_best_result_uses_first_grid_row_when_objectives_tie():
 
     result = select_best_result(grid_results)
 
-    assert result.loan_rate == pytest.approx(0.050)
-    assert result.deposit_rate == pytest.approx(0.030)
+    assert result.loan_rate == pytest.approx(0.055)
+    assert result.deposit_rate == pytest.approx(0.035)
+
+
+def test_select_best_result_prefers_smaller_market_spread_when_shortfall_ties():
+    tied_results = np.array(
+        [
+            [0.050, 0.030, -75.0, 50.0, 100.0, 10.0, 5.0, 1.0, 1.0, 83.0, 1_000.0, 500.0, 100.0],
+            [0.055, 0.035, 25.0, -25.0, 110.0, 20.0, 5.0, 1.0, 1.0, 83.0, 900.0, 600.0, 100.0],
+        ],
+        dtype=float,
+    )
+    grid_results = pd.DataFrame(tied_results, columns=GRID_RESULT_COLUMNS)
+
+    result = select_best_result(grid_results)
+
+    assert result.loan_rate == pytest.approx(0.055)
+    assert result.deposit_rate == pytest.approx(0.035)
 
 
 def test_select_best_result_rejects_empty_grid_results():
