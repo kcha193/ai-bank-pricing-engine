@@ -34,6 +34,8 @@ class ScenarioDiagnostics:
     boundary_diagnostics: BoundaryDiagnostics
     initial_boundary_diagnostics: BoundaryDiagnostics
     expansion_rounds: int = 0
+    expansion_capped: bool = False
+    policy_band_breached: bool = False
 
     def top_results(self, n: int = 5) -> pd.DataFrame:
         """Return the top objective rows for reporting."""
@@ -68,6 +70,8 @@ class ScenarioDiagnostics:
             "boundary_warning_flag": self.boundary_diagnostics.has_warning,
             "initial_boundary_warning_flag": self.initial_boundary_diagnostics.has_warning,
             "expansion_rounds": self.expansion_rounds,
+            "expansion_capped": self.expansion_capped,
+            "policy_band_breached": self.policy_band_breached,
         }
         (path / "summary.json").write_text(
             json.dumps(summary, indent=2, sort_keys=True),
@@ -110,6 +114,8 @@ def run_baseline_diagnostics(
         boundary_diagnostics=diagnostics.boundary_diagnostics,
         initial_boundary_diagnostics=diagnostics.initial_boundary_diagnostics,
         expansion_rounds=diagnostics.expansion_rounds,
+        expansion_capped=diagnostics.expansion_capped,
+        policy_band_breached=diagnostics.policy_band_breached,
     )
 
 

@@ -23,13 +23,8 @@ from balance_pricing_engine.synthetic.market import MarketState
 from balance_pricing_engine.utils.random import make_rng
 
 
-BOUNDARY_WARNING_CAUSES = (
-    "search range too narrow",
-    "weak elasticity",
-    "objective over-rewarding margin",
-    "funding penalty too weak or strong",
-    "competitor effects too small",
-)
+COMPETITOR_GAP_WARNING_THRESHOLD_BPS = 150.0
+FUNDING_SHORTFALL_NEAR_ZERO_RATIO = 0.01
 
 SENSITIVITY_RESULT_COLUMNS = [
     "scenario_name",
@@ -68,6 +63,16 @@ class ObjectiveDecomposition:
             - self.funding_shortfall_penalty
         )
 
+    @property
+    def loan_income_after_losses(self) -> float:
+        """Loan income net of expected credit losses."""
+        return self.loan_interest_income - self.expected_credit_loss
+
+    @property
+    def funding_penalty(self) -> float:
+        """Funding shortfall penalty component."""
+        return self.funding_shortfall_penalty
+
 
 @dataclass(frozen=True)
 class BoundaryDiagnostics:
@@ -97,6 +102,8 @@ class AdaptiveGridResult:
     boundary_diagnostics: BoundaryDiagnostics
     initial_boundary_diagnostics: BoundaryDiagnostics
     expansion_rounds: int
+    expansion_capped: bool
+    policy_band_breached: bool
 
 
 def objective_decomposition_from_result(result: OptimizationResult) -> ObjectiveDecomposition:
@@ -114,10 +121,36 @@ def objective_decomposition_from_result(result: OptimizationResult) -> Objective
     )
 
 
+def infer_boundary_warning_cause(
+    decomposition: ObjectiveDecomposition,
+    loan_rate: float,
+    deposit_rate: float,
+    competitor_loan_rate: float | None = None,
+    competitor_deposit_rate: float | None = None,
+) -> str:
+    """Infer the most likely reason a boundary optimum needs review."""
+    competitor_gap_bps = _largest_competitor_gap_bps(
+        loan_rate=loan_rate,
+        deposit_rate=deposit_rate,
+        competitor_loan_rate=competitor_loan_rate,
+        competitor_deposit_rate=competitor_deposit_rate,
+    )
+    if competitor_gap_bps >= COMPETITOR_GAP_WARNING_THRESHOLD_BPS:
+        return "winner is far from competitor rates"
+
+    if _funding_shortfall_near_zero(decomposition):
+        return "funding shortfall is near zero"
+
+    if decomposition.loan_income_after_losses >= decomposition.funding_penalty:
+        return "loan income after losses dominates funding penalty"
+    return "funding penalty dominates loan income after losses"
+
+
 def evaluate_boundary_diagnostics(
     result: OptimizationResult,
     loan_rate_grid: np.ndarray,
     deposit_rate_grid: np.ndarray,
+    market: MarketState | None = None,
 ) -> BoundaryDiagnostics:
     """Flag optimizer wins that land on the edge of either pricing grid."""
     warnings: list[str] = []
@@ -125,6 +158,13 @@ def evaluate_boundary_diagnostics(
     loan_max = float(np.max(loan_rate_grid))
     deposit_min = float(np.min(deposit_rate_grid))
     deposit_max = float(np.max(deposit_rate_grid))
+    cause = infer_boundary_warning_cause(
+        objective_decomposition_from_result(result),
+        loan_rate=result.loan_rate,
+        deposit_rate=result.deposit_rate,
+        competitor_loan_rate=None if market is None else market.competitor_loan_rate,
+        competitor_deposit_rate=None if market is None else market.competitor_deposit_rate,
+    )
 
     warnings.extend(
         _rate_boundary_warnings(
@@ -132,6 +172,7 @@ def evaluate_boundary_diagnostics(
             rate=result.loan_rate,
             minimum_rate=loan_min,
             maximum_rate=loan_max,
+            cause=cause,
         )
     )
     warnings.extend(
@@ -140,6 +181,7 @@ def evaluate_boundary_diagnostics(
             rate=result.deposit_rate,
             minimum_rate=deposit_min,
             maximum_rate=deposit_max,
+            cause=cause,
         )
     )
     return BoundaryDiagnostics(warnings=tuple(warnings))
@@ -180,6 +222,8 @@ def evaluate_adaptive_joint_rate_grid(
 ) -> AdaptiveGridResult:
     """Evaluate a joint grid, expanding boundaries before accepting edge optima."""
     initial_boundary_diagnostics: BoundaryDiagnostics | None = None
+    original_loan_rate_grid = np.array(loan_rate_grid, dtype=float)
+    original_deposit_rate_grid = np.array(deposit_rate_grid, dtype=float)
     expansion_rounds = 0
 
     while True:
@@ -203,6 +247,7 @@ def evaluate_adaptive_joint_rate_grid(
             best_result,
             loan_rate_grid,
             deposit_rate_grid,
+            market=market,
         )
         if initial_boundary_diagnostics is None:
             initial_boundary_diagnostics = boundary_diagnostics
@@ -224,6 +269,17 @@ def evaluate_adaptive_joint_rate_grid(
         boundary_diagnostics=boundary_diagnostics,
         initial_boundary_diagnostics=initial_boundary_diagnostics,
         expansion_rounds=expansion_rounds,
+        expansion_capped=(
+            boundary_diagnostics.has_warning
+            and expansion_rounds >= max_boundary_expansions
+        ),
+        policy_band_breached=_policy_band_breached(
+            best_result,
+            original_loan_rate_grid=original_loan_rate_grid,
+            original_deposit_rate_grid=original_deposit_rate_grid,
+            home_loan_reference_rate=home_loan_reference_rate,
+            term_deposit_reference_rate=term_deposit_reference_rate,
+        ),
     )
 
 
@@ -390,23 +446,88 @@ def _rate_boundary_warnings(
     rate: float,
     minimum_rate: float,
     maximum_rate: float,
+    cause: str,
 ) -> list[str]:
-    causes = "; ".join(BOUNDARY_WARNING_CAUSES)
     if np.isclose(rate, minimum_rate):
         return [
             (
                 f"Winning {product_name} rate {rate:.2%} is at the minimum grid boundary. "
-                f"Possible causes: {causes}."
+                f"Likely cause: {cause}."
             )
         ]
     if np.isclose(rate, maximum_rate):
         return [
             (
                 f"Winning {product_name} rate {rate:.2%} is at the maximum grid boundary. "
-                f"Possible causes: {causes}."
+                f"Likely cause: {cause}."
             )
         ]
     return []
+
+
+def _largest_competitor_gap_bps(
+    loan_rate: float,
+    deposit_rate: float,
+    competitor_loan_rate: float | None,
+    competitor_deposit_rate: float | None,
+) -> float:
+    gaps: list[float] = []
+    if competitor_loan_rate is not None:
+        gaps.append(abs(loan_rate - competitor_loan_rate))
+    if competitor_deposit_rate is not None:
+        gaps.append(abs(deposit_rate - competitor_deposit_rate))
+    if not gaps:
+        return 0.0
+    return max(gaps) * 10_000
+
+
+def _funding_shortfall_near_zero(decomposition: ObjectiveDecomposition) -> bool:
+    if decomposition.funding_shortfall < 0:
+        return False
+    scale = max(abs(decomposition.expected_loan_volume), 1.0)
+    return decomposition.funding_shortfall / scale <= FUNDING_SHORTFALL_NEAR_ZERO_RATIO
+
+
+def _policy_band_breached(
+    result: OptimizationResult,
+    original_loan_rate_grid: np.ndarray,
+    original_deposit_rate_grid: np.ndarray,
+    home_loan_reference_rate: float | None,
+    term_deposit_reference_rate: float | None,
+) -> bool:
+    return _outside_original_band(
+        rate=result.loan_rate,
+        spread_bps=result.home_loan_spread_to_market_bps,
+        original_rate_grid=original_loan_rate_grid,
+        reference_rate=home_loan_reference_rate,
+    ) or _outside_original_band(
+        rate=result.deposit_rate,
+        spread_bps=result.term_deposit_spread_to_market_bps,
+        original_rate_grid=original_deposit_rate_grid,
+        reference_rate=term_deposit_reference_rate,
+    )
+
+
+def _outside_original_band(
+    rate: float,
+    spread_bps: float,
+    original_rate_grid: np.ndarray,
+    reference_rate: float | None,
+) -> bool:
+    minimum_rate = float(np.min(original_rate_grid))
+    maximum_rate = float(np.max(original_rate_grid))
+    if reference_rate is None or np.isnan(spread_bps):
+        return bool(rate < minimum_rate and not np.isclose(rate, minimum_rate)) or bool(
+            rate > maximum_rate and not np.isclose(rate, maximum_rate)
+        )
+
+    minimum_spread_bps = (minimum_rate - reference_rate) * 10_000
+    maximum_spread_bps = (maximum_rate - reference_rate) * 10_000
+    return bool(
+        spread_bps < minimum_spread_bps and not np.isclose(spread_bps, minimum_spread_bps)
+    ) or bool(
+        spread_bps > maximum_spread_bps and not np.isclose(spread_bps, maximum_spread_bps)
+    )
 
 
 def _expand_grid_for_selected_rate(

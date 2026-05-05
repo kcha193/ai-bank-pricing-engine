@@ -5,11 +5,12 @@ import pandas as pd
 
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.diagnostics import (
-    BOUNDARY_WARNING_CAUSES,
+    ObjectiveDecomposition,
     SENSITIVITY_RESULT_COLUMNS,
     evaluate_adaptive_joint_rate_grid,
     evaluate_boundary_diagnostics,
     expand_rate_grids_for_boundary,
+    infer_boundary_warning_cause,
     run_sensitivity_analysis,
 )
 from balance_pricing_engine.optimization.grid_search import OptimizationResult
@@ -59,8 +60,86 @@ def test_boundary_diagnostics_trigger_when_optimum_is_at_grid_edge():
     assert diagnostics.has_warning
     assert "home loan rate 8.00%" in diagnostics.warnings[0]
     assert "maximum grid boundary" in diagnostics.warnings[0]
-    for cause in BOUNDARY_WARNING_CAUSES:
-        assert cause in diagnostics.warnings[0]
+    assert "Likely cause: loan income after losses dominates funding penalty." in (
+        diagnostics.warnings[0]
+    )
+
+
+def test_boundary_warning_heuristic_categorises_each_cause_branch():
+    base = ObjectiveDecomposition(
+        loan_interest_income=1_000_000,
+        expected_credit_loss=100_000,
+        deposit_interest_cost=100_000,
+        wholesale_funding_cost=50_000,
+        funding_shortfall_penalty=50_000,
+        total_objective=700_000,
+        expected_loan_volume=10_000_000,
+        expected_deposit_volume=6_000_000,
+        funding_shortfall=500_000,
+    )
+
+    assert (
+        infer_boundary_warning_cause(
+            base,
+            loan_rate=0.08,
+            deposit_rate=0.04,
+            competitor_loan_rate=0.05,
+            competitor_deposit_rate=0.04,
+        )
+        == "winner is far from competitor rates"
+    )
+    assert (
+        infer_boundary_warning_cause(
+            base,
+            loan_rate=0.051,
+            deposit_rate=0.039,
+            competitor_loan_rate=0.05,
+            competitor_deposit_rate=0.04,
+        )
+        == "loan income after losses dominates funding penalty"
+    )
+    penalty_dominant = ObjectiveDecomposition(
+        loan_interest_income=100_000,
+        expected_credit_loss=10_000,
+        deposit_interest_cost=100_000,
+        wholesale_funding_cost=50_000,
+        funding_shortfall_penalty=200_000,
+        total_objective=-260_000,
+        expected_loan_volume=10_000_000,
+        expected_deposit_volume=6_000_000,
+        funding_shortfall=500_000,
+    )
+    assert (
+        infer_boundary_warning_cause(
+            penalty_dominant,
+            loan_rate=0.051,
+            deposit_rate=0.039,
+            competitor_loan_rate=0.05,
+            competitor_deposit_rate=0.04,
+        )
+        == "funding penalty dominates loan income after losses"
+    )
+    funding_near_target = ObjectiveDecomposition(
+        loan_interest_income=1_000_000,
+        expected_credit_loss=100_000,
+        deposit_interest_cost=100_000,
+        wholesale_funding_cost=50_000,
+        funding_shortfall_penalty=50_000,
+        total_objective=700_000,
+        expected_loan_volume=10_000_000,
+        expected_deposit_volume=6_000_000,
+        funding_shortfall=50_000,
+    )
+    assert (
+        infer_boundary_warning_cause(
+            funding_near_target,
+            loan_rate=0.051,
+            deposit_rate=0.039,
+            competitor_loan_rate=0.05,
+            competitor_deposit_rate=0.04,
+        )
+        == "funding shortfall is near zero"
+    )
 
 
 def test_boundary_expansion_extends_only_hit_boundaries():
@@ -141,10 +220,35 @@ def test_capped_adaptive_expansion_preserves_final_boundary_warning():
     )
 
     assert diagnostics.expansion_rounds == 0
+    assert diagnostics.expansion_capped
     assert diagnostics.initial_boundary_diagnostics.has_warning
     assert diagnostics.boundary_diagnostics.has_warning
     assert diagnostics.best_result.loan_rate == 0.06
     assert diagnostics.best_result.deposit_rate == 0.02
+
+
+def test_capped_expansion_flag_is_persisted_in_summary_json(tmp_path):
+    config = load_config("configs/base.yaml")
+    diagnostics = run_baseline_diagnostics(config, max_boundary_expansions=0)
+
+    diagnostics.write_artifacts(tmp_path)
+
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["expansion_capped"] is True
+
+
+def test_policy_band_breach_flag_is_persisted_when_expansion_wins_outside_initial_band(
+    tmp_path,
+):
+    config = load_config("configs/base.yaml")
+    diagnostics = run_baseline_diagnostics(config)
+
+    diagnostics.write_artifacts(tmp_path)
+
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert diagnostics.expansion_rounds > 0
+    assert diagnostics.policy_band_breached
+    assert summary["policy_band_breached"] is True
 
 
 def test_sensitivity_runner_returns_expected_columns():
@@ -200,6 +304,8 @@ def test_scenario_diagnostics_can_persist_regression_artifacts(tmp_path):
         "boundary_warning_flag",
         "initial_boundary_warning_flag",
         "expansion_rounds",
+        "expansion_capped",
+        "policy_band_breached",
     } <= set(summary)
     assert summary["best_loan_rate"] == diagnostics.best_result.loan_rate
     assert summary["best_deposit_rate"] == diagnostics.best_result.deposit_rate
@@ -210,3 +316,5 @@ def test_scenario_diagnostics_can_persist_regression_artifacts(tmp_path):
         is diagnostics.initial_boundary_diagnostics.has_warning
     )
     assert summary["expansion_rounds"] == 0
+    assert summary["expansion_capped"] is diagnostics.expansion_capped
+    assert summary["policy_band_breached"] is diagnostics.policy_band_breached

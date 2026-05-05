@@ -24,7 +24,12 @@ NUMERIC_KEYS = {
     "expected_deposit_volume",
     "funding_shortfall",
 }
-BOOL_KEYS = {"boundary_warning_flag", "initial_boundary_warning_flag"}
+BOOL_KEYS = {
+    "boundary_warning_flag",
+    "initial_boundary_warning_flag",
+    "expansion_capped",
+    "policy_band_breached",
+}
 INT_KEYS = {"expansion_rounds"}
 
 
@@ -40,6 +45,8 @@ def _build_summary(diag) -> dict:
         "boundary_warning_flag": diag.boundary_diagnostics.has_warning,
         "initial_boundary_warning_flag": diag.initial_boundary_diagnostics.has_warning,
         "expansion_rounds": diag.expansion_rounds,
+        "expansion_capped": diag.expansion_capped,
+        "policy_band_breached": diag.policy_band_breached,
     }
 
 

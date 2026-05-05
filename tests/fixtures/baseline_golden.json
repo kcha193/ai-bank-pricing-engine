@@ -2,10 +2,12 @@
   "best_deposit_rate": 0.0515,
   "best_loan_rate": 0.08,
   "boundary_warning_flag": false,
+  "expansion_capped": false,
   "expansion_rounds": 2,
   "expected_deposit_volume": 393936646.4845102,
   "expected_loan_volume": 604819813.7590528,
   "funding_shortfall": 0.0,
   "initial_boundary_warning_flag": true,
-  "objective_value": 12496385.538664
+  "objective_value": 12496385.538664,
+  "policy_band_breached": true
 }
