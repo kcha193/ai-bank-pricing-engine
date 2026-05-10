@@ -50,6 +50,8 @@ def test_normalise_frequency_maps_common_labels(label, expected):
     ("label", "expected"),
     [
         ("minimum 20% equity required", "min_20_percent_equity"),
+        ("Special LVR under 80%", "min_20_percent_equity"),
+        ("Special LVR < 80%", "min_20_percent_equity"),
         ("low equity margin applies", "low_equity_margin_applies"),
         ("standard rate", "standard"),
     ],

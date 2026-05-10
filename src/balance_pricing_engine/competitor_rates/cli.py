@@ -14,6 +14,7 @@ from balance_pricing_engine.competitor_rates.apply import (
     load_and_resolve_competitor_rates,
 )
 from balance_pricing_engine.competitor_rates.extractors import extract_all_sources
+from balance_pricing_engine.competitor_rates.interest_co_nz import fetch_interest_co_nz_rates
 from balance_pricing_engine.competitor_rates.models import (
     CompetitorRateRun,
     CompetitorRatesConfig,
@@ -34,6 +35,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "fetch":
             return _fetch(args)
+        if args.command == "fetch-interest-co-nz":
+            return _fetch_interest_co_nz(args)
         if args.command == "validate":
             return _validate(args)
         if args.command == "apply":
@@ -61,6 +64,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Render pages with Playwright if static HTML extraction finds no rates",
     )
 
+    interest = subparsers.add_parser(
+        "fetch-interest-co-nz",
+        help="Fetch fallback competitor rates from interest.co.nz aggregator tables",
+    )
+    interest.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
+    interest.add_argument("--raw-dir", default="data/raw/competitor_rates")
+    interest.add_argument("--strict", default="false", choices=["true", "false"])
+
     validate = subparsers.add_parser("validate", help="Validate a stored competitor-rate file")
     validate.add_argument("--source-file", default=str(DEFAULT_OUTPUT_DIR / "latest.json"))
     validate.add_argument("--strict", default="true", choices=["true", "false"])
@@ -85,6 +96,29 @@ def _fetch(args: argparse.Namespace) -> int:
         raw_root=args.raw_dir,
         captured_at_utc=captured_at,
         use_browser_fallback=args.browser_fallback,
+    )
+    run = _build_run(records=records, attempts=attempts, captured_at_utc=captured_at)
+    summary = validate_rate_run(run, strict=strict)
+    run = run.model_copy(update={"validation_summary": summary})
+    write_rate_run(run, args.output_dir)
+    _print_validation_summary(summary)
+    for attempt in attempts:
+        status = "ok" if attempt.success else "failed"
+        print(
+            f"{attempt.bank} {attempt.product_type}: {status}, "
+            f"records={attempt.records_extracted}, source={attempt.source_url}"
+        )
+        if attempt.error:
+            print(f"  {attempt.error}")
+    return 1 if summary.status == "failed" else 0
+
+
+def _fetch_interest_co_nz(args: argparse.Namespace) -> int:
+    strict = _parse_bool(args.strict)
+    captured_at = datetime.now(timezone.utc)
+    records, attempts = fetch_interest_co_nz_rates(
+        raw_root=args.raw_dir,
+        captured_at_utc=captured_at,
     )
     run = _build_run(records=records, attempts=attempts, captured_at_utc=captured_at)
     summary = validate_rate_run(run, strict=strict)
