@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+from pathlib import Path
+from urllib.error import URLError
 
 from balance_pricing_engine.competitor_rates import interest_co_nz
 from balance_pricing_engine.competitor_rates.models import ProductType
@@ -121,3 +123,93 @@ def test_fetch_interest_co_nz_rates_returns_records_and_attempts(monkeypatch, tm
     }
     assert len(attempts) == 10
     assert sum(attempt.success for attempt in attempts) == 2
+
+
+def test_fetch_interest_co_nz_rates_reports_page_fetch_failures(monkeypatch, tmp_path):
+    def fake_fetch(url, raw_root, captured_at_utc):
+        return None, None, None, "blocked"
+
+    monkeypatch.setattr(interest_co_nz, "_fetch_interest_co_nz_page", fake_fetch)
+
+    records, attempts = interest_co_nz.fetch_interest_co_nz_rates(
+        raw_root=tmp_path,
+        captured_at_utc=CAPTURED_AT,
+    )
+
+    assert records == []
+    assert len(attempts) == 10
+    assert all(not attempt.success for attempt in attempts)
+    assert {attempt.error for attempt in attempts} == {"blocked"}
+
+
+def test_fetch_interest_co_nz_page_writes_snapshot(monkeypatch, tmp_path):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+        def read(self):
+            return b"<html><body>rates</body></html>"
+
+    monkeypatch.setattr(
+        interest_co_nz,
+        "urlopen",
+        lambda request, timeout: FakeResponse(),
+    )
+
+    html, snapshot_path, raw_hash, error = interest_co_nz._fetch_interest_co_nz_page(
+        interest_co_nz.INTEREST_CO_NZ_MORTGAGE_URL,
+        raw_root=tmp_path,
+        captured_at_utc=CAPTURED_AT,
+    )
+
+    assert html == "<html><body>rates</body></html>"
+    assert raw_hash
+    assert error is None
+    assert Path(snapshot_path).exists()
+
+
+def test_fetch_interest_co_nz_page_reports_fetch_errors(monkeypatch, tmp_path):
+    def fail(request, timeout):
+        raise URLError("network blocked")
+
+    monkeypatch.setattr(interest_co_nz, "urlopen", fail)
+
+    html, snapshot_path, raw_hash, error = interest_co_nz._fetch_interest_co_nz_page(
+        interest_co_nz.INTEREST_CO_NZ_MORTGAGE_URL,
+        raw_root=tmp_path,
+        captured_at_utc=CAPTURED_AT,
+    )
+
+    assert html is None
+    assert snapshot_path is None
+    assert raw_hash is None
+    assert "network blocked" in error
+
+
+def test_interest_co_nz_helpers_handle_unmatched_and_edge_values():
+    html = """
+    <table>
+      <tr><th>Institution</th><th>Product</th><th>Variable floating</th><th>6 months</th><th>1 year</th></tr>
+      <tr><td><img alt="ANZ"></td><td>TotalMoney</td><td>5.94</td><td></td><td></td></tr>
+      <tr><td>Non-bank lender</td><td>Standard</td><td>9.99</td><td>8.99</td><td>8.49</td></tr>
+      <tr><td><img alt="BNZ"></td><td>Variable floating</td><td>5.75</td><td></td><td>16.00</td></tr>
+    </table>
+    """
+
+    records = interest_co_nz.parse_interest_co_nz_mortgage_rates(
+        html,
+        captured_at_utc=CAPTURED_AT,
+    )
+
+    assert records == []
+    assert interest_co_nz._bank_from_cell("unknown", interest_co_nz.SELECTED_BANKS) is None
+    assert interest_co_nz._rate_at_header(["ANZ", "Standard"], ("Institution", "Product", "1 year"), "1 year") is None
+    assert interest_co_nz._parse_rate("not a rate") is None
+    assert interest_co_nz._parse_rate("16.00") is None
+    assert interest_co_nz._looks_like_continuation_row("AA-") is True
+    assert interest_co_nz._looks_like_continuation_row("unrelated row") is False
+    assert interest_co_nz._mortgage_category("Variable floating") == "floating"
+    assert interest_co_nz._interest_co_nz_frequency(["ANZ"]) == "unknown"

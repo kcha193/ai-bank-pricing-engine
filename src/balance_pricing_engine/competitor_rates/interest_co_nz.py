@@ -307,7 +307,7 @@ def _is_header(row: list[str]) -> bool:
 
 def _looks_like_continuation_row(first_cell: str) -> bool:
     text = first_cell.lower()
-    if re.fullmatch(r"[a-z]{1,3}[+-]?", first_cell):
+    if re.fullmatch(r"[a-z]{1,3}[+-]?", text):
         return True
     return any(
         marker in text
