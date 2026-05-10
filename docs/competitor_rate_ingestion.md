@@ -22,6 +22,16 @@ Fetch official pages and write artifacts:
 python3 -m balance_pricing_engine.competitor_rates.cli fetch
 ```
 
+Fetch fallback rates from interest.co.nz aggregator tables:
+
+```bash
+python3 -m balance_pricing_engine.competitor_rates.cli fetch-interest-co-nz
+```
+
+This fallback is useful for demos and local scenarios when official bank pages block automated
+access or time out. It still writes the same `latest.json`, `latest.csv`, history, and validation
+artifacts, so the downstream `validate`, `apply`, and scenario commands are unchanged.
+
 If a site requires JavaScript-rendered values and Playwright is installed in the environment, use:
 
 ```bash

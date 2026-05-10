@@ -85,6 +85,8 @@ def normalise_lvr_condition(label: str | None) -> str:
     text = label.lower()
     if "20%" in text and "equity" in text:
         return "min_20_percent_equity"
+    if "lvr" in text and ("under 80%" in text or "< 80%" in text or "<80%" in text):
+        return "min_20_percent_equity"
     if "low equity" in text:
         return "low_equity_margin_applies"
     return "standard"

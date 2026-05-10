@@ -139,6 +139,31 @@ def test_fetch_command_returns_nonzero_for_strict_failures(tmp_path, monkeypatch
     assert exit_code == 1
 
 
+def test_fetch_interest_co_nz_command_writes_artifacts(tmp_path, monkeypatch, capsys):
+    run = load_rate_run(FIXTURE)
+
+    def fake_fetch_interest_co_nz_rates(raw_root, captured_at_utc):
+        assert raw_root == str(tmp_path / "raw")
+        return run.records, run.source_attempts
+
+    monkeypatch.setattr(cli, "fetch_interest_co_nz_rates", fake_fetch_interest_co_nz_rates)
+
+    exit_code = cli.main(
+        [
+            "fetch-interest-co-nz",
+            "--raw-dir",
+            str(tmp_path / "raw"),
+            "--output-dir",
+            str(tmp_path / "processed"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Validation status: valid" in captured.out
+    assert (tmp_path / "processed" / "latest.json").exists()
+
+
 def test_validate_command_returns_nonzero_for_failed_file(tmp_path):
     run = load_rate_run(FIXTURE)
     failed = run.model_copy(
@@ -192,6 +217,9 @@ def test_build_run_counts_records_by_bank_product():
         "ANZ|home_loan": 1,
         "ANZ|term_deposit": 1,
     }
+    assert built.source_urls_attempted == [
+        attempt.source_url for attempt in run.source_attempts[:2]
+    ]
 
 
 def _config() -> dict:

@@ -160,6 +160,43 @@ def test_extract_source_rates_returns_fetch_failure(monkeypatch):
     assert attempt.error == "timeout"
 
 
+def test_extract_source_rates_uses_browser_fallback_when_static_fetch_fails(monkeypatch):
+    source = RateSource("BNZ", ProductType.HOME_LOAN, "https://example.test/home")
+    failed_attempt = SourceAttempt(
+        bank="BNZ",
+        product_type="home_loan",
+        source_url=source.url,
+        success=False,
+        error="HTTP Error 403: Forbidden",
+    )
+    rendered_attempt = SourceAttempt(
+        bank="BNZ",
+        product_type="home_loan",
+        source_url=source.url,
+        success=True,
+        snapshot_path="rendered.html",
+        raw_html_sha256="b" * 64,
+    )
+    html = """
+    <html><body><table>
+      <tr><td>Special fixed</td><td>1 year</td><td>5.55%</td></tr>
+    </table></body></html>
+    """
+    monkeypatch.setattr(extractors, "fetch_source", lambda source, raw_root: (None, failed_attempt))
+    monkeypatch.setattr(
+        extractors,
+        "fetch_source_with_playwright",
+        lambda source, raw_root: (html, rendered_attempt),
+    )
+
+    records, attempt = extract_source_rates(source, use_browser_fallback=True)
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.55
+    assert attempt.success is True
+    assert attempt.snapshot_path == "rendered.html"
+
+
 def test_extract_source_rates_uses_browser_fallback_when_static_parse_is_empty(monkeypatch):
     source = RateSource("ANZ", ProductType.HOME_LOAN, "https://example.test/home")
     static_attempt = SourceAttempt(

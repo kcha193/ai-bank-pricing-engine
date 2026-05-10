@@ -42,6 +42,11 @@ class _TableTextParser(HTMLParser):
         if tag.lower() in {"td", "th"}:
             self._in_cell = True
             self._cell_parts = []
+        if tag.lower() == "img" and self._in_cell:
+            attrs_by_name = {key.lower(): value for key, value in attrs if value}
+            label = attrs_by_name.get("alt") or attrs_by_name.get("title")
+            if label:
+                self._cell_parts.append(label)
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
@@ -50,11 +55,10 @@ class _TableTextParser(HTMLParser):
             self.title = _clean_text(" ".join(self._title_parts))
         if tag in {"td", "th"} and self._in_cell:
             cell = _clean_text(" ".join(self._cell_parts))
-            if cell:
-                self._current_row.append(cell)
+            self._current_row.append(cell)
             self._in_cell = False
         if tag == "tr":
-            if self._current_row:
+            if any(self._current_row):
                 self.rows.append(self._current_row)
             self._current_row = []
 
@@ -110,7 +114,15 @@ def extract_source_rates(
     captured_at_utc = captured_at_utc or datetime.now(timezone.utc)
     html, attempt = fetch_source(source, raw_root=raw_root)
     if html is None:
-        return [], attempt
+        if not use_browser_fallback:
+            return [], attempt
+        rendered_html, rendered_attempt = fetch_source_with_playwright(source, raw_root=raw_root)
+        if rendered_html is None:
+            if rendered_attempt.error:
+                attempt.error = f"{attempt.error}; {rendered_attempt.error}"
+            return [], attempt
+        html = rendered_html
+        attempt = rendered_attempt
     records = parse_html_rates(
         bank=source.bank,
         product_type=source.product_type,
@@ -130,6 +142,7 @@ def extract_source_rates(
             )
             attempt.snapshot_path = rendered_attempt.snapshot_path
             attempt.raw_html_sha256 = rendered_attempt.raw_html_sha256
+            attempt.success = rendered_attempt.success
         elif rendered_attempt.error:
             attempt.error = rendered_attempt.error
     attempt.records_extracted = len(records)
