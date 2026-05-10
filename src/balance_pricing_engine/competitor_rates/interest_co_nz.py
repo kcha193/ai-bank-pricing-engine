@@ -355,7 +355,9 @@ def _interest_co_nz_frequency(row: list[str]) -> str:
     return {
         "M": "monthly",
         "Q": "quarterly",
-        "Y": "annually",
+        # interest.co.nz code Y means "at maturity for <6 months, otherwise quarterly".
+        # This parser currently ingests only 12-month deposits, so map to quarterly.
+        "Y": "quarterly",
         "A": "annually",
         "S": "annually",
         "Z": "at_maturity",

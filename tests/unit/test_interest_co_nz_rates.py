@@ -65,6 +65,7 @@ def test_parse_interest_co_nz_term_deposit_rows_extracts_twelve_month_rates():
     ]
     assert all(record.product_type == ProductType.TERM_DEPOSIT for record in records)
     assert records[0].term_months_normalised == 12
+    assert records[0].interest_payment_frequency == "quarterly"
     assert records[0].min_balance_or_deposit == 10000
 
 
