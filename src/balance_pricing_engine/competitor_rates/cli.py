@@ -216,7 +216,7 @@ def _build_run(records, attempts, captured_at_utc: datetime) -> CompetitorRateRu
     return CompetitorRateRun(
         run_id=str(uuid.uuid4()),
         captured_at_utc=captured_at_utc,
-        source_urls_attempted=[source.url for source in OFFICIAL_SOURCES],
+        source_urls_attempted=[attempt.source_url for attempt in attempts],
         source_attempts=attempts,
         validation_summary=ValidationSummary(
             status="failed",

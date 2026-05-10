@@ -217,6 +217,9 @@ def test_build_run_counts_records_by_bank_product():
         "ANZ|home_loan": 1,
         "ANZ|term_deposit": 1,
     }
+    assert built.source_urls_attempted == [
+        attempt.source_url for attempt in run.source_attempts[:2]
+    ]
 
 
 def _config() -> dict:
