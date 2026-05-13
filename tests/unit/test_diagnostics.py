@@ -175,6 +175,32 @@ def test_boundary_expansion_extends_only_hit_boundaries():
     assert np.allclose(deposit_grid, np.array([0.03, 0.04, 0.05]))
 
 
+def test_boundary_expansion_handles_zero_clamp_without_invalid_grid_alignment():
+    result = OptimizationResult(
+        loan_rate=0.003,
+        deposit_rate=0.03,
+        loan_interest_income=0.0,
+        expected_credit_loss=0.0,
+        deposit_interest_cost=0.0,
+        wholesale_funding_cost=0.0,
+        excess_deposit_income=0.0,
+        funding_shortfall_penalty=0.0,
+        total_objective=0.0,
+        expected_loan_volume=0.0,
+        expected_deposit_volume=0.0,
+        funding_shortfall=0.0,
+    )
+
+    loan_grid, _, expanded = expand_rate_grids_for_boundary(
+        result,
+        loan_rate_grid=np.array([0.003, 0.008, 0.013]),
+        deposit_rate_grid=np.array([0.02, 0.03, 0.04]),
+    )
+
+    assert not expanded
+    assert np.allclose(loan_grid, np.array([0.003, 0.008, 0.013]))
+
+
 def test_baseline_diagnostics_runs_boundary_follow_up_before_accepting_result():
     config = load_config("configs/base.yaml")
     initial_loan_grid, initial_deposit_grid = build_configured_rate_grids(config)

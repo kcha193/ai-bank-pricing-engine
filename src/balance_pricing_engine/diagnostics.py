@@ -735,7 +735,11 @@ def _expand_grid_for_selected_rate(
     span = maximum_rate - minimum_rate
 
     if np.isclose(selected_rate, minimum_rate):
-        expanded_minimum = max(0.0, minimum_rate - span)
+        expanded_minimum = minimum_rate - span
+        if expanded_minimum < 0.0:
+            increments_to_zero = int(np.ceil((0.0 - expanded_minimum) / step))
+            expanded_minimum = expanded_minimum + increments_to_zero * step
+            expanded_minimum = max(0.0, expanded_minimum)
         if np.isclose(expanded_minimum, minimum_rate):
             return sorted_grid, False
         return build_inclusive_numeric_grid(expanded_minimum, maximum_rate, step), True
