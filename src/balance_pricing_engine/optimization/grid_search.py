@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from balance_pricing_engine.grid_utils import build_inclusive_numeric_grid
 from balance_pricing_engine.market import (
     MarketRates,
     SpreadGridConfig,
@@ -88,12 +89,7 @@ GRID_RESULT_COLUMNS = [
 
 def build_rate_grid(start: float, stop: float, step: float) -> np.ndarray:
     """Build an inclusive decimal rate grid with stable rounding."""
-    if step <= 0:
-        raise ValueError("Grid step must be greater than zero.")
-    if stop < start:
-        raise ValueError("Grid stop must be greater than or equal to start.")
-    n_steps = int(round((stop - start) / step))
-    return np.round(start + np.arange(n_steps + 1) * step, 6)
+    return build_inclusive_numeric_grid(start, stop, step)
 
 
 def evaluate_joint_rate_grid(

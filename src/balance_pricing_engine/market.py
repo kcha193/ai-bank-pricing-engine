@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from balance_pricing_engine.grid_utils import build_inclusive_numeric_grid
+
 
 @dataclass(frozen=True)
 class MarketRates:
@@ -52,10 +54,12 @@ def build_market_relative_grid(
 
 
 def _build_spread_rate_grid(config: SpreadGridConfig) -> np.ndarray:
-    if config.step <= 0:
-        raise ValueError("Spread grid step must be greater than zero.")
-    if config.max < config.min:
-        raise ValueError("Spread grid max must be greater than or equal to min.")
-    n_steps = int(round((config.max - config.min) / config.step))
-    spread_bps_grid = config.min + np.arange(n_steps + 1) * config.step
+    spread_bps_grid = build_inclusive_numeric_grid(
+        config.min,
+        config.max,
+        config.step,
+        label="Spread grid",
+        start_name="min",
+        stop_name="max",
+    )
     return np.array([bps_to_rate(float(spread_bps)) for spread_bps in spread_bps_grid])

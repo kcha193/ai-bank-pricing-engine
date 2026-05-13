@@ -131,6 +131,15 @@ def test_build_market_relative_grid_rejects_reversed_spread_inputs():
         )
 
 
+def test_build_market_relative_grid_rejects_non_divisible_spread_steps():
+    with pytest.raises(ValueError, match="land exactly"):
+        build_market_relative_grid(
+            market_rates=MarketRates(0.05, 0.04),
+            home_loan_spread_bps=SpreadGridConfig(min=-10, max=10, step=6),
+            term_deposit_spread_bps=SpreadGridConfig(min=-10, max=10, step=10),
+        )
+
+
 def test_build_market_relative_grid_rejects_generated_negative_rates():
     with pytest.raises(ValueError, match="negative rates"):
         build_market_relative_grid(

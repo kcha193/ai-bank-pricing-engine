@@ -22,6 +22,7 @@ It estimates:
 - Expected credit loss.
 - Term deposit interest cost.
 - Wholesale funding cost when deposits do not fully fund lending.
+- Excess deposit income when deposits exceed lending and surplus balances earn the cash rate.
 - A penalty when deposit funding falls short of the required funding ratio.
 
 The optimizer chooses the rate pair with the highest total objective:
@@ -33,6 +34,7 @@ total objective
 - deposit interest cost
 - wholesale funding cost
 - funding shortfall penalty
++ excess deposit income
 ```
 
 Wholesale funding cost and the funding shortfall penalty are intentionally additive under the
@@ -248,15 +250,25 @@ prepare a wheelhouse on a machine with network access:
 
 ```bash
 mkdir -p wheelhouse
+python3 -m pip install --upgrade pip setuptools wheel
 python3 -m pip download --dest wheelhouse "setuptools>=64" wheel
-python3 -m pip download --dest wheelhouse -e ".[dev]"
+python3 -m pip download --dest wheelhouse ".[dev]"
 ```
 
 Copy `wheelhouse/` to the restricted machine, then install without reaching the network:
 
 ```bash
 python3 -m pip install --no-index --find-links wheelhouse --upgrade setuptools wheel
-python3 -m pip install --no-index --find-links wheelhouse -e ".[dev]"
+python3 -m pip install --no-index --find-links wheelhouse --no-build-isolation -e ".[dev]"
+```
+
+For stricter reproducibility, create a constraints file on the networked machine and use it for both
+download and install:
+
+```bash
+python3 -m pip freeze --all > constraints.txt
+python3 -m pip download --dest wheelhouse -c constraints.txt ".[dev]"
+python3 -m pip install --no-index --find-links wheelhouse -c constraints.txt --no-build-isolation -e ".[dev]"
 ```
 
 If editable install is unavailable but you only need to run scripts from a checked-out repo, use:
@@ -416,11 +428,10 @@ This section is useful for business review because the mathematically best answe
 management-preferred answer. A lower-ranked candidate might be preferred if it has less funding risk
 or better strategic fit.
 
-If two candidates have exactly the same objective value, the current optimizer resolves the tie
-deterministically using its grid-result ordering: the first row with the maximum objective is
-selected. That makes runs reproducible, but it is not yet a business-specific tie-break policy. A
-future governed rule could prefer lower funding shortfall, less rate movement, or a specific
-product strategy when exact ties occur.
+If two candidates have exactly the same objective value, the optimizer resolves the tie
+deterministically using the governed policy in [docs/model_governance.md](model_governance.md):
+lowest funding shortfall first, then lowest combined absolute spread to market. Remaining exact
+ties retain stable grid-search ordering.
 
 ### Boundary Diagnostics
 

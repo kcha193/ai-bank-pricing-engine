@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from balance_pricing_engine.config import EngineConfig, ResponseCoefficientsConfig
+from balance_pricing_engine.grid_utils import build_inclusive_numeric_grid
 from balance_pricing_engine.optimization.grid_search import (
     OptimizationResult,
     evaluate_joint_rate_grid,
@@ -737,12 +738,10 @@ def _expand_grid_for_selected_rate(
         expanded_minimum = max(0.0, minimum_rate - span)
         if np.isclose(expanded_minimum, minimum_rate):
             return sorted_grid, False
-        n_steps = int(round((maximum_rate - expanded_minimum) / step))
-        return np.round(expanded_minimum + np.arange(n_steps + 1) * step, 6), True
+        return build_inclusive_numeric_grid(expanded_minimum, maximum_rate, step), True
 
     if np.isclose(selected_rate, maximum_rate):
         expanded_maximum = maximum_rate + span
-        n_steps = int(round((expanded_maximum - minimum_rate) / step))
-        return np.round(minimum_rate + np.arange(n_steps + 1) * step, 6), True
+        return build_inclusive_numeric_grid(minimum_rate, expanded_maximum, step), True
 
     return sorted_grid, False
