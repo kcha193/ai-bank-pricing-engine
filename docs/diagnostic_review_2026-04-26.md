@@ -1,5 +1,7 @@
 # Diagnostic Review — 2026-04-26
 
+_Updated 2026-05-13 to reflect items addressed in [PR #20](https://github.com/kcha193/ai-bank-pricing-engine/pull/20)._
+
 ## 1) Repository structure and current engine summary
 
 - `src/balance_pricing_engine/synthetic/` creates synthetic customers and known response curves.
@@ -19,6 +21,7 @@ Current engine behaviour:
   - `-` deposit interest expense
   - `-` wholesale funding cost for loan volume not funded by deposits
   - `-` penalty for shortfall against required deposit-funding ratio.
+  - `+` excess deposit income when deposits exceed lending (surplus earns cash rate).
 - Pricing grids are market-relative spread grids by default (basis points around reference rates).
 
 ## 2) Setup and run diagnostics requested
@@ -26,9 +29,9 @@ Current engine behaviour:
 ### Command outcomes
 
 1. `python3 -m pip install -e ".[dev]"`
-   - **Failed in this environment**: pip could not download build dependency `setuptools>=64` due proxy/network restrictions.
+   - **Failed in this environment**: pip could not download build dependency `setuptools>=64` due proxy/network restrictions. See [docs/usage_guide.md](usage_guide.md) for offline wheelhouse instructions.
 2. `python3 -m pytest -q`
-   - **Passed**: 33 passed.
+   - **Passed**: 33 passed (201 passed as of 2026-05-13).
 3. `python3 -m ruff check .`
    - **Passed**: all checks passed.
 4. `python3 examples/run_baseline.py`
@@ -38,8 +41,8 @@ Current engine behaviour:
 
 ### Does the project run successfully?
 
-- **Mostly yes**: tests, lint, baseline scenario, and model-training example run successfully.
-- **Packaging/setup is currently environment-sensitive** because editable install depends on fetching build dependencies from network.
+- **Yes**: tests, lint, baseline scenario, and model-training example all run successfully.
+- Offline/restricted-network setup is now documented in [docs/usage_guide.md](usage_guide.md).
 
 ## 3) Modelling review from retail bank balance-sheet pricing perspective
 
@@ -76,11 +79,11 @@ Current engine behaviour:
 ### Deposit funding shortfall
 
 - Separate policy-style penalty on shortfall versus required deposit funding ratio.
-- Good control lever, but can overlap economically with wholesale funding cost and create double-penalization depending on interpretation.
+- Intentionally additive with wholesale funding cost: wholesale cost captures marginal funding economics; penalty enforces the strategic deposit-funding ratio target. Documented in [docs/usage_guide.md](usage_guide.md).
 
 ### Objective function
 
-- Clear and decomposable.
+- Clear and decomposable; `architecture.md` diagram updated to include excess deposit income term.
 - In baseline output objective is materially negative with very large shortfall, suggesting configuration mismatch between demand, grids, and funding constraints rather than optimizer failure.
 - No capital/RWA constraints, NII volatility, customer fairness, or volume growth targets.
 
@@ -88,67 +91,77 @@ Current engine behaviour:
 
 - Exhaustive grid search is transparent and robust for small grids.
 - Baseline winner lands on max boundary for both products: strong sign grid is too narrow and/or objective/elasticities produce monotonic push to boundaries.
-- Grid resolution fixed at 5 bps; no local refinement around optima.
+- Adaptive boundary expansion (`evaluate_adaptive_joint_rate_grid`) auto-expands the grid when the winner hits an edge.
+- Tie-break policy: lowest funding shortfall first, then lowest combined absolute spread to market. Documented in [docs/model_governance.md](model_governance.md).
 
 ### Boundary diagnostics
 
-- Existing diagnostics correctly warn when winner is at min/max boundary.
-- Helpful explanatory text exists; next step is actionable auto-remediation (e.g., adaptive re-grid).
+- Diagnostics correctly warn when winner is at min/max boundary.
+- Adaptive re-grid is implemented; `summary.json` distinguishes `initial_boundary_warning_flag` from `boundary_warning_flag` post-expansion.
 
 ### Sensitivity analysis
 
 - Includes one-at-a-time perturbations to elasticities, funding penalty/rate, and competitor rates.
+- Two-way stress scenarios added: elasticity × funding penalty, competitor loan rate × wholesale rate, competitor deposit rate × funding penalty.
 - In current baseline all scenarios still hit upper boundaries, which weakens decision confidence (insufficiently informative search range).
-- No multi-factor stress interactions.
 
 ## 4) Identified issues
 
-## Bugs / defects
+### Bugs / defects
 
-1. **Potential API-level grid bug**: `build_rate_grid` has no explicit validation for `step <= 0` or `stop < start` (unlike config validators), allowing misuse if called directly.
-2. **Code duplication risk**: rate-grid construction logic exists in both `scenarios/runner.py` and `diagnostics.py`; behaviour can drift if one side changes.
-3. **Example import hack**: examples modify `sys.path` manually. Works, but can mask packaging/import issues.
+1. ✅ **API-level grid bug** — `build_rate_grid` now validates step, bounds, and divisibility via `grid_utils.build_inclusive_numeric_grid`. Raises `ValueError` on misuse.
+2. ✅ **Code duplication** — `grid_search.py`, `market.py`, and `diagnostics.py` all delegate to `grid_utils.build_inclusive_numeric_grid`; inline `n_steps`/`np.arange` pattern removed.
+3. ⬜ **Example import hack** — examples still modify `sys.path` manually. Low risk given `pythonpath = ["src"]` in `pyproject.toml`; defer to a packaging cleanup pass.
 
-## Missing tests
+### Missing tests
 
-- No direct unit tests for invalid `build_rate_grid` inputs (zero/negative step, reversed bounds).
-- Limited tests around objective interactions (e.g., no-regression checks for wholesale cost + funding penalty combined effect).
-- No tests asserting boundary-warning remediation workflow (because there is no adaptive re-grid yet).
+- ✅ Unit tests for invalid `build_rate_grid` inputs (zero/negative step, reversed bounds, non-divisible step) — added in `test_optimizer`, `test_market`, `test_grid_utils`.
+- ✅ Objective interaction tests (wholesale cost + funding penalty combined effect) — `test_objective_properties.py`.
+- ✅ Tie-breaking behaviour — `test_optimizer.py::test_select_best_result_prefers_lower_funding_shortfall_when_objectives_tie` and sibling test.
+- ✅ Two-way sensitivity stresses — `test_diagnostics.py::test_default_sensitivity_includes_two_way_stresses`.
+- ⬜ Explicit boundary-warning remediation workflow tests — adaptive re-grid exists but no dedicated test for the expand-then-recheck path.
 
-## Unclear assumptions
+### Unclear assumptions
 
-- Whether wholesale funding cost and funding shortfall penalty are intentionally additive as distinct economics vs policy overlay.
-- Interpretation of required deposit funding ratio as hard strategic target vs soft risk appetite metric.
-- Annualized single-period treatment for both loans and deposits (no tenor dynamics).
+- ✅ Wholesale funding cost vs shortfall penalty interaction — now documented in `usage_guide.md` as intentionally additive with distinct economic roles.
+- ⬜ Interpretation of required deposit funding ratio as hard strategic target vs soft risk appetite metric — still implicit in config; no governance note yet.
+- ⬜ Annualized single-period treatment for both loans and deposits — no tenor dynamics; acknowledged in `modelling_assumptions.md`.
 
-## Model-risk concerns
+### Model-risk concerns
 
 - Synthetic-data circularity: optimization and ML diagnostics rely on same stylized latent model.
 - Elasticities are point estimates without confidence bounds/priors.
 - No challenger models for response, credit loss, or funding.
 - No fairness/conduct constraints in pricing decisions.
 
-## Documentation gaps
+### Documentation gaps
 
-- No dedicated model-governance note describing parameter calibration, validation cadence, and approval process.
-- No architecture/dependency diagram for engine flow (data generation -> response -> economics -> optimization -> diagnostics).
-- No explicit troubleshooting section for offline/air-gapped installation.
+- ✅ Offline/air-gapped installation — wheelhouse instructions fixed in `usage_guide.md`.
+- ✅ Architecture diagram updated with excess deposit income term.
+- ✅ Tie-break policy documented in `model_governance.md`.
+- ⬜ Model-governance note for parameter calibration cadence and approval process — partially in `model_governance.md`; empirical calibration process not yet defined.
 
 ## 5) Ranked action plan
 
-### Must fix now
+### Must fix now — completed
 
-1. Add guardrails and tests for low-level grid builders (`build_rate_grid` and spread-grid edge cases).
-2. Introduce adaptive boundary follow-up run (auto-expand grid when winner hits edge) before accepting recommendation.
-3. Clarify and document objective economics, especially interaction between wholesale funding cost and shortfall penalty.
-4. Add reproducible setup guidance for restricted-network environments (wheelhouse/constraints/local build instructions).
+1. ✅ Add guardrails and tests for low-level grid builders (`build_rate_grid` and spread-grid edge cases).
+2. ✅ Introduce adaptive boundary follow-up run (auto-expand grid when winner hits edge) before accepting recommendation.
+3. ✅ Clarify and document objective economics, especially interaction between wholesale funding cost and shortfall penalty.
+4. ✅ Add reproducible setup guidance for restricted-network environments (wheelhouse/constraints/local build instructions).
 
-### Should improve next
+### Should improve next — completed
 
-1. Remove duplicated grid-construction code into single shared helper.
-2. Add scenario tests covering monotonic objective corner-cases and tie-breaking behaviour.
-3. Add richer sensitivity framework (two-way stresses: elasticity × funding, competitor × funding).
-4. Persist baseline/sensitivity outputs to versioned artifacts for regression monitoring.
+1. ✅ Remove duplicated grid-construction code into single shared helper (`grid_utils.py`).
+2. ✅ Add scenario tests covering monotonic objective corner-cases and tie-breaking behaviour.
+3. ✅ Add richer sensitivity framework (two-way stresses: elasticity × funding, competitor × funding).
+4. ✅ Persist baseline/sensitivity outputs to versioned artifacts (`write_artifacts` in `runner.py`).
+
+### Remaining open items
+
+- ⬜ Fix example `sys.path` hack (low priority).
+- ⬜ Add dedicated test for adaptive boundary expansion + re-check path.
+- ⬜ Formalise deposit funding ratio interpretation (hard target vs soft risk appetite) in governance docs.
 
 ### Future enhancements
 
@@ -156,4 +169,3 @@ Current engine behaviour:
 2. Add behavioral tenor/runoff and multi-period balance-sheet dynamics.
 3. Add capital consumption / RWA / hurdle-rate terms and governance constraints.
 4. Replace purely synthetic DGP with empirical calibration + challenger models + uncertainty-aware optimization.
-

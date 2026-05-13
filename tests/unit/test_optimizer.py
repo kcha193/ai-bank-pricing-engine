@@ -46,6 +46,7 @@ def test_baseline_optimizer_returns_valid_joint_rates():
         (0.03, 0.04, 0, "step"),
         (0.03, 0.04, -0.005, "step"),
         (0.04, 0.03, 0.005, "stop"),
+        (0.03, 0.04, 0.006, "land exactly"),
     ],
 )
 def test_build_rate_grid_rejects_invalid_inputs(start, stop, step, message):

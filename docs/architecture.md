@@ -28,6 +28,7 @@ economic objective
   - deposit interest cost
   - wholesale funding cost
   - funding shortfall penalty
+  + excess deposit income
         |
         v
 joint grid search
