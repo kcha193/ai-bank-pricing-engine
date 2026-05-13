@@ -19,7 +19,7 @@ pricing_strategy:
     max: 40
     step: 5
 competitor_rates:
-  enabled: false
+  enabled: true
   source_file: data/processed/competitor_rates/latest.json
   selected_banks:
     - ANZ
