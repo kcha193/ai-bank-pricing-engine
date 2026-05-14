@@ -40,4 +40,9 @@ rate. It maximizes expected risk-adjusted profit while penalizing funding shortf
 
 The project also includes a small diagnostic ML layer that trains response models on synthetic
 observed outcomes and checks whether learned predictions recover sensible rate-response behaviour.
+
+Every pricing run produces an auditable ledger under `outputs/runs/` containing a config snapshot,
+run metadata, a business-facing pricing memo, and a governance checklist — all generated offline
+with no external dependencies.
+
 FastAPI, dashboards, and production model integration come later.
