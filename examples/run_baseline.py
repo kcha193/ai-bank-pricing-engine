@@ -6,11 +6,15 @@ from pathlib import Path
 
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.diagnostics import run_sensitivity_analysis
+from balance_pricing_engine.run_ledger import write_run_ledger
 from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
 
 
+CONFIG_PATH = Path("configs/base.yaml")
+
+
 def main() -> None:
-    config = load_config(Path("configs/base.yaml"))
+    config = load_config(CONFIG_PATH)
     diagnostics = run_baseline_diagnostics(config)
     result = diagnostics.best_result
 
@@ -87,6 +91,21 @@ def main() -> None:
             f"shortfall=${row.funding_shortfall:,.0f}, "
             f"boundary_warning={warning}"
         )
+    print()
+
+    run_dir = write_run_ledger(
+        scenario_name="baseline",
+        config=config,
+        config_path=CONFIG_PATH,
+        diagnostics=diagnostics,
+        sensitivity=sensitivity,
+    )
+    try:
+        display_run_dir = run_dir.relative_to(Path.cwd())
+    except ValueError:
+        display_run_dir = run_dir
+    print(f"Run ledger written to: {display_run_dir}")
+
 
 def _format_rate(rate: float | None) -> str:
     if rate is None:
