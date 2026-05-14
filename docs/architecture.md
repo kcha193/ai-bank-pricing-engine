@@ -55,6 +55,9 @@ scenario diagnostics and sensitivity analysis
   issues, expands grids when needed, and runs sensitivity cases.
 - `src/balance_pricing_engine/scenarios/runner.py`: orchestrates baseline scenario diagnostics and
   artifact persistence.
+- `src/balance_pricing_engine/run_ledger/`: creates governed pricing-run ledgers by wrapping
+  diagnostics artifacts with metadata, configuration snapshots, pricing memos, and governance
+  checklists.
 - `src/balance_pricing_engine/modelling/`: builds synthetic observed datasets and trains
   diagnostic-only response models.
 
@@ -76,8 +79,22 @@ boundary issue should remain open for review.
 
 - `grid_results.csv`: every final evaluated rate pair
 - `top_results.csv`: highest objective candidates
+- `counterfactuals.csv`: one-axis objective decompositions for top candidates
+- `cohort_attribution.csv`: expected winning volumes by coarse synthetic customer segment, when
+  cohort context is available
 - `sensitivity.csv`: sensitivity output, when provided
 - `summary.json`: accepted recommendation and boundary metadata
 
-The artifact filenames are fixed. Reusing an output directory overwrites the prior files, so
-run-specific directories are recommended for reproducible records.
+The run ledger layer is the preferred output orchestration path for reproducible records.
+`write_run_ledger()` creates a collision-safe directory under `data/outputs/runs/` using a single
+UTC timestamp for both the directory name and `metadata.json`, then writes:
+
+- `metadata.json`: run ID, timestamp, config hash, git/package details, and governance flags
+- `config_snapshot.yaml`: exact YAML configuration used for the run
+- the diagnostics artifacts listed above
+- `pricing_memo.md`: business-facing recommendation, decomposition, sensitivity, and risk notes
+- `governance_checklist.md`: manual review checklist for accepting the recommendation
+
+Artifact filenames inside a ledger directory remain fixed. Reusing an output directory can overwrite
+prior files, so run ledger directory creation is atomic and appends a numeric suffix if a same-timestamp
+directory already exists.

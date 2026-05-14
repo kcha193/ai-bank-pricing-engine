@@ -133,6 +133,10 @@ def _sensitivity_section(sensitivity: Optional[pd.DataFrame]) -> str:
         sub["objective_value"] = sub["objective_value"].map("${:,.0f}".format)
     if "delta_objective_pct" in sub:
         sub["delta_objective_pct"] = sub["delta_objective_pct"].map("{:+.1%}".format)
+    if "boundary_warning_flag" in sub:
+        sub["boundary_warning_flag"] = sub["boundary_warning_flag"].map(
+            lambda value: "Yes" if value else "No"
+        )
     table = _markdown_table(sub)
     return f"## Sensitivity Summary\n\n{table}"
 

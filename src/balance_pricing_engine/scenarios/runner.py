@@ -117,10 +117,11 @@ class ScenarioDiagnostics:
             asdict(decomposition)
             for decomposition in self.counterfactual_decompositions(top_n=top_n)
         ).to_csv(path / "counterfactuals.csv", index=False)
-        pd.DataFrame(_cohort_attribution_rows(self.cohort_attribution())).to_csv(
-            path / "cohort_attribution.csv",
-            index=False,
-        )
+        if self._has_cohort_context():
+            pd.DataFrame(_cohort_attribution_rows(self.cohort_attribution())).to_csv(
+                path / "cohort_attribution.csv",
+                index=False,
+            )
         if sensitivity is not None:
             sensitivity.to_csv(path / "sensitivity.csv", index=False)
 
@@ -157,7 +158,11 @@ class ScenarioDiagnostics:
         return candidates.sort_values("total_objective", ascending=False).iloc[0]
 
     def _require_cohort_context(self) -> None:
-        if (
+        if not self._has_cohort_context():
+            raise ValueError("Cohort attribution requires baseline customer context.")
+
+    def _has_cohort_context(self) -> bool:
+        return not (
             self.loan_customers is None
             or self.deposit_customers is None
             or self.market is None
@@ -166,8 +171,7 @@ class ScenarioDiagnostics:
             or self.deposit_rate_elasticity is None
             or self.deposit_competitor_gap_elasticity is None
             or self.response_coefficients is None
-        ):
-            raise ValueError("Cohort attribution requires baseline customer context.")
+        )
 
 
 def run_baseline_diagnostics(

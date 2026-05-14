@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -25,18 +26,20 @@ def write_run_ledger(
     diagnostics: "ScenarioDiagnostics",
     sensitivity: Optional[pd.DataFrame] = None,
     competitor_rate_source: Optional[str] = None,
-    base_dir: str | Path = "outputs/runs",
+    base_dir: str | Path = "data/outputs/runs",
 ) -> Path:
     """Create a full run ledger directory and write all artifacts.
 
     Returns the path to the created run directory.
     """
-    run_dir = create_run_directory(scenario_name, base_dir)
+    run_timestamp = datetime.utcnow()
+    run_dir = create_run_directory(scenario_name, base_dir, timestamp=run_timestamp)
     metadata = build_run_metadata(
         scenario_name=scenario_name,
         config_path=config_path,
         diagnostics=diagnostics,
         competitor_rate_source=competitor_rate_source,
+        timestamp=run_timestamp,
     )
     write_run_metadata(metadata, run_dir)
     write_config_snapshot(config_path, run_dir)

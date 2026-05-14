@@ -66,13 +66,15 @@ def build_run_metadata(
     config_path: str | Path,
     diagnostics: "ScenarioDiagnostics",
     competitor_rate_source: Optional[str] = None,
+    timestamp: datetime | None = None,
 ) -> RunMetadata:
     """Build a RunMetadata record from a completed ScenarioDiagnostics."""
     vi = sys.version_info
+    run_timestamp = timestamp or datetime.utcnow()
     return RunMetadata(
         run_id=str(uuid.uuid4()),
         scenario_name=scenario_name,
-        timestamp=datetime.utcnow().isoformat(),
+        timestamp=run_timestamp.isoformat(),
         git_commit=_git_commit(),
         config_path=str(config_path),
         config_hash=_config_hash(config_path),
