@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from balance_pricing_engine.config import load_config
+from balance_pricing_engine.run_ledger.checklist import write_governance_checklist
 from balance_pricing_engine.run_ledger.config_snapshot import write_config_snapshot
 from balance_pricing_engine.run_ledger.directory import create_run_directory
 from balance_pricing_engine.run_ledger.memo import write_pricing_memo
@@ -223,3 +224,57 @@ def test_pricing_memo_with_sensitivity_includes_sensitivity_section(
     content = (tmp_path / "pricing_memo.md").read_text()
     assert "## Sensitivity Summary" in content
     assert "baseline" in content  # scenario name appears in table
+
+
+REQUIRED_CHECKLIST_ITEMS = [
+    "Boundary result reviewed",
+    "Sensitivity reviewed",
+    "Competitor-rate freshness reviewed",
+    "Funding assumptions reviewed",
+    "Elasticity assumptions reviewed",
+    "Conduct and fairness limitations noted",
+    "Human approval required",
+    "Synthetic-data limitation acknowledged",
+]
+
+
+def test_write_governance_checklist_creates_file(tmp_path: Path, config, diagnostics) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_governance_checklist(tmp_path, metadata, config, diagnostics)
+    assert (tmp_path / "governance_checklist.md").exists()
+
+
+def test_governance_checklist_contains_all_required_checks(
+    tmp_path: Path, config, diagnostics
+) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_governance_checklist(tmp_path, metadata, config, diagnostics)
+    content = (tmp_path / "governance_checklist.md").read_text()
+    for item in REQUIRED_CHECKLIST_ITEMS:
+        assert item in content, f"Missing checklist item: {item!r}"
+
+
+def test_governance_checklist_uses_unchecked_boxes(
+    tmp_path: Path, config, diagnostics
+) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_governance_checklist(tmp_path, metadata, config, diagnostics)
+    content = (tmp_path / "governance_checklist.md").read_text()
+    assert "- [ ]" in content
+
+
+def test_governance_checklist_includes_run_id(tmp_path: Path, config, diagnostics) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_governance_checklist(tmp_path, metadata, config, diagnostics)
+    content = (tmp_path / "governance_checklist.md").read_text()
+    assert metadata.run_id in content
+
+
+def test_governance_checklist_shows_boundary_status(
+    tmp_path: Path, config, diagnostics
+) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_governance_checklist(tmp_path, metadata, config, diagnostics)
+    content = (tmp_path / "governance_checklist.md").read_text()
+    expected_status = "REQUIRES REVIEW" if metadata.boundary_warning_flag else "CLEAR"
+    assert expected_status in content
