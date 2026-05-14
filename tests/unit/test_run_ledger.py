@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from balance_pricing_engine.config import load_config
+from balance_pricing_engine.run_ledger.config_snapshot import write_config_snapshot
 from balance_pricing_engine.run_ledger.directory import create_run_directory
 from balance_pricing_engine.run_ledger.metadata import (
     RunMetadata,
@@ -130,3 +131,15 @@ def test_write_run_metadata_json_is_valid(tmp_path: Path, diagnostics) -> None:
     assert data["scenario_name"] == "baseline"
     assert isinstance(data["boundary_warning_flag"], bool)
     assert isinstance(data["expansion_rounds"], int)
+
+
+def test_write_config_snapshot_creates_file(tmp_path: Path) -> None:
+    write_config_snapshot("configs/base.yaml", tmp_path)
+    assert (tmp_path / "config_snapshot.yaml").exists()
+
+
+def test_write_config_snapshot_content_matches_original(tmp_path: Path) -> None:
+    write_config_snapshot("configs/base.yaml", tmp_path)
+    original = Path("configs/base.yaml").read_text(encoding="utf-8")
+    snapshot = (tmp_path / "config_snapshot.yaml").read_text(encoding="utf-8")
+    assert original == snapshot
