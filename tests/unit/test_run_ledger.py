@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from balance_pricing_engine.config import load_config
+from balance_pricing_engine.run_ledger import write_run_ledger
 from balance_pricing_engine.run_ledger.checklist import write_governance_checklist
 from balance_pricing_engine.run_ledger.config_snapshot import write_config_snapshot
 from balance_pricing_engine.run_ledger.directory import create_run_directory
@@ -278,3 +279,48 @@ def test_governance_checklist_shows_boundary_status(
     content = (tmp_path / "governance_checklist.md").read_text()
     expected_status = "REQUIRES REVIEW" if metadata.boundary_warning_flag else "CLEAR"
     assert expected_status in content
+
+
+def test_write_run_ledger_creates_directory(tmp_path: Path, config, diagnostics) -> None:
+    run_dir = write_run_ledger(
+        scenario_name="baseline",
+        config=config,
+        config_path="configs/base.yaml",
+        diagnostics=diagnostics,
+        base_dir=tmp_path,
+    )
+    assert run_dir.exists() and run_dir.is_dir()
+
+
+def test_write_run_ledger_creates_all_expected_files(
+    tmp_path: Path, config, diagnostics
+) -> None:
+    run_dir = write_run_ledger(
+        scenario_name="baseline",
+        config=config,
+        config_path="configs/base.yaml",
+        diagnostics=diagnostics,
+        base_dir=tmp_path,
+    )
+    expected = [
+        "metadata.json",
+        "config_snapshot.yaml",
+        "grid_results.csv",
+        "top_results.csv",
+        "summary.json",
+        "pricing_memo.md",
+        "governance_checklist.md",
+    ]
+    for filename in expected:
+        assert (run_dir / filename).exists(), f"Missing: {filename}"
+
+
+def test_write_run_ledger_returns_path(tmp_path: Path, config, diagnostics) -> None:
+    result = write_run_ledger(
+        scenario_name="baseline",
+        config=config,
+        config_path="configs/base.yaml",
+        diagnostics=diagnostics,
+        base_dir=tmp_path,
+    )
+    assert isinstance(result, Path)
