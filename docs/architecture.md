@@ -86,7 +86,7 @@ boundary issue should remain open for review.
 - `summary.json`: accepted recommendation and boundary metadata
 
 The run ledger layer is the preferred output orchestration path for reproducible records.
-`write_run_ledger()` creates a collision-safe directory under `outputs/runs/` using a single
+`write_run_ledger()` creates a collision-safe directory under `data/outputs/runs/` using a single
 UTC timestamp for both the directory name and `metadata.json`, then writes:
 
 - `metadata.json`: run ID, timestamp, config hash, git/package details, and governance flags
