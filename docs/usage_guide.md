@@ -107,6 +107,10 @@ The report prints five sections:
 - Boundary diagnostics.
 - Sensitivity summary.
 
+It also writes a full run ledger to `data/outputs/runs/` — a timestamped directory containing the
+config snapshot, all CSV/JSON artifacts, a pricing memo, and a governance checklist. See
+[docs/run_ledger_guide.md](run_ledger_guide.md) for a walkthrough of those outputs.
+
 ### Step 4: Read The Best Pricing Decision
 
 The current adaptive baseline result is:
@@ -510,38 +514,49 @@ sensitive to demand, funding, and competitor assumptions.
 
 That is exactly what the diagnostics layer is designed to reveal.
 
-### Persisting Regression Artifacts
+### Persisting Run Artifacts
 
-Use `ScenarioDiagnostics.write_artifacts()` when you want versioned outputs for regression
-monitoring:
+For governance and audit purposes, use `write_run_ledger()`. It creates a unique timestamped
+directory under `data/outputs/runs/` and writes the config snapshot, all CSV/JSON artifacts, a
+pricing memo, and a governance checklist in one call:
 
 ```python
 from pathlib import Path
 
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.diagnostics import run_sensitivity_analysis
+from balance_pricing_engine.run_ledger import write_run_ledger
 from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
 
 config = load_config("configs/base.yaml")
 diagnostics = run_baseline_diagnostics(config)
 sensitivity = run_sensitivity_analysis(config)
 
+run_dir = write_run_ledger(
+    scenario_name="baseline",
+    config=config,
+    config_path="configs/base.yaml",
+    diagnostics=diagnostics,
+    sensitivity=sensitivity,
+)
+```
+
+See [docs/run_ledger_guide.md](run_ledger_guide.md) for the full artifact reference and
+governance workflow.
+
+If you only need the raw CSV/JSON outputs without the memo and checklist (for example, for
+automated regression monitoring), use `ScenarioDiagnostics.write_artifacts()` directly:
+
+```python
 diagnostics.write_artifacts(
     Path("artifacts/baseline"),
     sensitivity=sensitivity,
 )
 ```
 
-This writes:
-
-- `grid_results.csv`
-- `top_results.csv`
-- `sensitivity.csv`, if provided
-- `summary.json`
-
-These filenames are fixed. If you reuse the same output directory, the existing files with those
-names are overwritten. For reproducible experiment records, write each run to a run-specific
-directory, for example a path containing the run date, scenario name, or commit SHA.
+This writes `grid_results.csv`, `top_results.csv`, `sensitivity.csv` (if provided), and
+`summary.json`. These filenames are fixed — reusing the same directory overwrites the prior
+files.
 
 ## 5. ML Response Modelling Workflow
 
@@ -658,12 +673,14 @@ configs/base.yaml
 examples/run_baseline.py
 examples/train_response_models.py
 src/balance_pricing_engine/config.py
+src/balance_pricing_engine/grid_utils.py
 src/balance_pricing_engine/synthetic/customers.py
 src/balance_pricing_engine/synthetic/response.py
 src/balance_pricing_engine/pricing/profit.py
 src/balance_pricing_engine/pricing/balance_sheet.py
 src/balance_pricing_engine/optimization/grid_search.py
 src/balance_pricing_engine/diagnostics.py
+src/balance_pricing_engine/run_ledger/
 src/balance_pricing_engine/modelling/datasets.py
 src/balance_pricing_engine/modelling/evaluation.py
 src/balance_pricing_engine/modelling/models.py
@@ -675,18 +692,20 @@ tests/unit/
 Responsibilities:
 
 - `config.py`: loads and validates YAML config.
+- `grid_utils.py`: shared helper for building inclusive numeric rate grids.
 - `synthetic/customers.py`: generates synthetic home loan and deposit customers.
 - `synthetic/response.py`: calculates customer response probabilities.
 - `pricing/profit.py`: calculates income, costs, credit loss, and funding costs.
 - `pricing/balance_sheet.py`: calculates funding requirement, shortfall, and penalty.
 - `optimization/grid_search.py`: evaluates the full joint rate grid and selects the best pair.
 - `diagnostics.py`: objective decomposition, boundary checks, and sensitivity analysis.
+- `run_ledger/`: creates auditable pricing-run ledgers (config snapshot, metadata, pricing memo, governance checklist). See [docs/run_ledger_guide.md](run_ledger_guide.md).
 - `modelling/datasets.py`: builds synthetic observed response datasets.
 - `modelling/models.py`: builds and fits sklearn response models.
 - `modelling/evaluation.py`: evaluates metrics, calibration, and rate response sanity.
 - `modelling/persistence.py`: saves and loads fitted models with joblib.
 - `scenarios/runner.py`: orchestrates the baseline scenario.
-- `examples/run_baseline.py`: user-facing report script.
+- `examples/run_baseline.py`: user-facing report script; writes a run ledger on each execution.
 - `examples/train_response_models.py`: trains and evaluates ML response models.
 
 ## 7. Programmatic Usage
@@ -761,7 +780,7 @@ from balance_pricing_engine.modelling.datasets import (
     LOAN_TARGET_COLUMN,
     build_loan_response_dataset,
 )
-from balance_pricing_engine.modelling.evaluation import evaluate_binary_classifier
+from balance_pricing_engine.modelling.evaluation import evaluate_model
 from balance_pricing_engine.modelling.models import (
     build_logistic_regression_model,
     fit_response_model,
@@ -774,7 +793,7 @@ model = fit_response_model(
     LOAN_FEATURE_COLUMNS,
     LOAN_TARGET_COLUMN,
 )
-metrics = evaluate_binary_classifier(model, dataset, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+metrics = evaluate_model(model, dataset, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
 ```
 
 ## 8. How To Change A Scenario
