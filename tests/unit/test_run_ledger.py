@@ -9,6 +9,7 @@ import pytest
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.run_ledger.config_snapshot import write_config_snapshot
 from balance_pricing_engine.run_ledger.directory import create_run_directory
+from balance_pricing_engine.run_ledger.memo import write_pricing_memo
 from balance_pricing_engine.run_ledger.metadata import (
     RunMetadata,
     build_run_metadata,
@@ -143,3 +144,82 @@ def test_write_config_snapshot_content_matches_original(tmp_path: Path) -> None:
     original = Path("configs/base.yaml").read_text(encoding="utf-8")
     snapshot = (tmp_path / "config_snapshot.yaml").read_text(encoding="utf-8")
     assert original == snapshot
+
+
+def test_write_pricing_memo_creates_file(tmp_path: Path, config, diagnostics) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_pricing_memo(tmp_path, metadata, config, diagnostics)
+    assert (tmp_path / "pricing_memo.md").exists()
+
+
+def test_pricing_memo_contains_recommendation_section(
+    tmp_path: Path, config, diagnostics
+) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_pricing_memo(tmp_path, metadata, config, diagnostics)
+    content = (tmp_path / "pricing_memo.md").read_text()
+    assert "## Recommendation" in content
+
+
+def test_pricing_memo_contains_objective_decomposition(
+    tmp_path: Path, config, diagnostics
+) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_pricing_memo(tmp_path, metadata, config, diagnostics)
+    content = (tmp_path / "pricing_memo.md").read_text()
+    assert "## Objective Decomposition" in content
+
+
+def test_pricing_memo_contains_boundary_diagnostics(
+    tmp_path: Path, config, diagnostics
+) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_pricing_memo(tmp_path, metadata, config, diagnostics)
+    content = (tmp_path / "pricing_memo.md").read_text()
+    assert "## Boundary Diagnostics" in content
+
+
+def test_pricing_memo_contains_model_risk_notes(tmp_path: Path, config, diagnostics) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_pricing_memo(tmp_path, metadata, config, diagnostics)
+    content = (tmp_path / "pricing_memo.md").read_text()
+    assert "## Model-Risk Notes" in content
+
+
+def test_pricing_memo_contains_committee_questions(
+    tmp_path: Path, config, diagnostics
+) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_pricing_memo(tmp_path, metadata, config, diagnostics)
+    content = (tmp_path / "pricing_memo.md").read_text()
+    assert "## Questions for Pricing Committee" in content
+
+
+def test_pricing_memo_contains_synthetic_data_limitation(
+    tmp_path: Path, config, diagnostics
+) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_pricing_memo(tmp_path, metadata, config, diagnostics)
+    content = (tmp_path / "pricing_memo.md").read_text()
+    assert "## Synthetic Data Limitation" in content
+
+
+def test_pricing_memo_contains_loan_rate(tmp_path: Path, config, diagnostics) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_pricing_memo(tmp_path, metadata, config, diagnostics)
+    content = (tmp_path / "pricing_memo.md").read_text()
+    loan_rate_pct = f"{diagnostics.best_result.loan_rate:.2%}"
+    assert loan_rate_pct in content
+
+
+def test_pricing_memo_with_sensitivity_includes_sensitivity_section(
+    tmp_path: Path, config, diagnostics
+) -> None:
+    from balance_pricing_engine.diagnostics import run_sensitivity_analysis
+
+    sensitivity = run_sensitivity_analysis(config)
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_pricing_memo(tmp_path, metadata, config, diagnostics, sensitivity=sensitivity)
+    content = (tmp_path / "pricing_memo.md").read_text()
+    assert "## Sensitivity Summary" in content
+    assert "baseline" in content  # scenario name appears in table
