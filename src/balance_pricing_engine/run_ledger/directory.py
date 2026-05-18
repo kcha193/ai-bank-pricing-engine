@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -15,7 +15,7 @@ def create_run_directory(
 
     Directory name: {YYYYMMDD_HHMMSS_microseconds}_{safe_scenario_name}
     """
-    run_timestamp = timestamp or datetime.utcnow()
+    run_timestamp = timestamp or datetime.now(timezone.utc)
     timestamp_label = run_timestamp.strftime("%Y%m%d_%H%M%S_%f")
     safe_name = scenario_name.replace(" ", "_").replace("/", "_")
     base_path = Path(base_dir).resolve()

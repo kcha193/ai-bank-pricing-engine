@@ -48,13 +48,19 @@ def _build_memo(
 def _header(metadata: "RunMetadata") -> str:
     git = metadata.git_commit or "n/a"
     source = metadata.competitor_rate_source or "n/a"
+    competitor_note = (
+        "  \n**Note:** Reference rate was set to the competitor average; "
+        "spread-to-market measures spread-to-competitor, not an independent benchmark."
+        if metadata.competitor_rate_source
+        else ""
+    )
     return (
         f"# Pricing Memo — {metadata.scenario_name}\n\n"
         f"Run: `{metadata.run_id}`  \n"
         f"Timestamp: {metadata.timestamp}  \n"
         f"Config hash: `{metadata.config_hash}`  \n"
         f"Git commit: {git}  \n"
-        f"Competitor rate source: {source}"
+        f"Competitor rate source: {source}{competitor_note}"
     )
 
 

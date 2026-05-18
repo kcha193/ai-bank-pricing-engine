@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -32,7 +32,7 @@ def write_run_ledger(
 
     Returns the path to the created run directory.
     """
-    run_timestamp = datetime.utcnow()
+    run_timestamp = datetime.now(timezone.utc)
     run_dir = create_run_directory(scenario_name, base_dir, timestamp=run_timestamp)
     metadata = build_run_metadata(
         scenario_name=scenario_name,

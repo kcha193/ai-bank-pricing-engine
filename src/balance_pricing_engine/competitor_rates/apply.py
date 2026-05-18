@@ -21,6 +21,9 @@ def apply_competitor_rates_to_config(config):
     if competitor_config is None or not competitor_config.enabled:
         return config
     resolved = load_and_resolve_competitor_rates(competitor_config)
+    # home_loan_reference_rate and term_deposit_reference_rate are set to the competitor
+    # averages here, so home_loan_spread_bps measures spread-to-competitor rather than
+    # spread-to-independent-benchmark after this call.
     updated_market = config.market.model_copy(
         update={
             "competitor_loan_rate": resolved.mortgage_reference_rate,

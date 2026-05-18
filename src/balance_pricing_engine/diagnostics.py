@@ -38,11 +38,34 @@ SENSITIVITY_RESULT_COLUMNS = [
     "initial_boundary_warning_flag",
     "boundary_warning_flag",
     "expansion_rounds",
+    "excess_deposit_income",
     "delta_loan_rate_bps",
     "delta_deposit_rate_bps",
     "delta_objective_pct",
     "parameter_family",
 ]
+
+_SENSITIVITY_AGGREGATED_COLUMNS = [
+    "best_loan_rate",
+    "best_deposit_rate",
+    "objective_value",
+    "expected_loan_volume",
+    "expected_deposit_volume",
+    "funding_shortfall",
+    "excess_deposit_income",
+]
+
+
+def sensitivity_result_columns(n_seeds: int = 1) -> list[str]:
+    """Return the documented column contract for sensitivity results."""
+    if n_seeds == 1:
+        return SENSITIVITY_RESULT_COLUMNS
+    extra = [
+        f"{c}_{suffix}"
+        for c in _SENSITIVITY_AGGREGATED_COLUMNS
+        for suffix in ("mean", "std_error")
+    ]
+    return SENSITIVITY_RESULT_COLUMNS + extra
 
 
 @dataclass(frozen=True)
@@ -498,14 +521,7 @@ def run_sensitivity_analysis(
         ignore_index=True,
     )
     base = frames[0].copy()
-    for column in [
-        "best_loan_rate",
-        "best_deposit_rate",
-        "objective_value",
-        "expected_loan_volume",
-        "expected_deposit_volume",
-        "funding_shortfall",
-    ]:
+    for column in _SENSITIVITY_AGGREGATED_COLUMNS:
         grouped = combined.groupby("scenario_name")[column]
         stats = grouped.agg(["mean", "std"]).reset_index()
         stats[f"{column}_mean"] = stats["mean"]
@@ -515,7 +531,7 @@ def run_sensitivity_analysis(
             on="scenario_name",
             how="left",
         )
-    return base
+    return base[sensitivity_result_columns(n_seeds)]
 
 
 def _run_sensitivity_analysis_for_seed(
@@ -564,6 +580,7 @@ def _run_sensitivity_analysis_for_seed(
                 "expected_loan_volume": best_result.expected_loan_volume,
                 "expected_deposit_volume": best_result.expected_deposit_volume,
                 "funding_shortfall": best_result.funding_shortfall,
+                "excess_deposit_income": best_result.excess_deposit_income,
                 "initial_boundary_warning_flag": (
                     diagnostics.initial_boundary_diagnostics.has_warning
                 ),
@@ -593,6 +610,8 @@ def _run_sensitivity_analysis_for_seed(
 
 def _parameter_family(scenario_name: str) -> str:
     name = scenario_name.lower()
+    if name == "baseline":
+        return "baseline"
     if "elasticity" in name or "coef" in name:
         return "elasticity"
     if "competitor" in name:
@@ -601,7 +620,7 @@ def _parameter_family(scenario_name: str) -> str:
         return "wholesale"
     if "penalty" in name or "ratio" in name:
         return "funding"
-    return "funding"
+    return "other"
 
 
 def _with_loan_risk_score_coef(

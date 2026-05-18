@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
@@ -66,7 +67,7 @@ def main() -> None:
         dataset=loan_dataset,
         feature_columns=LOAN_FEATURE_COLUMNS,
         target_column=LOAN_TARGET_COLUMN,
-        offered_rates=[float(rate) for rate in loan_grid],
+        offered_rates=np.linspace(0.0725, 0.0875, 9).tolist(),
         competitor_rate=config.market.competitor_loan_rate,
         expected_direction="decreasing",
         random_seed=config.random_seed,
@@ -77,7 +78,7 @@ def main() -> None:
         dataset=deposit_dataset,
         feature_columns=DEPOSIT_FEATURE_COLUMNS,
         target_column=DEPOSIT_TARGET_COLUMN,
-        offered_rates=[float(rate) for rate in deposit_grid],
+        offered_rates=np.linspace(0.0450, 0.0600, 7).tolist(),
         competitor_rate=config.market.competitor_deposit_rate,
         expected_direction="increasing",
         random_seed=config.random_seed,

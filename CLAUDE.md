@@ -103,7 +103,7 @@ The boundary fields distinguish "needed expansion" from "still hitting boundary 
 - Honour the synthetic-data-only invariant. Do not add real customer or counterparty data paths.
 - Keep portfolio-level scope unless the user explicitly opens up personalised pricing.
 - `OptimizationResult` is a frozen dataclass; backward-compat aliases (`objective_value`, `deposit_cost`, `funding_penalty`, `loan_income_after_losses`) exist deliberately — don't remove without checking call sites.
-- Modelling layer is **diagnostic only** — its predictions are not yet wired into the optimiser. Don't conflate ML response models with the synthetic response functions used inside the grid search. The single `train()` entry point in `agentic.py` replaced the former dual `train` / `train_and_recommend` API; `evaluate_binary_classifier` is gone — use `evaluate_probabilities` / `evaluate_model` from `evaluation.py`.
+- Modelling layer is **diagnostic only** — its predictions are not yet wired into the optimiser. Don't conflate ML response models with the synthetic response functions used inside the grid search. The single `train()` entry point in `agentic.py` replaced the former dual `train` / `train_and_recommend` API; `evaluate_binary_classifier` is a deprecated backward-compat alias for `evaluate_model` — use `evaluate_probabilities` / `evaluate_model` from `evaluation.py` for new code.
 - Competitor-rate ingestion is gated behind `competitor_rates.enabled` and `strict` flags. Strict-mode failures should error, not warn.
 - Update [docs/architecture.md](docs/architecture.md) and [docs/modelling_assumptions.md](docs/modelling_assumptions.md) when changing structural behaviour.
 

@@ -133,6 +133,11 @@ def test_build_run_metadata_boundary_flags_match_diagnostics(diagnostics) -> Non
     assert metadata.policy_band_breached == diagnostics.policy_band_breached
 
 
+def test_build_run_metadata_timestamp_is_utc_aware(diagnostics) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    assert metadata.timestamp.endswith("+00:00") or metadata.timestamp.endswith("Z")
+
+
 def test_write_run_metadata_creates_json(tmp_path: Path, diagnostics) -> None:
     metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
     write_run_metadata(metadata, tmp_path)
@@ -371,10 +376,12 @@ def test_write_run_ledger_returns_path(tmp_path: Path, config, diagnostics) -> N
 def test_write_run_ledger_uses_single_timestamp_for_directory_and_metadata(
     tmp_path: Path, config, diagnostics, monkeypatch
 ) -> None:
+    from datetime import timezone
+
     class FrozenDatetime:
         @classmethod
-        def utcnow(cls) -> datetime:
-            return datetime(2026, 5, 14, 1, 2, 3, 123456)
+        def now(cls, tz=None) -> datetime:
+            return datetime(2026, 5, 14, 1, 2, 3, 123456, tzinfo=timezone.utc)
 
     monkeypatch.setattr(
         "balance_pricing_engine.run_ledger.writer.datetime",
@@ -392,7 +399,7 @@ def test_write_run_ledger_uses_single_timestamp_for_directory_and_metadata(
 
     metadata = json.loads((run_dir / "metadata.json").read_text())
     assert run_dir.name.startswith("20260514_010203_123456_baseline")
-    assert metadata["timestamp"] == "2026-05-14T01:02:03.123456"
+    assert metadata["timestamp"] == "2026-05-14T01:02:03.123456+00:00"
 
 
 def test_write_run_ledger_handles_diagnostics_without_cohort_context(
