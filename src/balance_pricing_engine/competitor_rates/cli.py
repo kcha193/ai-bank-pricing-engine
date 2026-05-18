@@ -77,7 +77,7 @@ def _build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--strict", default="true", choices=["true", "false"])
     validate.add_argument(
         "--max-staleness-hours",
-        type=float,
+        type=int,
         default=None,
         help="Fail if the file is older than this many hours",
     )
@@ -155,7 +155,7 @@ def _validate(args: argparse.Namespace) -> int:
     _print_validation_summary(summary)
     failed = summary.status == "failed"
     if args.max_staleness_hours is not None:
-        staleness_issues = validate_staleness(run, int(args.max_staleness_hours), strict=strict)
+        staleness_issues = validate_staleness(run, args.max_staleness_hours, strict=strict)
         for issue in staleness_issues:
             print(f"{issue.severity.upper()}: {issue.message}")
         if any(i.severity == "error" for i in staleness_issues):
