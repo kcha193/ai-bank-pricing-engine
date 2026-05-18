@@ -22,7 +22,7 @@ from balance_pricing_engine.competitor_rates.models import (
 )
 from balance_pricing_engine.competitor_rates.sources import OFFICIAL_SOURCES
 from balance_pricing_engine.competitor_rates.store import load_rate_run, write_rate_run
-from balance_pricing_engine.competitor_rates.validate import validate_rate_run
+from balance_pricing_engine.competitor_rates.validate import validate_rate_run, validate_staleness
 from balance_pricing_engine.config import load_config
 
 
@@ -75,6 +75,17 @@ def _build_parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate", help="Validate a stored competitor-rate file")
     validate.add_argument("--source-file", default=str(DEFAULT_OUTPUT_DIR / "latest.json"))
     validate.add_argument("--strict", default="true", choices=["true", "false"])
+    validate.add_argument(
+        "--max-staleness-hours",
+        type=float,
+        default=None,
+        help="Fail if the file is older than this many hours",
+    )
+    validate.add_argument(
+        "--previous-file",
+        default=None,
+        help="Path to a previous run file to check for large rate movements",
+    )
 
     apply = subparsers.add_parser("apply", help="Resolve and apply competitor rates to config")
     apply.add_argument("--config", required=True)
@@ -137,10 +148,19 @@ def _fetch_interest_co_nz(args: argparse.Namespace) -> int:
 
 
 def _validate(args: argparse.Namespace) -> int:
+    strict = _parse_bool(args.strict)
     run = load_rate_run(args.source_file)
-    summary = validate_rate_run(run, strict=_parse_bool(args.strict))
+    previous_run = load_rate_run(args.previous_file) if args.previous_file else None
+    summary = validate_rate_run(run, previous_run=previous_run, strict=strict)
     _print_validation_summary(summary)
-    return 1 if summary.status == "failed" else 0
+    failed = summary.status == "failed"
+    if args.max_staleness_hours is not None:
+        staleness_issues = validate_staleness(run, int(args.max_staleness_hours), strict=strict)
+        for issue in staleness_issues:
+            print(f"{issue.severity.upper()}: {issue.message}")
+        if any(i.severity == "error" for i in staleness_issues):
+            failed = True
+    return 1 if failed else 0
 
 
 def _apply(args: argparse.Namespace) -> int:

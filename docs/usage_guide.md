@@ -364,7 +364,7 @@ Plain-English interpretation:
 - The best tested pair is an `8.00%` home loan rate and a `5.15%` term deposit rate.
 - The expected economic value of that decision is about `$12.5M`.
 - The model expects about `$605M` of accepted home loans.
-- The model expects about `$384M` of term deposits raised.
+- The model expects about `$394M` of term deposits raised.
 - There is no final funding shortfall after the adaptive boundary follow-up.
 
 The recommendation is not saying "this is the true market price." It is saying "given the current

@@ -44,6 +44,12 @@ be interpreted as a liquidity, franchise, or balance-sheet steering penalty. It 
 the wholesale funding cost unless a future model version explicitly changes the objective and
 documents that policy choice.
 
+## Deposit Funding Ratio — Soft Signal vs Hard Constraint
+
+The `required_deposit_funding_ratio` parameter is a *soft risk appetite signal*, not a hard constraint. The optimizer penalises funding shortfalls via `funding_shortfall_penalty_rate` to steer recommendations toward the target, but a solution that falls short of the ratio may still be returned if the penalty does not fully outweigh the profit from higher loan volumes.
+
+Callers who require a hard floor must either (a) set `funding_shortfall_penalty_rate` high enough to make shortfall solutions non-competitive, or (b) post-filter results by `funding_shortfall == 0`. This distinction should be noted in governance sign-off for each pricing run.
+
 ## Optimization Diagnostics Governance
 
 Adaptive boundary remediation starts from the configured rate grids. If the first selected result

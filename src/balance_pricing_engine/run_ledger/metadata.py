@@ -8,7 +8,7 @@ import subprocess
 import sys
 import uuid
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -70,7 +70,7 @@ def build_run_metadata(
 ) -> RunMetadata:
     """Build a RunMetadata record from a completed ScenarioDiagnostics."""
     vi = sys.version_info
-    run_timestamp = timestamp or datetime.utcnow()
+    run_timestamp = timestamp or datetime.now(timezone.utc)
     return RunMetadata(
         run_id=str(uuid.uuid4()),
         scenario_name=scenario_name,

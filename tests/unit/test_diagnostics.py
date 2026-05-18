@@ -13,6 +13,7 @@ from balance_pricing_engine.diagnostics import (
     expand_rate_grids_for_boundary,
     infer_boundary_warning_cause,
     run_sensitivity_analysis,
+    sensitivity_result_columns,
 )
 from balance_pricing_engine.optimization.grid_search import OptimizationResult
 from balance_pricing_engine.synthetic.market import MarketState
@@ -213,6 +214,25 @@ def test_baseline_diagnostics_runs_boundary_follow_up_before_accepting_result():
     assert diagnostics.grid_results["deposit_rate"].max() > max(initial_deposit_grid)
 
 
+def test_adaptive_grid_expands_when_boundary_hit():
+    from balance_pricing_engine.config import SpreadGridConfigModel
+
+    config = load_config("configs/base.yaml")
+    narrow_config = config.model_copy(
+        update={
+            "pricing_strategy": config.pricing_strategy.model_copy(
+                update={
+                    "home_loan_spread_bps": SpreadGridConfigModel(min=-5, max=5, step=5),
+                    "term_deposit_spread_bps": SpreadGridConfigModel(min=-5, max=5, step=5),
+                }
+            )
+        }
+    )
+    result = run_baseline_diagnostics(narrow_config)
+    assert result.initial_boundary_diagnostics.has_warning
+    assert result.expansion_rounds >= 1
+
+
 def test_capped_adaptive_expansion_preserves_final_boundary_warning():
     loan_customers = pd.DataFrame(
         {
@@ -301,9 +321,23 @@ def test_sensitivity_runner_returns_expected_columns():
         "parameter_family",
     } <= set(sensitivity.columns)
     assert sensitivity["parameter_family"].isin(
-        ["elasticity", "funding", "competitor", "wholesale"]
+        ["baseline", "elasticity", "funding", "competitor", "wholesale", "other"]
     ).all()
     assert (sensitivity["delta_objective_pct"].abs() > 0).any()
+
+
+def test_sensitivity_result_includes_excess_deposit_income():
+    config = load_config("configs/base.yaml")
+    sensitivity = run_sensitivity_analysis(config)
+    assert "excess_deposit_income" in sensitivity.columns
+    assert (sensitivity["excess_deposit_income"] >= 0).all()
+
+
+def test_sensitivity_multi_seed_columns_match_contract():
+    config = load_config("configs/base.yaml")
+    df = run_sensitivity_analysis(config, n_seeds=3)
+    expected_cols = sensitivity_result_columns(n_seeds=3)
+    assert list(df.columns) == expected_cols
 
 
 def test_default_sensitivity_includes_two_way_stresses():
@@ -435,3 +469,15 @@ def test_cohort_attribution_reconciles_segment_volumes(tmp_path):
     )
     saved = pd.read_csv(tmp_path / "cohort_attribution.csv")
     assert {"segment_type", "segment", "expected_volume"} <= set(saved.columns)
+
+
+def test_parameter_family_baseline() -> None:
+    from balance_pricing_engine.diagnostics import _parameter_family
+
+    assert _parameter_family("baseline") == "baseline"
+
+
+def test_parameter_family_unknown_returns_other() -> None:
+    from balance_pricing_engine.diagnostics import _parameter_family
+
+    assert _parameter_family("some_unknown_scenario") == "other"
