@@ -262,7 +262,7 @@ def test_compare_models_recommends_challenger_when_it_improves():
     lr_metrics = {"auc": 0.85, "log_loss": 0.42, "brier_score": 0.18}
     gbm_metrics = {"auc": 0.88, "log_loss": 0.40, "brier_score": 0.17}
     result = compare_models(
-        "logistic_regression", lr_metrics, 0.05,
+        "logistic_regression", lr_metrics,
         "hist_gradient_boosting", gbm_metrics, 0.04,
     )
     assert result["recommended"] == "hist_gradient_boosting"
@@ -275,7 +275,7 @@ def test_compare_models_retains_baseline_when_improvement_below_threshold():
     lr_metrics = {"auc": 0.85, "log_loss": 0.42, "brier_score": 0.18}
     gbm_metrics = {"auc": 0.86, "log_loss": 0.415, "brier_score": 0.175}  # only 0.005 improvement
     result = compare_models(
-        "logistic_regression", lr_metrics, 0.05,
+        "logistic_regression", lr_metrics,
         "hist_gradient_boosting", gbm_metrics, 0.04,
     )
     assert result["recommended"] == "logistic_regression"
@@ -287,7 +287,7 @@ def test_compare_models_retains_baseline_when_challenger_fails_calibration():
     lr_metrics = {"auc": 0.85, "log_loss": 0.42, "brier_score": 0.18}
     gbm_metrics = {"auc": 0.88, "log_loss": 0.40, "brier_score": 0.17}
     result = compare_models(
-        "logistic_regression", lr_metrics, 0.05,
+        "logistic_regression", lr_metrics,
         "hist_gradient_boosting", gbm_metrics, 0.15,  # cal_mae > 0.10
     )
     assert result["recommended"] == "logistic_regression"

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -357,12 +357,6 @@ class ModelTrainingAgent:
             )
             registry.append(record)
             records.append(record)
-            write_model_card(
-                record,
-                self.artifacts_dir / "model_cards",
-                feature_columns if self.config is None else self.config.feature_columns,
-                target_column if self.config is None else self.config.target_column,
-            )
 
         recommended = "elasticity_baseline"
         reason = "Baseline retained as governed default champion."
@@ -429,6 +423,18 @@ class ModelTrainingAgent:
             json.dumps(payload, indent=2, sort_keys=True),
             encoding="utf-8",
         )
+        card_feature_columns = feature_columns if self.config is None else self.config.feature_columns
+        card_target_column = target_column if self.config is None else self.config.target_column
+        for record in records:
+            write_model_card(
+                replace(
+                    record,
+                    champion_status=self._champion_status(record.model_name, recommendation),
+                ),
+                self.artifacts_dir / "model_cards",
+                card_feature_columns,
+                card_target_column,
+            )
         return TrainingResult(
             report=report,
             report_path=str(report_path),

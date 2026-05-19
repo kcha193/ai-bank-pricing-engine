@@ -18,7 +18,7 @@ import streamlit as st
 from balance_pricing_engine.plotting import plot_profit_surface
 
 
-_RUNS_DIR = Path("data/outputs/runs")
+_RUNS_DIR = Path(__file__).resolve().parent.parent / "data" / "outputs" / "runs"
 
 
 def _list_runs() -> list[str]:

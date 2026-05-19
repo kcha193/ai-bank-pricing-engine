@@ -68,7 +68,9 @@ def check_monotonicity(
         raise ValueError("expected_direction must be 'increasing' or 'decreasing'.")
     if len(pdp_frame) < 2:
         raise ValueError("pdp_frame must have at least 2 rows.")
-    probs = pdp_frame["mean_predicted_probability"].to_numpy()
+    sort_column = pdp_feature if pdp_feature in pdp_frame.columns else pdp_frame.columns[0]
+    sorted_pdp_frame = pdp_frame.sort_values(sort_column, ascending=True).copy()
+    probs = sorted_pdp_frame["mean_predicted_probability"].to_numpy()
     deltas = np.diff(probs)
     tolerance = 1e-6
     if expected_direction == "decreasing":
@@ -86,7 +88,6 @@ def check_monotonicity(
 def compare_models(
     model_name_a: str,
     metrics_a: dict[str, float],
-    cal_mae_a: float,
     model_name_b: str,
     metrics_b: dict[str, float],
     cal_mae_b: float,

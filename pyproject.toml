@@ -27,7 +27,7 @@ dev = [
     "pytest-cov>=6.0",
     "ruff>=0.8",
 ]
-dashboard = ["streamlit>=1.30"]
+dashboard = ["streamlit>=1.30", "matplotlib>=3.8"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

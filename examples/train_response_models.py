@@ -122,7 +122,7 @@ def train_and_report(
     )
 
     comparison = compare_models(
-        "logistic_regression", lr_metrics, lr_cal_mae,
+        "logistic_regression", lr_metrics,
         "hist_gradient_boosting", gbm_metrics, gbm_cal_mae,
     )
 
