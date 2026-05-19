@@ -22,11 +22,40 @@ CALIBRATION_COLUMNS = [
 
 
 @dataclass(frozen=True)
+class MonotonicityCheck:
+    feature: str
+    expected_direction: str
+    is_monotone: bool
+    violations: int
+
+
+@dataclass(frozen=True)
 class RateResponseCheck:
     expected_direction: str
     is_directionally_sane: bool
     rate_response: pd.DataFrame
     violations: int
+
+
+def compute_partial_dependence(
+    model: Any,
+    dataset: pd.DataFrame,
+    feature_columns: list[str],
+    pdp_feature: str,
+    grid_values: list[float],
+) -> pd.DataFrame:
+    """Compute marginal partial dependence of one feature on predicted probability."""
+    if len(grid_values) < 2:
+        raise ValueError("grid_values must have at least 2 entries.")
+    if pdp_feature not in feature_columns:
+        raise ValueError(f"pdp_feature '{pdp_feature}' is not in feature_columns.")
+    rows = []
+    for value in sorted(grid_values):
+        scenario = dataset.copy()
+        scenario[pdp_feature] = value
+        probability = predict_response_probability(model, scenario, feature_columns)
+        rows.append({pdp_feature: value, "mean_predicted_probability": float(np.mean(probability))})
+    return pd.DataFrame(rows)
 
 
 def evaluate_probabilities(y_true: np.ndarray, y_probability: np.ndarray) -> dict[str, float]:
