@@ -22,11 +22,94 @@ CALIBRATION_COLUMNS = [
 
 
 @dataclass(frozen=True)
+class MonotonicityCheck:
+    feature: str
+    expected_direction: str
+    is_monotone: bool
+    violations: int
+
+
+@dataclass(frozen=True)
 class RateResponseCheck:
     expected_direction: str
     is_directionally_sane: bool
     rate_response: pd.DataFrame
     violations: int
+
+
+def compute_partial_dependence(
+    model: Any,
+    dataset: pd.DataFrame,
+    feature_columns: list[str],
+    pdp_feature: str,
+    grid_values: list[float],
+) -> pd.DataFrame:
+    """Compute marginal partial dependence of one feature on predicted probability."""
+    if len(grid_values) < 2:
+        raise ValueError("grid_values must have at least 2 entries.")
+    if pdp_feature not in feature_columns:
+        raise ValueError(f"pdp_feature '{pdp_feature}' is not in feature_columns.")
+    rows = []
+    for value in sorted(grid_values):
+        scenario = dataset.copy()
+        scenario[pdp_feature] = value
+        probability = predict_response_probability(model, scenario, feature_columns)
+        rows.append({pdp_feature: value, "mean_predicted_probability": float(np.mean(probability))})
+    return pd.DataFrame(rows)
+
+
+def check_monotonicity(
+    pdp_frame: pd.DataFrame,
+    pdp_feature: str,
+    expected_direction: str,
+) -> MonotonicityCheck:
+    """Check whether a partial dependence curve is monotone in the expected direction."""
+    if expected_direction not in {"increasing", "decreasing"}:
+        raise ValueError("expected_direction must be 'increasing' or 'decreasing'.")
+    if len(pdp_frame) < 2:
+        raise ValueError("pdp_frame must have at least 2 rows.")
+    if pdp_feature not in pdp_frame.columns:
+        raise ValueError(f"pdp_feature '{pdp_feature}' not found in pdp_frame columns: {list(pdp_frame.columns)}")
+    sort_column = pdp_feature
+    sorted_pdp_frame = pdp_frame.sort_values(sort_column, ascending=True).copy()
+    probs = sorted_pdp_frame["mean_predicted_probability"].to_numpy()
+    deltas = np.diff(probs)
+    tolerance = 1e-6
+    if expected_direction == "decreasing":
+        violations = int(np.sum(deltas > tolerance))
+    else:
+        violations = int(np.sum(deltas < -tolerance))
+    return MonotonicityCheck(
+        feature=pdp_feature,
+        expected_direction=expected_direction,
+        is_monotone=violations == 0,
+        violations=violations,
+    )
+
+
+def compare_models(
+    model_name_a: str,
+    metrics_a: dict[str, float],
+    model_name_b: str,
+    metrics_b: dict[str, float],
+    cal_mae_b: float,
+    *,
+    min_log_loss_improvement: float = 0.01,
+    max_calibration_error: float = 0.10,
+) -> dict[str, Any]:
+    """Compare two models by log-loss improvement and calibration; return recommendation dict."""
+    improvement = metrics_a["log_loss"] - metrics_b["log_loss"]
+    b_qualifies = improvement >= min_log_loss_improvement and cal_mae_b <= max_calibration_error
+    if b_qualifies:
+        recommended = model_name_b
+        reason = (
+            f"challenger improved log_loss by {improvement:.4f} "
+            "and passed calibration threshold"
+        )
+    else:
+        recommended = model_name_a
+        reason = "baseline retained (challenger did not meet improvement or calibration threshold)"
+    return {"recommended": recommended, "reason": reason, "improvement": improvement}
 
 
 def evaluate_probabilities(y_true: np.ndarray, y_probability: np.ndarray) -> dict[str, float]:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -173,6 +173,53 @@ class ModelRegistry:
             (record for record in reversed(records) if record.get("model_name") == model_name),
             None,
         )
+
+
+def write_model_card(
+    record: "ModelRecord",
+    output_dir: Path,
+    feature_columns: list[str] | None = None,
+    target_column: str | None = None,
+) -> Path:
+    """Write a markdown model card for a trained model record."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    card_path = output_dir / f"{record.model_name}_{record.version}.md"
+
+    features_line = ", ".join(feature_columns) if feature_columns else "see config_hash"
+    target_line = target_column if target_column else "see config_hash"
+    artifact_line = record.artifact_path if record.artifact_path else "not persisted"
+    metrics = record.metrics
+    auc = metrics.get("auc", float("nan"))
+    log_loss_val = metrics.get("log_loss", float("nan"))
+    brier = metrics.get("brier_score", float("nan"))
+
+    content = (
+        f"# Model Card: {record.model_name}\n\n"
+        f"## Identity\n"
+        f"- **Model type:** {record.model_type}\n"
+        f"- **Version:** {record.version}\n"
+        f"- **Trained at (UTC):** {record.trained_at_utc}\n"
+        f"- **Config hash:** {record.config_hash}\n\n"
+        f"## Features & Target\n"
+        f"- **Features:** {features_line}\n"
+        f"- **Target:** {target_line}\n\n"
+        f"## Performance Metrics\n"
+        f"| Metric | Value |\n"
+        f"|--------|-------|\n"
+        f"| AUC | {auc:.4f} |\n"
+        f"| Log loss | {log_loss_val:.4f} |\n"
+        f"| Brier score | {brier:.4f} |\n"
+        f"| Calibration MAE | {record.calibration_mae:.4f} |\n\n"
+        f"## Governance\n"
+        f"- **Governance status:** {record.governance_status}\n"
+        f"- **Champion status:** {record.champion_status}\n"
+        f"- **Artifact path:** {artifact_line}\n\n"
+        f"## Approval\n"
+        f"- **Human approval required:** true\n"
+    )
+    card_path.write_text(content, encoding="utf-8")
+    return card_path
 
 
 class ModelTrainingAgent:
@@ -376,6 +423,18 @@ class ModelTrainingAgent:
             json.dumps(payload, indent=2, sort_keys=True),
             encoding="utf-8",
         )
+        card_feature_columns = feature_columns if self.config is None else self.config.feature_columns
+        card_target_column = target_column if self.config is None else self.config.target_column
+        for record in records:
+            write_model_card(
+                replace(
+                    record,
+                    champion_status=self._champion_status(record.model_name, recommendation),
+                ),
+                self.artifacts_dir / "model_cards",
+                card_feature_columns,
+                card_target_column,
+            )
         return TrainingResult(
             report=report,
             report_path=str(report_path),

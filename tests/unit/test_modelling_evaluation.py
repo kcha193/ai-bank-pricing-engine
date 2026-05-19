@@ -1,4 +1,6 @@
 import numpy as np
+import pandas as pd
+import pytest
 
 from balance_pricing_engine.modelling.datasets import (
     DEPOSIT_FEATURE_COLUMNS,
@@ -117,3 +119,175 @@ def test_rate_response_sanity_check_detects_expected_direction():
     assert increasing_check.is_directionally_sane
     assert decreasing_check.violations == 0
     assert increasing_check.violations == 0
+
+
+# --- P2-1: compute_partial_dependence ---
+
+
+class OfferedRateDecreasingModel:
+    """Toy model: acceptance = 0.9 - 5 * offered_rate (clipped)."""
+
+    def predict_proba(self, features):
+        prob = 0.9 - 5.0 * features["offered_rate"].to_numpy()
+        prob = np.clip(prob, 0.01, 0.99)
+        return np.column_stack([1 - prob, prob])
+
+
+def _minimal_dataset(n: int = 100) -> pd.DataFrame:
+    rng = np.random.default_rng(7)
+    return pd.DataFrame(
+        {
+            "offered_rate": rng.uniform(0.07, 0.09, n),
+            "feat_b": rng.standard_normal(n),
+        }
+    )
+
+
+def test_compute_partial_dependence_returns_sorted_rows():
+    from balance_pricing_engine.modelling.evaluation import compute_partial_dependence
+
+    dataset = _minimal_dataset()
+    model = OfferedRateDecreasingModel()
+    feature_cols = ["offered_rate", "feat_b"]
+    grid = [0.085, 0.075, 0.080]  # intentionally unsorted
+
+    result = compute_partial_dependence(model, dataset, feature_cols, "offered_rate", grid)
+
+    assert list(result.columns) == ["offered_rate", "mean_predicted_probability"]
+    assert list(result["offered_rate"]) == sorted(grid)
+    assert len(result) == 3
+
+
+def test_compute_partial_dependence_mean_decreases_for_decreasing_model():
+    from balance_pricing_engine.modelling.evaluation import compute_partial_dependence
+
+    dataset = _minimal_dataset()
+    model = OfferedRateDecreasingModel()
+    feature_cols = ["offered_rate", "feat_b"]
+    grid = [0.075, 0.080, 0.085]
+
+    result = compute_partial_dependence(model, dataset, feature_cols, "offered_rate", grid)
+
+    probs = result["mean_predicted_probability"].to_numpy()
+    assert probs[0] > probs[1] > probs[2]
+
+
+def test_compute_partial_dependence_raises_on_single_grid_value():
+    from balance_pricing_engine.modelling.evaluation import compute_partial_dependence
+
+    dataset = _minimal_dataset()
+    model = OfferedRateDecreasingModel()
+    with pytest.raises(ValueError, match="at least 2"):
+        compute_partial_dependence(model, dataset, ["offered_rate", "feat_b"], "offered_rate", [0.08])
+
+
+def test_compute_partial_dependence_raises_when_feature_not_in_feature_columns():
+    from balance_pricing_engine.modelling.evaluation import compute_partial_dependence
+
+    dataset = _minimal_dataset()
+    model = OfferedRateDecreasingModel()
+    with pytest.raises(ValueError, match="not in feature_columns"):
+        compute_partial_dependence(model, dataset, ["feat_b"], "offered_rate", [0.07, 0.08])
+
+
+# --- P2-1: check_monotonicity ---
+
+
+def test_check_monotonicity_pass_decreasing():
+    from balance_pricing_engine.modelling.evaluation import MonotonicityCheck, check_monotonicity
+
+    pdp = pd.DataFrame(
+        {
+            "offered_rate": [0.07, 0.08, 0.09],
+            "mean_predicted_probability": [0.80, 0.60, 0.40],
+        }
+    )
+    result = check_monotonicity(pdp, "offered_rate", "decreasing")
+    assert isinstance(result, MonotonicityCheck)
+    assert result.is_monotone is True
+    assert result.violations == 0
+    assert result.feature == "offered_rate"
+
+
+def test_check_monotonicity_fail_decreasing_one_violation():
+    from balance_pricing_engine.modelling.evaluation import check_monotonicity
+
+    pdp = pd.DataFrame(
+        {
+            "offered_rate": [0.07, 0.08, 0.09],
+            "mean_predicted_probability": [0.80, 0.90, 0.40],  # 0.80→0.90 violates decreasing
+        }
+    )
+    result = check_monotonicity(pdp, "offered_rate", "decreasing")
+    assert result.is_monotone is False
+    assert result.violations == 1
+
+
+def test_check_monotonicity_pass_increasing():
+    from balance_pricing_engine.modelling.evaluation import check_monotonicity
+
+    pdp = pd.DataFrame(
+        {
+            "deposit_rate": [0.04, 0.05, 0.06],
+            "mean_predicted_probability": [0.30, 0.50, 0.70],
+        }
+    )
+    result = check_monotonicity(pdp, "deposit_rate", "increasing")
+    assert result.is_monotone is True
+    assert result.violations == 0
+
+
+def test_check_monotonicity_raises_on_bad_direction():
+    from balance_pricing_engine.modelling.evaluation import check_monotonicity
+
+    pdp = pd.DataFrame({"x": [1, 2], "mean_predicted_probability": [0.4, 0.6]})
+    with pytest.raises(ValueError, match="expected_direction"):
+        check_monotonicity(pdp, "x", "sideways")
+
+
+def test_check_monotonicity_raises_on_too_few_rows():
+    from balance_pricing_engine.modelling.evaluation import check_monotonicity
+
+    pdp = pd.DataFrame({"x": [1], "mean_predicted_probability": [0.5]})
+    with pytest.raises(ValueError, match="at least 2 rows"):
+        check_monotonicity(pdp, "x", "increasing")
+
+
+# --- P2-2: compare_models ---
+
+
+def test_compare_models_recommends_challenger_when_it_improves():
+    from balance_pricing_engine.modelling.evaluation import compare_models
+
+    lr_metrics = {"auc": 0.85, "log_loss": 0.42, "brier_score": 0.18}
+    gbm_metrics = {"auc": 0.88, "log_loss": 0.40, "brier_score": 0.17}
+    result = compare_models(
+        "logistic_regression", lr_metrics,
+        "hist_gradient_boosting", gbm_metrics, 0.04,
+    )
+    assert result["recommended"] == "hist_gradient_boosting"
+    assert result["improvement"] == pytest.approx(0.02, abs=1e-6)
+
+
+def test_compare_models_retains_baseline_when_improvement_below_threshold():
+    from balance_pricing_engine.modelling.evaluation import compare_models
+
+    lr_metrics = {"auc": 0.85, "log_loss": 0.42, "brier_score": 0.18}
+    gbm_metrics = {"auc": 0.86, "log_loss": 0.415, "brier_score": 0.175}  # only 0.005 improvement
+    result = compare_models(
+        "logistic_regression", lr_metrics,
+        "hist_gradient_boosting", gbm_metrics, 0.04,
+    )
+    assert result["recommended"] == "logistic_regression"
+
+
+def test_compare_models_retains_baseline_when_challenger_fails_calibration():
+    from balance_pricing_engine.modelling.evaluation import compare_models
+
+    lr_metrics = {"auc": 0.85, "log_loss": 0.42, "brier_score": 0.18}
+    gbm_metrics = {"auc": 0.88, "log_loss": 0.40, "brier_score": 0.17}
+    result = compare_models(
+        "logistic_regression", lr_metrics,
+        "hist_gradient_boosting", gbm_metrics, 0.15,  # cal_mae > 0.10
+    )
+    assert result["recommended"] == "logistic_regression"
