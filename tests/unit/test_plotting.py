@@ -76,6 +76,14 @@ class FakePyplot:
     def show(self) -> None:
         self.show_calls += 1
 
+    def savefig(self, path, **kwargs) -> None:
+        self.savefig_calls = getattr(self, "savefig_calls", [])
+        self.savefig_calls.append(path)
+
+    def close(self, fig=None) -> None:
+        self.close_calls = getattr(self, "close_calls", [])
+        self.close_calls.append(fig)
+
 
 def fake_formatter(*args, **kwargs):
     return {"args": args, "kwargs": kwargs}
@@ -373,3 +381,43 @@ def test_plotting_functions_return_without_matplotlib_tools(monkeypatch):
     plotting.plot_sensitivity_summary(pd.DataFrame())
     plotting.plot_governed_modelling_summary(pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {})
     plotting.plot_response_model_report({}, {}, SimpleNamespace(), SimpleNamespace(), 0.0, 0.0)
+
+
+# --- P2-7: plot_profit_surface ---
+
+
+def test_plot_profit_surface_calls_savefig_and_close(monkeypatch, tmp_path):
+    fake_plt = install_fake_plotting(monkeypatch)
+
+    grid_rows = []
+    for lr in [0.080, 0.085]:
+        for dr in [0.050, 0.055]:
+            grid_rows.append(
+                {
+                    "loan_rate": lr,
+                    "deposit_rate": dr,
+                    "total_objective": 2_000_000.0,
+                    "funding_shortfall": 100_000.0,
+                }
+            )
+    grid_results = pd.DataFrame(grid_rows)
+    result = SimpleNamespace(loan_rate=0.080, deposit_rate=0.050)
+    output_path = tmp_path / "surface.png"
+
+    plotting.plot_profit_surface(grid_results, result, output_path)
+
+    assert hasattr(fake_plt, "savefig_calls")
+    assert len(fake_plt.savefig_calls) == 1
+    assert str(fake_plt.savefig_calls[0]) == str(output_path)
+    assert hasattr(fake_plt, "close_calls")
+    assert len(fake_plt.close_calls) == 1
+
+
+def test_plot_profit_surface_no_op_on_empty_grid(monkeypatch, tmp_path):
+    fake_plt = install_fake_plotting(monkeypatch)
+    plotting.plot_profit_surface(
+        pd.DataFrame(),
+        SimpleNamespace(loan_rate=0.08, deposit_rate=0.05),
+        tmp_path / "out.png",
+    )
+    assert not hasattr(fake_plt, "savefig_calls")
