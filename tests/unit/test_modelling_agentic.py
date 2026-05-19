@@ -266,3 +266,84 @@ def test_registry_labels_failed_challenger_correctly(tmp_path):
 
     assert by_name["ElasticityBaselineModel"]["champion_status"] == "baseline_champion"
     assert by_name["LogisticResponseModel"]["champion_status"] == "challenger_candidate"
+
+
+# --- P2-3: write_model_card ---
+
+
+def _sample_record() -> ModelRecord:
+    return ModelRecord(
+        model_name="LogisticResponseModel",
+        model_type="LogisticResponseModel",
+        version="20260520T120000",
+        trained_at_utc="2026-05-20T12:00:00+00:00",
+        artifact_path="/tmp/model.joblib",
+        metrics={"auc": 0.87, "log_loss": 0.41, "brier_score": 0.17},
+        calibration_mae=0.04,
+        governance_status="pending_human_approval",
+        champion_status="challenger",
+        config_hash="abc123",
+    )
+
+
+def test_write_model_card_creates_file(tmp_path):
+    from balance_pricing_engine.modelling.agentic import write_model_card
+
+    record = _sample_record()
+    path = write_model_card(record, tmp_path)
+    assert path.exists()
+    assert path.stat().st_size > 0
+    assert path.name == "LogisticResponseModel_20260520T120000.md"
+
+
+def test_write_model_card_contains_required_sections(tmp_path):
+    from balance_pricing_engine.modelling.agentic import write_model_card
+
+    record = _sample_record()
+    path = write_model_card(record, tmp_path)
+    content = path.read_text(encoding="utf-8")
+    for section in ["## Identity", "## Performance Metrics", "## Governance", "## Approval"]:
+        assert section in content, f"Missing section: {section}"
+
+
+def test_write_model_card_includes_metrics(tmp_path):
+    from balance_pricing_engine.modelling.agentic import write_model_card
+
+    record = _sample_record()
+    path = write_model_card(record, tmp_path)
+    content = path.read_text(encoding="utf-8")
+    assert "0.8700" in content  # auc
+    assert "0.4100" in content  # log_loss
+    assert "0.0400" in content  # calibration_mae
+
+
+def test_write_model_card_with_feature_columns(tmp_path):
+    from balance_pricing_engine.modelling.agentic import write_model_card
+
+    record = _sample_record()
+    path = write_model_card(
+        record, tmp_path,
+        feature_columns=["offered_rate", "credit_score"],
+        target_column="accepted",
+    )
+    content = path.read_text(encoding="utf-8")
+    assert "offered_rate, credit_score" in content
+    assert "accepted" in content
+
+
+def test_write_model_card_without_feature_columns_shows_fallback(tmp_path):
+    from balance_pricing_engine.modelling.agentic import write_model_card
+
+    record = _sample_record()
+    path = write_model_card(record, tmp_path)
+    content = path.read_text(encoding="utf-8")
+    assert "see config_hash" in content
+
+
+def test_write_model_card_creates_output_dir(tmp_path):
+    from balance_pricing_engine.modelling.agentic import write_model_card
+
+    record = _sample_record()
+    nested = tmp_path / "a" / "b" / "model_cards"
+    write_model_card(record, nested)
+    assert nested.exists()
