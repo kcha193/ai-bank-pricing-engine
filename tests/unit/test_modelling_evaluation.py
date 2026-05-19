@@ -188,3 +188,66 @@ def test_compute_partial_dependence_raises_when_feature_not_in_feature_columns()
     model = OfferedRateDecreasingModel()
     with pytest.raises(ValueError, match="not in feature_columns"):
         compute_partial_dependence(model, dataset, ["feat_b"], "offered_rate", [0.07, 0.08])
+
+
+# --- P2-1: check_monotonicity ---
+
+
+def test_check_monotonicity_pass_decreasing():
+    from balance_pricing_engine.modelling.evaluation import MonotonicityCheck, check_monotonicity
+
+    pdp = pd.DataFrame(
+        {
+            "offered_rate": [0.07, 0.08, 0.09],
+            "mean_predicted_probability": [0.80, 0.60, 0.40],
+        }
+    )
+    result = check_monotonicity(pdp, "offered_rate", "decreasing")
+    assert isinstance(result, MonotonicityCheck)
+    assert result.is_monotone is True
+    assert result.violations == 0
+    assert result.feature == "offered_rate"
+
+
+def test_check_monotonicity_fail_decreasing_one_violation():
+    from balance_pricing_engine.modelling.evaluation import check_monotonicity
+
+    pdp = pd.DataFrame(
+        {
+            "offered_rate": [0.07, 0.08, 0.09],
+            "mean_predicted_probability": [0.80, 0.90, 0.40],  # 0.80→0.90 violates decreasing
+        }
+    )
+    result = check_monotonicity(pdp, "offered_rate", "decreasing")
+    assert result.is_monotone is False
+    assert result.violations == 1
+
+
+def test_check_monotonicity_pass_increasing():
+    from balance_pricing_engine.modelling.evaluation import check_monotonicity
+
+    pdp = pd.DataFrame(
+        {
+            "deposit_rate": [0.04, 0.05, 0.06],
+            "mean_predicted_probability": [0.30, 0.50, 0.70],
+        }
+    )
+    result = check_monotonicity(pdp, "deposit_rate", "increasing")
+    assert result.is_monotone is True
+    assert result.violations == 0
+
+
+def test_check_monotonicity_raises_on_bad_direction():
+    from balance_pricing_engine.modelling.evaluation import check_monotonicity
+
+    pdp = pd.DataFrame({"x": [1, 2], "mean_predicted_probability": [0.4, 0.6]})
+    with pytest.raises(ValueError, match="expected_direction"):
+        check_monotonicity(pdp, "x", "sideways")
+
+
+def test_check_monotonicity_raises_on_too_few_rows():
+    from balance_pricing_engine.modelling.evaluation import check_monotonicity
+
+    pdp = pd.DataFrame({"x": [1], "mean_predicted_probability": [0.5]})
+    with pytest.raises(ValueError, match="at least 2 rows"):
+        check_monotonicity(pdp, "x", "increasing")

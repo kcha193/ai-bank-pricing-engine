@@ -58,6 +58,31 @@ def compute_partial_dependence(
     return pd.DataFrame(rows)
 
 
+def check_monotonicity(
+    pdp_frame: pd.DataFrame,
+    pdp_feature: str,
+    expected_direction: str,
+) -> MonotonicityCheck:
+    """Check whether a partial dependence curve is monotone in the expected direction."""
+    if expected_direction not in {"increasing", "decreasing"}:
+        raise ValueError("expected_direction must be 'increasing' or 'decreasing'.")
+    if len(pdp_frame) < 2:
+        raise ValueError("pdp_frame must have at least 2 rows.")
+    probs = pdp_frame["mean_predicted_probability"].to_numpy()
+    deltas = np.diff(probs)
+    tolerance = 1e-6
+    if expected_direction == "decreasing":
+        violations = int(np.sum(deltas > tolerance))
+    else:
+        violations = int(np.sum(deltas < -tolerance))
+    return MonotonicityCheck(
+        feature=pdp_feature,
+        expected_direction=expected_direction,
+        is_monotone=violations == 0,
+        violations=violations,
+    )
+
+
 def evaluate_probabilities(y_true: np.ndarray, y_probability: np.ndarray) -> dict[str, float]:
     """Evaluate binary response probabilities with ranking and calibration metrics."""
     return {
