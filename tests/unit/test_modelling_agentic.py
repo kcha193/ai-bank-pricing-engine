@@ -347,3 +347,32 @@ def test_write_model_card_creates_output_dir(tmp_path):
     nested = tmp_path / "a" / "b" / "model_cards"
     write_model_card(record, nested)
     assert nested.exists()
+
+
+def test_training_agent_writes_model_cards(tmp_path):
+    dataset = _loan_dataset()
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=7,
+        ),
+        artifacts_dir=tmp_path,
+    )
+    registry = ModelRegistry(tmp_path / "registry.json")
+    agent.train(
+        dataset=dataset,
+        candidates={
+            "elasticity_baseline": ElasticityBaselineModel(),
+            "logistic": LogisticResponseModel(random_state=7),
+        },
+        registry=registry,
+        run_name="card_test",
+    )
+    card_dir = tmp_path / "model_cards"
+    assert card_dir.exists()
+    cards = list(card_dir.glob("*.md"))
+    assert len(cards) == 2  # one per candidate
+    content = cards[0].read_text(encoding="utf-8")
+    assert "## Identity" in content
+    assert "## Approval" in content

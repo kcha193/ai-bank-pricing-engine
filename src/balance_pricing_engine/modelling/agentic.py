@@ -357,6 +357,12 @@ class ModelTrainingAgent:
             )
             registry.append(record)
             records.append(record)
+            write_model_card(
+                record,
+                self.artifacts_dir / "model_cards",
+                feature_columns if self.config is None else self.config.feature_columns,
+                target_column if self.config is None else self.config.target_column,
+            )
 
         recommended = "elasticity_baseline"
         reason = "Baseline retained as governed default champion."
