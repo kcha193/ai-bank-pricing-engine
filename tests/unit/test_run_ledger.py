@@ -283,6 +283,17 @@ REQUIRED_CHECKLIST_ITEMS = [
     "Synthetic-data limitation acknowledged",
 ]
 
+EXPECTED_CHECKLIST_JSON_IDS = {
+    "boundary-result-reviewed",
+    "sensitivity-reviewed",
+    "competitor-rate-freshness",
+    "funding-assumptions-reviewed",
+    "elasticity-assumptions-reviewed",
+    "conduct-fairness-noted",
+    "human-approval",
+    "synthetic-data-acknowledged",
+}
+
 
 def test_write_governance_checklist_creates_file(tmp_path: Path, config, diagnostics) -> None:
     metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
@@ -326,6 +337,63 @@ def test_governance_checklist_shows_boundary_status(
     assert expected_status in content
 
 
+def test_write_governance_checklist_writes_json_file(
+    tmp_path: Path, config, diagnostics
+) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_governance_checklist(tmp_path, metadata, config, diagnostics)
+    assert (tmp_path / "governance_checklist.json").exists()
+
+
+def test_governance_checklist_json_has_required_top_level_keys(
+    tmp_path: Path, config, diagnostics
+) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_governance_checklist(tmp_path, metadata, config, diagnostics)
+    data = json.loads((tmp_path / "governance_checklist.json").read_text())
+    assert set(data.keys()) == {
+        "run_id",
+        "scenario_name",
+        "timestamp",
+        "config_hash",
+        "generated_by",
+        "items",
+    }
+
+
+def test_governance_checklist_json_items_have_correct_schema(
+    tmp_path: Path, config, diagnostics
+) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_governance_checklist(tmp_path, metadata, config, diagnostics)
+    data = json.loads((tmp_path / "governance_checklist.json").read_text())
+
+    for item in data["items"]:
+        assert set(item.keys()) == {
+            "id",
+            "section",
+            "label",
+            "status",
+            "notes",
+            "signed_by",
+            "signed_at",
+        }
+        assert item["status"] == "pending"
+        assert item["notes"] is None
+        assert item["signed_by"] is None
+        assert item["signed_at"] is None
+
+
+def test_governance_checklist_json_has_all_expected_ids(
+    tmp_path: Path, config, diagnostics
+) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_governance_checklist(tmp_path, metadata, config, diagnostics)
+    data = json.loads((tmp_path / "governance_checklist.json").read_text())
+
+    assert {item["id"] for item in data["items"]} == EXPECTED_CHECKLIST_JSON_IDS
+
+
 def test_write_run_ledger_creates_directory(tmp_path: Path, config, diagnostics) -> None:
     run_dir = write_run_ledger(
         scenario_name="baseline",
@@ -360,6 +428,19 @@ def test_write_run_ledger_creates_all_expected_files(
     ]
     for filename in expected:
         assert (run_dir / filename).exists(), f"Missing: {filename}"
+
+
+def test_write_run_ledger_produces_checklist_json(
+    tmp_path: Path, config, diagnostics
+) -> None:
+    run_dir = write_run_ledger(
+        scenario_name="baseline",
+        config=config,
+        config_path="configs/base.yaml",
+        diagnostics=diagnostics,
+        base_dir=tmp_path,
+    )
+    assert (run_dir / "governance_checklist.json").exists()
 
 
 def test_write_run_ledger_returns_path(tmp_path: Path, config, diagnostics) -> None:

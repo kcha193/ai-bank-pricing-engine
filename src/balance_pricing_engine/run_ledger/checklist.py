@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,94 @@ def write_governance_checklist(
     """Write governance_checklist.md into run_dir."""
     content = _build_checklist(metadata, config, diagnostics)
     (run_dir / "governance_checklist.md").write_text(content, encoding="utf-8")
+    json_content = _build_checklist_json(metadata)
+    (run_dir / "governance_checklist.json").write_text(json_content, encoding="utf-8")
+
+
+def _build_checklist_json(metadata: "RunMetadata") -> str:
+    pkg = metadata.package_version or "unknown"
+    payload = {
+        "run_id": metadata.run_id,
+        "scenario_name": metadata.scenario_name,
+        "timestamp": metadata.timestamp,
+        "config_hash": metadata.config_hash,
+        "generated_by": f"ai-bank-pricing-engine v{pkg}",
+        "items": [
+            {
+                "id": "boundary-result-reviewed",
+                "section": "Optimizer Diagnostics",
+                "label": "Boundary result reviewed",
+                "status": "pending",
+                "notes": None,
+                "signed_by": None,
+                "signed_at": None,
+            },
+            {
+                "id": "sensitivity-reviewed",
+                "section": "Optimizer Diagnostics",
+                "label": "Sensitivity reviewed",
+                "status": "pending",
+                "notes": None,
+                "signed_by": None,
+                "signed_at": None,
+            },
+            {
+                "id": "competitor-rate-freshness",
+                "section": "Market Assumptions",
+                "label": "Competitor-rate freshness reviewed",
+                "status": "pending",
+                "notes": None,
+                "signed_by": None,
+                "signed_at": None,
+            },
+            {
+                "id": "funding-assumptions-reviewed",
+                "section": "Market Assumptions",
+                "label": "Funding assumptions reviewed",
+                "status": "pending",
+                "notes": None,
+                "signed_by": None,
+                "signed_at": None,
+            },
+            {
+                "id": "elasticity-assumptions-reviewed",
+                "section": "Model Assumptions",
+                "label": "Elasticity assumptions reviewed",
+                "status": "pending",
+                "notes": None,
+                "signed_by": None,
+                "signed_at": None,
+            },
+            {
+                "id": "conduct-fairness-noted",
+                "section": "Model Assumptions",
+                "label": "Conduct and fairness limitations noted",
+                "status": "pending",
+                "notes": None,
+                "signed_by": None,
+                "signed_at": None,
+            },
+            {
+                "id": "human-approval",
+                "section": "Approval",
+                "label": "Human approval required",
+                "status": "pending",
+                "notes": None,
+                "signed_by": None,
+                "signed_at": None,
+            },
+            {
+                "id": "synthetic-data-acknowledged",
+                "section": "Approval",
+                "label": "Synthetic-data limitation acknowledged",
+                "status": "pending",
+                "notes": None,
+                "signed_by": None,
+                "signed_at": None,
+            },
+        ],
+    }
+    return json.dumps(payload, indent=2, sort_keys=False)
 
 
 def _build_checklist(
