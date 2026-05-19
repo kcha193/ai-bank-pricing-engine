@@ -18,12 +18,13 @@ from balance_pricing_engine.modelling.datasets import (
     build_loan_response_dataset,
 )
 from balance_pricing_engine.modelling.evaluation import (
-    RateResponseCheck,
     check_rate_response_direction,
+    compare_models,
     evaluate_binary_classifier,
     evaluate_calibration,
 )
 from balance_pricing_engine.modelling.models import (
+    build_hist_gradient_boosting_model,
     build_logistic_regression_model,
     fit_response_model,
 )
@@ -101,46 +102,63 @@ def train_and_report(
         random_state=random_seed,
         stratify=dataset[target_column],
     )
-    model = fit_response_model(
-        build_logistic_regression_model(random_seed),
-        train,
-        feature_columns,
-        target_column,
+    lr_model = fit_response_model(
+        build_logistic_regression_model(random_seed), train, feature_columns, target_column
+    )
+    gbm_model = fit_response_model(
+        build_hist_gradient_boosting_model(random_seed), train, feature_columns, target_column
     )
 
-    metrics = evaluate_binary_classifier(model, test, feature_columns, target_column)
-    calibration = evaluate_calibration(
-        model,
-        test,
-        feature_columns,
-        target_column,
-        n_bins=5,
+    lr_metrics = evaluate_binary_classifier(lr_model, test, feature_columns, target_column)
+    gbm_metrics = evaluate_binary_classifier(gbm_model, test, feature_columns, target_column)
+
+    lr_cal = evaluate_calibration(lr_model, test, feature_columns, target_column, n_bins=5)
+    gbm_cal = evaluate_calibration(gbm_model, test, feature_columns, target_column, n_bins=5)
+    lr_cal_mae = float(
+        (lr_cal["mean_predicted_probability"] - lr_cal["observed_rate"]).abs().mean()
     )
-    response_check = check_rate_response_direction(
-        model,
-        test.head(1_000),
-        feature_columns,
-        offered_rates,
-        competitor_rate,
+    gbm_cal_mae = float(
+        (gbm_cal["mean_predicted_probability"] - gbm_cal["observed_rate"]).abs().mean()
+    )
+
+    comparison = compare_models(
+        "logistic_regression", lr_metrics, lr_cal_mae,
+        "hist_gradient_boosting", gbm_metrics, gbm_cal_mae,
+    )
+
+    lr_check = check_rate_response_direction(
+        lr_model, test.head(1_000), feature_columns, offered_rates, competitor_rate,
+        expected_direction,
+    )
+    gbm_check = check_rate_response_direction(
+        gbm_model, test.head(1_000), feature_columns, offered_rates, competitor_rate,
         expected_direction,
     )
 
     print(title)
-    print("  Logistic regression metrics")
-    for key, value in metrics.items():
-        print(f"    {key}: {value:.4f}")
-    print("  Calibration")
-    for row in calibration.itertuples(index=False):
-        print(
-            f"    bin={int(row.bin)}, "
-            f"mean_pred={row.mean_predicted_probability:.3f}, "
-            f"observed={row.observed_rate:.3f}, "
-            f"count={int(row.count)}"
-        )
-    print_rate_response_check(response_check)
+    _print_comparison_table(lr_metrics, gbm_metrics, lr_cal_mae, gbm_cal_mae)
+    print(f"  Recommendation: {comparison['recommended']}")
+    print(f"    reason: {comparison['reason']}")
+    print("  Logistic regression rate response")
+    print_rate_response_check(lr_check)
+    print("  Hist gradient boosting rate response")
+    print_rate_response_check(gbm_check)
 
 
-def print_rate_response_check(check: RateResponseCheck) -> None:
+def _print_comparison_table(
+    lr_metrics: dict,
+    gbm_metrics: dict,
+    lr_cal_mae: float,
+    gbm_cal_mae: float,
+) -> None:
+    header = f"  {'metric':<22}  {'logistic_regression':>22}  {'hist_gradient_boosting':>22}"
+    print(header)
+    for key in ["auc", "log_loss", "brier_score"]:
+        print(f"  {key:<22}  {lr_metrics[key]:>22.4f}  {gbm_metrics[key]:>22.4f}")
+    print(f"  {'calibration_mae':<22}  {lr_cal_mae:>22.4f}  {gbm_cal_mae:>22.4f}")
+
+
+def print_rate_response_check(check) -> None:
     status = "pass" if check.is_directionally_sane else "review"
     print(f"  Rate response sanity check: {status}")
     print(f"    expected_direction={check.expected_direction}")
