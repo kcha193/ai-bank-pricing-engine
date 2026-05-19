@@ -251,3 +251,43 @@ def test_check_monotonicity_raises_on_too_few_rows():
     pdp = pd.DataFrame({"x": [1], "mean_predicted_probability": [0.5]})
     with pytest.raises(ValueError, match="at least 2 rows"):
         check_monotonicity(pdp, "x", "increasing")
+
+
+# --- P2-2: compare_models ---
+
+
+def test_compare_models_recommends_challenger_when_it_improves():
+    from balance_pricing_engine.modelling.evaluation import compare_models
+
+    lr_metrics = {"auc": 0.85, "log_loss": 0.42, "brier_score": 0.18}
+    gbm_metrics = {"auc": 0.88, "log_loss": 0.40, "brier_score": 0.17}
+    result = compare_models(
+        "logistic_regression", lr_metrics, 0.05,
+        "hist_gradient_boosting", gbm_metrics, 0.04,
+    )
+    assert result["recommended"] == "hist_gradient_boosting"
+    assert result["improvement"] == pytest.approx(0.02, abs=1e-6)
+
+
+def test_compare_models_retains_baseline_when_improvement_below_threshold():
+    from balance_pricing_engine.modelling.evaluation import compare_models
+
+    lr_metrics = {"auc": 0.85, "log_loss": 0.42, "brier_score": 0.18}
+    gbm_metrics = {"auc": 0.86, "log_loss": 0.415, "brier_score": 0.175}  # only 0.005 improvement
+    result = compare_models(
+        "logistic_regression", lr_metrics, 0.05,
+        "hist_gradient_boosting", gbm_metrics, 0.04,
+    )
+    assert result["recommended"] == "logistic_regression"
+
+
+def test_compare_models_retains_baseline_when_challenger_fails_calibration():
+    from balance_pricing_engine.modelling.evaluation import compare_models
+
+    lr_metrics = {"auc": 0.85, "log_loss": 0.42, "brier_score": 0.18}
+    gbm_metrics = {"auc": 0.88, "log_loss": 0.40, "brier_score": 0.17}
+    result = compare_models(
+        "logistic_regression", lr_metrics, 0.05,
+        "hist_gradient_boosting", gbm_metrics, 0.15,  # cal_mae > 0.10
+    )
+    assert result["recommended"] == "logistic_regression"

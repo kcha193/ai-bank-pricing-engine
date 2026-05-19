@@ -83,6 +83,32 @@ def check_monotonicity(
     )
 
 
+def compare_models(
+    model_name_a: str,
+    metrics_a: dict[str, float],
+    cal_mae_a: float,
+    model_name_b: str,
+    metrics_b: dict[str, float],
+    cal_mae_b: float,
+    *,
+    min_log_loss_improvement: float = 0.01,
+    max_calibration_error: float = 0.10,
+) -> dict[str, Any]:
+    """Compare two models by log-loss improvement and calibration; return recommendation dict."""
+    improvement = metrics_a["log_loss"] - metrics_b["log_loss"]
+    b_qualifies = improvement >= min_log_loss_improvement and cal_mae_b <= max_calibration_error
+    if b_qualifies:
+        recommended = model_name_b
+        reason = (
+            f"challenger improved log_loss by {improvement:.4f} "
+            "and passed calibration threshold"
+        )
+    else:
+        recommended = model_name_a
+        reason = "baseline retained (challenger did not meet improvement or calibration threshold)"
+    return {"recommended": recommended, "reason": reason, "improvement": improvement}
+
+
 def evaluate_probabilities(y_true: np.ndarray, y_probability: np.ndarray) -> dict[str, float]:
     """Evaluate binary response probabilities with ranking and calibration metrics."""
     return {
