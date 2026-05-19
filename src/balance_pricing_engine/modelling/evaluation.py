@@ -68,7 +68,9 @@ def check_monotonicity(
         raise ValueError("expected_direction must be 'increasing' or 'decreasing'.")
     if len(pdp_frame) < 2:
         raise ValueError("pdp_frame must have at least 2 rows.")
-    sort_column = pdp_feature if pdp_feature in pdp_frame.columns else pdp_frame.columns[0]
+    if pdp_feature not in pdp_frame.columns:
+        raise ValueError(f"pdp_feature '{pdp_feature}' not found in pdp_frame columns: {list(pdp_frame.columns)}")
+    sort_column = pdp_feature
     sorted_pdp_frame = pdp_frame.sort_values(sort_column, ascending=True).copy()
     probs = sorted_pdp_frame["mean_predicted_probability"].to_numpy()
     deltas = np.diff(probs)

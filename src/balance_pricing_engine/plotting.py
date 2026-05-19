@@ -623,7 +623,7 @@ def plot_profit_surface(
     fig.colorbar(scatter, ax=axes[1, 1], label="Objective ($M)")
 
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.savefig(output_path, dpi=150, bbox_inches="tight", format="png")
     plt.close(fig)
 
 
