@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import warnings
 
 import pandas as pd
 
@@ -52,6 +53,9 @@ def run_multiperiod_diagnostics(
     back_book_deposit_cost = 0.0
 
     for period in range(mp.n_periods):
+        back_book_loan_income *= 1 - mp.loan_runoff_rate
+        back_book_deposit_cost *= 1 - mp.deposit_runoff_rate
+
         scenario_config = _build_period_config(config, period)
         diagnostics = run_baseline_diagnostics(
             scenario_config,
@@ -59,17 +63,13 @@ def run_multiperiod_diagnostics(
         )
         back_book_income = back_book_loan_income - back_book_deposit_cost
         period_net = diagnostics.best_result.total_objective + back_book_income
-        discounted_contribution = period_net / (1 + mp.discount_rate) ** period
+        discounted_contribution = period_net / (1 + mp.discount_rate) ** (period + 1)
 
         period_diagnostics.append(diagnostics)
         period_discounted_contributions.append(discounted_contribution)
 
-        surviving_loan_fraction = (1 - mp.loan_runoff_rate) ** (period + 1)
-        surviving_deposit_fraction = (1 - mp.deposit_runoff_rate) ** (period + 1)
-        back_book_loan_income += (
-            diagnostics.best_result.loan_income_after_losses * surviving_loan_fraction
-        )
-        back_book_deposit_cost += diagnostics.best_result.deposit_cost * surviving_deposit_fraction
+        back_book_loan_income += diagnostics.best_result.loan_income_after_losses
+        back_book_deposit_cost += diagnostics.best_result.deposit_cost
 
     return MultiPeriodDiagnostics(
         period_diagnostics=period_diagnostics,
@@ -86,6 +86,12 @@ def _build_period_config(config: EngineConfig, period: int) -> EngineConfig:
     mp = config.multiperiod
     if mp is None:
         raise ValueError("config.multiperiod is required for multi-period diagnostics.")
+    if mp.market_cash_rate_drift_bps != 0:
+        warnings.warn(
+            "market_cash_rate_drift_bps is set but competitor rates are not drifted. "
+            "Competitor gaps will shift mechanically, distorting elasticity calculations.",
+            stacklevel=2,
+        )
     cash_rate = config.market.cash_rate + period * mp.market_cash_rate_drift_bps / 10_000
     updated_market = config.market.model_copy(update={"cash_rate": cash_rate})
     return config.model_copy(update={"market": updated_market})

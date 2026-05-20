@@ -74,8 +74,8 @@ class BalanceSheetConfig(BaseModel):
 
 class MultiPeriodConfig(BaseModel):
     n_periods: int = Field(default=2, ge=2)
-    loan_runoff_rate: float = Field(default=0.30, gt=0, le=1)
-    deposit_runoff_rate: float = Field(default=0.50, gt=0, le=1)
+    loan_runoff_rate: float = Field(default=0.30, ge=0, le=1)
+    deposit_runoff_rate: float = Field(default=0.50, ge=0, le=1)
     discount_rate: float = Field(default=0.08, ge=0)
     market_cash_rate_drift_bps: float = 0.0
 

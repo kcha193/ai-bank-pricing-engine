@@ -55,6 +55,8 @@ scenario diagnostics and sensitivity analysis
   issues, expands grids when needed, and runs sensitivity cases.
 - `src/balance_pricing_engine/scenarios/runner.py`: orchestrates baseline scenario diagnostics and
   artifact persistence.
+- `src/balance_pricing_engine/scenarios/multiperiod.py`: rolls baseline diagnostics across multiple
+  future periods and discounts the resulting objective contributions.
 - `src/balance_pricing_engine/run_ledger/`: creates governed pricing-run ledgers by wrapping
   diagnostics artifacts with metadata, configuration snapshots, pricing memos, and governance
   checklists.
@@ -72,6 +74,19 @@ The final `boundary_warning_flag` reports the accepted result after expansion. T
 `initial_boundary_warning_flag` and `expansion_rounds` fields show whether remediation was needed.
 If the final flag remains true, the optimum may still sit outside the searched domain and the
 boundary issue should remain open for review.
+
+## Multi-Period Scenario Roll
+
+`MultiPeriodConfig` enables a portfolio-level scenario roll through
+`run_multiperiod_diagnostics()`. Each period runs the standard baseline diagnostics with the period's
+market assumptions, carries prior-period loan income and deposit cost as back-book economics, applies
+`loan_runoff_rate` and `deposit_runoff_rate` to that back book each period, and reports a discounted
+NPV using `discount_rate`.
+
+The key configuration fields are `n_periods`, `loan_runoff_rate`, `deposit_runoff_rate`,
+`discount_rate`, and `market_cash_rate_drift_bps`. The cash-rate drift shifts the cash rate used in
+later periods; competitor loan and deposit rates remain fixed, so a warning is emitted when cash-rate
+drift is configured because competitor gaps will move mechanically.
 
 ## Artifact Flow
 
