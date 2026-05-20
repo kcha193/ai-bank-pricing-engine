@@ -30,6 +30,7 @@ def test_objective_decomposition_components_reconcile_to_total_objective():
     reconciled_objective = (
         grid_results["loan_interest_income"]
         - grid_results["expected_credit_loss"]
+        - grid_results["capital_charge"]
         - grid_results["deposit_interest_cost"]
         - grid_results["wholesale_funding_cost"]
         - grid_results["funding_shortfall_penalty"]
@@ -411,6 +412,7 @@ def test_scenario_diagnostics_can_persist_regression_artifacts(tmp_path):
         "best_loan_rate",
         "best_deposit_rate",
         "objective_value",
+        "capital_charge",
         "excess_deposit_income",
         "boundary_warning_flag",
         "initial_boundary_warning_flag",
@@ -421,6 +423,7 @@ def test_scenario_diagnostics_can_persist_regression_artifacts(tmp_path):
     assert summary["best_loan_rate"] == diagnostics.best_result.loan_rate
     assert summary["best_deposit_rate"] == diagnostics.best_result.deposit_rate
     assert summary["objective_value"] == diagnostics.best_result.total_objective
+    assert summary["capital_charge"] == diagnostics.best_result.capital_charge
     assert summary["boundary_warning_flag"] is diagnostics.boundary_diagnostics.has_warning
     assert (
         summary["initial_boundary_warning_flag"]

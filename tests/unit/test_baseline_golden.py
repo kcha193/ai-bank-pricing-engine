@@ -23,6 +23,7 @@ NUMERIC_KEYS = {
     "expected_loan_volume",
     "expected_deposit_volume",
     "funding_shortfall",
+    "capital_charge",
     "excess_deposit_income",
 }
 BOOL_KEYS = {
@@ -40,6 +41,7 @@ def _build_summary(diag) -> dict:
         "best_loan_rate": r.loan_rate,
         "best_deposit_rate": r.deposit_rate,
         "objective_value": r.total_objective,
+        "capital_charge": r.capital_charge,
         "excess_deposit_income": r.excess_deposit_income,
         "expected_loan_volume": r.expected_loan_volume,
         "expected_deposit_volume": r.expected_deposit_volume,

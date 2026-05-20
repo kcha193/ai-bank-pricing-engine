@@ -16,6 +16,7 @@ MONEY_COLUMNS = [
     "total_objective",
     "loan_interest_income",
     "expected_credit_loss",
+    "capital_charge",
     "deposit_interest_cost",
     "wholesale_funding_cost",
     "excess_deposit_income",
@@ -228,6 +229,7 @@ def build_objective_decomposition_table(decomposition: Any) -> pd.DataFrame:
         [
             {"component": "loan interest income", "amount": decomposition.loan_interest_income},
             {"component": "expected credit loss", "amount": -decomposition.expected_credit_loss},
+            {"component": "capital charge", "amount": -decomposition.capital_charge},
             {"component": "deposit interest cost", "amount": -decomposition.deposit_interest_cost},
             {
                 "component": "wholesale funding cost",

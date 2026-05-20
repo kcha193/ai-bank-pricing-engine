@@ -3,6 +3,7 @@ import numpy as np
 from balance_pricing_engine.diagnostics import ObjectiveDecomposition
 from balance_pricing_engine.pricing.balance_sheet import calculate_funding_result
 from balance_pricing_engine.pricing.profit import (
+    expected_capital_charge,
     expected_credit_loss,
     expected_loan_interest_income,
     expected_wholesale_funding_cost,
@@ -51,6 +52,16 @@ def test_expected_credit_loss_reduces_loan_profit():
         higher_loss_decomposition.reconciled_total_objective
         < base_decomposition.reconciled_total_objective
     )
+
+
+def test_expected_capital_charge_prices_required_regulatory_capital():
+    charge = expected_capital_charge(
+        loan_volume=1_000_000,
+        rwa_weight=0.35,
+        capital_hurdle_rate=0.12,
+    )
+
+    assert charge == 4_200.0
 
 
 def test_funding_shortfall_creates_penalty():

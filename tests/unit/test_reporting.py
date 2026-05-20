@@ -33,10 +33,11 @@ from balance_pricing_engine.reporting import (
 class DummyDecomposition:
     loan_interest_income = 100.0
     expected_credit_loss = 10.0
+    capital_charge = 4.0
     deposit_interest_cost = 20.0
     wholesale_funding_cost = 30.0
     funding_shortfall_penalty = 5.0
-    total_objective = 35.0
+    total_objective = 31.0
 
 
 class DummyResult:
@@ -159,12 +160,21 @@ def test_rate_grid_and_decomposition_tables_match_notebook_shape():
     assert decomposition["component"].tolist() == [
         "loan interest income",
         "expected credit loss",
+        "capital charge",
         "deposit interest cost",
         "wholesale funding cost",
         "funding shortfall penalty",
         "total objective",
     ]
-    assert decomposition["amount"].tolist() == [100.0, -10.0, -20.0, -30.0, -5.0, 35.0]
+    assert decomposition["amount"].tolist() == [
+        100.0,
+        -10.0,
+        -4.0,
+        -20.0,
+        -30.0,
+        -5.0,
+        31.0,
+    ]
 
 
 def test_customer_profile_and_best_decision_tables_match_notebook_inputs():
