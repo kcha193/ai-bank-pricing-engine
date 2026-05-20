@@ -50,6 +50,22 @@ def test_segment_loan_customers_splits_lvr_tiers_without_overlap():
     assert len(assigned_ids) == len(set(assigned_ids))
 
 
+def test_segment_loan_customers_handles_duplicate_index_labels():
+    customers = pd.DataFrame(
+        {
+            "customer_id": [1, 2, 3],
+            "lvr": [0.50, 0.85, 0.92],
+        },
+        index=[0, 0, 1],
+    )
+    config = load_config("configs/segmented_pricing.yaml").segmented_pricing
+
+    cohorts = segment_loan_customers(customers, config.loan_tiers)
+
+    assigned_ids = pd.concat(cohorts.values())["customer_id"].tolist()
+    assert sorted(assigned_ids) == [1, 2, 3]
+
+
 def test_segment_deposit_customers_splits_balance_tiers_without_overlap():
     customers = pd.DataFrame(
         {

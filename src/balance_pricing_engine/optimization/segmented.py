@@ -200,26 +200,26 @@ def _segment_customers(
     upper_bound_attribute: str,
 ) -> dict[str, pd.DataFrame]:
     cohorts: dict[str, pd.DataFrame] = {}
-    assigned_indexes: set[int] = set()
+    assigned_positions = np.zeros(len(customers), dtype=bool)
     previous_upper_bound = 0.0
 
     for tier in tier_configs:
         upper_bound = getattr(tier, upper_bound_attribute)
-        values = customers[value_column]
+        values = customers[value_column].to_numpy()
         if upper_bound is None:
-            mask = ~customers.index.isin(assigned_indexes)
+            mask = ~assigned_positions
         else:
-            mask = (values >= previous_upper_bound) & (values < upper_bound)
+            mask = (values >= previous_upper_bound) & (values < upper_bound) & ~assigned_positions
             previous_upper_bound = float(upper_bound)
 
-        cohort = customers.loc[mask].copy()
+        cohort = customers.iloc[mask].copy()
         if cohort.empty:
             raise ValueError(f"Tier {tier.name!r} has no customers.")
 
         cohorts[tier.name] = cohort
-        assigned_indexes.update(cohort.index)
+        assigned_positions |= mask
 
-    if len(assigned_indexes) != len(customers):
+    if not assigned_positions.all():
         raise ValueError(f"Some customers are not covered by {value_column} tiers.")
 
     return cohorts
