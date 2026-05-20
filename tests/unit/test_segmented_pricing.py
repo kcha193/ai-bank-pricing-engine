@@ -197,6 +197,9 @@ def test_deposit_tier_optimizes_net_funding_contribution_not_volume():
         deposit_rate_elasticity=50.0,
         deposit_competitor_gap_elasticity=0.0,
         wholesale_funding_rate=market.wholesale_funding_rate,
+        cash_rate=market.cash_rate,
+        total_loan_volume=500_000.0,
+        accumulated_deposit_volume=0.0,
         response_coefficients=ResponseCoefficientsConfig(),
     )
 

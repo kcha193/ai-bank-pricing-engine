@@ -113,28 +113,32 @@ def optimize_segmented_rates(
             market=market,
             loan_rate_elasticity=loan_rate_elasticity,
             loan_competitor_gap_elasticity=loan_competitor_gap_elasticity,
-            required_deposit_funding_ratio=required_deposit_funding_ratio,
-            funding_shortfall_penalty_rate=funding_shortfall_penalty_rate,
             loan_rwa_weight=loan_rwa_weight,
             capital_hurdle_rate=capital_hurdle_rate,
             response_coefficients=response_coefficients,
         )
         for tier in config.loan_tiers
     ]
-    deposit_tier_results = [
-        _optimize_deposit_tier(
+
+    total_loan_volume = sum(tier.volume for tier in loan_tier_results)
+    deposit_tier_results: list[TierResult] = []
+    accumulated_deposit_volume = 0.0
+    for tier in config.deposit_tiers:
+        result = _optimize_deposit_tier(
             customers=deposit_segments[tier.name],
             tier=tier,
             market=market,
             deposit_rate_elasticity=deposit_rate_elasticity,
             deposit_competitor_gap_elasticity=deposit_competitor_gap_elasticity,
             wholesale_funding_rate=market.wholesale_funding_rate,
+            cash_rate=market.cash_rate,
+            total_loan_volume=total_loan_volume,
+            accumulated_deposit_volume=accumulated_deposit_volume,
             response_coefficients=response_coefficients,
         )
-        for tier in config.deposit_tiers
-    ]
+        deposit_tier_results.append(result)
+        accumulated_deposit_volume += result.volume
 
-    total_loan_volume = sum(tier.volume for tier in loan_tier_results)
     total_deposit_volume = sum(tier.volume for tier in deposit_tier_results)
     total_loan_interest_income = sum(tier.interest_income for tier in loan_tier_results)
     total_credit_loss = sum(tier.credit_loss for tier in loan_tier_results)
@@ -225,8 +229,6 @@ def _optimize_loan_tier(
     market: MarketState,
     loan_rate_elasticity: float,
     loan_competitor_gap_elasticity: float,
-    required_deposit_funding_ratio: float,
-    funding_shortfall_penalty_rate: float,
     loan_rwa_weight: float,
     capital_hurdle_rate: float,
     response_coefficients: ResponseCoefficientsConfig,
@@ -251,18 +253,13 @@ def _optimize_loan_tier(
             loan_rwa_weight,
             capital_hurdle_rate,
         )
-        funding = calculate_funding_result(
-            volume,
-            0.0,
-            required_deposit_funding_ratio,
-            funding_shortfall_penalty_rate,
-        )
+        # Wholesale funding cost is a real per-tier cost; the portfolio-level funding shortfall
+        # penalty is excluded here because it is a portfolio constraint, not a per-tier charge.
         objective = (
             interest_income
             - credit_loss
             - capital_charge
             - expected_wholesale_funding_cost(volume, 0.0, market.wholesale_funding_rate)
-            - funding.funding_penalty
         )
         if objective > best_objective:
             best_objective = objective
@@ -288,6 +285,9 @@ def _optimize_deposit_tier(
     deposit_rate_elasticity: float,
     deposit_competitor_gap_elasticity: float,
     wholesale_funding_rate: float,
+    cash_rate: float,
+    total_loan_volume: float,
+    accumulated_deposit_volume: float,
     response_coefficients: ResponseCoefficientsConfig,
 ) -> TierResult:
     best_result: TierResult | None = None
@@ -304,7 +304,11 @@ def _optimize_deposit_tier(
         )
         volume = expected_deposit_volume(customers, probabilities)
         interest_cost = expected_deposit_cost(customers, probabilities, float(rate))
-        funding_benefit = volume * wholesale_funding_rate
+        # Deposits that displace wholesale borrowing save at wholesale_funding_rate; deposits
+        # beyond total loan volume are excess and earn only cash_rate (via excess_deposit_income).
+        shortfall_covered = min(volume, max(0.0, total_loan_volume - accumulated_deposit_volume))
+        excess = volume - shortfall_covered
+        funding_benefit = shortfall_covered * wholesale_funding_rate + excess * cash_rate
         objective = -interest_cost + funding_benefit
         if objective > best_objective:
             best_objective = objective
