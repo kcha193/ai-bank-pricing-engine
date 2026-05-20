@@ -308,6 +308,25 @@ def test_segmented_diagnostics_warn_when_tier_winner_is_at_boundary():
     )
 
 
+def test_segmented_policy_band_breach_is_set_when_expansion_wins_outside_initial_band(
+    tmp_path,
+):
+    raw_config = _segmented_config_dict()
+    for tier in raw_config["segmented_pricing"]["loan_tiers"]:
+        tier["rate_grid"] = {"start": 0.055, "stop": 0.065, "step": 0.005}
+    config = EngineConfig.model_validate(raw_config)
+
+    diagnostics = run_baseline_diagnostics(config, max_boundary_expansions=1)
+    diagnostics.write_artifacts(tmp_path)
+
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert diagnostics.expansion_rounds == 1
+    assert diagnostics.segmented_tier_rates is not None
+    assert any(rate > 0.065 for rate in diagnostics.segmented_tier_rates["loan_tiers"].values())
+    assert diagnostics.policy_band_breached
+    assert summary["policy_band_breached"] is True
+
+
 def _segmented_config_dict() -> dict:
     return {
         "random_seed": 42,

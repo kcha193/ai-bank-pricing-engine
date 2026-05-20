@@ -266,6 +266,7 @@ def _evaluate_adaptive_segmented_rates(
     if segmented_config is None:
         raise ValueError("Segmented pricing config is required.")
 
+    original_segmented_config = segmented_config
     initial_boundary_diagnostics: BoundaryDiagnostics | None = None
     expansion_rounds = 0
 
@@ -291,6 +292,7 @@ def _evaluate_adaptive_segmented_rates(
             market,
             expansion_rounds=expansion_rounds,
             initial_boundary_diagnostics=initial_boundary_diagnostics,
+            original_config=original_segmented_config,
             expansion_capped=False,
         )
         if initial_boundary_diagnostics is None:
@@ -305,6 +307,7 @@ def _evaluate_adaptive_segmented_rates(
                 market,
                 expansion_rounds=expansion_rounds,
                 initial_boundary_diagnostics=initial_boundary_diagnostics,
+                original_config=original_segmented_config,
                 expansion_capped=(
                     diagnostics.boundary_diagnostics.has_warning
                     and expansion_rounds >= max_boundary_expansions
@@ -322,6 +325,7 @@ def _evaluate_adaptive_segmented_rates(
                 market,
                 expansion_rounds=expansion_rounds,
                 initial_boundary_diagnostics=initial_boundary_diagnostics,
+                original_config=original_segmented_config,
                 expansion_capped=diagnostics.boundary_diagnostics.has_warning,
             )
         expansion_rounds += 1
@@ -334,6 +338,7 @@ def _segmented_diagnostics(
     *,
     expansion_rounds: int = 0,
     initial_boundary_diagnostics: BoundaryDiagnostics | None = None,
+    original_config: SegmentedPricingConfig | None = None,
     expansion_capped: bool = False,
 ) -> ScenarioDiagnostics:
     best_result = _optimization_result_from_segmented_result(result)
@@ -351,6 +356,10 @@ def _segmented_diagnostics(
         initial_boundary_diagnostics=initial_boundary_diagnostics or boundary_diagnostics,
         expansion_rounds=expansion_rounds,
         expansion_capped=expansion_capped,
+        policy_band_breached=_segmented_policy_band_breached(
+            result,
+            original_config or config,
+        ),
         segmented_tier_rates={
             "loan_tiers": {tier.tier_name: tier.rate for tier in result.loan_tiers},
             "deposit_tiers": {tier.tier_name: tier.rate for tier in result.deposit_tiers},
@@ -391,6 +400,27 @@ def _segmented_boundary_diagnostics(
             )
         )
     return BoundaryDiagnostics(warnings=tuple(warnings))
+
+
+def _segmented_policy_band_breached(
+    result: SegmentedOptimizationResult,
+    original_config: SegmentedPricingConfig,
+) -> bool:
+    loan_breached = any(
+        _rate_outside_tier_grid(tier_result.rate, tier_config.rate_grid)
+        for tier_result, tier_config in zip(result.loan_tiers, original_config.loan_tiers)
+    )
+    deposit_breached = any(
+        _rate_outside_tier_grid(tier_result.rate, tier_config.rate_grid)
+        for tier_result, tier_config in zip(result.deposit_tiers, original_config.deposit_tiers)
+    )
+    return loan_breached or deposit_breached
+
+
+def _rate_outside_tier_grid(rate: float, rate_grid: GridConfig) -> bool:
+    return bool(rate < rate_grid.start and not np.isclose(rate, rate_grid.start)) or bool(
+        rate > rate_grid.stop and not np.isclose(rate, rate_grid.stop)
+    )
 
 
 def _tier_boundary_warnings(
