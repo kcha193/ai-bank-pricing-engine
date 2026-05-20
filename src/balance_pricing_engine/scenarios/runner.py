@@ -10,11 +10,19 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from balance_pricing_engine.config import EngineConfig, ResponseCoefficientsConfig
+from balance_pricing_engine.config import (
+    DepositTierConfig,
+    EngineConfig,
+    GridConfig,
+    LoanTierConfig,
+    ResponseCoefficientsConfig,
+    SegmentedPricingConfig,
+)
 from balance_pricing_engine.diagnostics import (
     BoundaryDiagnostics,
     ObjectiveDecomposition,
     evaluate_adaptive_joint_rate_grid,
+    infer_boundary_warning_cause,
     objective_decomposition_from_result,
     objective_decomposition_from_row,
 )
@@ -198,22 +206,13 @@ def run_baseline_diagnostics(
     market = MarketState(**config.market.model_dump())
 
     if config.segmented_pricing is not None:
-        segmented_result = optimize_segmented_rates(
+        return _evaluate_adaptive_segmented_rates(
+            config=config,
             loan_customers=loan_customers,
             deposit_customers=deposit_customers,
             market=market,
-            config=config.segmented_pricing,
-            loan_rate_elasticity=config.response.loan_rate_elasticity,
-            loan_competitor_gap_elasticity=config.response.loan_competitor_gap_elasticity,
-            deposit_rate_elasticity=config.response.deposit_rate_elasticity,
-            deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
-            required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
-            funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
-            loan_rwa_weight=config.balance_sheet.loan_rwa_weight,
-            capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
-            response_coefficients=config.response.coefficients,
+            max_boundary_expansions=max_boundary_expansions,
         )
-        return _segmented_diagnostics(segmented_result)
 
     loan_grid, deposit_grid = build_configured_rate_grids(config)
 
@@ -256,19 +255,221 @@ def run_baseline_diagnostics(
     )
 
 
-def _segmented_diagnostics(result: SegmentedOptimizationResult) -> ScenarioDiagnostics:
+def _evaluate_adaptive_segmented_rates(
+    config: EngineConfig,
+    loan_customers: pd.DataFrame,
+    deposit_customers: pd.DataFrame,
+    market: MarketState,
+    max_boundary_expansions: int,
+) -> ScenarioDiagnostics:
+    segmented_config = config.segmented_pricing
+    if segmented_config is None:
+        raise ValueError("Segmented pricing config is required.")
+
+    initial_boundary_diagnostics: BoundaryDiagnostics | None = None
+    expansion_rounds = 0
+
+    while True:
+        result = optimize_segmented_rates(
+            loan_customers=loan_customers,
+            deposit_customers=deposit_customers,
+            market=market,
+            config=segmented_config,
+            loan_rate_elasticity=config.response.loan_rate_elasticity,
+            loan_competitor_gap_elasticity=config.response.loan_competitor_gap_elasticity,
+            deposit_rate_elasticity=config.response.deposit_rate_elasticity,
+            deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
+            required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
+            funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
+            loan_rwa_weight=config.balance_sheet.loan_rwa_weight,
+            capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
+            response_coefficients=config.response.coefficients,
+        )
+        diagnostics = _segmented_diagnostics(
+            result,
+            segmented_config,
+            market,
+            expansion_rounds=expansion_rounds,
+            initial_boundary_diagnostics=initial_boundary_diagnostics,
+            expansion_capped=False,
+        )
+        if initial_boundary_diagnostics is None:
+            initial_boundary_diagnostics = diagnostics.boundary_diagnostics
+        if (
+            not diagnostics.boundary_diagnostics.has_warning
+            or expansion_rounds >= max_boundary_expansions
+        ):
+            return _segmented_diagnostics(
+                result,
+                segmented_config,
+                market,
+                expansion_rounds=expansion_rounds,
+                initial_boundary_diagnostics=initial_boundary_diagnostics,
+                expansion_capped=(
+                    diagnostics.boundary_diagnostics.has_warning
+                    and expansion_rounds >= max_boundary_expansions
+                ),
+            )
+
+        segmented_config, expanded = _expand_segmented_config_for_boundary(
+            result,
+            segmented_config,
+        )
+        if not expanded:
+            return _segmented_diagnostics(
+                result,
+                segmented_config,
+                market,
+                expansion_rounds=expansion_rounds,
+                initial_boundary_diagnostics=initial_boundary_diagnostics,
+                expansion_capped=diagnostics.boundary_diagnostics.has_warning,
+            )
+        expansion_rounds += 1
+
+
+def _segmented_diagnostics(
+    result: SegmentedOptimizationResult,
+    config: SegmentedPricingConfig,
+    market: MarketState,
+    *,
+    expansion_rounds: int = 0,
+    initial_boundary_diagnostics: BoundaryDiagnostics | None = None,
+    expansion_capped: bool = False,
+) -> ScenarioDiagnostics:
     best_result = _optimization_result_from_segmented_result(result)
     grid_results = _grid_results_from_segmented_result(result, best_result)
+    boundary_diagnostics = _segmented_boundary_diagnostics(
+        result,
+        config,
+        best_result,
+        market,
+    )
     return ScenarioDiagnostics(
         best_result=best_result,
         grid_results=grid_results,
-        boundary_diagnostics=BoundaryDiagnostics(warnings=()),
-        initial_boundary_diagnostics=BoundaryDiagnostics(warnings=()),
+        boundary_diagnostics=boundary_diagnostics,
+        initial_boundary_diagnostics=initial_boundary_diagnostics or boundary_diagnostics,
+        expansion_rounds=expansion_rounds,
+        expansion_capped=expansion_capped,
         segmented_tier_rates={
             "loan_tiers": {tier.tier_name: tier.rate for tier in result.loan_tiers},
             "deposit_tiers": {tier.tier_name: tier.rate for tier in result.deposit_tiers},
         },
     )
+
+
+def _segmented_boundary_diagnostics(
+    result: SegmentedOptimizationResult,
+    config: SegmentedPricingConfig,
+    best_result: OptimizationResult,
+    market: MarketState,
+) -> BoundaryDiagnostics:
+    cause = infer_boundary_warning_cause(
+        objective_decomposition_from_result(best_result),
+        loan_rate=best_result.loan_rate,
+        deposit_rate=best_result.deposit_rate,
+        competitor_loan_rate=market.competitor_loan_rate,
+        competitor_deposit_rate=market.competitor_deposit_rate,
+    )
+    warnings: list[str] = []
+    for tier_result, tier_config in zip(result.loan_tiers, config.loan_tiers):
+        warnings.extend(
+            _tier_boundary_warnings(
+                product_name=f"home loan tier {tier_config.name}",
+                rate=tier_result.rate,
+                rate_grid=tier_config.rate_grid,
+                cause=cause,
+            )
+        )
+    for tier_result, tier_config in zip(result.deposit_tiers, config.deposit_tiers):
+        warnings.extend(
+            _tier_boundary_warnings(
+                product_name=f"term deposit tier {tier_config.name}",
+                rate=tier_result.rate,
+                rate_grid=tier_config.rate_grid,
+                cause=cause,
+            )
+        )
+    return BoundaryDiagnostics(warnings=tuple(warnings))
+
+
+def _tier_boundary_warnings(
+    product_name: str,
+    rate: float,
+    rate_grid: GridConfig,
+    cause: str,
+) -> list[str]:
+    if np.isclose(rate, rate_grid.start):
+        return [
+            (
+                f"Winning {product_name} rate {rate:.2%} is at the minimum grid boundary. "
+                f"Likely cause: {cause}."
+            )
+        ]
+    if np.isclose(rate, rate_grid.stop):
+        return [
+            (
+                f"Winning {product_name} rate {rate:.2%} is at the maximum grid boundary. "
+                f"Likely cause: {cause}."
+            )
+        ]
+    return []
+
+
+def _expand_segmented_config_for_boundary(
+    result: SegmentedOptimizationResult,
+    config: SegmentedPricingConfig,
+) -> tuple[SegmentedPricingConfig, bool]:
+    loan_tiers, loan_expanded = _expand_tiers_for_boundary(
+        config.loan_tiers,
+        result.loan_tiers,
+    )
+    deposit_tiers, deposit_expanded = _expand_tiers_for_boundary(
+        config.deposit_tiers,
+        result.deposit_tiers,
+    )
+    return (
+        config.model_copy(
+            update={
+                "loan_tiers": loan_tiers,
+                "deposit_tiers": deposit_tiers,
+            }
+        ),
+        loan_expanded or deposit_expanded,
+    )
+
+
+def _expand_tiers_for_boundary(
+    tier_configs: list[LoanTierConfig] | list[DepositTierConfig],
+    tier_results,
+):
+    expanded_tiers = []
+    expanded_any = False
+    for tier_config, tier_result in zip(tier_configs, tier_results):
+        expanded_grid, expanded = _expand_tier_grid_for_selected_rate(
+            tier_config.rate_grid,
+            tier_result.rate,
+        )
+        expanded_tiers.append(tier_config.model_copy(update={"rate_grid": expanded_grid}))
+        expanded_any = expanded_any or expanded
+    return expanded_tiers, expanded_any
+
+
+def _expand_tier_grid_for_selected_rate(
+    rate_grid: GridConfig,
+    selected_rate: float,
+) -> tuple[GridConfig, bool]:
+    span = rate_grid.stop - rate_grid.start
+    if span <= 0.0:
+        return rate_grid, False
+    if np.isclose(selected_rate, rate_grid.start):
+        expanded_start = max(0.0, rate_grid.start - span)
+        if np.isclose(expanded_start, rate_grid.start):
+            return rate_grid, False
+        return rate_grid.model_copy(update={"start": expanded_start}), True
+    if np.isclose(selected_rate, rate_grid.stop):
+        return rate_grid.model_copy(update={"stop": rate_grid.stop + span}), True
+    return rate_grid, False
 
 
 def _optimization_result_from_segmented_result(

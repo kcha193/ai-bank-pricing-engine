@@ -200,10 +200,50 @@ def test_deposit_tier_optimizes_net_funding_contribution_not_volume():
         cash_rate=market.cash_rate,
         total_loan_volume=500_000.0,
         accumulated_deposit_volume=0.0,
+        required_deposit_funding_ratio=0.65,
+        funding_shortfall_penalty_rate=0.0,
         response_coefficients=ResponseCoefficientsConfig(),
     )
 
     assert result.rate == pytest.approx(0.01)
+
+
+def test_deposit_tier_values_funding_penalty_relief_before_required_deposits():
+    customers = pd.DataFrame(
+        {
+            "deposit_amount": [100_000.0],
+            "rate_sensitivity": [0.0],
+            "relationship_years": [0.0],
+            "digital_engagement": [0.0],
+        }
+    )
+    tier = DepositTierConfig(
+        name="test",
+        rate_grid=GridConfig(start=0.01, stop=0.10, step=0.09),
+    )
+    market = MarketState(
+        cash_rate=0.04,
+        wholesale_funding_spread=0.01,
+        competitor_loan_rate=0.06,
+        competitor_deposit_rate=0.04,
+    )
+
+    result = _optimize_deposit_tier(
+        customers=customers,
+        tier=tier,
+        market=market,
+        deposit_rate_elasticity=50.0,
+        deposit_competitor_gap_elasticity=0.0,
+        wholesale_funding_rate=market.wholesale_funding_rate,
+        cash_rate=market.cash_rate,
+        total_loan_volume=500_000.0,
+        accumulated_deposit_volume=0.0,
+        required_deposit_funding_ratio=0.65,
+        funding_shortfall_penalty_rate=0.07,
+        response_coefficients=ResponseCoefficientsConfig(),
+    )
+
+    assert result.rate == pytest.approx(0.10)
 
 
 def test_segmented_scenario_writes_tier_rate_artifact(tmp_path):
@@ -235,6 +275,20 @@ def test_segmented_grid_results_emit_one_row_per_winning_tier():
     deposit_rows = diagnostics.grid_results.tail(len(tier_rates["deposit_tiers"]))
     assert set(loan_rows["loan_rate"]) == set(tier_rates["loan_tiers"].values())
     assert set(deposit_rows["deposit_rate"]) == set(tier_rates["deposit_tiers"].values())
+
+
+def test_segmented_diagnostics_warn_when_tier_winner_is_at_boundary():
+    config = EngineConfig.model_validate(_segmented_config_dict())
+
+    diagnostics = run_baseline_diagnostics(config, max_boundary_expansions=0)
+
+    assert diagnostics.boundary_diagnostics.has_warning
+    assert diagnostics.initial_boundary_diagnostics.has_warning
+    assert diagnostics.expansion_capped
+    assert any(
+        "home loan tier standard rate" in warning
+        for warning in diagnostics.boundary_diagnostics.warnings
+    )
 
 
 def _segmented_config_dict() -> dict:

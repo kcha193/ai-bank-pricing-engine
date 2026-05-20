@@ -134,6 +134,8 @@ def optimize_segmented_rates(
             cash_rate=market.cash_rate,
             total_loan_volume=total_loan_volume,
             accumulated_deposit_volume=accumulated_deposit_volume,
+            required_deposit_funding_ratio=required_deposit_funding_ratio,
+            funding_shortfall_penalty_rate=funding_shortfall_penalty_rate,
             response_coefficients=response_coefficients,
         )
         deposit_tier_results.append(result)
@@ -288,6 +290,8 @@ def _optimize_deposit_tier(
     cash_rate: float,
     total_loan_volume: float,
     accumulated_deposit_volume: float,
+    required_deposit_funding_ratio: float,
+    funding_shortfall_penalty_rate: float,
     response_coefficients: ResponseCoefficientsConfig,
 ) -> TierResult:
     best_result: TierResult | None = None
@@ -309,7 +313,12 @@ def _optimize_deposit_tier(
         shortfall_covered = min(volume, max(0.0, total_loan_volume - accumulated_deposit_volume))
         excess = volume - shortfall_covered
         funding_benefit = shortfall_covered * wholesale_funding_rate + excess * cash_rate
-        objective = -interest_cost + funding_benefit
+        remaining_required_deposits = max(
+            0.0,
+            total_loan_volume * required_deposit_funding_ratio - accumulated_deposit_volume,
+        )
+        penalty_relief = min(volume, remaining_required_deposits) * funding_shortfall_penalty_rate
+        objective = -interest_cost + funding_benefit + penalty_relief
         if objective > best_objective:
             best_objective = objective
             best_result = TierResult(
