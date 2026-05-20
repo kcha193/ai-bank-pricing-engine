@@ -5,8 +5,17 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from balance_pricing_engine.config import EngineConfig, load_config
+from balance_pricing_engine.config import (
+    DepositTierConfig,
+    EngineConfig,
+    GridConfig,
+    ResponseCoefficientsConfig,
+    load_config,
+)
+from balance_pricing_engine.optimization.grid_search import GRID_RESULT_COLUMNS
+from balance_pricing_engine.pricing.profit import expected_capital_charge
 from balance_pricing_engine.optimization.segmented import (
+    _optimize_deposit_tier,
     optimize_segmented_rates,
     segment_deposit_customers,
     segment_loan_customers,
@@ -87,10 +96,19 @@ def test_optimize_segmented_rates_returns_tier_results_with_valid_rates():
         deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
         required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
         funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
+        loan_rwa_weight=config.balance_sheet.loan_rwa_weight,
+        capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
         response_coefficients=config.response.coefficients,
     )
 
     assert result.total_objective > 0
+    assert result.capital_charge == pytest.approx(
+        expected_capital_charge(
+            result.total_loan_volume,
+            config.balance_sheet.loan_rwa_weight,
+            config.balance_sheet.capital_hurdle_rate,
+        )
+    )
     assert len(result.loan_tiers) == 3
     assert len(result.deposit_tiers) == 3
     for tier_result, tier_config in zip(result.loan_tiers, config.segmented_pricing.loan_tiers):
@@ -136,17 +154,53 @@ def test_segmented_total_objective_matches_component_decomposition():
         deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
         required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
         funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
+        loan_rwa_weight=config.balance_sheet.loan_rwa_weight,
+        capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
         response_coefficients=config.response.coefficients,
     )
 
     assert result.total_objective == pytest.approx(
         result.total_loan_interest_income
         - result.total_credit_loss
+        - result.capital_charge
         - result.total_deposit_interest_cost
         - result.wholesale_funding_cost
         - result.funding_shortfall_penalty
         + result.excess_deposit_income
     )
+
+
+def test_deposit_tier_optimizes_net_funding_contribution_not_volume():
+    customers = pd.DataFrame(
+        {
+            "deposit_amount": [100_000.0],
+            "rate_sensitivity": [0.0],
+            "relationship_years": [0.0],
+            "digital_engagement": [0.0],
+        }
+    )
+    tier = DepositTierConfig(
+        name="test",
+        rate_grid=GridConfig(start=0.01, stop=0.10, step=0.09),
+    )
+    market = MarketState(
+        cash_rate=0.04,
+        wholesale_funding_spread=0.01,
+        competitor_loan_rate=0.06,
+        competitor_deposit_rate=0.04,
+    )
+
+    result = _optimize_deposit_tier(
+        customers=customers,
+        tier=tier,
+        market=market,
+        deposit_rate_elasticity=50.0,
+        deposit_competitor_gap_elasticity=0.0,
+        wholesale_funding_rate=market.wholesale_funding_rate,
+        response_coefficients=ResponseCoefficientsConfig(),
+    )
+
+    assert result.rate == pytest.approx(0.01)
 
 
 def test_segmented_scenario_writes_tier_rate_artifact(tmp_path):
@@ -161,6 +215,23 @@ def test_segmented_scenario_writes_tier_rate_artifact(tmp_path):
     summary = json.loads((tmp_path / "summary.json").read_text())
     assert set(tier_rates) == {"loan_tiers", "deposit_tiers"}
     assert summary["segmented_tier_rates"] == tier_rates
+
+
+def test_segmented_grid_results_emit_one_row_per_winning_tier():
+    diagnostics = run_baseline_diagnostics(
+        load_config("configs/segmented_pricing.yaml"),
+        max_boundary_expansions=0,
+    )
+    tier_rates = diagnostics.segmented_tier_rates
+
+    assert tier_rates is not None
+    expected_row_count = len(tier_rates["loan_tiers"]) + len(tier_rates["deposit_tiers"])
+    assert len(diagnostics.grid_results) == expected_row_count
+    assert list(diagnostics.grid_results.columns) == GRID_RESULT_COLUMNS
+    loan_rows = diagnostics.grid_results.head(len(tier_rates["loan_tiers"]))
+    deposit_rows = diagnostics.grid_results.tail(len(tier_rates["deposit_tiers"]))
+    assert set(loan_rows["loan_rate"]) == set(tier_rates["loan_tiers"].values())
+    assert set(deposit_rows["deposit_rate"]) == set(tier_rates["deposit_tiers"].values())
 
 
 def _segmented_config_dict() -> dict:

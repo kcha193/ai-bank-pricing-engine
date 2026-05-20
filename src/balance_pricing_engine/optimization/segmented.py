@@ -16,6 +16,7 @@ from balance_pricing_engine.config import (
 )
 from balance_pricing_engine.pricing.balance_sheet import calculate_funding_result
 from balance_pricing_engine.pricing.profit import (
+    expected_capital_charge,
     expected_credit_loss,
     expected_deposit_cost,
     expected_deposit_volume,
@@ -39,6 +40,7 @@ class TierResult:
     interest_income: float
     credit_loss: float
     interest_cost: float
+    capital_charge: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,7 @@ class SegmentedOptimizationResult:
     total_deposit_volume: float
     total_loan_interest_income: float
     total_credit_loss: float
+    capital_charge: float
     total_deposit_interest_cost: float
     wholesale_funding_cost: float
     excess_deposit_income: float
@@ -94,6 +97,8 @@ def optimize_segmented_rates(
     deposit_competitor_gap_elasticity: float,
     required_deposit_funding_ratio: float,
     funding_shortfall_penalty_rate: float,
+    loan_rwa_weight: float = 0.35,
+    capital_hurdle_rate: float = 0.12,
     response_coefficients: ResponseCoefficientsConfig | None = None,
 ) -> SegmentedOptimizationResult:
     """Optimize tier-level rates, then apply funding economics at portfolio level."""
@@ -110,6 +115,8 @@ def optimize_segmented_rates(
             loan_competitor_gap_elasticity=loan_competitor_gap_elasticity,
             required_deposit_funding_ratio=required_deposit_funding_ratio,
             funding_shortfall_penalty_rate=funding_shortfall_penalty_rate,
+            loan_rwa_weight=loan_rwa_weight,
+            capital_hurdle_rate=capital_hurdle_rate,
             response_coefficients=response_coefficients,
         )
         for tier in config.loan_tiers
@@ -121,6 +128,7 @@ def optimize_segmented_rates(
             market=market,
             deposit_rate_elasticity=deposit_rate_elasticity,
             deposit_competitor_gap_elasticity=deposit_competitor_gap_elasticity,
+            wholesale_funding_rate=market.wholesale_funding_rate,
             response_coefficients=response_coefficients,
         )
         for tier in config.deposit_tiers
@@ -130,6 +138,11 @@ def optimize_segmented_rates(
     total_deposit_volume = sum(tier.volume for tier in deposit_tier_results)
     total_loan_interest_income = sum(tier.interest_income for tier in loan_tier_results)
     total_credit_loss = sum(tier.credit_loss for tier in loan_tier_results)
+    capital_charge = expected_capital_charge(
+        total_loan_volume,
+        loan_rwa_weight,
+        capital_hurdle_rate,
+    )
     total_deposit_interest_cost = sum(tier.interest_cost for tier in deposit_tier_results)
     wholesale_funding_cost = expected_wholesale_funding_cost(
         total_loan_volume,
@@ -150,6 +163,7 @@ def optimize_segmented_rates(
     total_objective = (
         total_loan_interest_income
         - total_credit_loss
+        - capital_charge
         - total_deposit_interest_cost
         - wholesale_funding_cost
         - funding.funding_penalty
@@ -163,6 +177,7 @@ def optimize_segmented_rates(
         total_deposit_volume=total_deposit_volume,
         total_loan_interest_income=total_loan_interest_income,
         total_credit_loss=total_credit_loss,
+        capital_charge=capital_charge,
         total_deposit_interest_cost=total_deposit_interest_cost,
         wholesale_funding_cost=wholesale_funding_cost,
         excess_deposit_income=excess_deposit_income,
@@ -212,6 +227,8 @@ def _optimize_loan_tier(
     loan_competitor_gap_elasticity: float,
     required_deposit_funding_ratio: float,
     funding_shortfall_penalty_rate: float,
+    loan_rwa_weight: float,
+    capital_hurdle_rate: float,
     response_coefficients: ResponseCoefficientsConfig,
 ) -> TierResult:
     best_result: TierResult | None = None
@@ -229,6 +246,11 @@ def _optimize_loan_tier(
         volume = expected_loan_volume(customers, probabilities)
         interest_income = expected_loan_interest_income(customers, probabilities, float(rate))
         credit_loss = expected_credit_loss(customers, probabilities)
+        capital_charge = expected_capital_charge(
+            volume,
+            loan_rwa_weight,
+            capital_hurdle_rate,
+        )
         funding = calculate_funding_result(
             volume,
             0.0,
@@ -238,6 +260,7 @@ def _optimize_loan_tier(
         objective = (
             interest_income
             - credit_loss
+            - capital_charge
             - expected_wholesale_funding_cost(volume, 0.0, market.wholesale_funding_rate)
             - funding.funding_penalty
         )
@@ -250,6 +273,7 @@ def _optimize_loan_tier(
                 interest_income=interest_income,
                 credit_loss=credit_loss,
                 interest_cost=0.0,
+                capital_charge=capital_charge,
             )
 
     if best_result is None:
@@ -263,10 +287,11 @@ def _optimize_deposit_tier(
     market: MarketState,
     deposit_rate_elasticity: float,
     deposit_competitor_gap_elasticity: float,
+    wholesale_funding_rate: float,
     response_coefficients: ResponseCoefficientsConfig,
 ) -> TierResult:
     best_result: TierResult | None = None
-    best_volume = float("-inf")
+    best_objective = float("-inf")
 
     for rate in _build_tier_rate_grid(tier.rate_grid.start, tier.rate_grid.stop, tier.rate_grid.step):
         probabilities = deposit_uptake_probability(
@@ -279,8 +304,10 @@ def _optimize_deposit_tier(
         )
         volume = expected_deposit_volume(customers, probabilities)
         interest_cost = expected_deposit_cost(customers, probabilities, float(rate))
-        if volume > best_volume:
-            best_volume = volume
+        funding_benefit = volume * wholesale_funding_rate
+        objective = -interest_cost + funding_benefit
+        if objective > best_objective:
+            best_objective = objective
             best_result = TierResult(
                 tier_name=tier.name,
                 rate=float(rate),

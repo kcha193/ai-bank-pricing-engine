@@ -209,6 +209,8 @@ def run_baseline_diagnostics(
             deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
             required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
             funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
+            loan_rwa_weight=config.balance_sheet.loan_rwa_weight,
+            capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
             response_coefficients=config.response.coefficients,
         )
         return _segmented_diagnostics(segmented_result)
@@ -256,7 +258,7 @@ def run_baseline_diagnostics(
 
 def _segmented_diagnostics(result: SegmentedOptimizationResult) -> ScenarioDiagnostics:
     best_result = _optimization_result_from_segmented_result(result)
-    grid_results = _grid_results_from_segmented_result(best_result)
+    grid_results = _grid_results_from_segmented_result(result, best_result)
     return ScenarioDiagnostics(
         best_result=best_result,
         grid_results=grid_results,
@@ -277,6 +279,7 @@ def _optimization_result_from_segmented_result(
         deposit_rate=_volume_weighted_average_rate(result.deposit_tiers),
         loan_interest_income=result.total_loan_interest_income,
         expected_credit_loss=result.total_credit_loss,
+        capital_charge=result.capital_charge,
         deposit_interest_cost=result.total_deposit_interest_cost,
         wholesale_funding_cost=result.wholesale_funding_cost,
         excess_deposit_income=result.excess_deposit_income,
@@ -288,25 +291,52 @@ def _optimization_result_from_segmented_result(
     )
 
 
-def _grid_results_from_segmented_result(result: OptimizationResult) -> pd.DataFrame:
-    row = {
-        "loan_rate": result.loan_rate,
-        "deposit_rate": result.deposit_rate,
-        "home_loan_spread_to_market_bps": float("nan"),
-        "term_deposit_spread_to_market_bps": float("nan"),
-        "loan_interest_income": result.loan_interest_income,
-        "expected_credit_loss": result.expected_credit_loss,
-        "capital_charge": result.capital_charge,
-        "deposit_interest_cost": result.deposit_interest_cost,
-        "wholesale_funding_cost": result.wholesale_funding_cost,
-        "excess_deposit_income": result.excess_deposit_income,
-        "funding_shortfall_penalty": result.funding_shortfall_penalty,
-        "total_objective": result.total_objective,
-        "expected_loan_volume": result.expected_loan_volume,
-        "expected_deposit_volume": result.expected_deposit_volume,
-        "funding_shortfall": result.funding_shortfall,
-    }
-    return pd.DataFrame([row], columns=GRID_RESULT_COLUMNS)
+def _grid_results_from_segmented_result(
+    segmented_result: SegmentedOptimizationResult,
+    result: OptimizationResult,
+) -> pd.DataFrame:
+    rows: list[dict[str, float]] = []
+    for tier in segmented_result.loan_tiers:
+        rows.append(
+            {
+                "loan_rate": tier.rate,
+                "deposit_rate": result.deposit_rate,
+                "home_loan_spread_to_market_bps": float("nan"),
+                "term_deposit_spread_to_market_bps": float("nan"),
+                "loan_interest_income": tier.interest_income,
+                "expected_credit_loss": tier.credit_loss,
+                "capital_charge": tier.capital_charge,
+                "deposit_interest_cost": result.deposit_interest_cost,
+                "wholesale_funding_cost": result.wholesale_funding_cost,
+                "excess_deposit_income": result.excess_deposit_income,
+                "funding_shortfall_penalty": result.funding_shortfall_penalty,
+                "total_objective": result.total_objective,
+                "expected_loan_volume": tier.volume,
+                "expected_deposit_volume": result.expected_deposit_volume,
+                "funding_shortfall": result.funding_shortfall,
+            }
+        )
+    for tier in segmented_result.deposit_tiers:
+        rows.append(
+            {
+                "loan_rate": result.loan_rate,
+                "deposit_rate": tier.rate,
+                "home_loan_spread_to_market_bps": float("nan"),
+                "term_deposit_spread_to_market_bps": float("nan"),
+                "loan_interest_income": result.loan_interest_income,
+                "expected_credit_loss": result.expected_credit_loss,
+                "capital_charge": result.capital_charge,
+                "deposit_interest_cost": tier.interest_cost,
+                "wholesale_funding_cost": result.wholesale_funding_cost,
+                "excess_deposit_income": result.excess_deposit_income,
+                "funding_shortfall_penalty": result.funding_shortfall_penalty,
+                "total_objective": result.total_objective,
+                "expected_loan_volume": result.expected_loan_volume,
+                "expected_deposit_volume": tier.volume,
+                "funding_shortfall": result.funding_shortfall,
+            }
+        )
+    return pd.DataFrame(rows, columns=GRID_RESULT_COLUMNS)
 
 
 def _volume_weighted_average_rate(tiers) -> float:
