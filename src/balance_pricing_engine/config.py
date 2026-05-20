@@ -72,6 +72,14 @@ class BalanceSheetConfig(BaseModel):
     capital_hurdle_rate: float = Field(default=0.12, ge=0, le=1)
 
 
+class MultiPeriodConfig(BaseModel):
+    n_periods: int = Field(default=2, ge=2)
+    loan_runoff_rate: float = Field(default=0.30, ge=0, le=1)
+    deposit_runoff_rate: float = Field(default=0.50, ge=0, le=1)
+    discount_rate: float = Field(default=0.08, ge=0)
+    market_cash_rate_drift_bps: float = 0.0
+
+
 class LoanResponseCoefficientsConfig(BaseModel):
     intercept: float = 1.10
     rate_anchor: float = 0.065
@@ -112,6 +120,7 @@ class EngineConfig(BaseModel):
     competitor_rates: Optional[CompetitorRatesConfig] = None
     balance_sheet: BalanceSheetConfig
     response: ResponseConfig
+    multiperiod: Optional[MultiPeriodConfig] = None
 
     @model_validator(mode="after")
     def validate_pricing_configuration(self) -> "EngineConfig":
