@@ -166,6 +166,14 @@ def test_segmented_config_rejects_duplicate_tier_bounds():
         EngineConfig.model_validate(raw_config)
 
 
+def test_segmented_config_rejects_non_positive_tier_bounds():
+    raw_config = _segmented_config_dict()
+    raw_config["segmented_pricing"]["deposit_tiers"][0]["balance_max"] = 0
+
+    with pytest.raises(ValidationError, match="greater than zero"):
+        EngineConfig.model_validate(raw_config)
+
+
 def test_run_sensitivity_analysis_raises_for_segmented_config():
     config = load_config("configs/segmented_pricing.yaml")
 
