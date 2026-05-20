@@ -310,7 +310,15 @@ def _grid_results_from_segmented_result(
                 "wholesale_funding_cost": result.wholesale_funding_cost,
                 "excess_deposit_income": result.excess_deposit_income,
                 "funding_shortfall_penalty": result.funding_shortfall_penalty,
-                "total_objective": result.total_objective,
+                "total_objective": (
+                    tier.interest_income
+                    - tier.credit_loss
+                    - tier.capital_charge
+                    - result.deposit_interest_cost
+                    - result.wholesale_funding_cost
+                    - result.funding_shortfall_penalty
+                    + result.excess_deposit_income
+                ),
                 "expected_loan_volume": tier.volume,
                 "expected_deposit_volume": result.expected_deposit_volume,
                 "funding_shortfall": result.funding_shortfall,
@@ -330,7 +338,15 @@ def _grid_results_from_segmented_result(
                 "wholesale_funding_cost": result.wholesale_funding_cost,
                 "excess_deposit_income": result.excess_deposit_income,
                 "funding_shortfall_penalty": result.funding_shortfall_penalty,
-                "total_objective": result.total_objective,
+                "total_objective": (
+                    result.loan_interest_income
+                    - result.expected_credit_loss
+                    - result.capital_charge
+                    - tier.interest_cost
+                    - result.wholesale_funding_cost
+                    - result.funding_shortfall_penalty
+                    + result.excess_deposit_income
+                ),
                 "expected_loan_volume": result.expected_loan_volume,
                 "expected_deposit_volume": tier.volume,
                 "funding_shortfall": result.funding_shortfall,
