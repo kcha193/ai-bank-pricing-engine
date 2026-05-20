@@ -183,11 +183,69 @@ def test_evaluate_joint_rate_grid_credits_excess_deposits_at_cash_rate():
     assert row["total_objective"] == pytest.approx(
         row["loan_interest_income"]
         - row["expected_credit_loss"]
+        - row["capital_charge"]
         - row["deposit_interest_cost"]
         - row["wholesale_funding_cost"]
         - row["funding_shortfall_penalty"]
         + row["excess_deposit_income"]
     )
+
+
+def test_evaluate_joint_rate_grid_includes_nonnegative_capital_charge():
+    loan_customers, deposit_customers = _single_customer_portfolios()
+
+    grid_results = evaluate_joint_rate_grid(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=MarketState(
+            cash_rate=0.0,
+            wholesale_funding_spread=0.0,
+            competitor_loan_rate=0.05,
+            competitor_deposit_rate=0.03,
+        ),
+        loan_rate_grid=np.array([0.04, 0.05]),
+        deposit_rate_grid=np.array([0.02, 0.03]),
+        loan_rate_elasticity=0.0,
+        loan_competitor_gap_elasticity=0.0,
+        deposit_rate_elasticity=0.0,
+        deposit_competitor_gap_elasticity=0.0,
+        required_deposit_funding_ratio=0.0,
+        funding_shortfall_penalty_rate=0.0,
+    )
+
+    assert "capital_charge" in grid_results.columns
+    assert (grid_results["capital_charge"] >= 0.0).all()
+
+
+def test_default_capital_charge_reduces_total_objective():
+    loan_customers, deposit_customers = _single_customer_portfolios()
+    grid_kwargs = {
+        "loan_customers": loan_customers,
+        "deposit_customers": deposit_customers,
+        "market": MarketState(
+            cash_rate=0.0,
+            wholesale_funding_spread=0.0,
+            competitor_loan_rate=0.05,
+            competitor_deposit_rate=0.03,
+        ),
+        "loan_rate_grid": np.array([0.05]),
+        "deposit_rate_grid": np.array([0.02]),
+        "loan_rate_elasticity": 0.0,
+        "loan_competitor_gap_elasticity": 0.0,
+        "deposit_rate_elasticity": 0.0,
+        "deposit_competitor_gap_elasticity": 0.0,
+        "required_deposit_funding_ratio": 0.0,
+        "funding_shortfall_penalty_rate": 0.0,
+    }
+
+    with_default_charge = evaluate_joint_rate_grid(**grid_kwargs).iloc[0]
+    without_charge = evaluate_joint_rate_grid(
+        **grid_kwargs,
+        capital_hurdle_rate=0.0,
+    ).iloc[0]
+
+    assert with_default_charge["capital_charge"] > 0.0
+    assert with_default_charge["total_objective"] < without_charge["total_objective"]
 
 
 def test_baseline_grid_results_match_unhoisted_reference():
@@ -210,6 +268,8 @@ def test_baseline_grid_results_match_unhoisted_reference():
         deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
         required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
         funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
+        rwa_weight=config.balance_sheet.loan_rwa_weight,
+        capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
         home_loan_reference_rate=config.market.home_loan_reference_rate,
         term_deposit_reference_rate=config.market.term_deposit_reference_rate,
     )
@@ -225,6 +285,8 @@ def test_baseline_grid_results_match_unhoisted_reference():
         deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
         required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
         funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
+        rwa_weight=config.balance_sheet.loan_rwa_weight,
+        capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
         home_loan_reference_rate=config.market.home_loan_reference_rate,
         term_deposit_reference_rate=config.market.term_deposit_reference_rate,
     )
@@ -242,6 +304,7 @@ def test_optimization_result_alias_properties_return_canonical_fields():
         deposit_rate=0.04,
         loan_interest_income=1_000.0,
         expected_credit_loss=100.0,
+        capital_charge=12.0,
         deposit_interest_cost=50.0,
         wholesale_funding_cost=25.0,
         excess_deposit_income=0.0,
@@ -256,6 +319,7 @@ def test_optimization_result_alias_properties_return_canonical_fields():
     assert result.loan_income_after_losses == 900.0
     assert result.deposit_cost == result.deposit_interest_cost
     assert result.funding_penalty == result.funding_shortfall_penalty
+    assert result.capital_charge == 12.0
 
 
 def test_select_best_result_prefers_lower_funding_shortfall_when_objectives_tie():
@@ -268,6 +332,7 @@ def test_select_best_result_prefers_lower_funding_shortfall_when_objectives_tie(
                 0.0,
                 100.0,
                 10.0,
+                0.0,
                 5.0,
                 1.0,
                 0.0,
@@ -284,6 +349,7 @@ def test_select_best_result_prefers_lower_funding_shortfall_when_objectives_tie(
                 50.0,
                 110.0,
                 20.0,
+                0.0,
                 5.0,
                 1.0,
                 0.0,
@@ -314,6 +380,7 @@ def test_select_best_result_prefers_smaller_market_spread_when_shortfall_ties():
                 50.0,
                 100.0,
                 10.0,
+                0.0,
                 5.0,
                 1.0,
                 0.0,
@@ -330,6 +397,7 @@ def test_select_best_result_prefers_smaller_market_spread_when_shortfall_ties():
                 -25.0,
                 110.0,
                 20.0,
+                0.0,
                 5.0,
                 1.0,
                 0.0,
@@ -588,6 +656,8 @@ def _evaluate_joint_rate_grid_unhoisted(
     deposit_competitor_gap_elasticity,
     required_deposit_funding_ratio,
     funding_shortfall_penalty_rate,
+    rwa_weight=0.35,
+    capital_hurdle_rate=0.12,
     home_loan_reference_rate=None,
     term_deposit_reference_rate=None,
     response_coefficients=None,
@@ -609,6 +679,11 @@ def _evaluate_joint_rate_grid_unhoisted(
             float(loan_rate),
         )
         credit_loss = grid_search_module.expected_credit_loss(loan_customers, loan_probs)
+        capital_charge = grid_search_module.expected_capital_charge(
+            loan_volume,
+            rwa_weight,
+            capital_hurdle_rate,
+        )
         home_loan_spread_to_market_bps = grid_search_module._spread_to_market_bps(
             float(loan_rate),
             home_loan_reference_rate,
@@ -653,6 +728,7 @@ def _evaluate_joint_rate_grid_unhoisted(
             total_objective = (
                 loan_interest_income
                 - credit_loss
+                - capital_charge
                 - deposit_cost
                 - wholesale_funding_cost
                 - funding.funding_penalty
@@ -670,6 +746,7 @@ def _evaluate_joint_rate_grid_unhoisted(
                     "term_deposit_spread_to_market_bps": term_deposit_spread_to_market_bps,
                     "loan_interest_income": loan_interest_income,
                     "expected_credit_loss": credit_loss,
+                    "capital_charge": capital_charge,
                     "deposit_interest_cost": deposit_cost,
                     "wholesale_funding_cost": wholesale_funding_cost,
                     "excess_deposit_income": excess_deposit_income,

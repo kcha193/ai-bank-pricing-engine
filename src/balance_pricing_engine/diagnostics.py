@@ -80,6 +80,7 @@ class ObjectiveDecomposition:
     expected_loan_volume: float
     expected_deposit_volume: float
     funding_shortfall: float
+    capital_charge: float = 0.0
 
     @property
     def reconciled_total_objective(self) -> float:
@@ -87,6 +88,7 @@ class ObjectiveDecomposition:
         return (
             self.loan_interest_income
             - self.expected_credit_loss
+            - self.capital_charge
             - self.deposit_interest_cost
             - self.wholesale_funding_cost
             - self.funding_shortfall_penalty
@@ -122,6 +124,8 @@ class SensitivityCase:
     deposit_rate_elasticity: float
     deposit_competitor_gap_elasticity: float
     funding_shortfall_penalty_rate: float
+    loan_rwa_weight: float
+    capital_hurdle_rate: float
     wholesale_funding_rate: float
     competitor_loan_rate: float
     competitor_deposit_rate: float
@@ -152,6 +156,7 @@ def objective_decomposition_from_result(result: OptimizationResult) -> Objective
         expected_loan_volume=result.expected_loan_volume,
         expected_deposit_volume=result.expected_deposit_volume,
         funding_shortfall=result.funding_shortfall,
+        capital_charge=result.capital_charge,
     )
 
 
@@ -168,6 +173,7 @@ def objective_decomposition_from_row(row: pd.Series) -> ObjectiveDecomposition:
         expected_loan_volume=float(row["expected_loan_volume"]),
         expected_deposit_volume=float(row["expected_deposit_volume"]),
         funding_shortfall=float(row["funding_shortfall"]),
+        capital_charge=float(row["capital_charge"]),
     )
 
 
@@ -266,6 +272,8 @@ def evaluate_adaptive_joint_rate_grid(
     deposit_competitor_gap_elasticity: float,
     required_deposit_funding_ratio: float,
     funding_shortfall_penalty_rate: float,
+    rwa_weight: float = 0.35,
+    capital_hurdle_rate: float = 0.12,
     home_loan_reference_rate: float | None = None,
     term_deposit_reference_rate: float | None = None,
     max_boundary_expansions: int = 2,
@@ -290,6 +298,8 @@ def evaluate_adaptive_joint_rate_grid(
             deposit_competitor_gap_elasticity=deposit_competitor_gap_elasticity,
             required_deposit_funding_ratio=required_deposit_funding_ratio,
             funding_shortfall_penalty_rate=funding_shortfall_penalty_rate,
+            rwa_weight=rwa_weight,
+            capital_hurdle_rate=capital_hurdle_rate,
             home_loan_reference_rate=home_loan_reference_rate,
             term_deposit_reference_rate=term_deposit_reference_rate,
             response_coefficients=response_coefficients,
@@ -347,6 +357,8 @@ def build_default_sensitivity_cases(config: EngineConfig) -> list[SensitivityCas
         deposit_rate_elasticity=config.response.deposit_rate_elasticity,
         deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
         funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
+        loan_rwa_weight=config.balance_sheet.loan_rwa_weight,
+        capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
         wholesale_funding_rate=base_wholesale_rate,
         competitor_loan_rate=config.market.competitor_loan_rate,
         competitor_deposit_rate=config.market.competitor_deposit_rate,
@@ -441,6 +453,26 @@ def build_default_sensitivity_cases(config: EngineConfig) -> list[SensitivityCas
             name="funding_penalty_higher",
             funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate
             * 1.5,
+        ),
+        replace(
+            baseline,
+            name="capital_hurdle_rate_lower",
+            capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate * 0.75,
+        ),
+        replace(
+            baseline,
+            name="capital_hurdle_rate_higher",
+            capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate * 1.25,
+        ),
+        replace(
+            baseline,
+            name="loan_rwa_weight_lower",
+            loan_rwa_weight=config.balance_sheet.loan_rwa_weight * 0.75,
+        ),
+        replace(
+            baseline,
+            name="loan_rwa_weight_higher",
+            loan_rwa_weight=config.balance_sheet.loan_rwa_weight * 1.25,
         ),
         replace(
             baseline,
@@ -565,6 +597,8 @@ def _run_sensitivity_analysis_for_seed(
             deposit_competitor_gap_elasticity=case.deposit_competitor_gap_elasticity,
             required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
             funding_shortfall_penalty_rate=case.funding_shortfall_penalty_rate,
+            rwa_weight=case.loan_rwa_weight,
+            capital_hurdle_rate=case.capital_hurdle_rate,
             home_loan_reference_rate=config.market.home_loan_reference_rate,
             term_deposit_reference_rate=config.market.term_deposit_reference_rate,
             max_boundary_expansions=max_boundary_expansions,

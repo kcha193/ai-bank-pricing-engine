@@ -68,6 +68,8 @@ class PricingStrategyConfig(BaseModel):
 class BalanceSheetConfig(BaseModel):
     required_deposit_funding_ratio: float = Field(ge=0, le=1)
     funding_shortfall_penalty_rate: float = Field(ge=0)
+    loan_rwa_weight: float = Field(default=0.35, ge=0, le=2.5)
+    capital_hurdle_rate: float = Field(default=0.12, ge=0, le=1)
 
 
 class LoanResponseCoefficientsConfig(BaseModel):

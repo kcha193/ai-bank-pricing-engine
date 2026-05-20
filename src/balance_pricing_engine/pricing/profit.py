@@ -36,6 +36,18 @@ def expected_credit_loss(customers: pd.DataFrame, acceptance_probability: np.nda
     return float(np.sum(acceptance_probability * balances * expected_loss))
 
 
+def expected_capital_charge(
+    loan_volume: float,
+    rwa_weight: float,
+    capital_hurdle_rate: float,
+    tier1_capital_ratio: float = 0.10,
+) -> float:
+    """Calculate annual cost of capital tied up in loan-book RWA."""
+    rwa = loan_volume * rwa_weight
+    required_capital = rwa * tier1_capital_ratio
+    return required_capital * capital_hurdle_rate
+
+
 def expected_deposit_cost(
     customers: pd.DataFrame,
     uptake_probability: np.ndarray,
