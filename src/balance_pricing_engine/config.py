@@ -237,8 +237,10 @@ def _validate_tier_sequence(tier_name: str, tiers: list[tuple[str, Optional[floa
         raise ValueError(f"{tier_name} must be sorted ascending with catch-all tier last.")
 
     numeric_bounds = [bound for _, bound in tiers if bound is not None]
-    if numeric_bounds != sorted(numeric_bounds):
-        raise ValueError(f"{tier_name} must be sorted ascending by upper bound.")
+    if any(a >= b for a, b in zip(numeric_bounds, numeric_bounds[1:])):
+        raise ValueError(
+            f"{tier_name} must have strictly increasing upper bounds (duplicates not allowed)."
+        )
 
 
 def load_config(path: str | Path) -> EngineConfig:

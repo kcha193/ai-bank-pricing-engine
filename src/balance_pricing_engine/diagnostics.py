@@ -534,6 +534,11 @@ def run_sensitivity_analysis(
     n_seeds: int = 1,
 ) -> pd.DataFrame:
     """Run one-at-a-time sensitivity cases against the same synthetic customers."""
+    if config.segmented_pricing is not None:
+        raise NotImplementedError(
+            "Sensitivity analysis is not supported for segmented pricing configurations. "
+            "Use run_baseline_diagnostics directly for segmented runs."
+        )
     if n_seeds <= 0:
         raise ValueError("n_seeds must be positive.")
     selected_cases = cases if cases is not None else build_default_sensitivity_cases(config)

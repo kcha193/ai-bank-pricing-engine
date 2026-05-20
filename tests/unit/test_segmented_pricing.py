@@ -20,6 +20,7 @@ from balance_pricing_engine.optimization.segmented import (
     segment_deposit_customers,
     segment_loan_customers,
 )
+from balance_pricing_engine.diagnostics import run_sensitivity_analysis
 from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
 from balance_pricing_engine.synthetic.customers import (
     generate_deposit_customers,
@@ -136,8 +137,24 @@ def test_segmented_config_rejects_unsorted_tiers():
         raw_config["segmented_pricing"]["loan_tiers"][2],
     ]
 
-    with pytest.raises(ValidationError, match="sorted"):
+    with pytest.raises(ValidationError, match="strictly increasing"):
         EngineConfig.model_validate(raw_config)
+
+
+def test_segmented_config_rejects_duplicate_tier_bounds():
+    raw_config = _segmented_config_dict()
+    raw_config["segmented_pricing"]["loan_tiers"][0]["lvr_max"] = 0.80
+    raw_config["segmented_pricing"]["loan_tiers"][1]["lvr_max"] = 0.80
+
+    with pytest.raises(ValidationError, match="strictly increasing"):
+        EngineConfig.model_validate(raw_config)
+
+
+def test_run_sensitivity_analysis_raises_for_segmented_config():
+    config = load_config("configs/segmented_pricing.yaml")
+
+    with pytest.raises(NotImplementedError, match="not supported for segmented"):
+        run_sensitivity_analysis(config)
 
 
 def test_segmented_total_objective_matches_component_decomposition():
