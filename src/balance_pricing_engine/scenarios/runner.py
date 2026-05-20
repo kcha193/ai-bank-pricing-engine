@@ -496,6 +496,8 @@ def _grid_results_from_segmented_result(
     segmented_result: SegmentedOptimizationResult,
     result: OptimizationResult,
 ) -> pd.DataFrame:
+    # Segmented grid rows are synthetic decomposition rows, not independent alternatives.
+    # total_objective is always the actual portfolio value so rows never dominate the winner.
     rows: list[dict[str, float]] = []
     for tier in segmented_result.loan_tiers:
         rows.append(
@@ -511,15 +513,7 @@ def _grid_results_from_segmented_result(
                 "wholesale_funding_cost": result.wholesale_funding_cost,
                 "excess_deposit_income": result.excess_deposit_income,
                 "funding_shortfall_penalty": result.funding_shortfall_penalty,
-                "total_objective": (
-                    tier.interest_income
-                    - tier.credit_loss
-                    - tier.capital_charge
-                    - result.deposit_interest_cost
-                    - result.wholesale_funding_cost
-                    - result.funding_shortfall_penalty
-                    + result.excess_deposit_income
-                ),
+                "total_objective": result.total_objective,
                 "expected_loan_volume": tier.volume,
                 "expected_deposit_volume": result.expected_deposit_volume,
                 "funding_shortfall": result.funding_shortfall,
@@ -539,15 +533,7 @@ def _grid_results_from_segmented_result(
                 "wholesale_funding_cost": result.wholesale_funding_cost,
                 "excess_deposit_income": result.excess_deposit_income,
                 "funding_shortfall_penalty": result.funding_shortfall_penalty,
-                "total_objective": (
-                    result.loan_interest_income
-                    - result.expected_credit_loss
-                    - result.capital_charge
-                    - tier.interest_cost
-                    - result.wholesale_funding_cost
-                    - result.funding_shortfall_penalty
-                    + result.excess_deposit_income
-                ),
+                "total_objective": result.total_objective,
                 "expected_loan_volume": result.expected_loan_volume,
                 "expected_deposit_volume": tier.volume,
                 "funding_shortfall": result.funding_shortfall,
