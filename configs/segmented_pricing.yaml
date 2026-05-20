@@ -1,0 +1,78 @@
+random_seed: 42
+simulation:
+  n_loan_customers: 5000
+  n_deposit_customers: 5000
+market:
+  cash_rate: 0.0425
+  wholesale_funding_spread: 0.012
+  competitor_loan_rate: 0.0675
+  competitor_deposit_rate: 0.045
+  home_loan_reference_rate: 0.0525
+  term_deposit_reference_rate: 0.0400
+segmented_pricing:
+  loan_tiers:
+    - name: standard
+      lvr_max: 0.80
+      rate_grid: {start: 0.060, stop: 0.075, step: 0.005}
+    - name: high_lvr
+      lvr_max: 0.90
+      rate_grid: {start: 0.065, stop: 0.080, step: 0.005}
+    - name: very_high_lvr
+      rate_grid: {start: 0.070, stop: 0.090, step: 0.005}
+  deposit_tiers:
+    - name: retail
+      balance_max: 50000
+      rate_grid: {start: 0.040, stop: 0.055, step: 0.005}
+    - name: mid
+      balance_max: 200000
+      rate_grid: {start: 0.042, stop: 0.057, step: 0.005}
+    - name: wholesale
+      rate_grid: {start: 0.044, stop: 0.060, step: 0.005}
+competitor_rates:
+  enabled: false
+  source_file: data/processed/competitor_rates/latest.json
+  selected_banks:
+    - ANZ
+    - ASB
+    - Westpac
+    - BNZ
+    - Kiwibank
+  max_staleness_hours: 48
+  strict: true
+  mortgage:
+    strategy: market_average
+    term_months: 12
+    include_specials: true
+    require_min_20_percent_equity: true
+  term_deposit:
+    strategy: market_average
+    term_months: 12
+    product_type: term_deposit
+    interest_payment_frequency_preference:
+      - at_maturity
+      - annually
+      - quarterly
+      - monthly
+balance_sheet:
+  required_deposit_funding_ratio: 0.65
+  funding_shortfall_penalty_rate: 0.018
+  loan_rwa_weight: 0.35
+  capital_hurdle_rate: 0.12
+response:
+  loan_rate_elasticity: -85.0
+  loan_competitor_gap_elasticity: -65.0
+  deposit_rate_elasticity: 95.0
+  deposit_competitor_gap_elasticity: 75.0
+  coefficients:
+    loan:
+      intercept: 1.10
+      rate_anchor: 0.065
+      risk_score_coef: -1.20
+      credit_score_coef: 0.35
+      lvr_coef: -0.25
+    deposit:
+      intercept: -0.65
+      rate_anchor: 0.045
+      rate_sensitivity_coef: 0.60
+      relationship_coef: 0.04
+      digital_coef: -0.20

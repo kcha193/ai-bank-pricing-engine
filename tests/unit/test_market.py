@@ -48,11 +48,11 @@ def test_market_relative_config_requires_term_deposit_reference_rate():
         EngineConfig.model_validate(config)
 
 
-def test_config_requires_pricing_strategy_or_absolute_product_grid():
+def test_config_requires_exactly_one_pricing_mode():
     config = _minimal_market_relative_config()
     del config["pricing_strategy"]
 
-    with pytest.raises(ValidationError, match="pricing_strategy or products"):
+    with pytest.raises(ValidationError, match="Exactly one"):
         EngineConfig.model_validate(config)
 
 

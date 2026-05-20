@@ -86,21 +86,11 @@ def test_baseline_diagnostics_include_every_grid_candidate():
     )
 
 
-def test_pricing_strategy_grid_takes_precedence_over_absolute_product_grid():
+def test_config_rejects_multiple_pricing_modes():
     raw_config = _market_relative_config_with_stale_absolute_grid()
-    config = EngineConfig.model_validate(raw_config)
 
-    loan_grid, deposit_grid = build_configured_rate_grids(config)
-    diagnostics = run_baseline_diagnostics(config, max_boundary_expansions=0)
-
-    assert list(loan_grid) == pytest.approx([0.0520, 0.0525, 0.0530])
-    assert list(deposit_grid) == pytest.approx([0.0395, 0.0400, 0.0405])
-    assert diagnostics.grid_results["loan_rate"].min() == pytest.approx(0.0520)
-    assert diagnostics.grid_results["loan_rate"].max() == pytest.approx(0.0530)
-    assert diagnostics.grid_results["deposit_rate"].min() == pytest.approx(0.0395)
-    assert diagnostics.grid_results["deposit_rate"].max() == pytest.approx(0.0405)
-    assert 0.10 not in set(diagnostics.grid_results["loan_rate"])
-    assert 0.08 not in set(diagnostics.grid_results["deposit_rate"])
+    with pytest.raises(ValueError, match="Exactly one"):
+        EngineConfig.model_validate(raw_config)
 
 
 def test_baseline_best_result_matches_max_grid_objective():

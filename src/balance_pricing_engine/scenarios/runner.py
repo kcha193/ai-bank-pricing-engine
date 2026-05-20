@@ -19,7 +19,12 @@ from balance_pricing_engine.diagnostics import (
     objective_decomposition_from_row,
 )
 from balance_pricing_engine.optimization.grid_search import (
+    GRID_RESULT_COLUMNS,
     OptimizationResult,
+)
+from balance_pricing_engine.optimization.segmented import (
+    SegmentedOptimizationResult,
+    optimize_segmented_rates,
 )
 from balance_pricing_engine.rate_grids import build_configured_rate_grids
 from balance_pricing_engine.synthetic.customers import (
@@ -51,6 +56,7 @@ class ScenarioDiagnostics:
     deposit_rate_elasticity: float | None = None
     deposit_competitor_gap_elasticity: float | None = None
     response_coefficients: ResponseCoefficientsConfig | None = None
+    segmented_tier_rates: dict[str, dict[str, float]] | None = None
 
     def top_results(self, n: int = 5) -> pd.DataFrame:
         """Return the top objective rows for reporting."""
@@ -140,6 +146,12 @@ class ScenarioDiagnostics:
             "expansion_capped": self.expansion_capped,
             "policy_band_breached": self.policy_band_breached,
         }
+        if self.segmented_tier_rates is not None:
+            summary["segmented_tier_rates"] = self.segmented_tier_rates
+            (path / "segmented_tier_rates.json").write_text(
+                json.dumps(self.segmented_tier_rates, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
         (path / "summary.json").write_text(
             json.dumps(summary, indent=2, sort_keys=True),
             encoding="utf-8",
@@ -185,6 +197,22 @@ def run_baseline_diagnostics(
     deposit_customers = generate_deposit_customers(config.simulation.n_deposit_customers, rng)
     market = MarketState(**config.market.model_dump())
 
+    if config.segmented_pricing is not None:
+        segmented_result = optimize_segmented_rates(
+            loan_customers=loan_customers,
+            deposit_customers=deposit_customers,
+            market=market,
+            config=config.segmented_pricing,
+            loan_rate_elasticity=config.response.loan_rate_elasticity,
+            loan_competitor_gap_elasticity=config.response.loan_competitor_gap_elasticity,
+            deposit_rate_elasticity=config.response.deposit_rate_elasticity,
+            deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
+            required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
+            funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
+            response_coefficients=config.response.coefficients,
+        )
+        return _segmented_diagnostics(segmented_result)
+
     loan_grid, deposit_grid = build_configured_rate_grids(config)
 
     diagnostics = evaluate_adaptive_joint_rate_grid(
@@ -224,6 +252,68 @@ def run_baseline_diagnostics(
         deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
         response_coefficients=config.response.coefficients,
     )
+
+
+def _segmented_diagnostics(result: SegmentedOptimizationResult) -> ScenarioDiagnostics:
+    best_result = _optimization_result_from_segmented_result(result)
+    grid_results = _grid_results_from_segmented_result(best_result)
+    return ScenarioDiagnostics(
+        best_result=best_result,
+        grid_results=grid_results,
+        boundary_diagnostics=BoundaryDiagnostics(warnings=()),
+        initial_boundary_diagnostics=BoundaryDiagnostics(warnings=()),
+        segmented_tier_rates={
+            "loan_tiers": {tier.tier_name: tier.rate for tier in result.loan_tiers},
+            "deposit_tiers": {tier.tier_name: tier.rate for tier in result.deposit_tiers},
+        },
+    )
+
+
+def _optimization_result_from_segmented_result(
+    result: SegmentedOptimizationResult,
+) -> OptimizationResult:
+    return OptimizationResult(
+        loan_rate=_volume_weighted_average_rate(result.loan_tiers),
+        deposit_rate=_volume_weighted_average_rate(result.deposit_tiers),
+        loan_interest_income=result.total_loan_interest_income,
+        expected_credit_loss=result.total_credit_loss,
+        deposit_interest_cost=result.total_deposit_interest_cost,
+        wholesale_funding_cost=result.wholesale_funding_cost,
+        excess_deposit_income=result.excess_deposit_income,
+        funding_shortfall_penalty=result.funding_shortfall_penalty,
+        total_objective=result.total_objective,
+        expected_loan_volume=result.total_loan_volume,
+        expected_deposit_volume=result.total_deposit_volume,
+        funding_shortfall=result.funding_shortfall,
+    )
+
+
+def _grid_results_from_segmented_result(result: OptimizationResult) -> pd.DataFrame:
+    row = {
+        "loan_rate": result.loan_rate,
+        "deposit_rate": result.deposit_rate,
+        "home_loan_spread_to_market_bps": float("nan"),
+        "term_deposit_spread_to_market_bps": float("nan"),
+        "loan_interest_income": result.loan_interest_income,
+        "expected_credit_loss": result.expected_credit_loss,
+        "capital_charge": result.capital_charge,
+        "deposit_interest_cost": result.deposit_interest_cost,
+        "wholesale_funding_cost": result.wholesale_funding_cost,
+        "excess_deposit_income": result.excess_deposit_income,
+        "funding_shortfall_penalty": result.funding_shortfall_penalty,
+        "total_objective": result.total_objective,
+        "expected_loan_volume": result.expected_loan_volume,
+        "expected_deposit_volume": result.expected_deposit_volume,
+        "funding_shortfall": result.funding_shortfall,
+    }
+    return pd.DataFrame([row], columns=GRID_RESULT_COLUMNS)
+
+
+def _volume_weighted_average_rate(tiers) -> float:
+    total_volume = sum(tier.volume for tier in tiers)
+    if total_volume <= 0:
+        return 0.0
+    return sum(tier.rate * tier.volume for tier in tiers) / total_volume
 
 
 def run_baseline_scenario(config: EngineConfig) -> OptimizationResult:
