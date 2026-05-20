@@ -37,6 +37,7 @@ def run_scenario(request: RunScenarioRequest) -> dict[str, Any]:
             "expected_loan_volume": float(best_result.expected_loan_volume),
             "expected_deposit_volume": float(best_result.expected_deposit_volume),
             "funding_shortfall": float(best_result.funding_shortfall),
+            "capital_charge": float(best_result.capital_charge),
             "excess_deposit_income": float(best_result.excess_deposit_income),
             "boundary_warning_flag": bool(diagnostics.boundary_diagnostics.has_warning),
             "initial_boundary_warning_flag": bool(

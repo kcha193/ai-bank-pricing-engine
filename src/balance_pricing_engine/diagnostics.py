@@ -456,6 +456,26 @@ def build_default_sensitivity_cases(config: EngineConfig) -> list[SensitivityCas
         ),
         replace(
             baseline,
+            name="capital_hurdle_rate_lower",
+            capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate * 0.75,
+        ),
+        replace(
+            baseline,
+            name="capital_hurdle_rate_higher",
+            capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate * 1.25,
+        ),
+        replace(
+            baseline,
+            name="loan_rwa_weight_lower",
+            loan_rwa_weight=config.balance_sheet.loan_rwa_weight * 0.75,
+        ),
+        replace(
+            baseline,
+            name="loan_rwa_weight_higher",
+            loan_rwa_weight=config.balance_sheet.loan_rwa_weight * 1.25,
+        ),
+        replace(
+            baseline,
             name="wholesale_funding_rate_lower",
             wholesale_funding_rate=lower_wholesale_rate,
         ),

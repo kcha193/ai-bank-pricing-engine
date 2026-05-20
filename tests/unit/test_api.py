@@ -21,6 +21,7 @@ def test_run_scenario_returns_summary_for_valid_config_yaml():
         "expected_loan_volume",
         "expected_deposit_volume",
         "funding_shortfall",
+        "capital_charge",
         "excess_deposit_income",
         "boundary_warning_flag",
         "initial_boundary_warning_flag",
