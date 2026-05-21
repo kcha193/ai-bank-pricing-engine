@@ -213,6 +213,7 @@ def test_baseline_diagnostics_runs_boundary_follow_up_before_accepting_result():
     assert diagnostics.expansion_rounds == 1
     assert diagnostics.grid_results["loan_rate"].max() > max(initial_loan_grid)
     assert diagnostics.grid_results["deposit_rate"].max() > max(initial_deposit_grid)
+    assert not diagnostics.boundary_diagnostics.has_warning
 
 
 def test_adaptive_grid_expands_when_boundary_hit():

@@ -26,6 +26,7 @@ from balance_pricing_engine.utils.random import make_rng
 
 COMPETITOR_GAP_WARNING_THRESHOLD_BPS = 150.0
 FUNDING_SHORTFALL_NEAR_ZERO_RATIO = 0.01
+MIN_BOUNDARY_EXPANSION_HORIZON = 2
 
 SENSITIVITY_RESULT_COLUMNS = [
     "scenario_name",
@@ -247,15 +248,18 @@ def expand_rate_grids_for_boundary(
     result: OptimizationResult,
     loan_rate_grid: np.ndarray,
     deposit_rate_grid: np.ndarray,
+    span_multiplier: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, bool]:
     """Expand grids outward when the selected result lands on a boundary."""
     expanded_loan_grid, loan_expanded = _expand_grid_for_selected_rate(
         loan_rate_grid,
         result.loan_rate,
+        span_multiplier=span_multiplier,
     )
     expanded_deposit_grid, deposit_expanded = _expand_grid_for_selected_rate(
         deposit_rate_grid,
         result.deposit_rate,
+        span_multiplier=span_multiplier,
     )
     return expanded_loan_grid, expanded_deposit_grid, loan_expanded or deposit_expanded
 
@@ -316,10 +320,12 @@ def evaluate_adaptive_joint_rate_grid(
         if not boundary_diagnostics.has_warning or expansion_rounds >= max_boundary_expansions:
             break
 
+        span_multiplier = _boundary_expansion_span_multiplier(max_boundary_expansions)
         loan_rate_grid, deposit_rate_grid, expanded = expand_rate_grids_for_boundary(
             best_result,
             loan_rate_grid,
             deposit_rate_grid,
+            span_multiplier=span_multiplier,
         )
         if not expanded:
             break
@@ -782,6 +788,7 @@ def _outside_original_band(
 def _expand_grid_for_selected_rate(
     rate_grid: np.ndarray,
     selected_rate: float,
+    span_multiplier: float = 1.0,
 ) -> tuple[np.ndarray, bool]:
     sorted_grid = np.array(sorted({float(rate) for rate in rate_grid}))
     if len(sorted_grid) < 2:
@@ -793,7 +800,7 @@ def _expand_grid_for_selected_rate(
     span = maximum_rate - minimum_rate
 
     if np.isclose(selected_rate, minimum_rate):
-        expanded_minimum = minimum_rate - span
+        expanded_minimum = minimum_rate - span * span_multiplier
         if expanded_minimum < 0.0:
             increments_to_zero = int(np.ceil((0.0 - expanded_minimum) / step))
             expanded_minimum = expanded_minimum + increments_to_zero * step
@@ -803,7 +810,14 @@ def _expand_grid_for_selected_rate(
         return build_inclusive_numeric_grid(expanded_minimum, maximum_rate, step), True
 
     if np.isclose(selected_rate, maximum_rate):
-        expanded_maximum = maximum_rate + span
+        expanded_maximum = maximum_rate + span * span_multiplier
         return build_inclusive_numeric_grid(minimum_rate, expanded_maximum, step), True
 
     return sorted_grid, False
+
+
+def _boundary_expansion_span_multiplier(max_boundary_expansions: int) -> float:
+    if max_boundary_expansions <= 0:
+        return 1.0
+    horizon_rounds = max(max_boundary_expansions, MIN_BOUNDARY_EXPANSION_HORIZON)
+    return float((2**horizon_rounds - 1) / (2**max_boundary_expansions - 1))
