@@ -11,6 +11,7 @@ from balance_pricing_engine.config import (
     DepositResponseCoefficientsConfig,
     LoanResponseCoefficientsConfig,
 )
+from balance_pricing_engine.modelling.models import predict_response_probability
 from balance_pricing_engine.synthetic.response import (
     deposit_uptake_probability,
     loan_acceptance_probability,
@@ -93,7 +94,7 @@ class SyntheticDepositResponseFn:
 class MLResponseFnAdapter:
     """Wraps a fitted ResponseModel for use inside the optimizer grid search."""
 
-    model: Any  # duck-typed: must have predict_probability(df, feature_columns) -> np.ndarray
+    model: Any  # ResponseModel or sklearn estimator/pipeline
     feature_columns: list[str]
 
     def __call__(
@@ -118,4 +119,6 @@ class MLResponseFnAdapter:
                 bins=[-np.inf, 50_000, 150_000, np.inf],
                 labels=[0, 1, 2],
             ).astype(int)
-        return self.model.predict_probability(df, self.feature_columns)
+        if hasattr(self.model, "predict_probability"):
+            return self.model.predict_probability(df, self.feature_columns)
+        return predict_response_probability(self.model, df, self.feature_columns)

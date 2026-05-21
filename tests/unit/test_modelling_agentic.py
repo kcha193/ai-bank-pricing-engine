@@ -19,6 +19,7 @@ from balance_pricing_engine.modelling.datasets import (
 )
 from balance_pricing_engine.optimization.response_fn import (
     MLResponseFnAdapter,
+    SyntheticDepositResponseFn,
     SyntheticLoanResponseFn,
 )
 from balance_pricing_engine.synthetic.customers import generate_loan_customers
@@ -245,6 +246,93 @@ def test_scoring_agent_resolve_response_fn_returns_ml_adapter_for_approved_champ
     fn = scoring_agent.resolve_response_fn(feature_columns=LOAN_FEATURE_COLUMNS, fallback=fallback)
 
     assert isinstance(fn, MLResponseFnAdapter)
+
+
+def test_end_to_end_train_approve_and_use_in_optimizer(tmp_path):
+    """
+    Full Tier 1 governance flow:
+    1. Train logistic challenger on synthetic data.
+    2. Approve and promote it to champion in the registry.
+    3. Resolve it as a ResponseFn via ModelScoringAgent.
+    4. Run evaluate_joint_rate_grid with the resolved fn.
+    5. Verify results are valid (same shape as synthetic path).
+    """
+    from balance_pricing_engine.modelling.agentic import (
+        ElasticityBaselineModel, ModelTrainingAgent, TrainingConfig,
+    )
+    from balance_pricing_engine.optimization.grid_search import evaluate_joint_rate_grid
+    from balance_pricing_engine.optimization.response_fn import SyntheticLoanResponseFn
+    from balance_pricing_engine.synthetic.customers import (
+        generate_deposit_customers, generate_loan_customers,
+    )
+    from balance_pricing_engine.synthetic.market import MarketState
+    from balance_pricing_engine.utils.random import make_rng
+
+    rng = make_rng(42)
+    loan_customers = generate_loan_customers(300, rng)
+    deposit_customers = generate_deposit_customers(300, rng)
+    market = MarketState(
+        cash_rate=0.055,
+        wholesale_funding_spread=0.012,
+        competitor_loan_rate=0.079,
+        competitor_deposit_rate=0.048,
+    )
+
+    # Step 1: Train
+    dataset = _loan_dataset()
+    trainer = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=42,
+        ),
+        artifacts_dir=tmp_path,
+    )
+    registry = trainer.registry
+    trainer.train(
+        dataset=dataset,
+        candidates={
+            "elasticity_baseline": ElasticityBaselineModel(),
+            "logistic": LogisticResponseModel(random_state=42),
+        },
+        registry=registry,
+        run_name="loan_integration",
+    )
+
+    # Step 2: Approve and promote
+    registry.promote_champion("LogisticResponseModel", approver="integration_test")
+
+    # Step 3: Resolve ResponseFn
+    scoring_agent = ModelScoringAgent(registry_path=tmp_path / "model_registry.json")
+    fallback = SyntheticLoanResponseFn(elasticity=-85.0, competitor_gap_elasticity=-65.0)
+    loan_fn = scoring_agent.resolve_response_fn(
+        feature_columns=LOAN_FEATURE_COLUMNS, fallback=fallback
+    )
+    deposit_response_fn = SyntheticDepositResponseFn(
+        elasticity=80.0, competitor_gap_elasticity=60.0
+    )
+
+    # Step 4: Run optimizer with ML loan fn
+    grid_results = evaluate_joint_rate_grid(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=market,
+        loan_rate_grid=np.array([0.079, 0.081, 0.083]),
+        deposit_rate_grid=np.array([0.047, 0.049]),
+        loan_rate_elasticity=-85.0,
+        loan_competitor_gap_elasticity=-65.0,
+        deposit_rate_elasticity=80.0,
+        deposit_competitor_gap_elasticity=60.0,
+        required_deposit_funding_ratio=0.8,
+        funding_shortfall_penalty_rate=0.5,
+        loan_response_fn=loan_fn,
+        deposit_response_fn=deposit_response_fn,
+    )
+
+    # Step 5: Validate
+    assert len(grid_results) == 6  # 3 loan × 2 deposit
+    assert grid_results["expected_loan_volume"].gt(0).all()
+    assert grid_results["total_objective"].notna().all()
 
 
 def test_training_reproducible_with_fixed_seed(tmp_path):
