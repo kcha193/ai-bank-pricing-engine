@@ -624,6 +624,49 @@ def test_optimize_joint_market_relative_rates_builds_spread_grids():
     assert result.term_deposit_spread_to_market_bps == pytest.approx(-100.0)
 
 
+def test_optimize_joint_market_relative_rates_accepts_response_fn():
+    loan_customers, deposit_customers = _single_customer_portfolios()
+
+    class FixedProbFn:
+        def __init__(self):
+            self.rates = []
+
+        def __call__(self, customers, offered_rate, competitor_rate):
+            self.rates.append(offered_rate)
+            return np.full(len(customers), 0.5)
+
+    loan_fn = FixedProbFn()
+    deposit_fn = FixedProbFn()
+
+    optimize_joint_market_relative_rates(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=MarketState(
+            cash_rate=0.0,
+            wholesale_funding_spread=0.0,
+            competitor_loan_rate=0.05,
+            competitor_deposit_rate=0.03,
+        ),
+        market_rates=MarketRates(
+            home_loan_reference_rate=0.0500,
+            term_deposit_reference_rate=0.0300,
+        ),
+        home_loan_spread_bps=SpreadGridConfig(min=-100, max=100, step=100),
+        term_deposit_spread_bps=SpreadGridConfig(min=-100, max=100, step=100),
+        loan_rate_elasticity=0.0,
+        loan_competitor_gap_elasticity=0.0,
+        deposit_rate_elasticity=0.0,
+        deposit_competitor_gap_elasticity=0.0,
+        required_deposit_funding_ratio=0.0,
+        funding_shortfall_penalty_rate=0.0,
+        loan_response_fn=loan_fn,
+        deposit_response_fn=deposit_fn,
+    )
+
+    assert loan_fn.rates == pytest.approx([0.04, 0.05, 0.06])
+    assert deposit_fn.rates == pytest.approx([0.02, 0.03, 0.04])
+
+
 def test_optimizer_output_contains_spread_to_market_fields():
     config = load_config("configs/base.yaml")
 

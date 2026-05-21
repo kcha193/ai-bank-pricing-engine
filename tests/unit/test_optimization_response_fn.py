@@ -97,6 +97,20 @@ def test_ml_response_fn_adapter_adds_wealth_segment_when_missing():
     adapter(_deposit_customers(), offered_rate=0.05, competitor_rate=0.045)
 
 
+def test_ml_response_fn_adapter_adds_wealth_segment_from_loan_amount_when_missing():
+    class FakeModel:
+        def predict_probability(self, df, feature_columns):
+            assert "wealth_segment" in df.columns
+            assert df["wealth_segment"].notna().all()
+            return np.zeros(len(df))
+
+    adapter = MLResponseFnAdapter(
+        model=FakeModel(),
+        feature_columns=["offered_rate", "wealth_segment"],
+    )
+    adapter(_loan_customers(), offered_rate=0.08, competitor_rate=0.075)
+
+
 def test_require_approved_raises_governance_error_when_not_approved():
     with pytest.raises(GovernanceError, match="pending_human_approval"):
         require_approved("pending_human_approval", "MyModel")

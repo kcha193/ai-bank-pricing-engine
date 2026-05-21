@@ -22,6 +22,7 @@ from balance_pricing_engine.optimization.response_fn import (
     SyntheticDepositResponseFn,
     SyntheticLoanResponseFn,
 )
+from balance_pricing_engine.modelling.persistence import save_model
 from balance_pricing_engine.synthetic.customers import generate_loan_customers
 from balance_pricing_engine.utils.random import make_rng
 
@@ -130,6 +131,37 @@ def test_registry_promote_champion_sets_champion_and_retires_previous(tmp_path):
     assert logistic["champion_status"] == "champion"
     assert logistic["governance_status"] == "approved"
     assert elasticity["champion_status"] == "retired_champion"
+
+
+def test_registry_promote_champion_can_target_specific_run(tmp_path):
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.register({
+        "model_name": "LogisticResponseModel",
+        "version": "loan-v1",
+        "run_name": "loan",
+        "governance_status": "pending_human_approval",
+        "champion_status": "challenger",
+    })
+    registry.register({
+        "model_name": "LogisticResponseModel",
+        "version": "deposit-v1",
+        "run_name": "deposit",
+        "governance_status": "pending_human_approval",
+        "champion_status": "challenger",
+    })
+
+    registry.promote_champion(
+        "LogisticResponseModel",
+        approver="analyst@bank.nz",
+        run_name="loan",
+    )
+
+    records = registry.load()["models"]
+    loan_record = next(record for record in records if record["run_name"] == "loan")
+    deposit_record = next(record for record in records if record["run_name"] == "deposit")
+    assert loan_record["champion_status"] == "champion"
+    assert loan_record["governance_status"] == "approved"
+    assert deposit_record["champion_status"] == "challenger"
 
 
 def test_registry_get_champion_returns_latest_champion(tmp_path):
@@ -246,6 +278,56 @@ def test_scoring_agent_resolve_response_fn_returns_ml_adapter_for_approved_champ
     fn = scoring_agent.resolve_response_fn(feature_columns=LOAN_FEATURE_COLUMNS, fallback=fallback)
 
     assert isinstance(fn, MLResponseFnAdapter)
+
+
+def test_scoring_agent_resolve_response_fn_uses_feature_compatible_champion(tmp_path):
+    loan_artifact = tmp_path / "loan.joblib"
+    deposit_artifact = tmp_path / "deposit.joblib"
+    save_model(ElasticityBaselineModel(probability_column="loan_probability"), loan_artifact)
+    save_model(ElasticityBaselineModel(probability_column="deposit_probability"), deposit_artifact)
+
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.register({
+        "model_name": "LogisticResponseModel",
+        "champion_status": "champion",
+        "governance_status": "approved",
+        "artifact_path": str(loan_artifact),
+        "feature_columns": LOAN_FEATURE_COLUMNS,
+    })
+    registry.register({
+        "model_name": "LogisticResponseModel",
+        "champion_status": "champion",
+        "governance_status": "approved",
+        "artifact_path": str(deposit_artifact),
+        "feature_columns": DEPOSIT_FEATURE_COLUMNS,
+    })
+    agent = ModelScoringAgent(registry_path=tmp_path / "registry.json")
+    fallback = SyntheticLoanResponseFn(elasticity=-85.0, competitor_gap_elasticity=-65.0)
+
+    fn = agent.resolve_response_fn(feature_columns=LOAN_FEATURE_COLUMNS, fallback=fallback)
+
+    assert isinstance(fn, MLResponseFnAdapter)
+    assert fn.model.probability_column == "loan_probability"
+
+
+def test_scoring_agent_resolve_response_fn_falls_back_for_incompatible_champion(tmp_path):
+    deposit_artifact = tmp_path / "deposit.joblib"
+    save_model(ElasticityBaselineModel(probability_column="deposit_probability"), deposit_artifact)
+
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.register({
+        "model_name": "LogisticResponseModel",
+        "champion_status": "champion",
+        "governance_status": "approved",
+        "artifact_path": str(deposit_artifact),
+        "feature_columns": DEPOSIT_FEATURE_COLUMNS,
+    })
+    agent = ModelScoringAgent(registry_path=tmp_path / "registry.json")
+    fallback = SyntheticLoanResponseFn(elasticity=-85.0, competitor_gap_elasticity=-65.0)
+
+    fn = agent.resolve_response_fn(feature_columns=LOAN_FEATURE_COLUMNS, fallback=fallback)
+
+    assert fn is fallback
 
 
 def test_end_to_end_train_approve_and_use_in_optimizer(tmp_path):
