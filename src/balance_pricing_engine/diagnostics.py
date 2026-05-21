@@ -805,19 +805,46 @@ def _expand_grid_for_selected_rate(
             increments_to_zero = int(np.ceil((0.0 - expanded_minimum) / step))
             expanded_minimum = expanded_minimum + increments_to_zero * step
             expanded_minimum = max(0.0, expanded_minimum)
+        # Snap to the nearest step boundary reachable from maximum_rate going down, so
+        # that non-integer span_multiplier values don't produce a misaligned stop.
+        steps_below_max = int(np.ceil(round((maximum_rate - expanded_minimum) / step, 9)))
+        expanded_minimum = maximum_rate - steps_below_max * step
         if np.isclose(expanded_minimum, minimum_rate):
             return sorted_grid, False
         return build_inclusive_numeric_grid(expanded_minimum, maximum_rate, step), True
 
     if np.isclose(selected_rate, maximum_rate):
-        expanded_maximum = maximum_rate + span * span_multiplier
+        raw_expanded_maximum = maximum_rate + span * span_multiplier
+        # Snap up to the nearest step boundary from minimum_rate so that non-integer
+        # span_multiplier values don't produce a misaligned stop.
+        steps_above_min = int(np.ceil(round((raw_expanded_maximum - minimum_rate) / step, 9)))
+        expanded_maximum = minimum_rate + steps_above_min * step
         return build_inclusive_numeric_grid(minimum_rate, expanded_maximum, step), True
 
     return sorted_grid, False
 
 
 def _boundary_expansion_span_multiplier(max_boundary_expansions: int) -> float:
+    # When max_boundary_expansions >= MIN_BOUNDARY_EXPANSION_HORIZON (the common case),
+    # multiple rounds of 1× expansion already provide sufficient cumulative coverage,
+    # so no multiplier is needed.
+    #
+    # When max_boundary_expansions < MIN_BOUNDARY_EXPANSION_HORIZON, we compensate by
+    # expanding more per round so a single pass covers the same cumulative ground as
+    # MIN_BOUNDARY_EXPANSION_HORIZON rounds of 1× expansion would have.
+    # With 1× per round, cumulative span coverage after k rounds compounds geometrically:
+    # after round 1 the grid is 2× original, after round 2 it is 4× original, etc.
+    # Total coverage = (2^k − 1) × original_span. Setting one-shot coverage equal to the
+    # MIN_BOUNDARY_EXPANSION_HORIZON-round target gives:
+    #   multiplier = (2^H − 1) / (2^N − 1)
+    # where H = MIN_BOUNDARY_EXPANSION_HORIZON and N = max_boundary_expansions.
+    # For N=1, H=2: multiplier = 3, so the single expansion reaches 4× original span —
+    # the same peak grid size that the default two-round approach reaches on its second
+    # round.
     if max_boundary_expansions <= 0:
         return 1.0
-    horizon_rounds = max(max_boundary_expansions, MIN_BOUNDARY_EXPANSION_HORIZON)
-    return float((2**horizon_rounds - 1) / (2**max_boundary_expansions - 1))
+    if max_boundary_expansions >= MIN_BOUNDARY_EXPANSION_HORIZON:
+        return 1.0
+    return float(
+        (2**MIN_BOUNDARY_EXPANSION_HORIZON - 1) / (2**max_boundary_expansions - 1)
+    )

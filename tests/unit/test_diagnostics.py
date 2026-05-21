@@ -485,3 +485,46 @@ def test_parameter_family_unknown_returns_other() -> None:
     from balance_pricing_engine.diagnostics import _parameter_family
 
     assert _parameter_family("some_unknown_scenario") == "other"
+
+
+def test_boundary_expansion_span_multiplier_returns_one_for_default_and_above() -> None:
+    from balance_pricing_engine.diagnostics import (
+        MIN_BOUNDARY_EXPANSION_HORIZON,
+        _boundary_expansion_span_multiplier,
+    )
+
+    # For max_boundary_expansions >= MIN_BOUNDARY_EXPANSION_HORIZON, multi-round 1×
+    # expansion provides sufficient coverage; no multiplier is applied.
+    for n in range(MIN_BOUNDARY_EXPANSION_HORIZON, MIN_BOUNDARY_EXPANSION_HORIZON + 4):
+        assert _boundary_expansion_span_multiplier(n) == 1.0, n
+
+    # Edge cases.
+    assert _boundary_expansion_span_multiplier(0) == 1.0
+    assert _boundary_expansion_span_multiplier(-1) == 1.0
+
+
+def test_boundary_expansion_span_multiplier_compensates_for_tight_cap() -> None:
+    from balance_pricing_engine.diagnostics import (
+        MIN_BOUNDARY_EXPANSION_HORIZON,
+        _boundary_expansion_span_multiplier,
+    )
+
+    # For max_boundary_expansions=1 and MIN_BOUNDARY_EXPANSION_HORIZON=2, one-shot
+    # expansion must cover the same cumulative span as 2 rounds of 1× expansion:
+    # (2^2 − 1) / (2^1 − 1) = 3.0.
+    assert _boundary_expansion_span_multiplier(1) == 3.0
+    assert MIN_BOUNDARY_EXPANSION_HORIZON == 2  # document the assumption
+
+
+def test_expand_grid_for_selected_rate_handles_non_integer_multiplier() -> None:
+    from balance_pricing_engine.diagnostics import _expand_grid_for_selected_rate
+
+    # step=5, span=80 → multiplier=2.9 gives 80*2.9=232 which is not a multiple of 5.
+    # The function must snap the boundary to a valid step rather than raising ValueError.
+    grid = np.arange(0.0, 0.085, 0.005)  # 0.000 to 0.080 in 0.005 steps
+    expanded, did_expand = _expand_grid_for_selected_rate(grid, grid[-1], span_multiplier=2.9)
+    assert did_expand
+    step = float(np.diff(grid)[0])
+    # Expanded grid must be step-aligned: (stop − start) / step is an integer.
+    step_count = (expanded[-1] - expanded[0]) / step
+    assert np.isclose(step_count, round(step_count), rtol=1e-9, atol=1e-12)
