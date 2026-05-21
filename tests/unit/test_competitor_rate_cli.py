@@ -21,6 +21,57 @@ def test_validate_command_reports_fixture_status(capsys):
     assert "Validation status: valid" in captured.out
 
 
+def test_validate_command_returns_nonzero_when_file_exceeds_staleness_limit(capsys):
+    # FIXTURE captured_at_utc is 2026-04-27, always older than 0 hours.
+    exit_code = cli.main(["validate", "--source-file", FIXTURE, "--max-staleness-hours", "0"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "stale" in captured.out.lower()
+
+
+def test_validate_command_accepts_previous_file_with_no_movement(capsys):
+    # Same file as current and previous means zero rate movement.
+    exit_code = cli.main([
+        "validate",
+        "--source-file", FIXTURE,
+        "--previous-file", FIXTURE,
+    ])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Validation status: valid" in captured.out
+
+
+def test_validate_command_reports_large_rate_movement_from_previous_file(tmp_path, capsys):
+    # Build a "previous" run with ANZ home_loan rate 1.0 pp lower (triggers >0.50 threshold).
+    previous_run = load_rate_run(FIXTURE)
+    modified_records = []
+    for record in previous_run.records:
+        if record.bank == "ANZ" and str(record.product_type) == "home_loan":
+            modified_records.append(
+                record.model_copy(
+                    update={"advertised_rate_pct": record.advertised_rate_pct - 1.0}
+                )
+            )
+        else:
+            modified_records.append(record)
+    previous_with_low_anz = previous_run.model_copy(update={"records": modified_records})
+    previous_file = tmp_path / "previous.json"
+    previous_file.write_text(previous_with_low_anz.model_dump_json(), encoding="utf-8")
+
+    exit_code = cli.main([
+        "validate",
+        "--source-file", FIXTURE,
+        "--previous-file", str(previous_file),
+    ])
+
+    captured = capsys.readouterr()
+    # Movement severity is "warning" not "error"; exit code is still 0.
+    assert exit_code == 0
+    assert "Large day-over-day movement" in captured.out
+
+
 def test_report_command_prints_counts(capsys):
     exit_code = cli.main(["report", "--source-file", FIXTURE])
 
