@@ -380,7 +380,6 @@ Loan interest income:      $43,707,406
 Expected credit loss:      $3,646,398
 Deposit interest cost:     $17,449,664
 Wholesale funding cost:    $10,195,814
-Capital/RWA charge:        $2,266,309
 Funding shortfall penalty: $0
 Total objective:           $10,149,221
 ```
@@ -392,9 +391,8 @@ $43.71M loan interest income
 - $3.65M expected credit loss
 - $17.45M deposit interest cost
 - $10.20M wholesale funding cost
-- $2.27M capital/RWA charge
 - $0 funding shortfall penalty
-= $10.15M total objective
+= $10.15M total objective (after capital/RWA charge of ~$2.27M, not shown separately)
 ```
 
 Economically, this means the model expects the `8.10%` home loan rate to generate enough margin to
