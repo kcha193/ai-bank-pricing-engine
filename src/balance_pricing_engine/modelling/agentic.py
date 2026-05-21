@@ -174,6 +174,41 @@ class ModelRegistry:
             None,
         )
 
+    def get_champion(self) -> dict[str, Any] | None:
+        """Return the latest record with champion_status='champion', or None."""
+        records = self.load().get("models", [])
+        return next(
+            (r for r in reversed(records) if r.get("champion_status") == "champion"),
+            None,
+        )
+
+    def approve_model(self, model_name: str, approver: str) -> None:
+        """Set governance_status='approved' on the latest record for model_name."""
+        payload = self.load()
+        for record in reversed(payload.get("models", [])):
+            if record.get("model_name") == model_name:
+                record["governance_status"] = "approved"
+                record["approved_by"] = approver
+                record["approved_at_utc"] = datetime.now(timezone.utc).isoformat()
+                self.registry_path.write_text(
+                    json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+                )
+                return
+        raise ValueError(f"No registry record found for model_name='{model_name}'")
+
+    def promote_champion(self, model_name: str, approver: str) -> None:
+        """Approve model_name and promote it to champion, retiring the previous champion."""
+        self.approve_model(model_name, approver)
+        payload = self.load()
+        for record in payload.get("models", []):
+            if record.get("model_name") == model_name:
+                record["champion_status"] = "champion"
+            elif record.get("champion_status") == "champion":
+                record["champion_status"] = "retired_champion"
+        self.registry_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+        )
+
 
 def write_model_card(
     record: "ModelRecord",

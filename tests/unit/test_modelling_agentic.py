@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from balance_pricing_engine.modelling.agentic import (
     ElasticityBaselineModel,
@@ -81,6 +82,64 @@ def test_registry_round_trip_and_latest_lookup(tmp_path):
     payload = registry.load()
     assert payload["models"][0]["model_name"] == "m1"
     assert registry.latest_for_model("m1")["version"] == "v2"
+
+
+def test_registry_approve_model_sets_governance_status(tmp_path):
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.register({
+        "model_name": "LogisticResponseModel",
+        "governance_status": "pending_human_approval",
+    })
+
+    registry.approve_model("LogisticResponseModel", approver="analyst@bank.nz")
+
+    record = registry.latest_for_model("LogisticResponseModel")
+    assert record["governance_status"] == "approved"
+    assert record["approved_by"] == "analyst@bank.nz"
+    assert "approved_at_utc" in record
+
+
+def test_registry_approve_model_raises_when_not_found(tmp_path):
+    registry = ModelRegistry(tmp_path / "registry.json")
+    with pytest.raises(ValueError, match="No registry record found"):
+        registry.approve_model("UnknownModel", approver="analyst@bank.nz")
+
+
+def test_registry_promote_champion_sets_champion_and_retires_previous(tmp_path):
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.register({
+        "model_name": "ElasticityBaselineModel",
+        "governance_status": "approved",
+        "champion_status": "champion",
+    })
+    registry.register({
+        "model_name": "LogisticResponseModel",
+        "governance_status": "pending_human_approval",
+        "champion_status": "challenger",
+    })
+
+    registry.promote_champion("LogisticResponseModel", approver="analyst@bank.nz")
+
+    logistic = registry.latest_for_model("LogisticResponseModel")
+    elasticity = registry.latest_for_model("ElasticityBaselineModel")
+    assert logistic["champion_status"] == "champion"
+    assert logistic["governance_status"] == "approved"
+    assert elasticity["champion_status"] == "retired_champion"
+
+
+def test_registry_get_champion_returns_latest_champion(tmp_path):
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.register({"model_name": "ElasticityBaselineModel", "champion_status": "champion"})
+    registry.register({"model_name": "LogisticResponseModel", "champion_status": "challenger"})
+
+    champion = registry.get_champion()
+    assert champion["model_name"] == "ElasticityBaselineModel"
+
+
+def test_registry_get_champion_returns_none_when_no_champion(tmp_path):
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.register({"model_name": "LogisticResponseModel", "champion_status": "challenger"})
+    assert registry.get_champion() is None
 
 
 def test_registry_append_accepts_model_record(tmp_path):
