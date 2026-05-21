@@ -14,6 +14,10 @@ from balance_pricing_engine.optimization.grid_search import (
     optimize_joint_rates,
     select_best_result,
 )
+from balance_pricing_engine.optimization.response_fn import (
+    SyntheticDepositResponseFn,
+    SyntheticLoanResponseFn,
+)
 from balance_pricing_engine.market import MarketRates, SpreadGridConfig
 from balance_pricing_engine.pricing.balance_sheet import calculate_funding_result
 from balance_pricing_engine.rate_grids import build_configured_rate_grids
@@ -140,6 +144,101 @@ def test_evaluate_joint_rate_grid_reuses_deposit_precompute(monkeypatch):
     )
 
     assert call_count == len(deposit_grid)
+
+
+def _minimal_customers_and_market():
+    from balance_pricing_engine.synthetic.customers import (
+        generate_deposit_customers, generate_loan_customers,
+    )
+    from balance_pricing_engine.synthetic.market import MarketState
+    from balance_pricing_engine.utils.random import make_rng
+    rng = make_rng(99)
+    loan_customers = generate_loan_customers(200, rng)
+    deposit_customers = generate_deposit_customers(200, rng)
+    market = MarketState(
+        cash_rate=0.055,
+        wholesale_funding_spread=0.012,
+        competitor_loan_rate=0.079,
+        competitor_deposit_rate=0.048,
+    )
+    return loan_customers, deposit_customers, market
+
+
+def test_evaluate_joint_rate_grid_accepts_synthetic_response_fn():
+    loan_customers, deposit_customers, market = _minimal_customers_and_market()
+    loan_fn = SyntheticLoanResponseFn(elasticity=-85.0, competitor_gap_elasticity=-65.0)
+    deposit_fn = SyntheticDepositResponseFn(elasticity=80.0, competitor_gap_elasticity=60.0)
+
+    result = evaluate_joint_rate_grid(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=market,
+        loan_rate_grid=np.array([0.079, 0.081]),
+        deposit_rate_grid=np.array([0.047, 0.049]),
+        loan_rate_elasticity=-85.0,
+        loan_competitor_gap_elasticity=-65.0,
+        deposit_rate_elasticity=80.0,
+        deposit_competitor_gap_elasticity=60.0,
+        required_deposit_funding_ratio=0.8,
+        funding_shortfall_penalty_rate=0.5,
+        loan_response_fn=loan_fn,
+        deposit_response_fn=deposit_fn,
+    )
+    assert set(result.columns) == set(GRID_RESULT_COLUMNS)
+    assert len(result) == 4  # 2 loan rates × 2 deposit rates
+
+
+def test_evaluate_joint_rate_grid_custom_fn_overrides_volume():
+    """A response fn that always returns 0.5 probability produces deterministic volume."""
+    loan_customers, deposit_customers, market = _minimal_customers_and_market()
+
+    class FixedProbFn:
+        def __call__(self, customers, offered_rate, competitor_rate):
+            return np.full(len(customers), 0.5)
+
+    result_custom = evaluate_joint_rate_grid(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=market,
+        loan_rate_grid=np.array([0.079, 0.081]),
+        deposit_rate_grid=np.array([0.047]),
+        loan_rate_elasticity=-85.0,
+        loan_competitor_gap_elasticity=-65.0,
+        deposit_rate_elasticity=80.0,
+        deposit_competitor_gap_elasticity=60.0,
+        required_deposit_funding_ratio=0.8,
+        funding_shortfall_penalty_rate=0.5,
+        loan_response_fn=FixedProbFn(),
+        deposit_response_fn=FixedProbFn(),
+    )
+    # Both loan rates produce identical expected_loan_volume when prob is constant
+    assert abs(
+        result_custom.iloc[0]["expected_loan_volume"]
+        - result_custom.iloc[1]["expected_loan_volume"]
+    ) < 1.0
+
+
+def test_optimize_joint_rates_accepts_response_fn():
+    loan_customers, deposit_customers, market = _minimal_customers_and_market()
+    loan_fn = SyntheticLoanResponseFn(elasticity=-85.0, competitor_gap_elasticity=-65.0)
+    deposit_fn = SyntheticDepositResponseFn(elasticity=80.0, competitor_gap_elasticity=60.0)
+
+    result = optimize_joint_rates(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=market,
+        loan_rate_grid=np.array([0.079, 0.081]),
+        deposit_rate_grid=np.array([0.047, 0.049]),
+        loan_rate_elasticity=-85.0,
+        loan_competitor_gap_elasticity=-65.0,
+        deposit_rate_elasticity=80.0,
+        deposit_competitor_gap_elasticity=60.0,
+        required_deposit_funding_ratio=0.8,
+        funding_shortfall_penalty_rate=0.5,
+        loan_response_fn=loan_fn,
+        deposit_response_fn=deposit_fn,
+    )
+    assert result.loan_rate in [0.079, 0.081]
 
 
 def test_evaluate_joint_rate_grid_credits_excess_deposits_at_cash_rate():
