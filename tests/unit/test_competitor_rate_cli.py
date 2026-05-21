@@ -21,6 +21,15 @@ def test_validate_command_reports_fixture_status(capsys):
     assert "Validation status: valid" in captured.out
 
 
+def test_validate_command_returns_nonzero_when_file_exceeds_staleness_limit(capsys):
+    # FIXTURE captured_at_utc is 2026-04-27, always older than 0 hours.
+    exit_code = cli.main(["validate", "--source-file", FIXTURE, "--max-staleness-hours", "0"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "stale" in captured.out.lower()
+
+
 def test_report_command_prints_counts(capsys):
     exit_code = cli.main(["report", "--source-file", FIXTURE])
 
