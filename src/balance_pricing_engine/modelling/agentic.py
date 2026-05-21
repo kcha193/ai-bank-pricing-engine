@@ -683,6 +683,25 @@ class ModelScoringAgent:
         if missing:
             raise ValueError(f"Missing required scoring columns: {missing}")
 
+    def resolve_response_fn(
+        self,
+        feature_columns: list[str],
+        fallback: Any,
+    ) -> Any:
+        """Return MLResponseFnAdapter for the approved champion, or fallback."""
+        from balance_pricing_engine.optimization.response_fn import MLResponseFnAdapter
+
+        champion = self.registry.get_champion()
+        if champion is None:
+            return fallback
+        if champion.get("governance_status") != "approved":
+            return fallback
+        artifact_path = champion.get("artifact_path")
+        if artifact_path is None or not Path(str(artifact_path)).exists():
+            return fallback
+        model = load_model(str(artifact_path))
+        return MLResponseFnAdapter(model=model, feature_columns=feature_columns)
+
 
 def _calibration_error(y_true: np.ndarray, y_probability: np.ndarray) -> float:
     calibration = build_calibration_table(y_true, y_probability, n_bins=5)

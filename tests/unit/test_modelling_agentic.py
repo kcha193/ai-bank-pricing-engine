@@ -17,6 +17,10 @@ from balance_pricing_engine.modelling.datasets import (
     LOAN_TARGET_COLUMN,
     build_loan_response_dataset,
 )
+from balance_pricing_engine.optimization.response_fn import (
+    MLResponseFnAdapter,
+    SyntheticLoanResponseFn,
+)
 from balance_pricing_engine.synthetic.customers import generate_loan_customers
 from balance_pricing_engine.utils.random import make_rng
 
@@ -183,6 +187,64 @@ def test_registered_scoring_reports_fallback_model_when_artifact_missing(tmp_pat
 
     assert result["used_fallback"] is True
     assert result["model_used"] == "ElasticityResponseModel"
+
+
+def test_scoring_agent_resolve_response_fn_returns_fallback_when_no_champion(tmp_path):
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.register({"model_name": "LogisticResponseModel", "champion_status": "challenger"})
+    agent = ModelScoringAgent(registry_path=tmp_path / "registry.json")
+    fallback = SyntheticLoanResponseFn(elasticity=-85.0, competitor_gap_elasticity=-65.0)
+
+    fn = agent.resolve_response_fn(feature_columns=LOAN_FEATURE_COLUMNS, fallback=fallback)
+    assert fn is fallback
+
+
+def test_scoring_agent_resolve_response_fn_returns_fallback_when_artifact_missing(tmp_path):
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.register({
+        "model_name": "LogisticResponseModel",
+        "champion_status": "champion",
+        "governance_status": "approved",
+        "artifact_path": str(tmp_path / "missing.joblib"),
+    })
+    agent = ModelScoringAgent(registry_path=tmp_path / "registry.json")
+    fallback = SyntheticLoanResponseFn(elasticity=-85.0, competitor_gap_elasticity=-65.0)
+
+    fn = agent.resolve_response_fn(feature_columns=LOAN_FEATURE_COLUMNS, fallback=fallback)
+    assert fn is fallback
+
+
+def test_scoring_agent_resolve_response_fn_returns_ml_adapter_for_approved_champion(tmp_path):
+    from balance_pricing_engine.modelling.agentic import (
+        ElasticityBaselineModel, ModelTrainingAgent, TrainingConfig,
+    )
+
+    dataset = _loan_dataset()
+    agent_trainer = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=7,
+        ),
+        artifacts_dir=tmp_path,
+    )
+    registry = agent_trainer.registry
+    agent_trainer.train(
+        dataset=dataset,
+        candidates={
+            "elasticity_baseline": ElasticityBaselineModel(),
+            "logistic": LogisticResponseModel(random_state=7),
+        },
+        registry=registry,
+        run_name="loan",
+    )
+    registry.promote_champion("LogisticResponseModel", approver="analyst@bank.nz")
+
+    scoring_agent = ModelScoringAgent(registry_path=tmp_path / "model_registry.json")
+    fallback = SyntheticLoanResponseFn(elasticity=-85.0, competitor_gap_elasticity=-65.0)
+    fn = scoring_agent.resolve_response_fn(feature_columns=LOAN_FEATURE_COLUMNS, fallback=fallback)
+
+    assert isinstance(fn, MLResponseFnAdapter)
 
 
 def test_training_reproducible_with_fixed_seed(tmp_path):
