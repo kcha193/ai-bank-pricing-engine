@@ -114,8 +114,9 @@ class MLResponseFnAdapter:
                 labels=[0, 1, 2],
             ).astype(int)
         if "wealth_segment" in self.feature_columns and "wealth_segment" not in df.columns:
+            amount_column = "deposit_amount" if "deposit_amount" in df.columns else "loan_amount"
             df["wealth_segment"] = pd.cut(
-                df["deposit_amount"],
+                df[amount_column],
                 bins=[-np.inf, 50_000, 150_000, np.inf],
                 labels=[0, 1, 2],
             ).astype(int)

@@ -347,6 +347,8 @@ def optimize_joint_market_relative_rates(
     rwa_weight: float = 0.35,
     capital_hurdle_rate: float = 0.12,
     response_coefficients: ResponseCoefficientsConfig | None = None,
+    loan_response_fn: ResponseFn | None = None,
+    deposit_response_fn: ResponseFn | None = None,
 ) -> OptimizationResult:
     """Optimize rates over spreads to reference market rates."""
     loan_rate_grid, deposit_rate_grid = build_market_relative_grid(
@@ -371,6 +373,8 @@ def optimize_joint_market_relative_rates(
         home_loan_reference_rate=market_rates.home_loan_reference_rate,
         term_deposit_reference_rate=market_rates.term_deposit_reference_rate,
         response_coefficients=response_coefficients,
+        loan_response_fn=loan_response_fn,
+        deposit_response_fn=deposit_response_fn,
     )
 
 

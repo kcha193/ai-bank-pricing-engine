@@ -201,10 +201,15 @@ class ModelRegistry:
         self.approve_model(model_name, approver)
         payload = self.load()
         for record in payload.get("models", []):
+            if record.get("champion_status") == "champion":
+                record["champion_status"] = "retired_champion"
+        for record in reversed(payload.get("models", [])):
             if record.get("model_name") == model_name:
                 record["champion_status"] = "champion"
-            elif record.get("champion_status") == "champion":
-                record["champion_status"] = "retired_champion"
+                self.registry_path.write_text(
+                    json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+                )
+                return
         self.registry_path.write_text(
             json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
         )
