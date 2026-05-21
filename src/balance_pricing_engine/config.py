@@ -60,6 +60,35 @@ class ProductConfig(BaseModel):
     deposit_rate_grid: GridConfig
 
 
+class LoanTierConfig(BaseModel):
+    name: str
+    lvr_max: Optional[float] = None
+    rate_grid: GridConfig
+
+
+class DepositTierConfig(BaseModel):
+    name: str
+    balance_max: Optional[float] = None
+    rate_grid: GridConfig
+
+
+class SegmentedPricingConfig(BaseModel):
+    loan_tiers: list[LoanTierConfig] = Field(min_length=1)
+    deposit_tiers: list[DepositTierConfig] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_tiers(self) -> "SegmentedPricingConfig":
+        _validate_tier_sequence(
+            tier_name="loan_tiers",
+            tiers=[(tier.name, tier.lvr_max) for tier in self.loan_tiers],
+        )
+        _validate_tier_sequence(
+            tier_name="deposit_tiers",
+            tiers=[(tier.name, tier.balance_max) for tier in self.deposit_tiers],
+        )
+        return self
+
+
 class PricingStrategyConfig(BaseModel):
     home_loan_spread_bps: SpreadGridConfigModel
     term_deposit_spread_bps: SpreadGridConfigModel
@@ -117,6 +146,7 @@ class EngineConfig(BaseModel):
     market: MarketConfig
     products: Optional[ProductConfig] = None
     pricing_strategy: Optional[PricingStrategyConfig] = None
+    segmented_pricing: Optional[SegmentedPricingConfig] = None
     competitor_rates: Optional[CompetitorRatesConfig] = None
     balance_sheet: BalanceSheetConfig
     response: ResponseConfig
@@ -124,8 +154,15 @@ class EngineConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_pricing_configuration(self) -> "EngineConfig":
-        if self.pricing_strategy is None and self.products is None:
-            raise ValueError("Either pricing_strategy or products rate grids must be provided.")
+        pricing_modes = [
+            self.pricing_strategy is not None,
+            self.products is not None,
+            self.segmented_pricing is not None,
+        ]
+        if sum(pricing_modes) != 1:
+            raise ValueError(
+                "Exactly one of pricing_strategy, products, or segmented_pricing must be provided."
+            )
         if self.pricing_strategy is not None:
             if self.market.home_loan_reference_rate is None:
                 raise ValueError("market.home_loan_reference_rate is required for pricing_strategy.")
@@ -185,6 +222,27 @@ class EngineConfig(BaseModel):
                     "likely to expand past policy.",
                     stacklevel=2,
                 )
+
+
+def _validate_tier_sequence(tier_name: str, tiers: list[tuple[str, Optional[float]]]) -> None:
+    names = [name for name, _ in tiers]
+    if len(names) != len(set(names)):
+        raise ValueError(f"{tier_name} names must be unique.")
+
+    none_count = sum(bound is None for _, bound in tiers)
+    if none_count > 1:
+        raise ValueError(f"{tier_name} may contain at most one catch-all tier.")
+
+    if any(bound is None for _, bound in tiers[:-1]):
+        raise ValueError(f"{tier_name} must be sorted ascending with catch-all tier last.")
+
+    numeric_bounds = [bound for _, bound in tiers if bound is not None]
+    if any(bound <= 0 for bound in numeric_bounds):
+        raise ValueError(f"{tier_name} upper bounds must be greater than zero.")
+    if any(a >= b for a, b in zip(numeric_bounds, numeric_bounds[1:])):
+        raise ValueError(
+            f"{tier_name} must have strictly increasing upper bounds (duplicates not allowed)."
+        )
 
 
 def load_config(path: str | Path) -> EngineConfig:
