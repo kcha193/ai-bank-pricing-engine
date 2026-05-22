@@ -968,3 +968,49 @@ def test_training_agent_skips_model_card_importances_for_non_callable_attr(tmp_p
     card_files = list((tmp_path / "model_cards").glob("NonCallableFeatureImportanceModel_*.md"))
     assert len(card_files) == 1
     assert "## Feature Importances" not in card_files[0].read_text()
+
+
+def test_training_agent_uses_candidate_key_for_same_class_model_card_importances(tmp_path):
+    class SharedImportanceModel(LogisticResponseModel):
+        name = "SharedImportanceModel"
+
+        def __init__(self, offered_rate_importance: float, random_state: int = 7):
+            super().__init__(random_state=random_state)
+            self._offered_rate_importance = offered_rate_importance
+
+        def feature_importances(self, feature_columns):
+            return {
+                feature: self._offered_rate_importance if feature == "offered_rate" else 0.0
+                for feature in feature_columns
+            }
+
+    dataset = _loan_dataset()
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=7,
+        ),
+        artifacts_dir=tmp_path,
+    )
+
+    agent.train(
+        dataset=dataset,
+        candidates={
+            "first": SharedImportanceModel(0.9),
+            "second": SharedImportanceModel(0.1),
+        },
+        registry=agent.registry,
+        run_name="same_class",
+    )
+
+    card_contents = [
+        path.read_text(encoding="utf-8")
+        for path in (tmp_path / "model_cards").glob("SharedImportanceModel_*.md")
+    ]
+    assert len(card_contents) == 2
+    first_card = next(content for content in card_contents if "same_class_first.joblib" in content)
+    second_card = next(content for content in card_contents if "same_class_second.joblib" in content)
+
+    assert "| offered_rate | 0.9000 |" in first_card
+    assert "| offered_rate | 0.1000 |" in second_card

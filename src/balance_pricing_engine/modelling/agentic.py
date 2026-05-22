@@ -82,6 +82,7 @@ class ModelRecord:
     target_column: str | None = None
     run_name: str | None = None
     report_path: str | None = None
+    candidate_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -649,6 +650,7 @@ class ModelTrainingAgent:
                 feature_columns=list(feature_columns),
                 target_column=target_column,
                 run_name=run_name,
+                candidate_key=name,
             )
             registry.append(record)
             records.append(record)
@@ -733,14 +735,18 @@ class ModelTrainingAgent:
         card_target_column = target_column if self.config is None else self.config.target_column
         fitted_candidates: dict[str, ResponseModel] = dict(candidates)
         for record in records:
-            fitted_model = next(
-                (
-                    model
-                    for key, model in fitted_candidates.items()
-                    if key == record.model_name or _model_name(model) == record.model_name
-                ),
-                None,
-            )
+            fitted_model = None
+            if record.candidate_key is not None:
+                fitted_model = fitted_candidates.get(record.candidate_key)
+            if fitted_model is None:
+                fitted_model = next(
+                    (
+                        model
+                        for key, model in fitted_candidates.items()
+                        if key == record.model_name or _model_name(model) == record.model_name
+                    ),
+                    None,
+                )
             importances = _optional_feature_importances(fitted_model, card_feature_columns)
             write_model_card(
                 replace(
