@@ -739,6 +739,58 @@ def test_write_model_card_with_feature_columns(tmp_path):
     assert "accepted" in content
 
 
+def test_write_model_card_includes_feature_importances(tmp_path):
+    record = ModelRecord(
+        model_name="HistGBMResponseModel",
+        model_type="HistGBMResponseModel",
+        version="20260521000000000000",
+        trained_at_utc="2026-05-21T00:00:00+00:00",
+        artifact_path=None,
+        metrics={"auc": 0.72, "log_loss": 0.64, "brier_score": 0.21},
+        calibration_mae=0.04,
+        governance_status="pending_human_approval",
+        champion_status="challenger",
+        config_hash="abc123",
+    )
+    importances = {"offered_rate": 0.45, "credit_score": 0.30, "loan_amount": 0.25}
+
+    card_path = write_model_card(
+        record=record,
+        output_dir=tmp_path,
+        feature_columns=list(importances.keys()),
+        target_column="accepted",
+        feature_importances=importances,
+    )
+
+    content = card_path.read_text()
+    assert "## Feature Importances" in content
+    assert "offered_rate" in content
+    assert "0.4500" in content
+
+
+def test_write_model_card_omits_importances_section_when_none(tmp_path):
+    record = ModelRecord(
+        model_name="LogisticResponseModel",
+        model_type="LogisticResponseModel",
+        version="20260521000000000001",
+        trained_at_utc="2026-05-21T00:00:00+00:00",
+        artifact_path=None,
+        metrics={"auc": 0.70, "log_loss": 0.66, "brier_score": 0.22},
+        calibration_mae=0.05,
+        governance_status="pending_human_approval",
+        champion_status="challenger",
+        config_hash="def456",
+    )
+    card_path = write_model_card(
+        record=record,
+        output_dir=tmp_path,
+        feature_columns=["offered_rate"],
+        target_column="accepted",
+    )
+    content = card_path.read_text()
+    assert "## Feature Importances" not in content
+
+
 def test_write_model_card_without_feature_columns_shows_fallback(tmp_path):
     from balance_pricing_engine.modelling.agentic import write_model_card
 

@@ -384,6 +384,7 @@ def write_model_card(
     output_dir: Path,
     feature_columns: list[str] | None = None,
     target_column: str | None = None,
+    feature_importances: dict[str, float] | None = None,
 ) -> Path:
     """Write a markdown model card for a trained model record."""
     output_dir = Path(output_dir)
@@ -397,6 +398,22 @@ def write_model_card(
     auc = metrics.get("auc", float("nan"))
     log_loss_val = metrics.get("log_loss", float("nan"))
     brier = metrics.get("brier_score", float("nan"))
+    importances_section = ""
+    if feature_importances is not None:
+        importances_section = (
+            "## Feature Importances\n"
+            "| Feature | Importance |\n"
+            "|---------|------------|\n"
+            + "".join(
+                f"| {feature} | {importance:.4f} |\n"
+                for feature, importance in sorted(
+                    feature_importances.items(),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )
+            )
+            + "\n"
+        )
 
     content = (
         f"# Model Card: {record.model_name}\n\n"
@@ -415,6 +432,7 @@ def write_model_card(
         f"| Log loss | {log_loss_val:.4f} |\n"
         f"| Brier score | {brier:.4f} |\n"
         f"| Calibration MAE | {record.calibration_mae:.4f} |\n\n"
+        f"{importances_section}"
         f"## Governance\n"
         f"- **Governance status:** {record.governance_status}\n"
         f"- **Champion status:** {record.champion_status}\n"
