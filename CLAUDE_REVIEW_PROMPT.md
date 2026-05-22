@@ -1,6 +1,6 @@
 # Claude Code Review Prompt
 
-Use this prompt in Claude Code to run a focused document review of `Claude.md`, `agent.md`, and `README.md` in this repository.
+Use this prompt in Claude Code to run a focused document review of `CLAUDE.md`, `AGENTS.md`, and `README.md` in this repository.
 
 ---
 
@@ -8,8 +8,8 @@ You are a senior software engineer performing a production-quality document and 
 
 ## Goal
 Review these files for correctness, consistency, maintainability, and operational clarity:
-- `Claude.md`
-- `agent.md`
+- `CLAUDE.md`
+- `AGENTS.md`
 - `README.md`
 
 ## Review Scope
@@ -23,7 +23,7 @@ Review these files for correctness, consistency, maintainability, and operationa
    - Flag missing prerequisites, version assumptions, or environment dependencies.
 
 3. **Agent/process quality**
-   - Evaluate whether `Claude.md` and `agent.md` provide clear, non-conflicting operating instructions.
+   - Evaluate whether `CLAUDE.md` and `AGENTS.md` provide clear, non-conflicting operating instructions.
    - Flag instructions that are too vague to execute reliably.
    - Highlight any directives that could cause unsafe behavior, hidden assumptions, or policy drift.
 
