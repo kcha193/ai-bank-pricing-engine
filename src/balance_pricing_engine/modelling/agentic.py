@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -991,6 +992,13 @@ class ModelScoringAgent:
         if artifact_path is None or not Path(str(artifact_path)).exists():
             return fallback
         model = load_model(str(artifact_path))
+        logging.info(
+            "Resolved approved champion response model: model_name=%s artifact_path=%s "
+            "governance_status=%s",
+            champion.get("model_name"),
+            artifact_path,
+            champion.get("governance_status"),
+        )
         return MLResponseFnAdapter(model=model, feature_columns=feature_columns)
 
 

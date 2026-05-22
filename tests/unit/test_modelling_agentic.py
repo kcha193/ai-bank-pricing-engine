@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -12,6 +14,7 @@ from balance_pricing_engine.modelling.agentic import (
     ModelScoringAgent,
     ModelTrainingAgent,
     TrainingConfig,
+    _optional_feature_importances,
     write_model_card,
 )
 from balance_pricing_engine.modelling.datasets import (
@@ -124,6 +127,29 @@ def test_histgbm_response_model_feature_importances_available_after_fit():
     assert set(importances.keys()) == set(LOAN_FEATURE_COLUMNS)
     assert all(isinstance(v, float) for v in importances.values())
     assert all(not np.isnan(v) for v in importances.values())
+
+
+def test_histgbm_response_model_feature_importances_returns_none_for_tiny_dataset():
+    tiny_dataset = pd.DataFrame(
+        {
+            "offered_rate": [0.055, 0.06, 0.065],
+            "competitor_rate": [0.062, 0.062, 0.062],
+            "rate_gap_to_competitor": [-0.007, -0.002, 0.003],
+            "loan_amount": [250_000.0, 300_000.0, 350_000.0],
+            "income": [90_000.0, 110_000.0, 130_000.0],
+            "credit_score": [680.0, 720.0, 760.0],
+            "risk_score": [0.35, 0.25, 0.2],
+            "expected_loss_rate": [0.01, 0.008, 0.006],
+            "lvr": [0.75, 0.7, 0.65],
+            "risk_segment": [1, 0, 0],
+            LOAN_TARGET_COLUMN: [0, 1, 0],
+        }
+    )
+    model = HistGBMResponseModel(random_state=42)
+
+    model.fit(tiny_dataset, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+
+    assert model.feature_importances(LOAN_FEATURE_COLUMNS) is None
 
 
 def test_histgbm_response_model_feature_importances_use_holdout(monkeypatch):
@@ -377,7 +403,9 @@ def test_scoring_agent_resolve_response_fn_returns_fallback_when_artifact_missin
     assert fn is fallback
 
 
-def test_scoring_agent_resolve_response_fn_returns_ml_adapter_for_approved_champion(tmp_path):
+def test_scoring_agent_resolve_response_fn_returns_ml_adapter_for_approved_champion(
+    tmp_path, caplog
+):
     from balance_pricing_engine.modelling.agentic import (
         ElasticityBaselineModel, ModelTrainingAgent, TrainingConfig,
     )
@@ -405,9 +433,13 @@ def test_scoring_agent_resolve_response_fn_returns_ml_adapter_for_approved_champ
 
     scoring_agent = ModelScoringAgent(registry_path=tmp_path / "model_registry.json")
     fallback = SyntheticLoanResponseFn(elasticity=-85.0, competitor_gap_elasticity=-65.0)
+    caplog.set_level(logging.INFO)
     fn = scoring_agent.resolve_response_fn(feature_columns=LOAN_FEATURE_COLUMNS, fallback=fallback)
 
     assert isinstance(fn, MLResponseFnAdapter)
+    assert "Resolved approved champion response model" in caplog.text
+    assert "LogisticResponseModel" in caplog.text
+    assert "governance_status=approved" in caplog.text
 
 
 def test_scoring_agent_resolve_response_fn_uses_feature_compatible_champion(tmp_path):
@@ -1024,6 +1056,14 @@ def test_training_agent_skips_model_card_importances_when_hook_values_are_invali
     card_files = list((tmp_path / "model_cards").glob("InvalidFeatureImportanceModel_*.md"))
     assert len(card_files) == 1
     assert "## Feature Importances" not in card_files[0].read_text()
+
+
+def test_optional_feature_importances_handles_none_return():
+    class NoneFeatureImportanceModel:
+        def feature_importances(self, feature_columns):
+            return None
+
+    assert _optional_feature_importances(NoneFeatureImportanceModel(), ["offered_rate"]) is None
 
 
 def test_training_agent_uses_candidate_key_for_same_class_model_card_importances(tmp_path):
