@@ -11,7 +11,11 @@ import pytest
 
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.run_ledger import write_run_ledger
-from balance_pricing_engine.run_ledger.checklist import write_governance_checklist
+from balance_pricing_engine.run_ledger.checklist import (
+    sign_off_all_items,
+    sign_off_item,
+    write_governance_checklist,
+)
 from balance_pricing_engine.run_ledger.config_snapshot import write_config_snapshot
 from balance_pricing_engine.run_ledger.directory import create_run_directory
 from balance_pricing_engine.run_ledger.memo import write_pricing_memo
@@ -73,6 +77,34 @@ def config():
 @pytest.fixture(scope="module")
 def diagnostics(config):
     return run_baseline_diagnostics(config)
+
+
+@pytest.fixture()
+def run_dir_with_checklist(tmp_path):
+    """A tmp run directory with governance_checklist.json + .md already written."""
+    metadata = RunMetadata(
+        run_id="test-run-001",
+        scenario_name="test_scenario",
+        timestamp="2026-05-23T00:00:00+00:00",
+        git_commit=None,
+        config_path="configs/base.yaml",
+        config_hash="abc123",
+        python_version="3.11.0",
+        package_version="0.1.0",
+        boundary_warning_flag=False,
+        initial_boundary_warning_flag=False,
+        expansion_rounds=0,
+        policy_band_breached=False,
+        competitor_rate_source=None,
+    )
+    # write_governance_checklist needs a config and diagnostics — use the simplest possible stubs
+    # by calling _build_checklist_json directly instead.
+    from balance_pricing_engine.run_ledger.checklist import _build_checklist_json
+    import json
+    json_content = _build_checklist_json(metadata)
+    (tmp_path / "governance_checklist.json").write_text(json_content, encoding="utf-8")
+    (tmp_path / "governance_checklist.md").write_text("# placeholder\n", encoding="utf-8")
+    return tmp_path
 
 
 REQUIRED_METADATA_FIELDS = {
@@ -392,6 +424,75 @@ def test_governance_checklist_json_has_all_expected_ids(
     data = json.loads((tmp_path / "governance_checklist.json").read_text())
 
     assert {item["id"] for item in data["items"]} == EXPECTED_CHECKLIST_JSON_IDS
+
+
+def _checklist_json(run_dir) -> dict:
+    return json.loads((run_dir / "governance_checklist.json").read_text())
+
+
+def test_sign_off_item_updates_status_and_signer(run_dir_with_checklist):
+    run_dir = run_dir_with_checklist
+
+    sign_off_item(run_dir, "human-approval", approver="alice")
+
+    payload = _checklist_json(run_dir)
+    item = next(i for i in payload["items"] if i["id"] == "human-approval")
+    assert item["status"] == "approved"
+    assert item["signed_by"] == "alice"
+    assert item["signed_at"] is not None
+
+
+def test_sign_off_item_records_notes(run_dir_with_checklist):
+    run_dir = run_dir_with_checklist
+
+    sign_off_item(run_dir, "boundary-result-reviewed", approver="bob", notes="Reviewed, clear.")
+
+    payload = _checklist_json(run_dir)
+    item = next(i for i in payload["items"] if i["id"] == "boundary-result-reviewed")
+    assert item["notes"] == "Reviewed, clear."
+
+
+def test_sign_off_item_raises_on_unknown_id(run_dir_with_checklist):
+    run_dir = run_dir_with_checklist
+
+    with pytest.raises(ValueError, match="not found"):
+        sign_off_item(run_dir, "nonexistent-item-id", approver="alice")
+
+
+def test_sign_off_item_raises_if_json_missing(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        sign_off_item(tmp_path, "human-approval", approver="alice")
+
+
+def test_sign_off_item_regenerates_markdown(run_dir_with_checklist):
+    run_dir = run_dir_with_checklist
+
+    sign_off_item(run_dir, "human-approval", approver="alice")
+
+    md = (run_dir / "governance_checklist.md").read_text()
+    assert "alice" in md
+    assert "approved" in md.lower()
+
+
+def test_sign_off_all_items_marks_all_approved(run_dir_with_checklist):
+    run_dir = run_dir_with_checklist
+
+    sign_off_all_items(run_dir, approver="carol")
+
+    payload = _checklist_json(run_dir)
+    for item in payload["items"]:
+        assert item["status"] == "approved"
+        assert item["signed_by"] == "carol"
+
+
+def test_sign_off_all_items_applies_shared_notes(run_dir_with_checklist):
+    run_dir = run_dir_with_checklist
+
+    sign_off_all_items(run_dir, approver="carol", notes="Batch approved after review.")
+
+    payload = _checklist_json(run_dir)
+    for item in payload["items"]:
+        assert item["notes"] == "Batch approved after review."
 
 
 def test_write_run_ledger_creates_directory(tmp_path: Path, config, diagnostics) -> None:
