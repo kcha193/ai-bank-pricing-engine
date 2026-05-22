@@ -970,6 +970,62 @@ def test_training_agent_skips_model_card_importances_for_non_callable_attr(tmp_p
     assert "## Feature Importances" not in card_files[0].read_text()
 
 
+def test_training_agent_skips_model_card_importances_when_hook_raises(tmp_path):
+    class RaisingFeatureImportanceModel(LogisticResponseModel):
+        name = "RaisingFeatureImportanceModel"
+
+        def feature_importances(self, feature_columns):
+            raise NotImplementedError("importances unavailable for this candidate")
+
+    dataset = _loan_dataset()
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=7,
+        ),
+        artifacts_dir=tmp_path,
+    )
+    agent.train(
+        dataset=dataset,
+        candidates={"raising": RaisingFeatureImportanceModel(random_state=7)},
+        registry=agent.registry,
+        run_name="raising_importances",
+    )
+
+    card_files = list((tmp_path / "model_cards").glob("RaisingFeatureImportanceModel_*.md"))
+    assert len(card_files) == 1
+    assert "## Feature Importances" not in card_files[0].read_text()
+
+
+def test_training_agent_skips_model_card_importances_when_hook_values_are_invalid(tmp_path):
+    class InvalidFeatureImportanceModel(LogisticResponseModel):
+        name = "InvalidFeatureImportanceModel"
+
+        def feature_importances(self, feature_columns):
+            return {feature: "not-a-number" for feature in feature_columns}
+
+    dataset = _loan_dataset()
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=7,
+        ),
+        artifacts_dir=tmp_path,
+    )
+    agent.train(
+        dataset=dataset,
+        candidates={"invalid": InvalidFeatureImportanceModel(random_state=7)},
+        registry=agent.registry,
+        run_name="invalid_importances",
+    )
+
+    card_files = list((tmp_path / "model_cards").glob("InvalidFeatureImportanceModel_*.md"))
+    assert len(card_files) == 1
+    assert "## Feature Importances" not in card_files[0].read_text()
+
+
 def test_training_agent_uses_candidate_key_for_same_class_model_card_importances(tmp_path):
     class SharedImportanceModel(LogisticResponseModel):
         name = "SharedImportanceModel"

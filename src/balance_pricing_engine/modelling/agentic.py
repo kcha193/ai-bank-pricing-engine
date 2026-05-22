@@ -508,11 +508,14 @@ def _optional_feature_importances(
     try:
         hook_signature.bind(feature_columns)
         importances = hook(feature_columns)
-    except TypeError:
+    except Exception:
         return None
     if not isinstance(importances, dict):
         return None
-    return {str(feature): float(importance) for feature, importance in importances.items()}
+    try:
+        return {str(feature): float(importance) for feature, importance in importances.items()}
+    except Exception:
+        return None
 
 
 class ModelTrainingAgent:
