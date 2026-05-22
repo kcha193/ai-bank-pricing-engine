@@ -75,6 +75,10 @@ class ModelRecord:
     governance_status: str
     champion_status: str
     config_hash: str
+    feature_columns: list[str] | None = None
+    target_column: str | None = None
+    run_name: str | None = None
+    report_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -173,6 +177,169 @@ class ModelRegistry:
             (record for record in reversed(records) if record.get("model_name") == model_name),
             None,
         )
+
+    def get_champion(
+        self,
+        *,
+        feature_columns: list[str] | None = None,
+        target_column: str | None = None,
+        config_hash: str | None = None,
+        run_name: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return the latest compatible champion record, or None."""
+        records = self.load().get("models", [])
+        return next(
+            (
+                r
+                for r in reversed(records)
+                if r.get("champion_status") == "champion"
+                and self._matches_filters(
+                    r,
+                    feature_columns=feature_columns,
+                    target_column=target_column,
+                    config_hash=config_hash,
+                    run_name=run_name,
+                )
+            ),
+            None,
+        )
+
+    def approve_model(
+        self,
+        model_name: str,
+        approver: str,
+        *,
+        version: str | None = None,
+        run_name: str | None = None,
+        config_hash: str | None = None,
+        feature_columns: list[str] | None = None,
+        target_column: str | None = None,
+    ) -> None:
+        """Set governance_status='approved' on the latest matching model record."""
+        payload = self.load()
+        record = self._find_latest_record(
+            payload,
+            model_name=model_name,
+            version=version,
+            run_name=run_name,
+            config_hash=config_hash,
+            feature_columns=feature_columns,
+            target_column=target_column,
+        )
+        if record is not None:
+            self._approve_record(record, approver)
+            self.registry_path.write_text(
+                json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+            )
+            return
+        raise ValueError(f"No registry record found for model_name='{model_name}'")
+
+    def promote_champion(
+        self,
+        model_name: str,
+        approver: str,
+        *,
+        version: str | None = None,
+        run_name: str | None = None,
+        config_hash: str | None = None,
+        feature_columns: list[str] | None = None,
+        target_column: str | None = None,
+    ) -> None:
+        """Approve one matching model record and promote it within its champion scope."""
+        payload = self.load()
+        target = self._find_latest_record(
+            payload,
+            model_name=model_name,
+            version=version,
+            run_name=run_name,
+            config_hash=config_hash,
+            feature_columns=feature_columns,
+            target_column=target_column,
+        )
+        if target is None:
+            raise ValueError(f"No registry record found for model_name='{model_name}'")
+
+        self._approve_record(target, approver)
+        target_scope = self._champion_scope(target)
+        for record in payload.get("models", []):
+            if (
+                record is not target
+                and record.get("champion_status") == "champion"
+                and self._champion_scope(record) == target_scope
+            ):
+                record["champion_status"] = "retired_champion"
+        target["champion_status"] = "champion"
+        self.registry_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+        )
+
+    @staticmethod
+    def _approve_record(record: dict[str, Any], approver: str) -> None:
+        record["governance_status"] = "approved"
+        record["approved_by"] = approver
+        record["approved_at_utc"] = datetime.now(timezone.utc).isoformat()
+
+    @classmethod
+    def _find_latest_record(
+        cls,
+        payload: dict[str, Any],
+        *,
+        model_name: str,
+        version: str | None = None,
+        run_name: str | None = None,
+        config_hash: str | None = None,
+        feature_columns: list[str] | None = None,
+        target_column: str | None = None,
+    ) -> dict[str, Any] | None:
+        return next(
+            (
+                record
+                for record in reversed(payload.get("models", []))
+                if record.get("model_name") == model_name
+                and cls._matches_filters(
+                    record,
+                    version=version,
+                    run_name=run_name,
+                    config_hash=config_hash,
+                    feature_columns=feature_columns,
+                    target_column=target_column,
+                )
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _matches_filters(
+        record: dict[str, Any],
+        *,
+        version: str | None = None,
+        run_name: str | None = None,
+        config_hash: str | None = None,
+        feature_columns: list[str] | None = None,
+        target_column: str | None = None,
+    ) -> bool:
+        if version is not None and record.get("version") != version:
+            return False
+        if run_name is not None and record.get("run_name") != run_name:
+            return False
+        if config_hash is not None and record.get("config_hash") != config_hash:
+            return False
+        if feature_columns is not None and record.get("feature_columns") != feature_columns:
+            return False
+        if target_column is not None and record.get("target_column") != target_column:
+            return False
+        return True
+
+    @staticmethod
+    def _champion_scope(record: dict[str, Any]) -> tuple[str, Any]:
+        feature_columns = record.get("feature_columns")
+        target_column = record.get("target_column")
+        if feature_columns is not None:
+            return ("features", tuple(feature_columns), target_column)
+        config_hash = record.get("config_hash")
+        if config_hash is not None:
+            return ("config_hash", config_hash)
+        return ("global", None)
 
 
 def write_model_card(
@@ -354,6 +521,9 @@ class ModelTrainingAgent:
                 governance_status="pending_human_approval",
                 champion_status="challenger",
                 config_hash=config_hash,
+                feature_columns=list(feature_columns),
+                target_column=target_column,
+                run_name=run_name,
             )
             registry.append(record)
             records.append(record)
@@ -409,12 +579,23 @@ class ModelTrainingAgent:
         self.report_dir.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
         payload = registry.load()
-        trained_names = {record.model_name for record in records}
+        current_record_keys = {
+            (record.model_name, record.version, record.artifact_path, record.config_hash)
+            for record in records
+        }
         for record in payload.get("models", []):
-            if record.get("model_name") not in trained_names:
+            record_key = (
+                record.get("model_name"),
+                record.get("version"),
+                record.get("artifact_path"),
+                record.get("config_hash"),
+            )
+            if record_key not in current_record_keys:
                 continue
             record["run_name"] = run_name
             record["report_path"] = str(report_path)
+            record["feature_columns"] = list(feature_columns)
+            record["target_column"] = target_column
             record["champion_status"] = self._champion_status(
                 str(record["model_name"]),
                 recommendation,
@@ -647,6 +828,25 @@ class ModelScoringAgent:
         missing = sorted(set(feature_columns) - set(dataset.columns))
         if missing:
             raise ValueError(f"Missing required scoring columns: {missing}")
+
+    def resolve_response_fn(
+        self,
+        feature_columns: list[str],
+        fallback: Any,
+    ) -> Any:
+        """Return MLResponseFnAdapter for the approved champion, or fallback."""
+        from balance_pricing_engine.optimization.response_fn import MLResponseFnAdapter
+
+        champion = self.registry.get_champion(feature_columns=feature_columns)
+        if champion is None:
+            return fallback
+        if champion.get("governance_status") != "approved":
+            return fallback
+        artifact_path = champion.get("artifact_path")
+        if artifact_path is None or not Path(str(artifact_path)).exists():
+            return fallback
+        model = load_model(str(artifact_path))
+        return MLResponseFnAdapter(model=model, feature_columns=feature_columns)
 
 
 def _calibration_error(y_true: np.ndarray, y_probability: np.ndarray) -> float:

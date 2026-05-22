@@ -14,6 +14,7 @@ from balance_pricing_engine.market import (
     build_market_relative_grid,
 )
 from balance_pricing_engine.config import ResponseCoefficientsConfig
+from balance_pricing_engine.optimization.response_fn import ResponseFn
 from balance_pricing_engine.pricing.balance_sheet import calculate_funding_result
 from balance_pricing_engine.pricing.profit import (
     expected_capital_charge,
@@ -112,6 +113,8 @@ def evaluate_joint_rate_grid(
     home_loan_reference_rate: float | None = None,
     term_deposit_reference_rate: float | None = None,
     response_coefficients: ResponseCoefficientsConfig | None = None,
+    loan_response_fn: ResponseFn | None = None,
+    deposit_response_fn: ResponseFn | None = None,
 ) -> pd.DataFrame:
     """Evaluate every loan and deposit rate pair in the joint pricing grid."""
     rows: list[dict[str, float]] = []
@@ -119,14 +122,21 @@ def evaluate_joint_rate_grid(
     response_coefficients = response_coefficients or ResponseCoefficientsConfig()
 
     for deposit_rate in deposit_rate_grid:
-        deposit_probs = deposit_uptake_probability(
-            deposit_customers,
-            float(deposit_rate),
-            market.competitor_deposit_rate,
-            deposit_rate_elasticity,
-            deposit_competitor_gap_elasticity,
-            coefficients=response_coefficients.deposit,
-        )
+        if deposit_response_fn is not None:
+            deposit_probs = deposit_response_fn(
+                deposit_customers,
+                float(deposit_rate),
+                market.competitor_deposit_rate,
+            )
+        else:
+            deposit_probs = deposit_uptake_probability(
+                deposit_customers,
+                float(deposit_rate),
+                market.competitor_deposit_rate,
+                deposit_rate_elasticity,
+                deposit_competitor_gap_elasticity,
+                coefficients=response_coefficients.deposit,
+            )
         deposit_volume = expected_deposit_volume(deposit_customers, deposit_probs)
         deposit_cost = expected_deposit_cost(
             deposit_customers,
@@ -147,14 +157,21 @@ def evaluate_joint_rate_grid(
         )
 
     for loan_rate in loan_rate_grid:
-        loan_probs = loan_acceptance_probability(
-            loan_customers,
-            float(loan_rate),
-            market.competitor_loan_rate,
-            loan_rate_elasticity,
-            loan_competitor_gap_elasticity,
-            coefficients=response_coefficients.loan,
-        )
+        if loan_response_fn is not None:
+            loan_probs = loan_response_fn(
+                loan_customers,
+                float(loan_rate),
+                market.competitor_loan_rate,
+            )
+        else:
+            loan_probs = loan_acceptance_probability(
+                loan_customers,
+                float(loan_rate),
+                market.competitor_loan_rate,
+                loan_rate_elasticity,
+                loan_competitor_gap_elasticity,
+                coefficients=response_coefficients.loan,
+            )
         loan_volume = expected_loan_volume(loan_customers, loan_probs)
         capital_charge = expected_capital_charge(
             loan_volume,
@@ -287,6 +304,8 @@ def optimize_joint_rates(
     home_loan_reference_rate: float | None = None,
     term_deposit_reference_rate: float | None = None,
     response_coefficients: ResponseCoefficientsConfig | None = None,
+    loan_response_fn: ResponseFn | None = None,
+    deposit_response_fn: ResponseFn | None = None,
 ) -> OptimizationResult:
     """Optimize portfolio-level loan and deposit rates by exhaustive grid search."""
     grid_results = evaluate_joint_rate_grid(
@@ -306,6 +325,8 @@ def optimize_joint_rates(
         home_loan_reference_rate=home_loan_reference_rate,
         term_deposit_reference_rate=term_deposit_reference_rate,
         response_coefficients=response_coefficients,
+        loan_response_fn=loan_response_fn,
+        deposit_response_fn=deposit_response_fn,
     )
     return select_best_result(grid_results)
 
@@ -326,6 +347,8 @@ def optimize_joint_market_relative_rates(
     rwa_weight: float = 0.35,
     capital_hurdle_rate: float = 0.12,
     response_coefficients: ResponseCoefficientsConfig | None = None,
+    loan_response_fn: ResponseFn | None = None,
+    deposit_response_fn: ResponseFn | None = None,
 ) -> OptimizationResult:
     """Optimize rates over spreads to reference market rates."""
     loan_rate_grid, deposit_rate_grid = build_market_relative_grid(
@@ -350,6 +373,8 @@ def optimize_joint_market_relative_rates(
         home_loan_reference_rate=market_rates.home_loan_reference_rate,
         term_deposit_reference_rate=market_rates.term_deposit_reference_rate,
         response_coefficients=response_coefficients,
+        loan_response_fn=loan_response_fn,
+        deposit_response_fn=deposit_response_fn,
     )
 
 
