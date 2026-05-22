@@ -13,8 +13,10 @@ from balance_pricing_engine.modelling.agentic import (
 )
 from balance_pricing_engine.modelling.datasets import (
     DEPOSIT_FEATURE_COLUMNS,
+    DEPOSIT_TARGET_COLUMN,
     LOAN_FEATURE_COLUMNS,
     LOAN_TARGET_COLUMN,
+    build_deposit_response_dataset,
     build_loan_response_dataset,
 )
 from balance_pricing_engine.optimization.response_fn import (
@@ -23,7 +25,7 @@ from balance_pricing_engine.optimization.response_fn import (
     SyntheticLoanResponseFn,
 )
 from balance_pricing_engine.modelling.persistence import save_model
-from balance_pricing_engine.synthetic.customers import generate_loan_customers
+from balance_pricing_engine.synthetic.customers import generate_deposit_customers, generate_loan_customers
 from balance_pricing_engine.utils.random import make_rng
 
 
@@ -36,6 +38,20 @@ def _loan_dataset(seed: int = 123):
         competitor_rate=0.062,
         rate_elasticity=-85.0,
         competitor_gap_elasticity=-65.0,
+        rng=rng,
+        n_samples=1200,
+    )
+
+
+def _deposit_dataset(seed: int = 456):
+    rng = make_rng(seed)
+    customers = generate_deposit_customers(200, rng)
+    return build_deposit_response_dataset(
+        customers,
+        offered_rates=np.array([0.04, 0.045, 0.05, 0.055]),
+        competitor_rate=0.048,
+        rate_elasticity=80.0,
+        competitor_gap_elasticity=60.0,
         rng=rng,
         n_samples=1200,
     )
@@ -557,6 +573,45 @@ def test_registry_labels_failed_challenger_correctly(tmp_path):
 
     assert by_name["ElasticityBaselineModel"]["champion_status"] == "baseline_champion"
     assert by_name["LogisticResponseModel"]["champion_status"] == "challenger_candidate"
+
+
+def test_training_agent_preserves_historical_record_schema_metadata(tmp_path):
+    registry = ModelRegistry(tmp_path / "model_registry.json")
+    registry.register({
+        "model_name": "LogisticResponseModel",
+        "model_type": "LogisticResponseModel",
+        "version": "loan-v1",
+        "trained_at_utc": "2026-05-20T00:00:00+00:00",
+        "artifact_path": "loan.joblib",
+        "metrics": {"auc": 0.8, "log_loss": 0.4, "brier_score": 0.16},
+        "calibration_mae": 0.03,
+        "governance_status": "approved",
+        "champion_status": "champion",
+        "config_hash": "loan-hash",
+        "feature_columns": LOAN_FEATURE_COLUMNS,
+        "target_column": LOAN_TARGET_COLUMN,
+        "run_name": "loan-history",
+    })
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=DEPOSIT_FEATURE_COLUMNS,
+            target_column=DEPOSIT_TARGET_COLUMN,
+            random_seed=11,
+        ),
+        artifacts_dir=tmp_path,
+    )
+
+    agent.train(
+        dataset=_deposit_dataset(),
+        candidates={"logistic": LogisticResponseModel(random_state=11)},
+        registry=registry,
+        run_name="deposit-current",
+    )
+
+    historical_record = registry.load()["models"][0]
+    assert historical_record["feature_columns"] == LOAN_FEATURE_COLUMNS
+    assert historical_record["target_column"] == LOAN_TARGET_COLUMN
+    assert historical_record["run_name"] == "loan-history"
 
 
 # --- P2-3: write_model_card ---

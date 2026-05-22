@@ -579,9 +579,18 @@ class ModelTrainingAgent:
         self.report_dir.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
         payload = registry.load()
-        trained_names = {record.model_name for record in records}
+        current_record_keys = {
+            (record.model_name, record.version, record.artifact_path, record.config_hash)
+            for record in records
+        }
         for record in payload.get("models", []):
-            if record.get("model_name") not in trained_names:
+            record_key = (
+                record.get("model_name"),
+                record.get("version"),
+                record.get("artifact_path"),
+                record.get("config_hash"),
+            )
+            if record_key not in current_record_keys:
                 continue
             record["run_name"] = run_name
             record["report_path"] = str(report_path)
