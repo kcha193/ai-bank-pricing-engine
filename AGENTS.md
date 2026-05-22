@@ -25,9 +25,9 @@ python3 examples/train_response_models.py
 
 # Competitor-rate CLI (separate subcommand surface):
 python3 -m balance_pricing_engine.competitor_rates.cli fetch    --output-dir data/processed/competitor_rates
-python3 -m balance_pricing_engine.competitor_rates.cli validate --run-file <path>
+python3 -m balance_pricing_engine.competitor_rates.cli validate --source-file <path>
 python3 -m balance_pricing_engine.competitor_rates.cli apply    --config configs/base.yaml
-python3 -m balance_pricing_engine.competitor_rates.cli report   --run-file <path>
+python3 -m balance_pricing_engine.competitor_rates.cli report   --source-file <path>
 ```
 
 **`live_rates` pytest marker fetches real bank websites — never run in CI and never run without
