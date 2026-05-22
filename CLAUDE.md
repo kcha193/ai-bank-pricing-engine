@@ -1,6 +1,6 @@
 # AI Bank Pricing Engine — Claude Instructions
 
-> Companion to [AGENTS.md](AGENTS.md). Source of truth for commands and scope is AGENTS.md; this file adds Claude-specific architectural detail verified against the code.
+> This file is the source of truth for module-level invariants, architectural detail, and operating constraints for Claude sessions. [AGENTS.md](AGENTS.md) covers all agent runtimes (Codex, etc.) with a subset of the same context.
 
 ## What this project is
 
