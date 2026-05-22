@@ -1,15 +1,18 @@
 import numpy as np
+import pandas as pd
 import pytest
 
 from balance_pricing_engine.modelling.agentic import (
     ElasticityBaselineModel,
     ElasticityResponseModel,
+    HistGBMResponseModel,
     LogisticResponseModel,
     ModelRecord,
     ModelRegistry,
     ModelScoringAgent,
     ModelTrainingAgent,
     TrainingConfig,
+    write_model_card,
 )
 from balance_pricing_engine.modelling.datasets import (
     DEPOSIT_FEATURE_COLUMNS,
@@ -86,6 +89,65 @@ def test_training_agent_trains_and_recommends(tmp_path):
         "LogisticResponseModel",
     }
     assert result.report_path.endswith(".json")
+
+
+def test_histgbm_response_model_fits_and_predicts(tmp_path):
+    dataset = _loan_dataset()
+    model = HistGBMResponseModel(random_state=42)
+    train = dataset.iloc[:800]
+    test_data = dataset.iloc[800:]
+
+    model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+    probs = model.predict_probability(test_data, LOAN_FEATURE_COLUMNS)
+
+    assert probs.shape == (len(test_data),)
+    assert np.all(probs >= 0) and np.all(probs <= 1)
+
+
+def test_histgbm_response_model_raises_before_fit():
+    model = HistGBMResponseModel(random_state=42)
+    df = pd.DataFrame({"offered_rate": [0.08]})
+    with pytest.raises(ValueError, match="fitted"):
+        model.predict_probability(df, ["offered_rate"])
+
+
+def test_histgbm_response_model_name():
+    assert HistGBMResponseModel.name == "HistGBMResponseModel"
+
+
+def test_histgbm_response_model_feature_importances_available_after_fit():
+    dataset = _loan_dataset()
+    model = HistGBMResponseModel(random_state=42)
+    model.fit(dataset.iloc[:800], LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+    importances = model.feature_importances(LOAN_FEATURE_COLUMNS)
+    assert isinstance(importances, dict)
+    assert set(importances.keys()) == set(LOAN_FEATURE_COLUMNS)
+    assert all(isinstance(v, float) for v in importances.values())
+
+
+def test_histgbm_response_model_in_training_agent(tmp_path):
+    dataset = _loan_dataset()
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=7,
+        ),
+        artifacts_dir=tmp_path,
+    )
+    result = agent.train(
+        dataset=dataset,
+        candidates={
+            "elasticity_baseline": ElasticityBaselineModel(),
+            "logistic": LogisticResponseModel(random_state=7),
+            "histgbm": HistGBMResponseModel(random_state=7),
+        },
+        registry=agent.registry,
+        run_name="loan_three_candidates",
+    )
+    model_names = {c["model_name"] for c in result.report["candidates"]}
+    assert "HistGBMResponseModel" in model_names
+    assert len(result.report["candidates"]) == 3
 
 
 def test_scoring_agent_schema_and_fallback(tmp_path):

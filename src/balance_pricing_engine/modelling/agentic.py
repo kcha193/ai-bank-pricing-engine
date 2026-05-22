@@ -18,6 +18,7 @@ from balance_pricing_engine.modelling.evaluation import (
     evaluate_probabilities,
 )
 from balance_pricing_engine.modelling.models import (
+    build_hist_gradient_boosting_model,
     build_logistic_regression_model,
     fit_response_model,
     predict_response_probability,
@@ -140,6 +141,42 @@ class LogisticResponseModel:
         if self._model is None:
             raise ValueError("Model must be fitted before scoring.")
         return predict_response_probability(self._model, data, feature_columns)
+
+    @property
+    def fitted_model(self) -> Any:
+        return self._model
+
+
+class HistGBMResponseModel:
+    """Governed HistGradientBoosting response model backed by sklearn."""
+
+    name = "HistGBMResponseModel"
+
+    def __init__(self, random_state: int = 42, model: Any | None = None):
+        self._random_state = random_state
+        self._model = model
+
+    def fit(self, train: pd.DataFrame, feature_columns: list[str], target_column: str) -> None:
+        self._model = fit_response_model(
+            build_hist_gradient_boosting_model(self._random_state),
+            train,
+            feature_columns,
+            target_column,
+        )
+
+    def predict_probability(self, data: pd.DataFrame, feature_columns: list[str]) -> np.ndarray:
+        if self._model is None:
+            raise ValueError("Model must be fitted before scoring.")
+        return predict_response_probability(self._model, data, feature_columns)
+
+    def feature_importances(self, feature_columns: list[str]) -> dict[str, float]:
+        """Return per-feature importance scores. Requires a fitted model."""
+        if self._model is None:
+            raise ValueError("Model must be fitted before retrieving feature importances.")
+        importances = getattr(self._model, "feature_importances_", None)
+        if importances is None:
+            return {column: float("nan") for column in feature_columns}
+        return dict(zip(feature_columns, importances.tolist()))
 
     @property
     def fitted_model(self) -> Any:
