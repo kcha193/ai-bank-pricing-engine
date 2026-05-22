@@ -159,38 +159,73 @@ class HistGBMResponseModel:
         self._perm_importances: dict[str, float] | None = None
 
     def fit(self, train: pd.DataFrame, feature_columns: list[str], target_column: str) -> None:
+        fit_data, importance_data = self._split_fit_and_importance_holdout(train, target_column)
+        self._model = fit_response_model(
+            build_hist_gradient_boosting_model(self._random_state),
+            fit_data,
+            feature_columns,
+            target_column,
+        )
+        self._perm_importances = None
+        if importance_data is None:
+            return
+        result = permutation_importance(
+            self._model,
+            importance_data[feature_columns],
+            importance_data[target_column],
+            n_repeats=5,
+            random_state=self._random_state,
+            n_jobs=1,
+        )
+        self._perm_importances = dict(zip(feature_columns, result["importances_mean"].tolist()))
         self._model = fit_response_model(
             build_hist_gradient_boosting_model(self._random_state),
             train,
             feature_columns,
             target_column,
         )
-        result = permutation_importance(
-            self._model,
-            train[feature_columns],
-            train[target_column],
-            n_repeats=5,
-            random_state=self._random_state,
-            n_jobs=1,
-        )
-        self._perm_importances = dict(zip(feature_columns, result["importances_mean"].tolist()))
 
     def predict_probability(self, data: pd.DataFrame, feature_columns: list[str]) -> np.ndarray:
         if self._model is None:
             raise ValueError("Model must be fitted before scoring.")
         return predict_response_probability(self._model, data, feature_columns)
 
-    def feature_importances(self, feature_columns: list[str]) -> dict[str, float]:
+    def feature_importances(self, feature_columns: list[str]) -> dict[str, float] | None:
         """Return permutation-based feature importances computed at fit time."""
         if self._model is None:
             raise ValueError("Model must be fitted before retrieving feature importances.")
         if self._perm_importances is None:
-            return {column: float("nan") for column in feature_columns}
+            return None
         return {col: self._perm_importances.get(col, float("nan")) for col in feature_columns}
 
     @property
     def fitted_model(self) -> Any:
         return self._model
+
+    def _split_fit_and_importance_holdout(
+        self,
+        train: pd.DataFrame,
+        target_column: str,
+    ) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+        if len(train) < 5:
+            return train, None
+
+        target = train[target_column]
+        target_counts = target.value_counts()
+        stratify = target if target_counts.size > 1 and target_counts.min() >= 2 else None
+        try:
+            fit_data, importance_data = train_test_split(
+                train,
+                test_size=0.2,
+                random_state=self._random_state,
+                stratify=stratify,
+            )
+        except ValueError:
+            return train, None
+
+        if fit_data.empty or importance_data.empty:
+            return train, None
+        return fit_data, importance_data
 
 
 class ModelRegistry:

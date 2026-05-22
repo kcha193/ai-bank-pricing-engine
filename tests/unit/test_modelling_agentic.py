@@ -126,6 +126,57 @@ def test_histgbm_response_model_feature_importances_available_after_fit():
     assert all(not np.isnan(v) for v in importances.values())
 
 
+def test_histgbm_response_model_feature_importances_use_holdout(monkeypatch):
+    dataset = _loan_dataset()
+    train = dataset.iloc[:800]
+    captured = {}
+
+    def capture_permutation_importance(model, features, target, **kwargs):
+        captured["feature_index"] = set(features.index)
+        captured["target_index"] = set(target.index)
+        return {"importances_mean": np.ones(len(LOAN_FEATURE_COLUMNS))}
+
+    monkeypatch.setattr(
+        "balance_pricing_engine.modelling.agentic.permutation_importance",
+        capture_permutation_importance,
+    )
+
+    model = HistGBMResponseModel(random_state=42)
+    model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+
+    assert captured["feature_index"] == captured["target_index"]
+    assert captured["feature_index"].issubset(set(train.index))
+    assert captured["feature_index"] != set(train.index)
+
+
+def test_histgbm_response_model_refits_final_model_on_full_training_data(monkeypatch):
+    dataset = _loan_dataset()
+    train = dataset.iloc[:800]
+    fit_indices = []
+
+    def capture_fit_response_model(model, data, feature_columns, target_column):
+        fit_indices.append(set(data.index))
+        return model
+
+    def capture_permutation_importance(model, features, target, **kwargs):
+        return {"importances_mean": np.ones(len(LOAN_FEATURE_COLUMNS))}
+
+    monkeypatch.setattr(
+        "balance_pricing_engine.modelling.agentic.fit_response_model",
+        capture_fit_response_model,
+    )
+    monkeypatch.setattr(
+        "balance_pricing_engine.modelling.agentic.permutation_importance",
+        capture_permutation_importance,
+    )
+
+    model = HistGBMResponseModel(random_state=42)
+    model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+
+    assert fit_indices[0] != set(train.index)
+    assert fit_indices[-1] == set(train.index)
+
+
 def test_histgbm_response_model_in_training_agent(tmp_path):
     dataset = _loan_dataset()
     agent = ModelTrainingAgent(
