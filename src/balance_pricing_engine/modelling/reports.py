@@ -9,7 +9,6 @@ from sklearn.model_selection import train_test_split
 
 from balance_pricing_engine.modelling.evaluation import (
     check_rate_response_direction,
-    compare_models,
     evaluate_binary_classifier,
     evaluate_calibration,
 )

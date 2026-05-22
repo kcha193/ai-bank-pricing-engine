@@ -100,7 +100,6 @@ def run_dir_with_checklist(tmp_path):
     # write_governance_checklist needs a config and diagnostics — use the simplest possible stubs
     # by calling _build_checklist_json directly instead.
     from balance_pricing_engine.run_ledger.checklist import _build_checklist_json
-    import json
     json_content = _build_checklist_json(metadata)
     (tmp_path / "governance_checklist.json").write_text(json_content, encoding="utf-8")
     (tmp_path / "governance_checklist.md").write_text("# placeholder\n", encoding="utf-8")
