@@ -9,12 +9,14 @@ from pydantic import BaseModel, ValidationError
 import yaml
 
 from balance_pricing_engine.config import EngineConfig
+from balance_pricing_engine.diagnostics import run_sensitivity_analysis
 from balance_pricing_engine.optimization.grid_search import GRID_RESULT_COLUMNS
 from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
 
 
 class RunScenarioRequest(BaseModel):
     config_yaml: str
+    include_sensitivity: bool = False
 
 
 app = FastAPI(title="AI Bank Pricing Engine")
@@ -40,7 +42,7 @@ def run_scenario(request: RunScenarioRequest) -> dict[str, Any]:
     try:
         diagnostics = run_baseline_diagnostics(config)
         best_result = diagnostics.best_result
-        return {
+        payload: dict[str, Any] = {
             "best_loan_rate": float(best_result.loan_rate),
             "best_deposit_rate": float(best_result.deposit_rate),
             "objective_value": float(best_result.total_objective),
@@ -58,8 +60,15 @@ def run_scenario(request: RunScenarioRequest) -> dict[str, Any]:
             "policy_band_breached": bool(diagnostics.policy_band_breached),
             "top_results": _top_results_payload(diagnostics),
         }
+        if request.include_sensitivity:
+            sensitivity_frame = run_sensitivity_analysis(config)
+            payload["sensitivity"] = sensitivity_frame.to_dict(orient="records")
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail="Unexpected scenario execution error") from exc
+
+    return payload
 
 
 def _top_results_payload(diagnostics: Any) -> list[dict[str, float | None]]:

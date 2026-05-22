@@ -47,6 +47,47 @@ def test_run_scenario_returns_summary_for_valid_config_yaml():
     assert set(payload["top_results"][0]) == set(GRID_RESULT_COLUMNS)
 
 
+def test_run_scenario_without_sensitivity_flag_has_no_sensitivity_key():
+    client = TestClient(app)
+    config_yaml = Path("configs/base.yaml").read_text(encoding="utf-8")
+
+    response = client.post("/run-scenario", json={"config_yaml": config_yaml})
+
+    assert response.status_code == 200
+    assert "sensitivity" not in response.json()
+
+
+def test_run_scenario_with_include_sensitivity_false_has_no_sensitivity_key():
+    client = TestClient(app)
+    config_yaml = Path("configs/base.yaml").read_text(encoding="utf-8")
+
+    response = client.post(
+        "/run-scenario", json={"config_yaml": config_yaml, "include_sensitivity": False}
+    )
+
+    assert response.status_code == 200
+    assert "sensitivity" not in response.json()
+
+
+def test_run_scenario_with_include_sensitivity_true_returns_sensitivity_rows():
+    client = TestClient(app)
+    config_yaml = Path("configs/base.yaml").read_text(encoding="utf-8")
+
+    response = client.post(
+        "/run-scenario", json={"config_yaml": config_yaml, "include_sensitivity": True}
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "sensitivity" in payload
+    rows = payload["sensitivity"]
+    assert isinstance(rows, list)
+    assert len(rows) > 0
+    first = rows[0]
+    assert "scenario_name" in first
+    assert "delta_objective_pct" in first
+
+
 def test_run_scenario_returns_422_for_invalid_yaml():
     client = TestClient(app)
 
