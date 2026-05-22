@@ -5,10 +5,6 @@ A production-style Python project for simulating and optimizing retail bank pric
 - Home lending rates, as asset pricing
 - Term deposit rates, as liability pricing
 
-The first milestone is intentionally small: synthetic customer generation, known elasticity response
-simulation, risk-adjusted profit calculation, a funding constraint, and a transparent joint grid
-search optimizer.
-
 ## Quickstart
 
 ```bash
