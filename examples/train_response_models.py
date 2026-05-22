@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import numpy as np
 import pandas as pd
@@ -16,6 +17,13 @@ from balance_pricing_engine.modelling.datasets import (
     LOAN_TARGET_COLUMN,
     build_deposit_response_dataset,
     build_loan_response_dataset,
+)
+from balance_pricing_engine.modelling.agentic import (
+    ElasticityBaselineModel,
+    HistGBMResponseModel,
+    LogisticResponseModel,
+    ModelTrainingAgent,
+    TrainingConfig,
 )
 from balance_pricing_engine.modelling.evaluation import (
     check_rate_response_direction,
@@ -137,6 +145,12 @@ def train_and_report(
 
     print(title)
     _print_comparison_table(lr_metrics, gbm_metrics, lr_cal_mae, gbm_cal_mae)
+    _print_governed_candidate_table(
+        dataset=dataset,
+        feature_columns=feature_columns,
+        target_column=target_column,
+        random_seed=random_seed,
+    )
     print(f"  Recommendation: {comparison['recommended']}")
     print(f"    reason: {comparison['reason']}")
     print("  Logistic regression rate response")
@@ -156,6 +170,45 @@ def _print_comparison_table(
     for key in ["auc", "log_loss", "brier_score"]:
         print(f"  {key:<22}  {lr_metrics[key]:>22.4f}  {gbm_metrics[key]:>22.4f}")
     print(f"  {'calibration_mae':<22}  {lr_cal_mae:>22.4f}  {gbm_cal_mae:>22.4f}")
+
+
+def _print_governed_candidate_table(
+    dataset: pd.DataFrame,
+    feature_columns: list[str],
+    target_column: str,
+    random_seed: int,
+) -> None:
+    candidates = {
+        "elasticity_baseline": ElasticityBaselineModel(),
+        "logistic": LogisticResponseModel(random_state=random_seed),
+        "histgbm": HistGBMResponseModel(random_state=random_seed),
+    }
+    with TemporaryDirectory(prefix="bank-pricing-agentic-") as artifacts_dir:
+        agent = ModelTrainingAgent(
+            config=TrainingConfig(
+                feature_columns=feature_columns,
+                target_column=target_column,
+                random_seed=random_seed,
+            ),
+            artifacts_dir=artifacts_dir,
+        )
+        result = agent.train(
+            dataset=dataset,
+            candidates=candidates,
+            registry=agent.registry,
+            run_name="example_response_models",
+        )
+
+    print("  Governed agentic workflow")
+    print(f"  {'model_name':<30}  {'auc':>8}  {'log_loss':>8}  {'cal_mae':>8}")
+    for candidate in result.report["candidates"]:
+        metrics = candidate["metrics"]
+        print(
+            f"  {candidate['model_name']:<30}  "
+            f"{metrics['auc']:>8.4f}  "
+            f"{metrics['log_loss']:>8.4f}  "
+            f"{candidate['calibration_error']:>8.4f}"
+        )
 
 
 def print_rate_response_check(check) -> None:

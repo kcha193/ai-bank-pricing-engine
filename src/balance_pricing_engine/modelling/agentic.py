@@ -6,11 +6,13 @@ import json
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
+from inspect import signature
 from pathlib import Path
 from typing import Any, Protocol
 
 import numpy as np
 import pandas as pd
+from sklearn.inspection import permutation_importance
 from sklearn.model_selection import train_test_split
 
 from balance_pricing_engine.modelling.evaluation import (
@@ -18,6 +20,7 @@ from balance_pricing_engine.modelling.evaluation import (
     evaluate_probabilities,
 )
 from balance_pricing_engine.modelling.models import (
+    build_hist_gradient_boosting_model,
     build_logistic_regression_model,
     fit_response_model,
     predict_response_probability,
@@ -79,6 +82,7 @@ class ModelRecord:
     target_column: str | None = None
     run_name: str | None = None
     report_path: str | None = None
+    candidate_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -144,6 +148,86 @@ class LogisticResponseModel:
     @property
     def fitted_model(self) -> Any:
         return self._model
+
+
+class HistGBMResponseModel:
+    """Governed HistGradientBoosting response model backed by sklearn."""
+
+    name = "HistGBMResponseModel"
+
+    def __init__(self, random_state: int = 42, model: Any | None = None):
+        self._random_state = random_state
+        self._model = model
+        self._perm_importances: dict[str, float] | None = None
+
+    def fit(self, train: pd.DataFrame, feature_columns: list[str], target_column: str) -> None:
+        fit_data, importance_data = self._split_fit_and_importance_holdout(train, target_column)
+        self._model = fit_response_model(
+            build_hist_gradient_boosting_model(self._random_state),
+            fit_data,
+            feature_columns,
+            target_column,
+        )
+        self._perm_importances = None
+        if importance_data is None:
+            return
+        result = permutation_importance(
+            self._model,
+            importance_data[feature_columns],
+            importance_data[target_column],
+            n_repeats=5,
+            random_state=self._random_state,
+            n_jobs=1,
+        )
+        self._perm_importances = dict(zip(feature_columns, result["importances_mean"].tolist()))
+        self._model = fit_response_model(
+            build_hist_gradient_boosting_model(self._random_state),
+            train,
+            feature_columns,
+            target_column,
+        )
+
+    def predict_probability(self, data: pd.DataFrame, feature_columns: list[str]) -> np.ndarray:
+        if self._model is None:
+            raise ValueError("Model must be fitted before scoring.")
+        return predict_response_probability(self._model, data, feature_columns)
+
+    def feature_importances(self, feature_columns: list[str]) -> dict[str, float] | None:
+        """Return permutation-based feature importances computed at fit time."""
+        if self._model is None:
+            raise ValueError("Model must be fitted before retrieving feature importances.")
+        if self._perm_importances is None:
+            return None
+        return {col: self._perm_importances.get(col, float("nan")) for col in feature_columns}
+
+    @property
+    def fitted_model(self) -> Any:
+        return self._model
+
+    def _split_fit_and_importance_holdout(
+        self,
+        train: pd.DataFrame,
+        target_column: str,
+    ) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+        if len(train) < 5:
+            return train, None
+
+        target = train[target_column]
+        target_counts = target.value_counts()
+        stratify = target if target_counts.size > 1 and target_counts.min() >= 2 else None
+        try:
+            fit_data, importance_data = train_test_split(
+                train,
+                test_size=0.2,
+                random_state=self._random_state,
+                stratify=stratify,
+            )
+        except ValueError:
+            return train, None
+
+        if fit_data.empty or importance_data.empty:
+            return train, None
+        return fit_data, importance_data
 
 
 class ModelRegistry:
@@ -347,6 +431,7 @@ def write_model_card(
     output_dir: Path,
     feature_columns: list[str] | None = None,
     target_column: str | None = None,
+    feature_importances: dict[str, float] | None = None,
 ) -> Path:
     """Write a markdown model card for a trained model record."""
     output_dir = Path(output_dir)
@@ -360,6 +445,22 @@ def write_model_card(
     auc = metrics.get("auc", float("nan"))
     log_loss_val = metrics.get("log_loss", float("nan"))
     brier = metrics.get("brier_score", float("nan"))
+    importances_section = ""
+    if feature_importances is not None:
+        importances_section = (
+            "## Feature Importances\n"
+            "| Feature | Importance |\n"
+            "|---------|------------|\n"
+            + "".join(
+                f"| {feature} | {importance:.4f} |\n"
+                for feature, importance in sorted(
+                    feature_importances.items(),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )
+            )
+            + "\n"
+        )
 
     content = (
         f"# Model Card: {record.model_name}\n\n"
@@ -378,6 +479,7 @@ def write_model_card(
         f"| Log loss | {log_loss_val:.4f} |\n"
         f"| Brier score | {brier:.4f} |\n"
         f"| Calibration MAE | {record.calibration_mae:.4f} |\n\n"
+        f"{importances_section}"
         f"## Governance\n"
         f"- **Governance status:** {record.governance_status}\n"
         f"- **Champion status:** {record.champion_status}\n"
@@ -387,6 +489,33 @@ def write_model_card(
     )
     card_path.write_text(content, encoding="utf-8")
     return card_path
+
+
+def _optional_feature_importances(
+    model: ResponseModel | None,
+    feature_columns: list[str],
+) -> dict[str, float] | None:
+    """Return feature importances from models that support the optional hook."""
+    if model is None:
+        return None
+    hook = getattr(model, "feature_importances", None)
+    if not callable(hook):
+        return None
+    try:
+        hook_signature = signature(hook)
+    except (TypeError, ValueError):
+        return None
+    try:
+        hook_signature.bind(feature_columns)
+        importances = hook(feature_columns)
+    except Exception:
+        return None
+    if not isinstance(importances, dict):
+        return None
+    try:
+        return {str(feature): float(importance) for feature, importance in importances.items()}
+    except Exception:
+        return None
 
 
 class ModelTrainingAgent:
@@ -524,6 +653,7 @@ class ModelTrainingAgent:
                 feature_columns=list(feature_columns),
                 target_column=target_column,
                 run_name=run_name,
+                candidate_key=name,
             )
             registry.append(record)
             records.append(record)
@@ -606,7 +736,21 @@ class ModelTrainingAgent:
         )
         card_feature_columns = feature_columns if self.config is None else self.config.feature_columns
         card_target_column = target_column if self.config is None else self.config.target_column
+        fitted_candidates: dict[str, ResponseModel] = dict(candidates)
         for record in records:
+            fitted_model = None
+            if record.candidate_key is not None:
+                fitted_model = fitted_candidates.get(record.candidate_key)
+            if fitted_model is None:
+                fitted_model = next(
+                    (
+                        model
+                        for key, model in fitted_candidates.items()
+                        if key == record.model_name or _model_name(model) == record.model_name
+                    ),
+                    None,
+                )
+            importances = _optional_feature_importances(fitted_model, card_feature_columns)
             write_model_card(
                 replace(
                     record,
@@ -615,6 +759,7 @@ class ModelTrainingAgent:
                 self.artifacts_dir / "model_cards",
                 card_feature_columns,
                 card_target_column,
+                feature_importances=importances,
             )
         return TrainingResult(
             report=report,

@@ -1,15 +1,18 @@
 import numpy as np
+import pandas as pd
 import pytest
 
 from balance_pricing_engine.modelling.agentic import (
     ElasticityBaselineModel,
     ElasticityResponseModel,
+    HistGBMResponseModel,
     LogisticResponseModel,
     ModelRecord,
     ModelRegistry,
     ModelScoringAgent,
     ModelTrainingAgent,
     TrainingConfig,
+    write_model_card,
 )
 from balance_pricing_engine.modelling.datasets import (
     DEPOSIT_FEATURE_COLUMNS,
@@ -86,6 +89,117 @@ def test_training_agent_trains_and_recommends(tmp_path):
         "LogisticResponseModel",
     }
     assert result.report_path.endswith(".json")
+
+
+def test_histgbm_response_model_fits_and_predicts(tmp_path):
+    dataset = _loan_dataset()
+    model = HistGBMResponseModel(random_state=42)
+    train = dataset.iloc[:800]
+    test_data = dataset.iloc[800:]
+
+    model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+    probs = model.predict_probability(test_data, LOAN_FEATURE_COLUMNS)
+
+    assert probs.shape == (len(test_data),)
+    assert np.all(probs >= 0) and np.all(probs <= 1)
+
+
+def test_histgbm_response_model_raises_before_fit():
+    model = HistGBMResponseModel(random_state=42)
+    df = pd.DataFrame({"offered_rate": [0.08]})
+    with pytest.raises(ValueError, match="fitted"):
+        model.predict_probability(df, ["offered_rate"])
+
+
+def test_histgbm_response_model_name():
+    assert HistGBMResponseModel.name == "HistGBMResponseModel"
+
+
+def test_histgbm_response_model_feature_importances_available_after_fit():
+    dataset = _loan_dataset()
+    model = HistGBMResponseModel(random_state=42)
+    model.fit(dataset.iloc[:800], LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+    importances = model.feature_importances(LOAN_FEATURE_COLUMNS)
+    assert isinstance(importances, dict)
+    assert set(importances.keys()) == set(LOAN_FEATURE_COLUMNS)
+    assert all(isinstance(v, float) for v in importances.values())
+    assert all(not np.isnan(v) for v in importances.values())
+
+
+def test_histgbm_response_model_feature_importances_use_holdout(monkeypatch):
+    dataset = _loan_dataset()
+    train = dataset.iloc[:800]
+    captured = {}
+
+    def capture_permutation_importance(model, features, target, **kwargs):
+        captured["feature_index"] = set(features.index)
+        captured["target_index"] = set(target.index)
+        return {"importances_mean": np.ones(len(LOAN_FEATURE_COLUMNS))}
+
+    monkeypatch.setattr(
+        "balance_pricing_engine.modelling.agentic.permutation_importance",
+        capture_permutation_importance,
+    )
+
+    model = HistGBMResponseModel(random_state=42)
+    model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+
+    assert captured["feature_index"] == captured["target_index"]
+    assert captured["feature_index"].issubset(set(train.index))
+    assert captured["feature_index"] != set(train.index)
+
+
+def test_histgbm_response_model_refits_final_model_on_full_training_data(monkeypatch):
+    dataset = _loan_dataset()
+    train = dataset.iloc[:800]
+    fit_indices = []
+
+    def capture_fit_response_model(model, data, feature_columns, target_column):
+        fit_indices.append(set(data.index))
+        return model
+
+    def capture_permutation_importance(model, features, target, **kwargs):
+        return {"importances_mean": np.ones(len(LOAN_FEATURE_COLUMNS))}
+
+    monkeypatch.setattr(
+        "balance_pricing_engine.modelling.agentic.fit_response_model",
+        capture_fit_response_model,
+    )
+    monkeypatch.setattr(
+        "balance_pricing_engine.modelling.agentic.permutation_importance",
+        capture_permutation_importance,
+    )
+
+    model = HistGBMResponseModel(random_state=42)
+    model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+
+    assert fit_indices[0] != set(train.index)
+    assert fit_indices[-1] == set(train.index)
+
+
+def test_histgbm_response_model_in_training_agent(tmp_path):
+    dataset = _loan_dataset()
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=7,
+        ),
+        artifacts_dir=tmp_path,
+    )
+    result = agent.train(
+        dataset=dataset,
+        candidates={
+            "elasticity_baseline": ElasticityBaselineModel(),
+            "logistic": LogisticResponseModel(random_state=7),
+            "histgbm": HistGBMResponseModel(random_state=7),
+        },
+        registry=agent.registry,
+        run_name="loan_three_candidates",
+    )
+    model_names = {c["model_name"] for c in result.report["candidates"]}
+    assert "HistGBMResponseModel" in model_names
+    assert len(result.report["candidates"]) == 3
 
 
 def test_scoring_agent_schema_and_fallback(tmp_path):
@@ -677,6 +791,58 @@ def test_write_model_card_with_feature_columns(tmp_path):
     assert "accepted" in content
 
 
+def test_write_model_card_includes_feature_importances(tmp_path):
+    record = ModelRecord(
+        model_name="HistGBMResponseModel",
+        model_type="HistGBMResponseModel",
+        version="20260521000000000000",
+        trained_at_utc="2026-05-21T00:00:00+00:00",
+        artifact_path=None,
+        metrics={"auc": 0.72, "log_loss": 0.64, "brier_score": 0.21},
+        calibration_mae=0.04,
+        governance_status="pending_human_approval",
+        champion_status="challenger",
+        config_hash="abc123",
+    )
+    importances = {"offered_rate": 0.45, "credit_score": 0.30, "loan_amount": 0.25}
+
+    card_path = write_model_card(
+        record=record,
+        output_dir=tmp_path,
+        feature_columns=list(importances.keys()),
+        target_column="accepted",
+        feature_importances=importances,
+    )
+
+    content = card_path.read_text()
+    assert "## Feature Importances" in content
+    assert "offered_rate" in content
+    assert "0.4500" in content
+
+
+def test_write_model_card_omits_importances_section_when_none(tmp_path):
+    record = ModelRecord(
+        model_name="LogisticResponseModel",
+        model_type="LogisticResponseModel",
+        version="20260521000000000001",
+        trained_at_utc="2026-05-21T00:00:00+00:00",
+        artifact_path=None,
+        metrics={"auc": 0.70, "log_loss": 0.66, "brier_score": 0.22},
+        calibration_mae=0.05,
+        governance_status="pending_human_approval",
+        champion_status="challenger",
+        config_hash="def456",
+    )
+    card_path = write_model_card(
+        record=record,
+        output_dir=tmp_path,
+        feature_columns=["offered_rate"],
+        target_column="accepted",
+    )
+    content = card_path.read_text()
+    assert "## Feature Importances" not in content
+
+
 def test_write_model_card_without_feature_columns_shows_fallback(tmp_path):
     from balance_pricing_engine.modelling.agentic import write_model_card
 
@@ -722,3 +888,185 @@ def test_training_agent_writes_model_cards(tmp_path):
     content = cards[0].read_text(encoding="utf-8")
     assert "## Identity" in content
     assert "## Approval" in content
+
+
+def test_training_agent_writes_model_card_with_importances_for_histgbm(tmp_path):
+    dataset = _loan_dataset()
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=7,
+        ),
+        artifacts_dir=tmp_path,
+    )
+    agent.train(
+        dataset=dataset,
+        candidates={
+            "elasticity_baseline": ElasticityBaselineModel(),
+            "histgbm": HistGBMResponseModel(random_state=7),
+        },
+        registry=agent.registry,
+        run_name="loan_importances",
+    )
+    cards_dir = tmp_path / "model_cards"
+    card_files = list(cards_dir.glob("HistGBMResponseModel_*.md"))
+    assert len(card_files) == 1
+    content = card_files[0].read_text()
+    assert "## Feature Importances" in content
+
+
+def test_training_agent_skips_model_card_importances_for_no_arg_hook(tmp_path):
+    class NoArgFeatureImportanceModel(LogisticResponseModel):
+        name = "NoArgFeatureImportanceModel"
+
+        def feature_importances(self):
+            return {"offered_rate": 1.0}
+
+    dataset = _loan_dataset()
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=7,
+        ),
+        artifacts_dir=tmp_path,
+    )
+    agent.train(
+        dataset=dataset,
+        candidates={"no_arg": NoArgFeatureImportanceModel(random_state=7)},
+        registry=agent.registry,
+        run_name="no_arg_importances",
+    )
+
+    card_files = list((tmp_path / "model_cards").glob("NoArgFeatureImportanceModel_*.md"))
+    assert len(card_files) == 1
+    assert "## Feature Importances" not in card_files[0].read_text()
+
+
+def test_training_agent_skips_model_card_importances_for_non_callable_attr(tmp_path):
+    class NonCallableFeatureImportanceModel(LogisticResponseModel):
+        name = "NonCallableFeatureImportanceModel"
+        feature_importances = {"offered_rate": 1.0}
+
+    dataset = _loan_dataset()
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=7,
+        ),
+        artifacts_dir=tmp_path,
+    )
+    agent.train(
+        dataset=dataset,
+        candidates={"non_callable": NonCallableFeatureImportanceModel(random_state=7)},
+        registry=agent.registry,
+        run_name="non_callable_importances",
+    )
+
+    card_files = list((tmp_path / "model_cards").glob("NonCallableFeatureImportanceModel_*.md"))
+    assert len(card_files) == 1
+    assert "## Feature Importances" not in card_files[0].read_text()
+
+
+def test_training_agent_skips_model_card_importances_when_hook_raises(tmp_path):
+    class RaisingFeatureImportanceModel(LogisticResponseModel):
+        name = "RaisingFeatureImportanceModel"
+
+        def feature_importances(self, feature_columns):
+            raise NotImplementedError("importances unavailable for this candidate")
+
+    dataset = _loan_dataset()
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=7,
+        ),
+        artifacts_dir=tmp_path,
+    )
+    agent.train(
+        dataset=dataset,
+        candidates={"raising": RaisingFeatureImportanceModel(random_state=7)},
+        registry=agent.registry,
+        run_name="raising_importances",
+    )
+
+    card_files = list((tmp_path / "model_cards").glob("RaisingFeatureImportanceModel_*.md"))
+    assert len(card_files) == 1
+    assert "## Feature Importances" not in card_files[0].read_text()
+
+
+def test_training_agent_skips_model_card_importances_when_hook_values_are_invalid(tmp_path):
+    class InvalidFeatureImportanceModel(LogisticResponseModel):
+        name = "InvalidFeatureImportanceModel"
+
+        def feature_importances(self, feature_columns):
+            return {feature: "not-a-number" for feature in feature_columns}
+
+    dataset = _loan_dataset()
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=7,
+        ),
+        artifacts_dir=tmp_path,
+    )
+    agent.train(
+        dataset=dataset,
+        candidates={"invalid": InvalidFeatureImportanceModel(random_state=7)},
+        registry=agent.registry,
+        run_name="invalid_importances",
+    )
+
+    card_files = list((tmp_path / "model_cards").glob("InvalidFeatureImportanceModel_*.md"))
+    assert len(card_files) == 1
+    assert "## Feature Importances" not in card_files[0].read_text()
+
+
+def test_training_agent_uses_candidate_key_for_same_class_model_card_importances(tmp_path):
+    class SharedImportanceModel(LogisticResponseModel):
+        name = "SharedImportanceModel"
+
+        def __init__(self, offered_rate_importance: float, random_state: int = 7):
+            super().__init__(random_state=random_state)
+            self._offered_rate_importance = offered_rate_importance
+
+        def feature_importances(self, feature_columns):
+            return {
+                feature: self._offered_rate_importance if feature == "offered_rate" else 0.0
+                for feature in feature_columns
+            }
+
+    dataset = _loan_dataset()
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=7,
+        ),
+        artifacts_dir=tmp_path,
+    )
+
+    agent.train(
+        dataset=dataset,
+        candidates={
+            "first": SharedImportanceModel(0.9),
+            "second": SharedImportanceModel(0.1),
+        },
+        registry=agent.registry,
+        run_name="same_class",
+    )
+
+    card_contents = [
+        path.read_text(encoding="utf-8")
+        for path in (tmp_path / "model_cards").glob("SharedImportanceModel_*.md")
+    ]
+    assert len(card_contents) == 2
+    first_card = next(content for content in card_contents if "same_class_first.joblib" in content)
+    second_card = next(content for content in card_contents if "same_class_second.joblib" in content)
+
+    assert "| offered_rate | 0.9000 |" in first_card
+    assert "| offered_rate | 0.1000 |" in second_card

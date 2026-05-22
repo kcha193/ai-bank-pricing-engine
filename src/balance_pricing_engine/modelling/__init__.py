@@ -6,6 +6,7 @@ See docs/model_governance.md.
 from balance_pricing_engine.modelling.agentic import (
     ElasticityBaselineModel,
     ElasticityResponseModel,
+    HistGBMResponseModel,
     LogisticResponseModel,
     ModelRecord,
     ModelRegistry,
@@ -38,6 +39,7 @@ from balance_pricing_engine.utils.random import make_rng
 __all__ = [
     "ElasticityBaselineModel",
     "ElasticityResponseModel",
+    "HistGBMResponseModel",
     "LogisticResponseModel",
     "ModelRecord",
     "ModelRegistry",
