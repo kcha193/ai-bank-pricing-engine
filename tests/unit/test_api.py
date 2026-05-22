@@ -6,6 +6,17 @@ from balance_pricing_engine.api import app
 from balance_pricing_engine.optimization.grid_search import GRID_RESULT_COLUMNS
 
 
+def test_health_returns_200_with_status_ok():
+    client = TestClient(app)
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert "version" in payload
+
+
 def test_run_scenario_returns_summary_for_valid_config_yaml():
     client = TestClient(app)
     config_yaml = Path("configs/base.yaml").read_text(encoding="utf-8")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -17,6 +18,15 @@ class RunScenarioRequest(BaseModel):
 
 
 app = FastAPI(title="AI Bank Pricing Engine")
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    try:
+        pkg_version = _pkg_version("ai-bank-pricing-engine")
+    except PackageNotFoundError:
+        pkg_version = "unknown"
+    return {"status": "ok", "version": pkg_version}
 
 
 @app.post("/run-scenario")
