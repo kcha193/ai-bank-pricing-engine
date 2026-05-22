@@ -123,6 +123,7 @@ def test_histgbm_response_model_feature_importances_available_after_fit():
     assert isinstance(importances, dict)
     assert set(importances.keys()) == set(LOAN_FEATURE_COLUMNS)
     assert all(isinstance(v, float) for v in importances.values())
+    assert all(not np.isnan(v) for v in importances.values())
 
 
 def test_histgbm_response_model_in_training_agent(tmp_path):

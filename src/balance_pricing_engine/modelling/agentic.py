@@ -11,6 +11,7 @@ from typing import Any, Protocol
 
 import numpy as np
 import pandas as pd
+from sklearn.inspection import permutation_importance
 from sklearn.model_selection import train_test_split
 
 from balance_pricing_engine.modelling.evaluation import (
@@ -155,6 +156,7 @@ class HistGBMResponseModel:
     def __init__(self, random_state: int = 42, model: Any | None = None):
         self._random_state = random_state
         self._model = model
+        self._perm_importances: dict[str, float] | None = None
 
     def fit(self, train: pd.DataFrame, feature_columns: list[str], target_column: str) -> None:
         self._model = fit_response_model(
@@ -163,6 +165,15 @@ class HistGBMResponseModel:
             feature_columns,
             target_column,
         )
+        result = permutation_importance(
+            self._model,
+            train[feature_columns],
+            train[target_column],
+            n_repeats=5,
+            random_state=self._random_state,
+            n_jobs=1,
+        )
+        self._perm_importances = dict(zip(feature_columns, result["importances_mean"].tolist()))
 
     def predict_probability(self, data: pd.DataFrame, feature_columns: list[str]) -> np.ndarray:
         if self._model is None:
@@ -170,13 +181,12 @@ class HistGBMResponseModel:
         return predict_response_probability(self._model, data, feature_columns)
 
     def feature_importances(self, feature_columns: list[str]) -> dict[str, float]:
-        """Return per-feature importance scores. Requires a fitted model."""
+        """Return permutation-based feature importances computed at fit time."""
         if self._model is None:
             raise ValueError("Model must be fitted before retrieving feature importances.")
-        importances = getattr(self._model, "feature_importances_", None)
-        if importances is None:
+        if self._perm_importances is None:
             return {column: float("nan") for column in feature_columns}
-        return dict(zip(feature_columns, importances.tolist()))
+        return {col: self._perm_importances.get(col, float("nan")) for col in feature_columns}
 
     @property
     def fitted_model(self) -> Any:
