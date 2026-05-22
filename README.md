@@ -7,14 +7,19 @@ A production-style Python project for simulating and optimizing retail bank pric
 
 ## Quickstart
 
+Requires Python ≥ 3.9.
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install --upgrade pip setuptools wheel
 python3 -m pip install -e ".[dev]"
 python3 -m pytest -q
-python3 examples/run_baseline.py
-python3 examples/train_response_models.py
+python3 examples/run_baseline.py               # core grid-search + diagnostics
+python3 examples/run_with_competitor_rates.py  # with live competitor rate ingestion
+python3 examples/run_llm_diagnostics.py        # LLM scenario narration (requires ANTHROPIC_API_KEY)
+python3 examples/run_multiperiod.py            # multi-period scenario
+python3 examples/train_response_models.py      # diagnostic ML layer
 ```
 
 If your environment cannot download build dependencies, see the restricted-network setup notes in
