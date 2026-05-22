@@ -35,14 +35,19 @@ For model-risk and architecture notes, see:
 
 ## Current Scope
 
-The current engine chooses one portfolio-level home loan rate and one portfolio-level term deposit
-rate. It maximizes expected risk-adjusted profit while penalizing funding shortfalls.
+The engine chooses one portfolio-level home loan rate and one portfolio-level term deposit rate,
+maximising expected risk-adjusted profit while penalising funding shortfalls.
 
-The project also includes a small diagnostic ML layer that trains response models on synthetic
-observed outcomes and checks whether learned predictions recover sensible rate-response behaviour.
+The project also includes:
 
-Every pricing run produces an auditable ledger under `data/outputs/runs/` containing a config snapshot,
-run metadata, a business-facing pricing memo, and a governance checklist — all generated offline
-with no external dependencies.
+- A diagnostic ML layer that trains response models on synthetic observed outcomes and validates
+  rate-response behaviour.
+- An LLM decision-support layer (`llm/`) for plain-language narration and config anomaly detection
+  (human review required — never wired into automated decisions).
+- A FastAPI endpoint (`POST /run-scenario`) in `api/` for local HTTP access.
 
-FastAPI, dashboards, and production model integration come later.
+Every pricing run produces an auditable ledger under `data/outputs/runs/` containing a config
+snapshot, run metadata, a business-facing pricing memo, and a governance checklist — all generated
+offline with no external dependencies. See [docs/run_ledger_guide.md](docs/run_ledger_guide.md).
+
+Dashboards and production deployment are not yet implemented.
