@@ -5,11 +5,9 @@ A production-style Python project for simulating and optimizing retail bank pric
 - Home lending rates, as asset pricing
 - Term deposit rates, as liability pricing
 
-The first milestone is intentionally small: synthetic customer generation, known elasticity response
-simulation, risk-adjusted profit calculation, a funding constraint, and a transparent joint grid
-search optimizer.
-
 ## Quickstart
+
+Requires Python ≥ 3.9.
 
 ```bash
 python3 -m venv .venv
@@ -17,8 +15,12 @@ source .venv/bin/activate
 python3 -m pip install --upgrade pip setuptools wheel
 python3 -m pip install -e ".[dev]"
 python3 -m pytest -q
-python3 examples/run_baseline.py
-python3 examples/train_response_models.py
+python3 examples/run_baseline.py               # core grid-search + diagnostics
+python3 -m balance_pricing_engine.competitor_rates.cli fetch --output-dir data/processed/competitor_rates
+python3 examples/run_with_competitor_rates.py  # with live competitor rate ingestion
+python3 examples/run_llm_diagnostics.py        # LLM scenario narration (requires ANTHROPIC_API_KEY)
+python3 examples/run_multiperiod.py            # multi-period scenario
+python3 examples/train_response_models.py      # diagnostic ML layer
 ```
 
 If your environment cannot download build dependencies, see the restricted-network setup notes in
@@ -35,14 +37,19 @@ For model-risk and architecture notes, see:
 
 ## Current Scope
 
-The current engine chooses one portfolio-level home loan rate and one portfolio-level term deposit
-rate. It maximizes expected risk-adjusted profit while penalizing funding shortfalls.
+The engine chooses one portfolio-level home loan rate and one portfolio-level term deposit rate,
+maximising expected risk-adjusted profit while penalising funding shortfalls.
 
-The project also includes a small diagnostic ML layer that trains response models on synthetic
-observed outcomes and checks whether learned predictions recover sensible rate-response behaviour.
+The project also includes:
 
-Every pricing run produces an auditable ledger under `data/outputs/runs/` containing a config snapshot,
-run metadata, a business-facing pricing memo, and a governance checklist — all generated offline
-with no external dependencies.
+- A diagnostic ML layer that trains response models on synthetic observed outcomes and validates
+  rate-response behaviour.
+- An LLM decision-support layer (`llm/`) for plain-language narration and config anomaly detection
+  (human review required — never wired into automated decisions).
+- A FastAPI endpoint (`POST /run-scenario`) in `api/` for local HTTP access.
 
-FastAPI, dashboards, and production model integration come later.
+Every pricing run produces an auditable ledger under `data/outputs/runs/` containing a config
+snapshot, run metadata, a business-facing pricing memo, and a governance checklist — all generated
+offline with no external dependencies. See [docs/run_ledger_guide.md](docs/run_ledger_guide.md).
+
+Dashboards and production deployment are not yet implemented.

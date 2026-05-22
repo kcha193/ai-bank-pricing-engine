@@ -1,6 +1,6 @@
 # AI Bank Pricing Engine — Claude Instructions
 
-> Companion to [AGENTS.md](AGENTS.md). Source of truth for commands and scope is AGENTS.md; this file adds Claude-specific architectural detail verified against the code.
+> This file is the source of truth for module-level invariants, architectural detail, and operating constraints for Claude sessions. [AGENTS.md](AGENTS.md) covers all agent runtimes (Codex, etc.) with a subset of the same context.
 
 ## What this project is
 
@@ -15,11 +15,13 @@ The engine maximises expected risk-adjusted profit subject to a funding-shortfal
 - [rate_grids.py](src/balance_pricing_engine/rate_grids.py) — `build_configured_rate_grids`: dispatches between market-relative spread grids and absolute fallback grids.
 - [synthetic/](src/balance_pricing_engine/synthetic/) — `customers.py` (loan + deposit generators), `market.py` (`MarketState`), `response.py` (`loan_acceptance_probability`, `deposit_uptake_probability`).
 - [pricing/](src/balance_pricing_engine/pricing/) — `profit.py` (loan income, ECL, deposit cost, wholesale funding) + `balance_sheet.py` (`calculate_funding_result`, shortfall + penalty).
-- [optimization/grid_search.py](src/balance_pricing_engine/optimization/grid_search.py) — `evaluate_joint_rate_grid`, `select_best_result`, `optimize_joint_rates`, `optimize_joint_market_relative_rates`. Returns `OptimizationResult` dataclass with backward-compat aliases (`objective_value`, `deposit_cost`, `funding_penalty`).
+- [optimization/grid_search.py](src/balance_pricing_engine/optimization/grid_search.py) — `evaluate_joint_rate_grid`, `select_best_result`, `optimize_joint_rates`, `optimize_joint_market_relative_rates`. Returns `OptimizationResult` dataclass with backward-compat aliases (`objective_value`, `deposit_cost`, `funding_penalty`, `loan_income_after_losses`).
 - [diagnostics.py](src/balance_pricing_engine/diagnostics.py) — `BoundaryDiagnostics`, `ObjectiveDecomposition`, `evaluate_adaptive_joint_rate_grid` (boundary-expansion wrapper), `run_sensitivity_analysis` (returns `delta_loan_rate_bps`, `delta_deposit_rate_bps`, `delta_objective_pct`, `parameter_family`; accepts `n_seeds` for Monte Carlo cohort uncertainty). Default sensitivity cases perturb all four elasticities and two customer-feature coefficients by ±25%.
 - [scenarios/runner.py](src/balance_pricing_engine/scenarios/runner.py) — `run_baseline_diagnostics`, `ScenarioDiagnostics` dataclass, `write_artifacts()` persistence. `ScenarioDiagnostics` also exposes `counterfactual_decompositions(top_n)` and `cohort_attribution()`.
 - [scenarios/experiments.py](src/balance_pricing_engine/scenarios/experiments.py) — small scenario helpers (e.g. `run_higher_funding_penalty_scenario`).
 - [run_ledger/](src/balance_pricing_engine/run_ledger/) — governed pricing-run ledger layer. Single `write_run_ledger()` entry point (re-exported from `__init__.py`) orchestrates: `directory.py` (timestamped `data/outputs/runs/{timestamp}_{scenario_name}/` directory), `metadata.py` (`RunMetadata` dataclass + `build_run_metadata` + `write_run_metadata`), `config_snapshot.py` (YAML copy), `memo.py` (`write_pricing_memo` — markdown recommendation/decomposition/risk memo), `checklist.py` (`write_governance_checklist` — markdown approval checklist). Wraps `ScenarioDiagnostics.write_artifacts()` and adds new artifacts on top.
+- [api/app.py](src/balance_pricing_engine/api/app.py) — FastAPI serving layer. Exposes `POST /run-scenario` (accepts YAML config string, returns optimization summary dict). Optional; not imported by core engine. Requires `fastapi` extra.
+- [llm/](src/balance_pricing_engine/llm/) — Tier 4 LLM decision-support layer: `narrative.py` (plain-language scenario narration), `anomaly.py` (config anomaly detection), `_client.py` (Claude API wrapper, default model `claude-sonnet-4-6`). **Decision-support only** — every response tagged `[DECISION-SUPPORT: requires human review]`. Never wired into automated pricing decisions.
 - [modelling/](src/balance_pricing_engine/modelling/) — diagnostic ML layer:
   - `datasets.py` — feature schemas (`LOAN_FEATURE_COLUMNS`, `DEPOSIT_FEATURE_COLUMNS`) and dataset builders.
   - `models.py` — `build_logistic_regression_model`, `build_hist_gradient_boosting_model`, `fit_response_model`, `predict_response_probability`.
@@ -53,6 +55,8 @@ python3 -m pytest -q
 python3 -m ruff check .
 python3 examples/run_baseline.py
 python3 examples/run_with_competitor_rates.py
+python3 examples/run_llm_diagnostics.py
+python3 examples/run_multiperiod.py
 python3 examples/train_response_models.py
 
 # Competitor-rate CLI (separate subcommand surface):
