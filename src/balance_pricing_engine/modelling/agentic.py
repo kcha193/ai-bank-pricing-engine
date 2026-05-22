@@ -661,7 +661,21 @@ class ModelTrainingAgent:
         )
         card_feature_columns = feature_columns if self.config is None else self.config.feature_columns
         card_target_column = target_column if self.config is None else self.config.target_column
+        fitted_candidates: dict[str, ResponseModel] = dict(candidates)
         for record in records:
+            fitted_model = next(
+                (
+                    model
+                    for key, model in fitted_candidates.items()
+                    if key == record.model_name or _model_name(model) == record.model_name
+                ),
+                None,
+            )
+            importances = (
+                fitted_model.feature_importances(card_feature_columns)
+                if fitted_model is not None and hasattr(fitted_model, "feature_importances")
+                else None
+            )
             write_model_card(
                 replace(
                     record,
@@ -670,6 +684,7 @@ class ModelTrainingAgent:
                 self.artifacts_dir / "model_cards",
                 card_feature_columns,
                 card_target_column,
+                feature_importances=importances,
             )
         return TrainingResult(
             report=report,

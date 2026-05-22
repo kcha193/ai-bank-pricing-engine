@@ -836,3 +836,29 @@ def test_training_agent_writes_model_cards(tmp_path):
     content = cards[0].read_text(encoding="utf-8")
     assert "## Identity" in content
     assert "## Approval" in content
+
+
+def test_training_agent_writes_model_card_with_importances_for_histgbm(tmp_path):
+    dataset = _loan_dataset()
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=7,
+        ),
+        artifacts_dir=tmp_path,
+    )
+    agent.train(
+        dataset=dataset,
+        candidates={
+            "elasticity_baseline": ElasticityBaselineModel(),
+            "histgbm": HistGBMResponseModel(random_state=7),
+        },
+        registry=agent.registry,
+        run_name="loan_importances",
+    )
+    cards_dir = tmp_path / "model_cards"
+    card_files = list(cards_dir.glob("HistGBMResponseModel_*.md"))
+    assert len(card_files) == 1
+    content = card_files[0].read_text()
+    assert "## Feature Importances" in content
