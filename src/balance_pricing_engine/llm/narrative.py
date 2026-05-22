@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -77,7 +78,13 @@ class ScenarioNarrativeAgent:
                 from balance_pricing_engine.llm._client import build_client
 
                 client = build_client()
-            except Exception:
+            except ImportError:
+                return _fallback_narrative(user_prompt), False, "fallback"
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "Failed to build LLM client; using fallback narrative: %s",
+                    exc,
+                )
                 return _fallback_narrative(user_prompt), False, "fallback"
         try:
             response = client.messages.create(

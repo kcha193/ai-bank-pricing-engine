@@ -57,6 +57,10 @@ def main() -> None:
         print()
         print(result.narrative_text)
     else:
+        print(
+            "Note: Anomaly detection is rule-based decision-support only and requires human review "
+            "before any pricing action."
+        )
         print("Tip: run with --narrate to generate a scenario narrative (requires [llm] extra).")
 
 

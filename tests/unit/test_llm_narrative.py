@@ -1,3 +1,4 @@
+import logging
 import json
 from unittest.mock import MagicMock
 
@@ -62,6 +63,38 @@ def test_narrative_agent_falls_back_on_api_error():
     assert result.used_llm is False
     assert result.model_used == "fallback"
     assert result.narrative_text  # fallback text still present
+
+
+def test_narrative_agent_falls_back_silently_when_sdk_missing(monkeypatch, caplog):
+    diag = _diagnostics()
+
+    def raise_import_error():
+        raise ImportError("anthropic missing")
+
+    monkeypatch.setattr("balance_pricing_engine.llm._client.build_client", raise_import_error)
+    caplog.set_level(logging.WARNING)
+
+    result = ScenarioNarrativeAgent(use_llm=True).narrate(diag)
+
+    assert result.used_llm is False
+    assert result.model_used == "fallback"
+    assert caplog.text == ""
+
+
+def test_narrative_agent_warns_when_client_build_fails(monkeypatch, caplog):
+    diag = _diagnostics()
+
+    def raise_runtime_error():
+        raise RuntimeError("bad client config")
+
+    monkeypatch.setattr("balance_pricing_engine.llm._client.build_client", raise_runtime_error)
+    caplog.set_level(logging.WARNING)
+
+    result = ScenarioNarrativeAgent(use_llm=True).narrate(diag)
+
+    assert result.used_llm is False
+    assert result.model_used == "fallback"
+    assert "Failed to build LLM client" in caplog.text
 
 
 def test_narrative_result_has_prompt_hash():
