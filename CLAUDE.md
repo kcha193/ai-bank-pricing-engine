@@ -55,6 +55,8 @@ python3 -m pytest -q
 python3 -m ruff check .
 python3 examples/run_baseline.py
 python3 examples/run_with_competitor_rates.py
+python3 examples/run_llm_diagnostics.py
+python3 examples/run_multiperiod.py
 python3 examples/train_response_models.py
 
 # Competitor-rate CLI (separate subcommand surface):
