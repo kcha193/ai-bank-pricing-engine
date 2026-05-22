@@ -28,6 +28,22 @@ from balance_pricing_engine.modelling.models import (
 )
 from balance_pricing_engine.modelling.persistence import load_model, save_model
 
+__all__ = [
+    "ElasticityBaselineModel",
+    "ElasticityResponseModel",
+    "LogisticResponseModel",
+    "HistGBMResponseModel",
+    "ModelTrainingAgent",
+    "ModelScoringAgent",
+    "ModelRegistry",
+    "ModelRecord",
+    "TrainingConfig",
+    "TrainingResult",
+    "write_model_card",
+    "generate_model_cards_from_registry",
+    "generate_card_for_champion",
+]
+
 
 class ResponseModel(Protocol):
     """Common interface for portfolio/customer response models."""
@@ -490,6 +506,77 @@ def write_model_card(
     )
     card_path.write_text(content, encoding="utf-8")
     return card_path
+
+
+def generate_model_cards_from_registry(
+    registry: "ModelRegistry",
+    output_dir: Path | str,
+) -> list[Path]:
+    """Write a model card for every record in the registry. Returns list of written paths."""
+    output_dir = Path(output_dir)
+    records = registry.load().get("models", [])
+    paths: list[Path] = []
+    for raw in records:
+        record = ModelRecord(**{k: raw[k] for k in ModelRecord.__dataclass_fields__ if k in raw})
+        importances: dict[str, float] | None = None
+        if record.artifact_path:
+            try:
+                from balance_pricing_engine.modelling.persistence import load_model
+
+                model = load_model(record.artifact_path)
+                feature_cols = record.feature_columns or []
+                importances = _optional_feature_importances(model, feature_cols)
+            except Exception:
+                importances = None
+        card_path = write_model_card(
+            record=record,
+            output_dir=output_dir,
+            feature_columns=record.feature_columns,
+            target_column=record.target_column,
+            feature_importances=importances,
+        )
+        paths.append(card_path)
+    return paths
+
+
+def generate_card_for_champion(
+    registry: "ModelRegistry",
+    output_dir: Path | str,
+    *,
+    feature_columns: list[str] | None = None,
+    target_column: str | None = None,
+    config_hash: str | None = None,
+    run_name: str | None = None,
+) -> Path | None:
+    """Write a model card for the current champion, or return None if none exists."""
+    champion = registry.get_champion(
+        feature_columns=feature_columns,
+        target_column=target_column,
+        config_hash=config_hash,
+        run_name=run_name,
+    )
+    if champion is None:
+        return None
+    record = ModelRecord(
+        **{k: champion[k] for k in ModelRecord.__dataclass_fields__ if k in champion}
+    )
+    importances: dict[str, float] | None = None
+    if record.artifact_path:
+        try:
+            from balance_pricing_engine.modelling.persistence import load_model
+
+            model = load_model(record.artifact_path)
+            feature_cols = record.feature_columns or []
+            importances = _optional_feature_importances(model, feature_cols)
+        except Exception:
+            importances = None
+    return write_model_card(
+        record=record,
+        output_dir=Path(output_dir),
+        feature_columns=record.feature_columns,
+        target_column=record.target_column,
+        feature_importances=importances,
+    )
 
 
 def _optional_feature_importances(
