@@ -6,6 +6,7 @@ import json
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
+from inspect import signature
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -489,6 +490,30 @@ def write_model_card(
     return card_path
 
 
+def _optional_feature_importances(
+    model: ResponseModel | None,
+    feature_columns: list[str],
+) -> dict[str, float] | None:
+    """Return feature importances from models that support the optional hook."""
+    if model is None:
+        return None
+    hook = getattr(model, "feature_importances", None)
+    if not callable(hook):
+        return None
+    try:
+        hook_signature = signature(hook)
+    except (TypeError, ValueError):
+        return None
+    try:
+        hook_signature.bind(feature_columns)
+        importances = hook(feature_columns)
+    except TypeError:
+        return None
+    if not isinstance(importances, dict):
+        return None
+    return {str(feature): float(importance) for feature, importance in importances.items()}
+
+
 class ModelTrainingAgent:
     """Governed orchestrator that trains, compares, and recommends response models."""
 
@@ -716,11 +741,7 @@ class ModelTrainingAgent:
                 ),
                 None,
             )
-            importances = (
-                fitted_model.feature_importances(card_feature_columns)
-                if fitted_model is not None and hasattr(fitted_model, "feature_importances")
-                else None
-            )
+            importances = _optional_feature_importances(fitted_model, card_feature_columns)
             write_model_card(
                 replace(
                     record,

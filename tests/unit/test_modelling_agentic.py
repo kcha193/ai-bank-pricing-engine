@@ -914,3 +914,57 @@ def test_training_agent_writes_model_card_with_importances_for_histgbm(tmp_path)
     assert len(card_files) == 1
     content = card_files[0].read_text()
     assert "## Feature Importances" in content
+
+
+def test_training_agent_skips_model_card_importances_for_no_arg_hook(tmp_path):
+    class NoArgFeatureImportanceModel(LogisticResponseModel):
+        name = "NoArgFeatureImportanceModel"
+
+        def feature_importances(self):
+            return {"offered_rate": 1.0}
+
+    dataset = _loan_dataset()
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=7,
+        ),
+        artifacts_dir=tmp_path,
+    )
+    agent.train(
+        dataset=dataset,
+        candidates={"no_arg": NoArgFeatureImportanceModel(random_state=7)},
+        registry=agent.registry,
+        run_name="no_arg_importances",
+    )
+
+    card_files = list((tmp_path / "model_cards").glob("NoArgFeatureImportanceModel_*.md"))
+    assert len(card_files) == 1
+    assert "## Feature Importances" not in card_files[0].read_text()
+
+
+def test_training_agent_skips_model_card_importances_for_non_callable_attr(tmp_path):
+    class NonCallableFeatureImportanceModel(LogisticResponseModel):
+        name = "NonCallableFeatureImportanceModel"
+        feature_importances = {"offered_rate": 1.0}
+
+    dataset = _loan_dataset()
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=7,
+        ),
+        artifacts_dir=tmp_path,
+    )
+    agent.train(
+        dataset=dataset,
+        candidates={"non_callable": NonCallableFeatureImportanceModel(random_state=7)},
+        registry=agent.registry,
+        run_name="non_callable_importances",
+    )
+
+    card_files = list((tmp_path / "model_cards").glob("NonCallableFeatureImportanceModel_*.md"))
+    assert len(card_files) == 1
+    assert "## Feature Importances" not in card_files[0].read_text()
