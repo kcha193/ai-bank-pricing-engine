@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from balance_pricing_engine import plotting
+from balance_pricing_engine.plotting import build_profit_surface_figure, build_sensitivity_waterfall_figure
 
 
 class FakeAxisFormatters:
@@ -421,3 +422,97 @@ def test_plot_profit_surface_no_op_on_empty_grid(monkeypatch, tmp_path):
         tmp_path / "out.png",
     )
     assert not hasattr(fake_plt, "savefig_calls")
+
+
+def _make_grid_results() -> pd.DataFrame:
+    """Minimal 2×2 grid results DataFrame for plotting tests."""
+    import pandas as pd
+    rows = []
+    for loan_rate in [0.08, 0.085]:
+        for deposit_rate in [0.05, 0.055]:
+            rows.append({
+                "loan_rate": loan_rate,
+                "deposit_rate": deposit_rate,
+                "total_objective": 12_000_000 + loan_rate * 1e8 - deposit_rate * 5e7,
+                "loan_interest_income": 10_000_000,
+                "expected_credit_loss": 500_000,
+                "capital_charge": 200_000,
+                "deposit_interest_cost": 2_000_000,
+                "wholesale_funding_cost": 500_000,
+                "excess_deposit_income": 0.0,
+                "funding_shortfall_penalty": 0.0,
+                "expected_loan_volume": 100_000_000,
+                "expected_deposit_volume": 90_000_000,
+                "funding_shortfall": 0.0,
+                "home_loan_spread_to_market_bps": float("nan"),
+                "term_deposit_spread_to_market_bps": float("nan"),
+            })
+    return pd.DataFrame(rows)
+
+
+def _make_best_result():
+    from balance_pricing_engine.optimization.grid_search import OptimizationResult
+    return OptimizationResult(
+        loan_rate=0.085,
+        deposit_rate=0.05,
+        loan_interest_income=10_500_000,
+        expected_credit_loss=500_000,
+        capital_charge=200_000,
+        deposit_interest_cost=1_800_000,
+        wholesale_funding_cost=500_000,
+        excess_deposit_income=0.0,
+        funding_shortfall_penalty=0.0,
+        total_objective=12_500_000,
+        expected_loan_volume=105_000_000,
+        expected_deposit_volume=90_000_000,
+        funding_shortfall=0.0,
+    )
+
+
+def test_build_profit_surface_figure_returns_figure():
+    import matplotlib
+    matplotlib.use("Agg")
+    from matplotlib.figure import Figure
+
+    fig = build_profit_surface_figure(_make_grid_results(), _make_best_result())
+
+    assert isinstance(fig, Figure)
+
+
+def test_build_profit_surface_figure_returns_none_for_empty_grid():
+    import matplotlib
+    matplotlib.use("Agg")
+    import pandas as pd
+
+    result = build_profit_surface_figure(pd.DataFrame(), _make_best_result())
+
+    assert result is None
+
+
+def test_build_sensitivity_waterfall_figure_returns_figure():
+    import matplotlib
+    matplotlib.use("Agg")
+    import pandas as pd
+    from matplotlib.figure import Figure
+
+    sensitivity = pd.DataFrame({
+        "scenario_name": ["baseline", "loan_rate_elasticity_up", "deposit_rate_elasticity_down"],
+        "delta_objective_pct": [0.0, -3.2, 2.1],
+        "parameter_family": ["baseline", "elasticity", "elasticity"],
+    })
+
+    fig = build_sensitivity_waterfall_figure(sensitivity)
+
+    assert isinstance(fig, Figure)
+
+
+def test_build_sensitivity_waterfall_figure_returns_none_for_empty_frame():
+    import matplotlib
+    matplotlib.use("Agg")
+    import pandas as pd
+
+    result = build_sensitivity_waterfall_figure(pd.DataFrame(
+        columns=["scenario_name", "delta_objective_pct", "parameter_family"]
+    ))
+
+    assert result is None

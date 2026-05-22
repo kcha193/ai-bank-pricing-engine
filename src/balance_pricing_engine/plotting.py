@@ -627,6 +627,168 @@ def plot_profit_surface(
     plt.close(fig)
 
 
+def build_profit_surface_figure(
+    grid_results: pd.DataFrame,
+    result: Any,
+) -> Any:
+    """Return a 2×2 matplotlib Figure of the profit surface, or None if grid is empty."""
+    if len(grid_results) == 0:
+        return None
+    plotting = get_plotting_tools()
+    if plotting is None:
+        return None
+    plt, func_formatter, percent_formatter = plotting
+
+    pivot = (
+        grid_results.pivot_table(
+            index="deposit_rate",
+            columns="loan_rate",
+            values="total_objective",
+            aggfunc="max",
+        )
+        .sort_index()
+        .sort_index(axis=1)
+    )
+    loan_rates = pivot.columns.to_numpy(dtype=float)
+    deposit_rates = pivot.index.to_numpy(dtype=float)
+    best_loan_idx = int(np.abs(loan_rates - result.loan_rate).argmin())
+    best_deposit_idx = int(np.abs(deposit_rates - result.deposit_rate).argmin())
+
+    best_by_loan = (
+        grid_results.groupby("loan_rate", as_index=False)["total_objective"]
+        .max()
+        .sort_values("loan_rate")
+    )
+    best_by_deposit = (
+        grid_results.groupby("deposit_rate", as_index=False)["total_objective"]
+        .max()
+        .sort_values("deposit_rate")
+    )
+    top_10 = grid_results.sort_values("total_objective", ascending=False).head(10).copy()
+
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+
+    heatmap = axes[0, 0].imshow(
+        pivot.to_numpy() / 1_000_000,
+        aspect="auto",
+        origin="lower",
+        cmap="viridis",
+    )
+    axes[0, 0].scatter(
+        best_loan_idx,
+        best_deposit_idx,
+        marker="*",
+        s=220,
+        color=CHART_COLORS["highlight"],
+        edgecolor="black",
+    )
+    axes[0, 0].set_title("Objective surface by rate pair")
+    axes[0, 0].set_xlabel("Home loan rate")
+    axes[0, 0].set_ylabel("Term deposit rate")
+    axes[0, 0].set_xticks(range(len(loan_rates)))
+    axes[0, 0].set_xticklabels([fmt_rate(r) for r in loan_rates], rotation=45, ha="right")
+    axes[0, 0].set_yticks(range(len(deposit_rates)))
+    axes[0, 0].set_yticklabels([fmt_rate(r) for r in deposit_rates])
+    fig.colorbar(heatmap, ax=axes[0, 0], label="Objective ($M)")
+
+    axes[0, 1].plot(
+        best_by_loan["loan_rate"],
+        best_by_loan["total_objective"],
+        marker="o",
+        color=CHART_COLORS["loan"],
+    )
+    axes[0, 1].axvline(
+        result.loan_rate, color=CHART_COLORS["highlight"], linestyle="--", label="winner"
+    )
+    axes[0, 1].set_title("Best objective by home loan rate")
+    axes[0, 1].set_xlabel("Home loan rate")
+    axes[0, 1].set_ylabel("Objective")
+    axes[0, 1].xaxis.set_major_formatter(rate_axis_formatter(percent_formatter))
+    axes[0, 1].yaxis.set_major_formatter(money_axis_formatter(func_formatter))
+    axes[0, 1].legend()
+
+    axes[1, 0].plot(
+        best_by_deposit["deposit_rate"],
+        best_by_deposit["total_objective"],
+        marker="o",
+        color=CHART_COLORS["deposit"],
+    )
+    axes[1, 0].axvline(
+        result.deposit_rate, color=CHART_COLORS["highlight"], linestyle="--", label="winner"
+    )
+    axes[1, 0].set_title("Best objective by term deposit rate")
+    axes[1, 0].set_xlabel("Term deposit rate")
+    axes[1, 0].set_ylabel("Objective")
+    axes[1, 0].xaxis.set_major_formatter(rate_axis_formatter(percent_formatter))
+    axes[1, 0].yaxis.set_major_formatter(money_axis_formatter(func_formatter))
+    axes[1, 0].legend()
+
+    axes[1, 1].scatter(
+        top_10["loan_rate"],
+        top_10["deposit_rate"],
+        c=top_10["total_objective"] / 1_000_000,
+        cmap="viridis",
+        s=120,
+        edgecolors="black",
+        linewidths=0.5,
+    )
+    axes[1, 1].scatter(
+        [result.loan_rate],
+        [result.deposit_rate],
+        marker="*",
+        s=280,
+        color=CHART_COLORS["highlight"],
+        edgecolor="black",
+        label="winner",
+        zorder=5,
+    )
+    axes[1, 1].set_title("Top-10 rate combinations")
+    axes[1, 1].set_xlabel("Home loan rate")
+    axes[1, 1].set_ylabel("Term deposit rate")
+    axes[1, 1].xaxis.set_major_formatter(rate_axis_formatter(percent_formatter))
+    axes[1, 1].yaxis.set_major_formatter(rate_axis_formatter(percent_formatter))
+    axes[1, 1].legend()
+
+    fig.tight_layout()
+    plt.close(fig)
+    return fig
+
+
+def build_sensitivity_waterfall_figure(sensitivity: pd.DataFrame) -> Any:
+    """Return a horizontal bar chart Figure of sensitivity deltas, or None if frame is empty."""
+    if sensitivity.empty:
+        return None
+    plotting = get_plotting_tools()
+    if plotting is None:
+        return None
+    plt, _func_formatter, _percent_formatter = plotting
+
+    non_baseline = sensitivity[sensitivity["scenario_name"] != "baseline"].copy()
+    if non_baseline.empty:
+        return None
+
+    non_baseline = non_baseline.sort_values("delta_objective_pct")
+    colors = [
+        CHART_COLORS["positive"] if v >= 0 else CHART_COLORS["negative"]
+        for v in non_baseline["delta_objective_pct"]
+    ]
+
+    fig, ax = plt.subplots(figsize=(10, max(4, len(non_baseline) * 0.4 + 1)))
+    ax.barh(
+        non_baseline["scenario_name"],
+        non_baseline["delta_objective_pct"],
+        color=colors,
+        edgecolor="white",
+        linewidth=0.5,
+    )
+    ax.axvline(0, color=CHART_COLORS["neutral"], linewidth=1.0)
+    ax.set_xlabel("Δ Objective (%)")
+    ax.set_title("Sensitivity — impact on objective by scenario")
+    fig.tight_layout()
+    plt.close(fig)
+    return fig
+
+
 def plot_response_dataset_overview(
     loan_dataset: pd.DataFrame,
     deposit_dataset: pd.DataFrame,
