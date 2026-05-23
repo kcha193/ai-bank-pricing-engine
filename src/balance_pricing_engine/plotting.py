@@ -767,15 +767,16 @@ def build_sensitivity_waterfall_figure(sensitivity: pd.DataFrame) -> Any:
         return None
 
     non_baseline = non_baseline.sort_values("delta_objective_pct")
+    non_baseline["delta_objective_percent"] = non_baseline["delta_objective_pct"] * 100.0
     colors = [
         CHART_COLORS["positive"] if v >= 0 else CHART_COLORS["negative"]
-        for v in non_baseline["delta_objective_pct"]
+        for v in non_baseline["delta_objective_percent"]
     ]
 
     fig, ax = plt.subplots(figsize=(10, max(4, len(non_baseline) * 0.4 + 1)))
     ax.barh(
         non_baseline["scenario_name"],
-        non_baseline["delta_objective_pct"],
+        non_baseline["delta_objective_percent"],
         color=colors,
         edgecolor="white",
         linewidth=0.5,

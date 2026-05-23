@@ -409,6 +409,19 @@ def test_generate_model_cards_from_registry_preserves_duplicate_model_versions(t
     assert all(path.exists() for path in cards)
 
 
+def test_generate_model_cards_from_registry_skips_incomplete_historical_records(tmp_path):
+    registry_path = tmp_path / "registry.json"
+    registry = ModelRegistry(registry_path)
+    registry.register({"model_name": "historical", "champion_status": "challenger"})
+    registry.append(_make_record("logistic"))
+
+    cards = generate_model_cards_from_registry(registry, tmp_path / "cards")
+
+    assert len(cards) == 1
+    assert cards[0].exists()
+    assert "logistic" in cards[0].read_text()
+
+
 def test_generate_model_cards_from_registry_skips_no_records(tmp_path):
     registry_path = tmp_path / "registry.json"
     registry = ModelRegistry(registry_path)

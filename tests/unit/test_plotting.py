@@ -42,6 +42,9 @@ class FakeFigure:
     def suptitle(self, *args, **kwargs) -> None:
         self.calls.append(("suptitle", args, kwargs))
 
+    def tight_layout(self, *args, **kwargs) -> None:
+        self.calls.append(("tight_layout", args, kwargs))
+
 
 class FakePyplot:
     def __init__(self) -> None:
@@ -497,13 +500,30 @@ def test_build_sensitivity_waterfall_figure_returns_figure():
 
     sensitivity = pd.DataFrame({
         "scenario_name": ["baseline", "loan_rate_elasticity_up", "deposit_rate_elasticity_down"],
-        "delta_objective_pct": [0.0, -3.2, 2.1],
+        "delta_objective_pct": [0.0, -0.032, 0.021],
         "parameter_family": ["baseline", "elasticity", "elasticity"],
     })
 
     fig = build_sensitivity_waterfall_figure(sensitivity)
 
     assert isinstance(fig, Figure)
+
+
+def test_build_sensitivity_waterfall_figure_plots_ratio_deltas_as_percent(monkeypatch):
+    fake_plt = install_fake_plotting(monkeypatch)
+    sensitivity = pd.DataFrame(
+        {
+            "scenario_name": ["baseline", "deposit_down", "loan_up"],
+            "delta_objective_pct": [0.0, 0.04, -0.025],
+            "parameter_family": ["baseline", "deposit", "loan"],
+        }
+    )
+
+    build_sensitivity_waterfall_figure(sensitivity)
+
+    barh_call = next(call for call in fake_plt.axes[0].calls if call[0] == "barh")
+    plotted_values = list(barh_call[1][1])
+    assert plotted_values == [-2.5, 4.0]
 
 
 def test_build_sensitivity_waterfall_figure_returns_none_for_empty_frame():

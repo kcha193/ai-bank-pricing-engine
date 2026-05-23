@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import asdict, dataclass, replace
+from dataclasses import MISSING, asdict, dataclass, fields, replace
 from datetime import datetime, timezone
 from hashlib import sha256
 from inspect import signature
@@ -516,21 +516,35 @@ def _safe_model_card_stem(*parts: object) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("_")
 
 
+def _model_record_from_registry_payload(raw: dict[str, Any]) -> ModelRecord | None:
+    required_fields = [
+        field.name
+        for field in fields(ModelRecord)
+        if field.default is MISSING and field.default_factory is MISSING
+    ]
+    if any(name not in raw for name in required_fields):
+        return None
+    return ModelRecord(**{field.name: raw[field.name] for field in fields(ModelRecord) if field.name in raw})
+
+
 def generate_model_cards_from_registry(
     registry: "ModelRegistry",
     output_dir: Path | str,
 ) -> list[Path]:
     """Write a model card for every record in the registry. Returns list of written paths."""
     output_dir = Path(output_dir)
-    records = registry.load().get("models", [])
+    records = [
+        record
+        for raw in registry.load().get("models", [])
+        if (record := _model_record_from_registry_payload(raw)) is not None
+    ]
     base_stems = [
-        _safe_model_card_stem(raw.get("model_name"), raw.get("version"))
-        for raw in records
+        _safe_model_card_stem(record.model_name, record.version)
+        for record in records
     ]
     duplicate_stems = {stem for stem in base_stems if base_stems.count(stem) > 1}
     paths: list[Path] = []
-    for index, raw in enumerate(records, start=1):
-        record = ModelRecord(**{k: raw[k] for k in ModelRecord.__dataclass_fields__ if k in raw})
+    for index, record in enumerate(records, start=1):
         importances: dict[str, float] | None = None
         if record.artifact_path:
             try:
