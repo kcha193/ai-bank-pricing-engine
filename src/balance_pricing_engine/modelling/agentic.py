@@ -594,9 +594,9 @@ def generate_card_for_champion(
     )
     if champion is None:
         return None
-    record = ModelRecord(
-        **{k: champion[k] for k in ModelRecord.__dataclass_fields__ if k in champion}
-    )
+    record = _model_record_from_registry_payload(champion)
+    if record is None:
+        return None
     importances: dict[str, float] | None = None
     if record.artifact_path:
         try:

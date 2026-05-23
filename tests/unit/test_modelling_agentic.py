@@ -1224,3 +1224,18 @@ def test_training_agent_uses_candidate_key_for_same_class_model_card_importances
 
     assert "| offered_rate | 0.9000 |" in first_card
     assert "| offered_rate | 0.1000 |" in second_card
+
+
+def test_generate_card_for_champion_skips_partial_registry_record(tmp_path):
+    registry = ModelRegistry(tmp_path / "model_registry.json")
+    registry.register(
+        {
+            "model_name": "ManualChampion",
+            "champion_status": "champion",
+        }
+    )
+
+    card_path = generate_card_for_champion(registry, tmp_path / "model_cards")
+
+    assert card_path is None
+    assert not (tmp_path / "model_cards").exists()
