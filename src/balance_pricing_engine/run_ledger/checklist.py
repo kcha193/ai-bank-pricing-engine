@@ -22,12 +22,57 @@ def write_governance_checklist(
     """Write governance_checklist.md into run_dir."""
     content = _build_checklist(metadata, config, diagnostics)
     (run_dir / "governance_checklist.md").write_text(content, encoding="utf-8")
-    json_content = _build_checklist_json(metadata)
+    json_content = _build_checklist_json(metadata, config, diagnostics)
     (run_dir / "governance_checklist.json").write_text(json_content, encoding="utf-8")
 
 
-def _build_checklist_json(metadata: "RunMetadata") -> str:
+def _build_checklist_json(
+    metadata: "RunMetadata",
+    config: "EngineConfig | None" = None,
+    diagnostics: "ScenarioDiagnostics | None" = None,
+) -> str:
     pkg = metadata.package_version or "unknown"
+    boundary_status = "REQUIRES REVIEW" if metadata.boundary_warning_flag else "CLEAR"
+    optimizer_details = [
+        f"Status: {boundary_status}",
+        f"Initial boundary warning: {'Yes' if metadata.initial_boundary_warning_flag else 'No'}",
+        f"Expansion rounds completed: {metadata.expansion_rounds}",
+        f"Post-expansion boundary warning: {'Yes' if metadata.boundary_warning_flag else 'No'}",
+        f"Policy band breached: {'Yes' if metadata.policy_band_breached else 'No'}",
+    ]
+    sensitivity_details = [
+        "Confirm no single-factor scenario reverses the recommendation without explanation."
+    ]
+    competitor_details: list[str] = []
+    funding_details: list[str] = []
+    elasticity_details: list[str] = []
+    if config is not None:
+        m = config.market
+        bs = config.balance_sheet
+        r = config.response
+        competitor_details.append(
+            "Verify competitor rates reflect current published rates "
+            f"(loan: {m.competitor_loan_rate:.2%}, deposit: {m.competitor_deposit_rate:.2%})."
+        )
+        if metadata.competitor_rate_source:
+            competitor_details.append(f"Source: {metadata.competitor_rate_source}")
+        funding_details.append(
+            "Required deposit funding ratio "
+            f"({bs.required_deposit_funding_ratio:.0%}) and penalty rate "
+            f"({bs.funding_shortfall_penalty_rate:.2%}) reflect current risk appetite."
+        )
+        elasticity_details.append(
+            "Loan rate elasticity "
+            f"({r.loan_rate_elasticity:.0f}), deposit rate elasticity "
+            f"({r.deposit_rate_elasticity:.0f}), loan competitor gap "
+            f"({r.loan_competitor_gap_elasticity:.0f}), and deposit competitor gap "
+            f"({r.deposit_competitor_gap_elasticity:.0f}) are consistent with market intelligence."
+        )
+    if diagnostics is not None:
+        optimizer_details.append(
+            f"Best rate pair: loan {diagnostics.best_result.loan_rate:.2%}, "
+            f"deposit {diagnostics.best_result.deposit_rate:.2%}."
+        )
     payload = {
         "run_id": metadata.run_id,
         "scenario_name": metadata.scenario_name,
@@ -40,6 +85,7 @@ def _build_checklist_json(metadata: "RunMetadata") -> str:
                 "section": "Optimizer Diagnostics",
                 "label": "Boundary result reviewed",
                 "status": "pending",
+                "details": optimizer_details,
                 "notes": None,
                 "signed_by": None,
                 "signed_at": None,
@@ -49,6 +95,7 @@ def _build_checklist_json(metadata: "RunMetadata") -> str:
                 "section": "Optimizer Diagnostics",
                 "label": "Sensitivity reviewed",
                 "status": "pending",
+                "details": sensitivity_details,
                 "notes": None,
                 "signed_by": None,
                 "signed_at": None,
@@ -58,6 +105,7 @@ def _build_checklist_json(metadata: "RunMetadata") -> str:
                 "section": "Market Assumptions",
                 "label": "Competitor-rate freshness reviewed",
                 "status": "pending",
+                "details": competitor_details,
                 "notes": None,
                 "signed_by": None,
                 "signed_at": None,
@@ -67,6 +115,7 @@ def _build_checklist_json(metadata: "RunMetadata") -> str:
                 "section": "Market Assumptions",
                 "label": "Funding assumptions reviewed",
                 "status": "pending",
+                "details": funding_details,
                 "notes": None,
                 "signed_by": None,
                 "signed_at": None,
@@ -76,6 +125,7 @@ def _build_checklist_json(metadata: "RunMetadata") -> str:
                 "section": "Model Assumptions",
                 "label": "Elasticity assumptions reviewed",
                 "status": "pending",
+                "details": elasticity_details,
                 "notes": None,
                 "signed_by": None,
                 "signed_at": None,
@@ -85,6 +135,11 @@ def _build_checklist_json(metadata: "RunMetadata") -> str:
                 "section": "Model Assumptions",
                 "label": "Conduct and fairness limitations noted",
                 "status": "pending",
+                "details": [
+                    "Portfolio-level pricing does not account for customer-level fairness or "
+                    "conduct obligations. Any move toward segmented pricing requires a separate "
+                    "governance review."
+                ],
                 "notes": None,
                 "signed_by": None,
                 "signed_at": None,
@@ -94,6 +149,10 @@ def _build_checklist_json(metadata: "RunMetadata") -> str:
                 "section": "Approval",
                 "label": "Human approval required",
                 "status": "pending",
+                "details": [
+                    "This recommendation must not be implemented without explicit sign-off from "
+                    "an authorised pricing decision-maker."
+                ],
                 "notes": None,
                 "signed_by": None,
                 "signed_at": None,
@@ -103,6 +162,10 @@ def _build_checklist_json(metadata: "RunMetadata") -> str:
                 "section": "Approval",
                 "label": "Synthetic-data limitation acknowledged",
                 "status": "pending",
+                "details": [
+                    "All results are based on synthetic customer populations and must not be "
+                    "treated as production pricing decisions."
+                ],
                 "notes": None,
                 "signed_by": None,
                 "signed_at": None,
@@ -291,6 +354,8 @@ def _rebuild_markdown_from_json(run_dir: Path, payload: dict) -> None:
         if notes_text:
             line += f"\n  - Notes: {notes_text}"
         lines.append(line)
+        for detail in item.get("details", []):
+            lines.append(f"  - {detail}")
         lines.append("")
 
     lines.append(f"_Generated by {payload.get('generated_by', 'ai-bank-pricing-engine')}_")

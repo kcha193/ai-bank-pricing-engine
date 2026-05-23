@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import logging
 
 import numpy as np
@@ -386,6 +387,26 @@ def test_generate_model_cards_from_registry_writes_one_card_per_record(tmp_path)
 
     assert len(cards) == 2
     assert all(p.exists() for p in cards)
+
+
+def test_generate_model_cards_from_registry_preserves_duplicate_model_versions(tmp_path):
+    registry_path = tmp_path / "registry.json"
+    registry = ModelRegistry(registry_path)
+    first = _make_record("logistic")
+    second = replace(
+        first,
+        trained_at_utc="2026-05-23T01:00:00+00:00",
+        metrics={"auc": 0.81, "log_loss": 0.54, "brier_score": 0.18},
+    )
+    registry.append(first)
+    registry.append(second)
+
+    cards = generate_model_cards_from_registry(registry, tmp_path / "cards")
+
+    assert len(cards) == 2
+    assert len({path.name for path in cards}) == 2
+    assert len(list((tmp_path / "cards").glob("*.md"))) == 2
+    assert all(path.exists() for path in cards)
 
 
 def test_generate_model_cards_from_registry_skips_no_records(tmp_path):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -449,11 +450,13 @@ def write_model_card(
     feature_columns: list[str] | None = None,
     target_column: str | None = None,
     feature_importances: dict[str, float] | None = None,
+    *,
+    filename_stem: str | None = None,
 ) -> Path:
     """Write a markdown model card for a trained model record."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    card_path = output_dir / f"{record.model_name}_{record.version}.md"
+    card_path = output_dir / f"{filename_stem or record.model_name + '_' + record.version}.md"
 
     features_line = ", ".join(feature_columns) if feature_columns else "see config_hash"
     target_line = target_column if target_column else "see config_hash"
@@ -508,6 +511,11 @@ def write_model_card(
     return card_path
 
 
+def _safe_model_card_stem(*parts: object) -> str:
+    raw = "_".join(str(part) for part in parts if part not in (None, ""))
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("_")
+
+
 def generate_model_cards_from_registry(
     registry: "ModelRegistry",
     output_dir: Path | str,
@@ -515,8 +523,13 @@ def generate_model_cards_from_registry(
     """Write a model card for every record in the registry. Returns list of written paths."""
     output_dir = Path(output_dir)
     records = registry.load().get("models", [])
+    base_stems = [
+        _safe_model_card_stem(raw.get("model_name"), raw.get("version"))
+        for raw in records
+    ]
+    duplicate_stems = {stem for stem in base_stems if base_stems.count(stem) > 1}
     paths: list[Path] = []
-    for raw in records:
+    for index, raw in enumerate(records, start=1):
         record = ModelRecord(**{k: raw[k] for k in ModelRecord.__dataclass_fields__ if k in raw})
         importances: dict[str, float] | None = None
         if record.artifact_path:
@@ -528,12 +541,22 @@ def generate_model_cards_from_registry(
                 importances = _optional_feature_importances(model, feature_cols)
             except Exception:
                 importances = None
+        base_stem = _safe_model_card_stem(record.model_name, record.version)
+        filename_stem = None
+        if base_stem in duplicate_stems:
+            filename_stem = _safe_model_card_stem(
+                record.model_name,
+                record.version,
+                record.trained_at_utc,
+                f"{index:03d}",
+            )
         card_path = write_model_card(
             record=record,
             output_dir=output_dir,
             feature_columns=record.feature_columns,
             target_column=record.target_column,
             feature_importances=importances,
+            filename_stem=filename_stem,
         )
         paths.append(card_path)
     return paths

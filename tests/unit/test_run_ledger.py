@@ -405,11 +405,13 @@ def test_governance_checklist_json_items_have_correct_schema(
             "section",
             "label",
             "status",
+            "details",
             "notes",
             "signed_by",
             "signed_at",
         }
         assert item["status"] == "pending"
+        assert isinstance(item["details"], list)
         assert item["notes"] is None
         assert item["signed_by"] is None
         assert item["signed_at"] is None
@@ -498,6 +500,25 @@ def test_sign_off_item_regenerates_markdown(run_dir_with_checklist):
     md = (run_dir / "governance_checklist.md").read_text()
     assert "alice" in md
     assert "approved" in md.lower()
+
+
+def test_sign_off_item_preserves_generated_checklist_evidence(
+    tmp_path: Path, config, diagnostics
+) -> None:
+    metadata = build_run_metadata("baseline", "configs/base.yaml", diagnostics)
+    write_governance_checklist(tmp_path, metadata, config, diagnostics)
+    original = (tmp_path / "governance_checklist.md").read_text(encoding="utf-8")
+    assert "Initial boundary warning:" in original
+    assert "Required deposit funding ratio" in original
+    assert "Loan rate elasticity" in original
+
+    sign_off_item(tmp_path, "boundary-result-reviewed", approver="alice")
+
+    updated = (tmp_path / "governance_checklist.md").read_text(encoding="utf-8")
+    assert "Initial boundary warning:" in updated
+    assert "Required deposit funding ratio" in updated
+    assert "Loan rate elasticity" in updated
+    assert "signed by: alice" in updated
 
 
 def test_sign_off_all_items_marks_all_approved(run_dir_with_checklist):
