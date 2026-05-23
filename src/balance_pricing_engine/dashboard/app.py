@@ -62,7 +62,11 @@ def _run(config_yaml_str: str, include_sensitivity_flag: bool) -> dict:
     return {"diagnostics": diag, "sensitivity": sensitivity_frame}
 
 
-result = _run(config_yaml, include_sensitivity)
+try:
+    result = _run(config_yaml, include_sensitivity)
+except NotImplementedError as exc:
+    st.error(f"Scenario option error: {exc}")
+    st.stop()
 diagnostics = result["diagnostics"]
 sensitivity = result["sensitivity"]
 best = diagnostics.best_result

@@ -1,9 +1,14 @@
+import importlib
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+import pandas as pd
 
 from balance_pricing_engine.api import app
 from balance_pricing_engine.optimization.grid_search import GRID_RESULT_COLUMNS
+
+api_module = importlib.import_module("balance_pricing_engine.api.app")
 
 
 def test_health_returns_200_with_status_ok():
@@ -102,3 +107,44 @@ def test_run_scenario_returns_422_for_valid_yaml_missing_required_config_fields(
     response = client.post("/run-scenario", json={"config_yaml": "random_seed: 42\n"})
 
     assert response.status_code == 422
+
+
+def test_run_scenario_returns_422_for_unsupported_sensitivity(monkeypatch):
+    def fake_run_baseline_diagnostics(config):
+        best = SimpleNamespace(
+            loan_rate=0.08,
+            deposit_rate=0.05,
+            total_objective=1_000_000.0,
+            expected_loan_volume=100_000_000.0,
+            expected_deposit_volume=80_000_000.0,
+            funding_shortfall=0.0,
+            capital_charge=20_000.0,
+            excess_deposit_income=0.0,
+        )
+        top_results = pd.DataFrame([{column: 0.0 for column in GRID_RESULT_COLUMNS}])
+        return SimpleNamespace(
+            best_result=best,
+            boundary_diagnostics=SimpleNamespace(has_warning=False),
+            initial_boundary_diagnostics=SimpleNamespace(has_warning=False),
+            expansion_rounds=0,
+            expansion_capped=False,
+            policy_band_breached=False,
+            top_results=lambda count: top_results,
+        )
+
+    def fake_run_sensitivity_analysis(config):
+        raise NotImplementedError(
+            "Sensitivity analysis is not supported for segmented pricing configurations."
+        )
+
+    monkeypatch.setattr(api_module, "run_baseline_diagnostics", fake_run_baseline_diagnostics)
+    monkeypatch.setattr(api_module, "run_sensitivity_analysis", fake_run_sensitivity_analysis)
+    client = TestClient(app)
+    config_yaml = Path("configs/segmented_pricing.yaml").read_text(encoding="utf-8")
+
+    response = client.post(
+        "/run-scenario", json={"config_yaml": config_yaml, "include_sensitivity": True}
+    )
+
+    assert response.status_code == 422
+    assert "not supported for segmented pricing" in response.json()["detail"]

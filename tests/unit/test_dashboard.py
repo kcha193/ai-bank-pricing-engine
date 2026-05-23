@@ -174,3 +174,37 @@ def test_dashboard_renders_summary_surface_and_sensitivity(monkeypatch):
     assert call_names.count("pyplot") == 2
     assert "warning" in call_names
     assert "dataframe" in call_names
+
+
+def test_dashboard_reports_unsupported_sensitivity_errors(monkeypatch):
+    import balance_pricing_engine.diagnostics as diagnostics_module
+    import balance_pricing_engine.scenarios.runner as runner_module
+
+    fake_st = FakeStreamlit(
+        run_button=True,
+        include_sensitivity=True,
+        config_yaml=Path("configs/base.yaml").read_text(encoding="utf-8"),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "run_baseline_diagnostics",
+        lambda config: _fake_diagnostics(boundary_warning=False, policy_breach=False),
+    )
+
+    def fake_run_sensitivity_analysis(config):
+        raise NotImplementedError(
+            "Sensitivity analysis is not supported for segmented pricing configurations."
+        )
+
+    monkeypatch.setattr(
+        diagnostics_module,
+        "run_sensitivity_analysis",
+        fake_run_sensitivity_analysis,
+    )
+
+    with pytest.raises(DashboardStop):
+        _fresh_dashboard_import(monkeypatch, fake_st)
+
+    error_messages = [call[1][0] for call in fake_st.calls if call[0] == "error"]
+    assert any("not supported for segmented pricing" in message for message in error_messages)
+    assert any(call[0] == "stop" for call in fake_st.calls)

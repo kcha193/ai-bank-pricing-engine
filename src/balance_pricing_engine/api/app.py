@@ -65,6 +65,8 @@ def run_scenario(request: RunScenarioRequest) -> dict[str, Any]:
             payload["sensitivity"] = sensitivity_frame.to_dict(orient="records")
     except HTTPException:
         raise
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail="Unexpected scenario execution error") from exc
 
