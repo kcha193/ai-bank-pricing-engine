@@ -116,7 +116,7 @@ def test_build_champion_challenger_report_retains_champion_on_poor_calibration()
         champion_metrics=lr_metrics,
         challenger_metrics=gbm_metrics,
         champion_cal_mae=0.03,
-        challenger_cal_mae=0.15,  # exceeds 0.10 threshold
+        challenger_cal_mae=0.15,  # exceeds 0.08 threshold
         champion_rate_check_pass=True,
         challenger_rate_check_pass=True,
     )
@@ -142,3 +142,41 @@ def test_build_champion_challenger_report_flags_failed_rate_check():
 
     assert report["recommendation"] == "logistic_regression"
     assert "rate response" in report["reason"].lower()
+
+
+def test_build_champion_challenger_report_notes_champion_rate_check_failure():
+    lr_metrics = _fake_metrics(log_loss=0.65)
+    gbm_metrics = _fake_metrics(log_loss=0.62)
+
+    report = build_champion_challenger_report(
+        champion_name="logistic_regression",
+        challenger_name="hist_gradient_boosting",
+        champion_metrics=lr_metrics,
+        challenger_metrics=gbm_metrics,
+        champion_cal_mae=0.03,
+        challenger_cal_mae=0.03,
+        champion_rate_check_pass=False,
+        challenger_rate_check_pass=True,
+    )
+
+    assert report["recommendation"] == "hist_gradient_boosting"
+    assert "manual review" in report["reason"].lower() or "champion" in report["reason"].lower()
+
+
+def test_build_champion_challenger_report_notes_both_rate_check_failures():
+    lr_metrics = _fake_metrics(log_loss=0.65)
+    gbm_metrics = _fake_metrics(log_loss=0.62)
+
+    report = build_champion_challenger_report(
+        champion_name="logistic_regression",
+        challenger_name="hist_gradient_boosting",
+        champion_metrics=lr_metrics,
+        challenger_metrics=gbm_metrics,
+        champion_cal_mae=0.03,
+        challenger_cal_mae=0.03,
+        champion_rate_check_pass=False,
+        challenger_rate_check_pass=False,
+    )
+
+    assert report["recommendation"] == "logistic_regression"
+    assert "manual review" in report["reason"].lower()

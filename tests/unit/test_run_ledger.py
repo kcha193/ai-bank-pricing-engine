@@ -458,6 +458,33 @@ def test_sign_off_item_raises_on_unknown_id(run_dir_with_checklist):
         sign_off_item(run_dir, "nonexistent-item-id", approver="alice")
 
 
+def test_sign_off_item_raises_on_invalid_status(run_dir_with_checklist):
+    run_dir = run_dir_with_checklist
+
+    with pytest.raises(ValueError, match="Invalid sign-off status"):
+        sign_off_item(run_dir, "human-approval", approver="alice", status="approved ")
+
+    with pytest.raises(ValueError, match="Invalid sign-off status"):
+        sign_off_item(run_dir, "human-approval", approver="alice", status="unknown")
+
+
+def test_sign_off_item_accepts_valid_non_approved_statuses(run_dir_with_checklist):
+    run_dir = run_dir_with_checklist
+
+    sign_off_item(run_dir, "human-approval", approver="alice", status="waived")
+
+    payload = _checklist_json(run_dir)
+    item = next(i for i in payload["items"] if i["id"] == "human-approval")
+    assert item["status"] == "waived"
+
+
+def test_sign_off_all_items_raises_on_invalid_status(run_dir_with_checklist):
+    run_dir = run_dir_with_checklist
+
+    with pytest.raises(ValueError, match="Invalid sign-off status"):
+        sign_off_all_items(run_dir, approver="carol", status="bad-status")
+
+
 def test_sign_off_item_raises_if_json_missing(tmp_path):
     with pytest.raises(FileNotFoundError):
         sign_off_item(tmp_path, "human-approval", approver="alice")

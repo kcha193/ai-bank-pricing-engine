@@ -750,7 +750,6 @@ def build_profit_surface_figure(
     axes[1, 1].legend()
 
     fig.tight_layout()
-    plt.close(fig)
     return fig
 
 
@@ -785,7 +784,6 @@ def build_sensitivity_waterfall_figure(sensitivity: pd.DataFrame) -> Any:
     ax.set_xlabel("Δ Objective (%)")
     ax.set_title("Sensitivity — impact on objective by scenario")
     fig.tight_layout()
-    plt.close(fig)
     return fig
 
 

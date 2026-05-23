@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -190,6 +191,9 @@ def _build_checklist(
     return "\n".join(lines)
 
 
+_VALID_SIGN_OFF_STATUSES = {"approved", "rejected", "waived"}
+
+
 def sign_off_item(
     run_dir: Path,
     item_id: str,
@@ -199,6 +203,10 @@ def sign_off_item(
     status: str = "approved",
 ) -> None:
     """Mark one checklist item as signed off; update JSON and regenerate markdown."""
+    if status not in _VALID_SIGN_OFF_STATUSES:
+        raise ValueError(
+            f"Invalid sign-off status '{status}'. Must be one of: {sorted(_VALID_SIGN_OFF_STATUSES)}"
+        )
     json_path = Path(run_dir) / "governance_checklist.json"
     if not json_path.exists():
         raise FileNotFoundError(f"governance_checklist.json not found in {run_dir}")
@@ -209,7 +217,6 @@ def sign_off_item(
             f"Checklist item '{item_id}' not found. "
             f"Known IDs: {[i['id'] for i in payload['items']]}"
         )
-    from datetime import datetime, timezone
     signed_at = datetime.now(timezone.utc).isoformat()
     for item in matched:
         item["status"] = status
@@ -229,11 +236,14 @@ def sign_off_all_items(
     status: str = "approved",
 ) -> None:
     """Mark every checklist item as signed off; update JSON and regenerate markdown."""
+    if status not in _VALID_SIGN_OFF_STATUSES:
+        raise ValueError(
+            f"Invalid sign-off status '{status}'. Must be one of: {sorted(_VALID_SIGN_OFF_STATUSES)}"
+        )
     json_path = Path(run_dir) / "governance_checklist.json"
     if not json_path.exists():
         raise FileNotFoundError(f"governance_checklist.json not found in {run_dir}")
     payload = json.loads(json_path.read_text(encoding="utf-8"))
-    from datetime import datetime, timezone
     signed_at = datetime.now(timezone.utc).isoformat()
     for item in payload["items"]:
         item["status"] = status

@@ -81,7 +81,7 @@ def build_champion_challenger_report(
     challenger_rate_check_pass: bool,
     *,
     min_log_loss_improvement: float = 0.01,
-    max_calibration_error: float = 0.10,
+    max_calibration_error: float = 0.08,
 ) -> dict[str, Any]:
     """Build a structured side-by-side comparison report for two candidate models.
 
@@ -91,10 +91,12 @@ def build_champion_challenger_report(
       reason: human-readable explanation
     """
     # Determine recommendation — challenger qualifies only if it clears both thresholds
-    # AND the rate-response sanity check passes.
+    # AND the rate-response sanity check passes. A failing champion rate check is noted
+    # but does not by itself override the metric gates.
     log_loss_improvement = champion_metrics["log_loss"] - challenger_metrics["log_loss"]
     calibration_ok = challenger_cal_mae <= max_calibration_error
     improvement_ok = log_loss_improvement >= min_log_loss_improvement
+    champion_rate_warning = not champion_rate_check_pass
 
     if not challenger_rate_check_pass:
         recommendation = champion_name
@@ -102,24 +104,32 @@ def build_champion_challenger_report(
             f"champion retained — challenger failed rate response sanity check "
             f"(log_loss improvement was {log_loss_improvement:.4f})"
         )
+        if champion_rate_warning:
+            reason += "; NOTE: champion also failed rate response check — manual review required"
     elif not calibration_ok:
         recommendation = champion_name
         reason = (
             f"champion retained — challenger calibration MAE {challenger_cal_mae:.4f} "
             f"exceeds threshold {max_calibration_error:.2f}"
         )
+        if champion_rate_warning:
+            reason += "; NOTE: champion also failed rate response check — manual review required"
     elif not improvement_ok:
         recommendation = champion_name
         reason = (
             f"champion retained — log_loss improvement {log_loss_improvement:.4f} "
             f"below threshold {min_log_loss_improvement:.2f}"
         )
+        if champion_rate_warning:
+            reason += "; NOTE: champion also failed rate response check — manual review required"
     else:
         recommendation = challenger_name
         reason = (
             f"challenger recommended — log_loss improved by {log_loss_improvement:.4f}, "
             f"calibration MAE {challenger_cal_mae:.4f} within threshold"
         )
+        if champion_rate_warning:
+            reason += "; champion rate response check also failed"
 
     rows = [
         {
