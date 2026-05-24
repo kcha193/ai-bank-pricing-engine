@@ -1,5 +1,7 @@
 import numpy as np
+import pytest
 
+from balance_pricing_engine.config import BalanceSheetConfig
 from balance_pricing_engine.diagnostics import ObjectiveDecomposition
 from balance_pricing_engine.pricing.balance_sheet import calculate_funding_result
 from balance_pricing_engine.pricing.profit import (
@@ -7,6 +9,7 @@ from balance_pricing_engine.pricing.profit import (
     expected_credit_loss,
     expected_loan_interest_income,
     expected_wholesale_funding_cost,
+    maturity_adjusted_rwa_weight,
 )
 from balance_pricing_engine.synthetic.customers import generate_loan_customers
 from balance_pricing_engine.utils.random import make_rng
@@ -62,6 +65,60 @@ def test_expected_capital_charge_prices_required_regulatory_capital():
     )
 
     assert charge == 4_200.0
+
+
+def test_maturity_adjusted_rwa_weight_skips_when_tenor_is_none():
+    weight = maturity_adjusted_rwa_weight(base_rwa_weight=0.35, tenor_years=None)
+    assert weight == pytest.approx(0.35)
+
+
+def test_maturity_adjusted_rwa_weight_at_one_year_is_neutral():
+    weight = maturity_adjusted_rwa_weight(base_rwa_weight=0.35, tenor_years=1.0)
+    assert weight == pytest.approx(0.35)
+
+
+def test_maturity_adjusted_rwa_weight_increases_with_tenor():
+    w1 = maturity_adjusted_rwa_weight(base_rwa_weight=0.35, tenor_years=1.0)
+    w3 = maturity_adjusted_rwa_weight(base_rwa_weight=0.35, tenor_years=3.0)
+    w5 = maturity_adjusted_rwa_weight(base_rwa_weight=0.35, tenor_years=5.0)
+    assert w1 < w3 < w5
+
+
+def test_maturity_adjusted_rwa_weight_clamps_below_one_year():
+    w_clamped = maturity_adjusted_rwa_weight(base_rwa_weight=0.35, tenor_years=0.5)
+    w_one = maturity_adjusted_rwa_weight(base_rwa_weight=0.35, tenor_years=1.0)
+    assert w_clamped == pytest.approx(w_one)
+
+
+def test_maturity_adjusted_rwa_weight_clamps_above_five_years():
+    w_clamped = maturity_adjusted_rwa_weight(base_rwa_weight=0.35, tenor_years=10.0)
+    w_five = maturity_adjusted_rwa_weight(base_rwa_weight=0.35, tenor_years=5.0)
+    assert w_clamped == pytest.approx(w_five)
+
+
+def test_balance_sheet_config_average_loan_tenor_years_defaults_to_none():
+    bs = BalanceSheetConfig(
+        required_deposit_funding_ratio=0.65,
+        funding_shortfall_penalty_rate=0.018,
+    )
+    assert bs.average_loan_tenor_years is None
+
+
+def test_balance_sheet_config_min_return_on_equity_defaults_to_none():
+    bs = BalanceSheetConfig(
+        required_deposit_funding_ratio=0.65,
+        funding_shortfall_penalty_rate=0.018,
+    )
+    assert bs.min_return_on_equity is None
+
+
+def test_balance_sheet_config_rejects_non_positive_tenor():
+    with pytest.raises(Exception):
+        BalanceSheetConfig(
+            required_deposit_funding_ratio=0.65,
+            funding_shortfall_penalty_rate=0.018,
+            average_loan_tenor_years=0.0,
+        )
 
 
 def test_funding_shortfall_creates_penalty():

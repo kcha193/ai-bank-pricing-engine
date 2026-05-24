@@ -34,6 +34,9 @@ __all__ = [
     "ElasticityResponseModel",
     "LogisticResponseModel",
     "HistGBMResponseModel",
+    "LightGBMResponseModel",
+    "XGBoostResponseModel",
+    "SurvivalResponseModel",
     "ModelTrainingAgent",
     "ModelScoringAgent",
     "ModelRegistry",
@@ -246,6 +249,154 @@ class HistGBMResponseModel:
         if fit_data.empty or importance_data.empty:
             return train, None
         return fit_data, importance_data
+
+
+class LightGBMResponseModel:
+    """Governed LightGBM response model. Requires the [ml] optional extra."""
+
+    name = "LightGBMResponseModel"
+
+    def __init__(self, random_state: int = 42, model: Any | None = None):
+        self._random_state = random_state
+        self._model = model
+
+    def fit(self, train: pd.DataFrame, feature_columns: list[str], target_column: str) -> None:
+        try:
+            import lightgbm as lgb
+        except ImportError as exc:
+            raise ImportError(
+                "LightGBMResponseModel requires lightgbm. "
+                "Install it with: pip install 'balance_pricing_engine[ml]'"
+            ) from exc
+        clf = lgb.LGBMClassifier(
+            random_state=self._random_state,
+            n_estimators=100,
+            verbose=-1,
+        )
+        clf.fit(train[feature_columns], train[target_column])
+        self._model = clf
+
+    def predict_probability(self, data: pd.DataFrame, feature_columns: list[str]) -> np.ndarray:
+        if self._model is None:
+            raise ValueError("LightGBMResponseModel must be fitted before scoring.")
+        proba = self._model.predict_proba(data[feature_columns])
+        return proba[:, 1].astype(float)
+
+    def feature_importances(self, feature_columns: list[str]) -> dict[str, float] | None:
+        if self._model is None:
+            raise ValueError("LightGBMResponseModel must be fitted before retrieving importances.")
+        importances = getattr(self._model, "feature_importances_", None)
+        if importances is None:
+            return None
+        return dict(zip(feature_columns, importances.tolist()))
+
+    @property
+    def fitted_model(self) -> Any:
+        return self._model
+
+
+class XGBoostResponseModel:
+    """Governed XGBoost response model. Requires the [ml] optional extra."""
+
+    name = "XGBoostResponseModel"
+
+    def __init__(self, random_state: int = 42, model: Any | None = None):
+        self._random_state = random_state
+        self._model = model
+
+    def fit(self, train: pd.DataFrame, feature_columns: list[str], target_column: str) -> None:
+        try:
+            import xgboost as xgb
+        except ImportError as exc:
+            raise ImportError(
+                "XGBoostResponseModel requires xgboost. "
+                "Install it with: pip install 'balance_pricing_engine[ml]'"
+            ) from exc
+        clf = xgb.XGBClassifier(
+            random_state=self._random_state,
+            n_estimators=100,
+            eval_metric="logloss",
+            verbosity=0,
+        )
+        clf.fit(train[feature_columns], train[target_column])
+        self._model = clf
+
+    def predict_probability(self, data: pd.DataFrame, feature_columns: list[str]) -> np.ndarray:
+        if self._model is None:
+            raise ValueError("XGBoostResponseModel must be fitted before scoring.")
+        proba = self._model.predict_proba(data[feature_columns])
+        return proba[:, 1].astype(float)
+
+    def feature_importances(self, feature_columns: list[str]) -> dict[str, float] | None:
+        if self._model is None:
+            raise ValueError("XGBoostResponseModel must be fitted before retrieving importances.")
+        importances = getattr(self._model, "feature_importances_", None)
+        if importances is None:
+            return None
+        return dict(zip(feature_columns, importances.tolist()))
+
+    @property
+    def fitted_model(self) -> Any:
+        return self._model
+
+
+class SurvivalResponseModel:
+    """Governed Weibull AFT survival model for churn/rollover prediction.
+
+    Requires the [ml] optional extra (lifelines). Predicts the probability of
+    observing the event/churn label by `hold_period_months`, matching the
+    project's binary target convention where 1 means event observed.
+
+    Governance note: decision-support only. Must not replace the synthetic
+    response functions in the optimizer until trained on real attrition data
+    and approved through the ModelRegistry governance workflow.
+    """
+
+    name = "SurvivalResponseModel"
+
+    def __init__(
+        self,
+        hold_period_months: int = 12,
+        duration_col: str = "duration",
+        event_col: str = "event_observed",
+        model: Any | None = None,
+    ):
+        self._hold_period_months = hold_period_months
+        self._duration_col = duration_col
+        self._event_col = event_col
+        self._model = model
+
+    def fit(self, train: pd.DataFrame, feature_columns: list[str], target_column: str) -> None:
+        try:
+            import lifelines
+        except ImportError as exc:
+            raise ImportError(
+                "SurvivalResponseModel requires lifelines. "
+                "Install it with: pip install 'balance_pricing_engine[ml]'"
+            ) from exc
+        fitter = lifelines.WeibullAFTFitter()
+        fit_columns = list(dict.fromkeys(feature_columns + [self._duration_col, target_column]))
+        fit_frame = train[fit_columns].copy()
+        fitter.fit(
+            fit_frame,
+            duration_col=self._duration_col,
+            event_col=target_column,
+        )
+        self._model = fitter
+
+    def predict_probability(self, data: pd.DataFrame, feature_columns: list[str]) -> np.ndarray:
+        """Return event probability by hold_period_months for each row."""
+        if self._model is None:
+            raise ValueError("SurvivalResponseModel must be fitted before scoring.")
+        survival = self._model.predict_survival_function(
+            data[feature_columns], times=[self._hold_period_months]
+        )
+        event_probability = 1.0 - survival.loc[self._hold_period_months].to_numpy(dtype=float)
+        return np.clip(event_probability, 0.0, 1.0)
+
+    @property
+    def fitted_model(self) -> Any:
+        return self._model
 
 
 class ModelRegistry:

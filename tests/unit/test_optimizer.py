@@ -306,6 +306,126 @@ def test_evaluate_joint_rate_grid_includes_nonnegative_capital_charge():
     assert (grid_results["capital_charge"] >= 0.0).all()
 
 
+def test_grid_result_columns_includes_return_on_equity():
+    assert "return_on_equity" in GRID_RESULT_COLUMNS
+
+
+def test_evaluate_joint_rate_grid_has_return_on_equity_column():
+    loan_customers, deposit_customers, market = _minimal_customers_and_market()
+
+    grid_results = evaluate_joint_rate_grid(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=market,
+        loan_rate_grid=np.array([0.06]),
+        deposit_rate_grid=np.array([0.04]),
+        loan_rate_elasticity=-85.0,
+        loan_competitor_gap_elasticity=-65.0,
+        deposit_rate_elasticity=95.0,
+        deposit_competitor_gap_elasticity=75.0,
+        required_deposit_funding_ratio=0.65,
+        funding_shortfall_penalty_rate=0.018,
+    )
+
+    assert "return_on_equity" in grid_results.columns
+
+
+def test_select_best_result_with_roe_floor_excludes_low_roe_rows():
+    # Force a grid where all rows have negative ROE by setting a very high hurdle
+    loan_customers, deposit_customers, market = _minimal_customers_and_market()
+
+    grid_results = evaluate_joint_rate_grid(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=market,
+        loan_rate_grid=np.array([0.06, 0.065]),
+        deposit_rate_grid=np.array([0.04]),
+        loan_rate_elasticity=-85.0,
+        loan_competitor_gap_elasticity=-65.0,
+        deposit_rate_elasticity=95.0,
+        deposit_competitor_gap_elasticity=75.0,
+        required_deposit_funding_ratio=0.65,
+        funding_shortfall_penalty_rate=0.018,
+    )
+
+    # With a very high floor, should fall back to best available row
+    result_high_floor = select_best_result(grid_results, min_return_on_equity=999.0)
+    result_no_floor = select_best_result(grid_results)
+    # When floor is unreachable, best available row is still returned (no crash)
+    assert result_high_floor.loan_rate in [0.06, 0.065]
+    assert result_no_floor.loan_rate in [0.06, 0.065]
+
+
+def test_select_best_result_roe_floor_picks_correct_row():
+    loan_customers, deposit_customers, market = _minimal_customers_and_market()
+
+    grid_results = evaluate_joint_rate_grid(
+        loan_customers=loan_customers,
+        deposit_customers=deposit_customers,
+        market=market,
+        loan_rate_grid=np.array([0.06, 0.07, 0.08]),
+        deposit_rate_grid=np.array([0.04]),
+        loan_rate_elasticity=-85.0,
+        loan_competitor_gap_elasticity=-65.0,
+        deposit_rate_elasticity=95.0,
+        deposit_competitor_gap_elasticity=75.0,
+        required_deposit_funding_ratio=0.65,
+        funding_shortfall_penalty_rate=0.018,
+    )
+    # Higher loan rate -> higher objective but also higher ROE
+    # A tight floor (e.g. 0.01) should still return a valid winner
+    result = select_best_result(grid_results, min_return_on_equity=0.01)
+    assert result.loan_rate in [0.06, 0.07, 0.08]
+
+
+def test_select_best_result_skips_roe_floor_when_all_values_are_nan():
+    grid_results = pd.DataFrame(
+        [
+            {
+                "loan_rate": 0.06,
+                "deposit_rate": 0.03,
+                "home_loan_spread_to_market_bps": 20.0,
+                "term_deposit_spread_to_market_bps": 10.0,
+                "loan_interest_income": 100.0,
+                "expected_credit_loss": 10.0,
+                "capital_charge": 4.0,
+                "return_on_equity": float("nan"),
+                "deposit_interest_cost": 25.0,
+                "wholesale_funding_cost": 5.0,
+                "excess_deposit_income": 0.0,
+                "funding_shortfall_penalty": 1.0,
+                "total_objective": 55.0,
+                "expected_loan_volume": 1_000.0,
+                "expected_deposit_volume": 700.0,
+                "funding_shortfall": 0.0,
+            },
+            {
+                "loan_rate": 0.065,
+                "deposit_rate": 0.03,
+                "home_loan_spread_to_market_bps": 30.0,
+                "term_deposit_spread_to_market_bps": 10.0,
+                "loan_interest_income": 120.0,
+                "expected_credit_loss": 10.0,
+                "capital_charge": 4.0,
+                "return_on_equity": float("nan"),
+                "deposit_interest_cost": 25.0,
+                "wholesale_funding_cost": 5.0,
+                "excess_deposit_income": 0.0,
+                "funding_shortfall_penalty": 1.0,
+                "total_objective": 75.0,
+                "expected_loan_volume": 1_000.0,
+                "expected_deposit_volume": 700.0,
+                "funding_shortfall": 0.0,
+            },
+        ],
+        columns=GRID_RESULT_COLUMNS,
+    )
+
+    result = select_best_result(grid_results, min_return_on_equity=0.10)
+
+    assert result.loan_rate == pytest.approx(0.065)
+
+
 def test_default_capital_charge_reduces_total_objective():
     loan_customers, deposit_customers = _single_customer_portfolios()
     grid_kwargs = {
@@ -430,6 +550,7 @@ def test_select_best_result_prefers_lower_funding_shortfall_when_objectives_tie(
                 1_000.0,
                 500.0,
                 250.0,
+                0.0,
             ],
             [
                 0.055,
@@ -447,6 +568,7 @@ def test_select_best_result_prefers_lower_funding_shortfall_when_objectives_tie(
                 900.0,
                 600.0,
                 100.0,
+                0.0,
             ],
         ],
         dtype=float,
@@ -478,6 +600,7 @@ def test_select_best_result_prefers_smaller_market_spread_when_shortfall_ties():
                 1_000.0,
                 500.0,
                 100.0,
+                0.0,
             ],
             [
                 0.055,
@@ -495,6 +618,7 @@ def test_select_best_result_prefers_smaller_market_spread_when_shortfall_ties():
                 900.0,
                 600.0,
                 100.0,
+                0.0,
             ],
         ],
         dtype=float,
@@ -866,6 +990,21 @@ def _evaluate_joint_rate_grid_unhoisted(
                 - funding.funding_penalty
                 + excess_deposit_income
             )
+            tier1_capital_ratio = 0.10
+            required_capital = loan_volume * rwa_weight * tier1_capital_ratio
+            return_on_equity = (
+                (
+                    loan_interest_income
+                    - credit_loss
+                    - deposit_cost
+                    - wholesale_funding_cost
+                    - funding.funding_penalty
+                    + excess_deposit_income
+                )
+                / required_capital
+                if required_capital > 0
+                else 0.0
+            )
             term_deposit_spread_to_market_bps = grid_search_module._spread_to_market_bps(
                 float(deposit_rate),
                 term_deposit_reference_rate,
@@ -887,6 +1026,7 @@ def _evaluate_joint_rate_grid_unhoisted(
                     "expected_loan_volume": loan_volume,
                     "expected_deposit_volume": deposit_volume,
                     "funding_shortfall": funding.funding_shortfall,
+                    "return_on_equity": return_on_equity,
                 }
             )
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 import logging
+import sys
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -11,12 +13,15 @@ from balance_pricing_engine.modelling.agentic import (
     ElasticityBaselineModel,
     ElasticityResponseModel,
     HistGBMResponseModel,
+    LightGBMResponseModel,
     LogisticResponseModel,
     ModelRecord,
     ModelRegistry,
     ModelScoringAgent,
     ModelTrainingAgent,
+    SurvivalResponseModel,
     TrainingConfig,
+    XGBoostResponseModel,
     _optional_feature_importances,
     generate_card_for_champion,
     generate_model_cards_from_registry,
@@ -38,6 +43,18 @@ from balance_pricing_engine.optimization.response_fn import (
 from balance_pricing_engine.modelling.persistence import save_model
 from balance_pricing_engine.synthetic.customers import generate_deposit_customers, generate_loan_customers
 from balance_pricing_engine.utils.random import make_rng
+
+
+def test_optional_model_adapters_are_exported_from_modelling_package():
+    from balance_pricing_engine.modelling import (
+        LightGBMResponseModel as PublicLightGBMResponseModel,
+        SurvivalResponseModel as PublicSurvivalResponseModel,
+        XGBoostResponseModel as PublicXGBoostResponseModel,
+    )
+
+    assert PublicLightGBMResponseModel is LightGBMResponseModel
+    assert PublicXGBoostResponseModel is XGBoostResponseModel
+    assert PublicSurvivalResponseModel is SurvivalResponseModel
 
 
 def _loan_dataset(seed: int = 123):
@@ -231,6 +248,242 @@ def test_histgbm_response_model_in_training_agent(tmp_path):
     model_names = {c["model_name"] for c in result.report["candidates"]}
     assert "HistGBMResponseModel" in model_names
     assert len(result.report["candidates"]) == 3
+
+
+def _make_fake_lgbm_classifier():
+    """Build a mock LGBMClassifier that behaves like the real one."""
+    clf = MagicMock()
+    clf.fit.return_value = clf
+    clf.predict_proba.return_value = np.column_stack(
+        [np.full(100, 0.4), np.full(100, 0.6)]
+    )
+    clf.feature_importances_ = np.ones(len(LOAN_FEATURE_COLUMNS))
+    return clf
+
+
+def _make_fake_lgbm_module(clf):
+    lgbm = MagicMock()
+    lgbm.LGBMClassifier.return_value = clf
+    return lgbm
+
+
+def test_lightgbm_response_model_name():
+    assert LightGBMResponseModel.name == "LightGBMResponseModel"
+
+
+def test_lightgbm_response_model_raises_before_fit():
+    model = LightGBMResponseModel()
+    df = pd.DataFrame({"offered_rate": [0.08]})
+    with pytest.raises(ValueError, match="fitted"):
+        model.predict_probability(df, ["offered_rate"])
+
+
+def test_lightgbm_response_model_raises_import_error_when_dep_missing():
+    with patch.dict(sys.modules, {"lightgbm": None}):
+        model = LightGBMResponseModel()
+        train = pd.DataFrame({col: [0.0] * 50 for col in LOAN_FEATURE_COLUMNS})
+        train[LOAN_TARGET_COLUMN] = [0] * 25 + [1] * 25
+        with pytest.raises(ImportError, match="lightgbm"):
+            model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+
+
+def test_lightgbm_response_model_fits_and_predicts():
+    clf = _make_fake_lgbm_classifier()
+    fake_lgbm = _make_fake_lgbm_module(clf)
+
+    with patch.dict(sys.modules, {"lightgbm": fake_lgbm}):
+        model = LightGBMResponseModel(random_state=42)
+        train = pd.DataFrame({col: np.random.rand(100) for col in LOAN_FEATURE_COLUMNS})
+        train[LOAN_TARGET_COLUMN] = np.random.randint(0, 2, 100)
+
+        model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+        probs = model.predict_probability(train, LOAN_FEATURE_COLUMNS)
+
+    assert probs.shape == (100,)
+    assert np.all(probs >= 0) and np.all(probs <= 1)
+
+
+def test_lightgbm_response_model_feature_importances():
+    clf = _make_fake_lgbm_classifier()
+    fake_lgbm = _make_fake_lgbm_module(clf)
+
+    with patch.dict(sys.modules, {"lightgbm": fake_lgbm}):
+        model = LightGBMResponseModel(random_state=42)
+        train = pd.DataFrame({col: np.random.rand(100) for col in LOAN_FEATURE_COLUMNS})
+        train[LOAN_TARGET_COLUMN] = np.random.randint(0, 2, 100)
+        model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+
+        importances = model.feature_importances(LOAN_FEATURE_COLUMNS)
+
+    assert importances is not None
+    assert set(importances.keys()) == set(LOAN_FEATURE_COLUMNS)
+
+
+def _make_fake_xgb_classifier():
+    clf = MagicMock()
+    clf.fit.return_value = clf
+    clf.predict_proba.return_value = np.column_stack(
+        [np.full(100, 0.35), np.full(100, 0.65)]
+    )
+    clf.feature_importances_ = np.ones(len(LOAN_FEATURE_COLUMNS))
+    return clf
+
+
+def _make_fake_xgb_module(clf):
+    xgb = MagicMock()
+    xgb.XGBClassifier.return_value = clf
+    return xgb
+
+
+def test_xgboost_response_model_name():
+    assert XGBoostResponseModel.name == "XGBoostResponseModel"
+
+
+def test_xgboost_response_model_raises_before_fit():
+    model = XGBoostResponseModel()
+    df = pd.DataFrame({"offered_rate": [0.08]})
+    with pytest.raises(ValueError, match="fitted"):
+        model.predict_probability(df, ["offered_rate"])
+
+
+def test_xgboost_response_model_raises_import_error_when_dep_missing():
+    with patch.dict(sys.modules, {"xgboost": None}):
+        model = XGBoostResponseModel()
+        train = pd.DataFrame({col: [0.0] * 50 for col in LOAN_FEATURE_COLUMNS})
+        train[LOAN_TARGET_COLUMN] = [0] * 25 + [1] * 25
+        with pytest.raises(ImportError, match="xgboost"):
+            model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+
+
+def test_xgboost_response_model_fits_and_predicts():
+    clf = _make_fake_xgb_classifier()
+    fake_xgb = _make_fake_xgb_module(clf)
+
+    with patch.dict(sys.modules, {"xgboost": fake_xgb}):
+        model = XGBoostResponseModel(random_state=42)
+        train = pd.DataFrame({col: np.random.rand(100) for col in LOAN_FEATURE_COLUMNS})
+        train[LOAN_TARGET_COLUMN] = np.random.randint(0, 2, 100)
+        model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+        probs = model.predict_probability(train, LOAN_FEATURE_COLUMNS)
+
+    assert probs.shape == (100,)
+    assert np.all(probs >= 0) and np.all(probs <= 1)
+
+
+def test_xgboost_response_model_feature_importances():
+    clf = _make_fake_xgb_classifier()
+    fake_xgb = _make_fake_xgb_module(clf)
+
+    with patch.dict(sys.modules, {"xgboost": fake_xgb}):
+        model = XGBoostResponseModel(random_state=42)
+        train = pd.DataFrame({col: np.random.rand(100) for col in LOAN_FEATURE_COLUMNS})
+        train[LOAN_TARGET_COLUMN] = np.random.randint(0, 2, 100)
+        model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+        importances = model.feature_importances(LOAN_FEATURE_COLUMNS)
+
+    assert importances is not None
+    assert set(importances.keys()) == set(LOAN_FEATURE_COLUMNS)
+
+
+def _make_fake_lifelines_module():
+    """Mock lifelines.WeibullAFTFitter with plausible behavior."""
+    fitter = MagicMock()
+    fitter.fit.return_value = fitter
+
+    def predict_survival_function(data, times):
+        return pd.DataFrame(
+            {i: [0.7] for i in range(len(data))},
+            index=times,
+        )
+
+    fitter.predict_survival_function.side_effect = predict_survival_function
+    ll = MagicMock()
+    ll.WeibullAFTFitter.return_value = fitter
+    return ll
+
+
+def test_survival_response_model_name():
+    assert SurvivalResponseModel.name == "SurvivalResponseModel"
+
+
+def test_survival_response_model_raises_before_fit():
+    model = SurvivalResponseModel()
+    df = pd.DataFrame({"offered_rate": [0.08], "duration": [12], "event_observed": [1]})
+    with pytest.raises(ValueError, match="fitted"):
+        model.predict_probability(df, ["offered_rate"])
+
+
+def test_survival_response_model_raises_import_error_when_lifelines_missing():
+    with patch.dict(sys.modules, {"lifelines": None}):
+        model = SurvivalResponseModel()
+        train = pd.DataFrame(
+            {
+                "offered_rate": [0.08] * 50,
+                "duration": list(range(1, 51)),
+                "event_observed": [1] * 50,
+            }
+        )
+        with pytest.raises(ImportError, match="lifelines"):
+            model.fit(train, ["offered_rate"], "event_observed")
+
+
+def test_survival_response_model_fits_and_predicts():
+    fake_ll = _make_fake_lifelines_module()
+
+    with patch.dict(sys.modules, {"lifelines": fake_ll}):
+        model = SurvivalResponseModel(hold_period_months=12)
+        train = pd.DataFrame(
+            {
+                "offered_rate": np.random.rand(100),
+                "duration": np.random.randint(1, 13, 100),
+                "event_observed": np.random.randint(0, 2, 100),
+            }
+        )
+        model.fit(train, ["offered_rate"], "event_observed")
+        probs = model.predict_probability(train, ["offered_rate"])
+
+    assert probs.shape == (100,)
+    assert np.all(probs >= 0) and np.all(probs <= 1)
+
+
+def test_survival_response_model_uses_caller_target_column():
+    fake_ll = _make_fake_lifelines_module()
+
+    with patch.dict(sys.modules, {"lifelines": fake_ll}):
+        model = SurvivalResponseModel(hold_period_months=12)
+        train = pd.DataFrame(
+            {
+                "offered_rate": np.random.rand(50),
+                "duration": np.random.randint(1, 13, 50),
+                "event_observed": [0] * 50,
+                "churned": [1] * 50,
+            }
+        )
+        model.fit(train, ["offered_rate"], "churned")
+
+    fitter = fake_ll.WeibullAFTFitter.return_value
+    fit_frame = fitter.fit.call_args.args[0]
+    assert "churned" in fit_frame.columns
+    assert fitter.fit.call_args.kwargs["event_col"] == "churned"
+
+
+def test_survival_response_model_predicts_event_probability():
+    fake_ll = _make_fake_lifelines_module()
+
+    with patch.dict(sys.modules, {"lifelines": fake_ll}):
+        model = SurvivalResponseModel(hold_period_months=12)
+        train = pd.DataFrame(
+            {
+                "offered_rate": np.random.rand(50),
+                "duration": np.random.randint(1, 13, 50),
+                "event_observed": [1] * 50,
+            }
+        )
+        model.fit(train, ["offered_rate"], "event_observed")
+        probs = model.predict_probability(train, ["offered_rate"])
+
+    # mock returns 0.7 survival for all rows at t=12, so event probability is 0.3
+    assert probs == pytest.approx(np.full(50, 0.3))
 
 
 def test_scoring_agent_schema_and_fallback(tmp_path):

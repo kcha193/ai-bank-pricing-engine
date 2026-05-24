@@ -34,6 +34,7 @@ from balance_pricing_engine.optimization.segmented import (
     SegmentedOptimizationResult,
     optimize_segmented_rates,
 )
+from balance_pricing_engine.pricing.profit import maturity_adjusted_rwa_weight
 from balance_pricing_engine.rate_grids import build_configured_rate_grids
 from balance_pricing_engine.synthetic.customers import (
     generate_deposit_customers,
@@ -215,6 +216,10 @@ def run_baseline_diagnostics(
         )
 
     loan_grid, deposit_grid = build_configured_rate_grids(config)
+    effective_rwa_weight = maturity_adjusted_rwa_weight(
+        config.balance_sheet.loan_rwa_weight,
+        config.balance_sheet.average_loan_tenor_years,
+    )
 
     diagnostics = evaluate_adaptive_joint_rate_grid(
         loan_customers=loan_customers,
@@ -228,12 +233,13 @@ def run_baseline_diagnostics(
         deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
         required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
         funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
-        rwa_weight=config.balance_sheet.loan_rwa_weight,
+        rwa_weight=effective_rwa_weight,
         capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
         home_loan_reference_rate=config.market.home_loan_reference_rate,
         term_deposit_reference_rate=config.market.term_deposit_reference_rate,
         max_boundary_expansions=max_boundary_expansions,
         response_coefficients=config.response.coefficients,
+        min_return_on_equity=config.balance_sheet.min_return_on_equity,
     )
 
     return ScenarioDiagnostics(
@@ -269,6 +275,10 @@ def _evaluate_adaptive_segmented_rates(
     original_segmented_config = segmented_config
     initial_boundary_diagnostics: BoundaryDiagnostics | None = None
     expansion_rounds = 0
+    effective_rwa_weight = maturity_adjusted_rwa_weight(
+        config.balance_sheet.loan_rwa_weight,
+        config.balance_sheet.average_loan_tenor_years,
+    )
 
     while True:
         result = optimize_segmented_rates(
@@ -282,7 +292,7 @@ def _evaluate_adaptive_segmented_rates(
             deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
             required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
             funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
-            loan_rwa_weight=config.balance_sheet.loan_rwa_weight,
+            loan_rwa_weight=effective_rwa_weight,
             capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
             response_coefficients=config.response.coefficients,
         )
@@ -290,6 +300,8 @@ def _evaluate_adaptive_segmented_rates(
             result,
             segmented_config,
             market,
+            loan_rwa_weight=effective_rwa_weight,
+            min_return_on_equity=config.balance_sheet.min_return_on_equity,
             expansion_rounds=expansion_rounds,
             initial_boundary_diagnostics=initial_boundary_diagnostics,
             original_config=original_segmented_config,
@@ -305,6 +317,8 @@ def _evaluate_adaptive_segmented_rates(
                 result,
                 segmented_config,
                 market,
+                loan_rwa_weight=effective_rwa_weight,
+                min_return_on_equity=config.balance_sheet.min_return_on_equity,
                 expansion_rounds=expansion_rounds,
                 initial_boundary_diagnostics=initial_boundary_diagnostics,
                 original_config=original_segmented_config,
@@ -323,6 +337,8 @@ def _evaluate_adaptive_segmented_rates(
                 result,
                 segmented_config,
                 market,
+                loan_rwa_weight=effective_rwa_weight,
+                min_return_on_equity=config.balance_sheet.min_return_on_equity,
                 expansion_rounds=expansion_rounds,
                 initial_boundary_diagnostics=initial_boundary_diagnostics,
                 original_config=original_segmented_config,
@@ -336,18 +352,26 @@ def _segmented_diagnostics(
     config: SegmentedPricingConfig,
     market: MarketState,
     *,
+    loan_rwa_weight: float,
+    min_return_on_equity: float | None = None,
     expansion_rounds: int = 0,
     initial_boundary_diagnostics: BoundaryDiagnostics | None = None,
     original_config: SegmentedPricingConfig | None = None,
     expansion_capped: bool = False,
 ) -> ScenarioDiagnostics:
     best_result = _optimization_result_from_segmented_result(result)
-    grid_results = _grid_results_from_segmented_result(result, best_result)
+    grid_results = _grid_results_from_segmented_result(
+        result,
+        best_result,
+        loan_rwa_weight=loan_rwa_weight,
+    )
     boundary_diagnostics = _segmented_boundary_diagnostics(
         result,
         config,
         best_result,
         market,
+        min_return_on_equity=min_return_on_equity,
+        return_on_equity=float(grid_results["return_on_equity"].iloc[0]),
     )
     return ScenarioDiagnostics(
         best_result=best_result,
@@ -372,6 +396,9 @@ def _segmented_boundary_diagnostics(
     config: SegmentedPricingConfig,
     best_result: OptimizationResult,
     market: MarketState,
+    *,
+    min_return_on_equity: float | None = None,
+    return_on_equity: float | None = None,
 ) -> BoundaryDiagnostics:
     cause = infer_boundary_warning_cause(
         objective_decomposition_from_result(best_result),
@@ -397,6 +424,19 @@ def _segmented_boundary_diagnostics(
                 rate=tier_result.rate,
                 rate_grid=tier_config.rate_grid,
                 cause=cause,
+            )
+        )
+    if (
+        min_return_on_equity is not None
+        and return_on_equity is not None
+        and return_on_equity < min_return_on_equity
+    ):
+        warnings.append(
+            (
+                f"Selected segmented portfolio return on equity {return_on_equity:.2%} "
+                f"is below the configured minimum return on equity "
+                f"{min_return_on_equity:.2%}; no segmented alternative is available "
+                "from the tier-wise optimizer."
             )
         )
     return BoundaryDiagnostics(warnings=tuple(warnings))
@@ -525,10 +565,27 @@ def _optimization_result_from_segmented_result(
 def _grid_results_from_segmented_result(
     segmented_result: SegmentedOptimizationResult,
     result: OptimizationResult,
+    *,
+    loan_rwa_weight: float,
 ) -> pd.DataFrame:
     # Segmented grid rows are synthetic decomposition rows, not independent alternatives.
     # total_objective is always the actual portfolio value so rows never dominate the winner.
     rows: list[dict[str, float]] = []
+    tier1_capital_ratio = 0.10
+    required_capital = result.expected_loan_volume * loan_rwa_weight * tier1_capital_ratio
+    return_on_equity = (
+        (
+            result.loan_interest_income
+            - result.expected_credit_loss
+            - result.deposit_interest_cost
+            - result.wholesale_funding_cost
+            - result.funding_shortfall_penalty
+            + result.excess_deposit_income
+        )
+        / required_capital
+        if required_capital > 0.0
+        else 0.0
+    )
     for tier in segmented_result.loan_tiers:
         rows.append(
             {
@@ -539,6 +596,7 @@ def _grid_results_from_segmented_result(
                 "loan_interest_income": tier.interest_income,
                 "expected_credit_loss": tier.credit_loss,
                 "capital_charge": tier.capital_charge,
+                "return_on_equity": return_on_equity,
                 "deposit_interest_cost": result.deposit_interest_cost,
                 "wholesale_funding_cost": result.wholesale_funding_cost,
                 "excess_deposit_income": result.excess_deposit_income,
@@ -559,6 +617,7 @@ def _grid_results_from_segmented_result(
                 "loan_interest_income": result.loan_interest_income,
                 "expected_credit_loss": result.expected_credit_loss,
                 "capital_charge": result.capital_charge,
+                "return_on_equity": return_on_equity,
                 "deposit_interest_cost": tier.interest_cost,
                 "wholesale_funding_cost": result.wholesale_funding_cost,
                 "excess_deposit_income": result.excess_deposit_income,

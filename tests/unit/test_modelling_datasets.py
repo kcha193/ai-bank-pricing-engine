@@ -1,10 +1,12 @@
 import numpy as np
+import pytest
 
 from balance_pricing_engine.modelling.datasets import (
     DEPOSIT_FEATURE_COLUMNS,
     DEPOSIT_TARGET_COLUMN,
     LOAN_FEATURE_COLUMNS,
     LOAN_TARGET_COLUMN,
+    build_attrition_dataset,
     build_deposit_response_dataset,
     build_loan_response_dataset,
 )
@@ -65,3 +67,43 @@ def test_deposit_response_dataset_returns_expected_columns():
     assert list(dataset.columns) == expected_columns
     assert dataset[DEPOSIT_TARGET_COLUMN].isin([0, 1]).all()
     assert dataset["ground_truth_probability"].between(0, 1).all()
+
+
+def test_build_attrition_dataset_returns_dataframe_with_required_columns():
+    rng = np.random.default_rng(42)
+    n = 200
+    acceptance_probs = rng.uniform(0.2, 0.8, n)
+
+    frame = build_attrition_dataset(
+        acceptance_probabilities=acceptance_probs,
+        n_rows=n,
+        hold_period_months=12,
+        rng=rng,
+    )
+
+    assert "duration" in frame.columns
+    assert "event_observed" in frame.columns
+    assert len(frame) == n
+    assert frame["duration"].min() >= 1
+    assert frame["event_observed"].isin([0, 1]).all()
+
+
+def test_build_attrition_dataset_high_acceptance_implies_longer_duration():
+    rng = np.random.default_rng(0)
+    n = 1000
+    high_probs = np.full(n, 0.9)
+    low_probs = np.full(n, 0.1)
+
+    high_frame = build_attrition_dataset(high_probs, n_rows=n, rng=rng)
+    rng2 = np.random.default_rng(0)
+    low_frame = build_attrition_dataset(low_probs, n_rows=n, rng=rng2)
+
+    assert high_frame["duration"].mean() > low_frame["duration"].mean()
+
+
+def test_build_attrition_dataset_rejects_non_positive_hold_period():
+    with pytest.raises(ValueError, match="hold_period_months"):
+        build_attrition_dataset(
+            acceptance_probabilities=np.array([0.5, 0.6]),
+            hold_period_months=0,
+        )

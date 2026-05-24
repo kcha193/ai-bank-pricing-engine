@@ -15,6 +15,7 @@ from balance_pricing_engine.optimization.grid_search import (
     evaluate_joint_rate_grid,
     select_best_result,
 )
+from balance_pricing_engine.pricing.profit import maturity_adjusted_rwa_weight
 from balance_pricing_engine.rate_grids import build_configured_rate_grids
 from balance_pricing_engine.synthetic.customers import (
     generate_deposit_customers,
@@ -282,6 +283,7 @@ def evaluate_adaptive_joint_rate_grid(
     term_deposit_reference_rate: float | None = None,
     max_boundary_expansions: int = 2,
     response_coefficients: ResponseCoefficientsConfig | None = None,
+    min_return_on_equity: float | None = None,
 ) -> AdaptiveGridResult:
     """Evaluate a joint grid, expanding boundaries before accepting edge optima."""
     initial_boundary_diagnostics: BoundaryDiagnostics | None = None
@@ -308,7 +310,10 @@ def evaluate_adaptive_joint_rate_grid(
             term_deposit_reference_rate=term_deposit_reference_rate,
             response_coefficients=response_coefficients,
         )
-        best_result = select_best_result(grid_results)
+        best_result = select_best_result(
+            grid_results,
+            min_return_on_equity=min_return_on_equity,
+        )
         boundary_diagnostics = evaluate_boundary_diagnostics(
             best_result,
             loan_rate_grid,
@@ -608,12 +613,16 @@ def _run_sensitivity_analysis_for_seed(
             deposit_competitor_gap_elasticity=case.deposit_competitor_gap_elasticity,
             required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
             funding_shortfall_penalty_rate=case.funding_shortfall_penalty_rate,
-            rwa_weight=case.loan_rwa_weight,
+            rwa_weight=maturity_adjusted_rwa_weight(
+                case.loan_rwa_weight,
+                config.balance_sheet.average_loan_tenor_years,
+            ),
             capital_hurdle_rate=case.capital_hurdle_rate,
             home_loan_reference_rate=config.market.home_loan_reference_rate,
             term_deposit_reference_rate=config.market.term_deposit_reference_rate,
             max_boundary_expansions=max_boundary_expansions,
             response_coefficients=case.response_coefficients,
+            min_return_on_equity=config.balance_sheet.min_return_on_equity,
         )
         best_result = diagnostics.best_result
         rows.append(
