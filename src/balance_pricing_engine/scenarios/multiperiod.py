@@ -20,6 +20,7 @@ class MultiPeriodDiagnostics:
     loan_runoff_rate: float
     deposit_runoff_rate: float
     discount_rate: float
+    reinvestment_spread_bps: float = 0.0
 
     def period_summary(self) -> pd.DataFrame:
         """Return one row per period with headline pricing and objective values."""
@@ -47,14 +48,32 @@ def run_multiperiod_diagnostics(
     if mp is None:
         raise ValueError("config.multiperiod is required for multi-period diagnostics.")
 
+    # Determine effective per-period loan runoff rate
+    effective_loan_runoff = (
+        1.0 / mp.loan_tenor_years if mp.loan_tenor_years is not None else mp.loan_runoff_rate
+    )
+
+    reinvestment_rate = config.market.cash_rate + mp.reinvestment_spread_bps / 10_000
+
+    if mp.market_cash_rate_drift_bps != 0:
+        warnings.warn(
+            "market_cash_rate_drift_bps is set but competitor rates are not drifted. "
+            "Competitor gaps will shift mechanically, distorting elasticity calculations.",
+            stacklevel=2,
+        )
+
     period_diagnostics: list[ScenarioDiagnostics] = []
     period_discounted_contributions: list[float] = []
-    back_book_loan_income = 0.0
-    back_book_deposit_cost = 0.0
+    back_book_loan_volume = 0.0
+    back_book_deposit_volume = 0.0
 
     for period in range(mp.n_periods):
-        back_book_loan_income *= 1 - mp.loan_runoff_rate
-        back_book_deposit_cost *= 1 - mp.deposit_runoff_rate
+        # Surviving back-book earns reinvestment_rate on remaining balances
+        back_book_loan_volume *= 1 - effective_loan_runoff
+        back_book_deposit_volume *= 1 - mp.deposit_runoff_rate
+
+        back_book_loan_income = back_book_loan_volume * reinvestment_rate
+        back_book_deposit_cost = back_book_deposit_volume * config.market.cash_rate
 
         scenario_config = _build_period_config(config, period)
         diagnostics = run_baseline_diagnostics(
@@ -68,17 +87,18 @@ def run_multiperiod_diagnostics(
         period_diagnostics.append(diagnostics)
         period_discounted_contributions.append(discounted_contribution)
 
-        back_book_loan_income += diagnostics.best_result.loan_income_after_losses
-        back_book_deposit_cost += diagnostics.best_result.deposit_cost
+        back_book_loan_volume += diagnostics.best_result.expected_loan_volume
+        back_book_deposit_volume += diagnostics.best_result.expected_deposit_volume
 
     return MultiPeriodDiagnostics(
         period_diagnostics=period_diagnostics,
         period_discounted_contributions=period_discounted_contributions,
         npv=sum(period_discounted_contributions),
         n_periods=mp.n_periods,
-        loan_runoff_rate=mp.loan_runoff_rate,
+        loan_runoff_rate=effective_loan_runoff,
         deposit_runoff_rate=mp.deposit_runoff_rate,
         discount_rate=mp.discount_rate,
+        reinvestment_spread_bps=mp.reinvestment_spread_bps,
     )
 
 
