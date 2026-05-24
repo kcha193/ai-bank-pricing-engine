@@ -122,6 +122,34 @@ def test_config_validation():
     MultiPeriodConfig(loan_runoff_rate=0.0, deposit_runoff_rate=0.0)
 
 
+def test_reinvestment_spread_bps_defaults_to_zero():
+    cfg = MultiPeriodConfig(n_periods=2)
+    assert cfg.reinvestment_spread_bps == 0.0
+
+
+def test_loan_tenor_years_defaults_to_none():
+    cfg = MultiPeriodConfig(n_periods=2)
+    assert cfg.loan_tenor_years is None
+
+
+def test_loan_tenor_years_must_be_positive():
+    with pytest.raises(ValidationError):
+        MultiPeriodConfig(n_periods=2, loan_tenor_years=0.0)
+
+    with pytest.raises(ValidationError):
+        MultiPeriodConfig(n_periods=2, loan_tenor_years=-1.0)
+
+
+def test_loan_tenor_years_accepted_when_positive():
+    cfg = MultiPeriodConfig(n_periods=2, loan_tenor_years=5.0)
+    assert cfg.loan_tenor_years == 5.0
+
+
+def test_reinvestment_spread_bps_negative_is_allowed():
+    cfg = MultiPeriodConfig(n_periods=2, reinvestment_spread_bps=-25.0)
+    assert cfg.reinvestment_spread_bps == -25.0
+
+
 def test_missing_multiperiod_config_raises():
     config = make_config(multiperiod=None)
 
