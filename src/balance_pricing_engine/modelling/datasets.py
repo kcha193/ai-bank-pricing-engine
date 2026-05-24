@@ -194,3 +194,40 @@ def _wealth_segment(deposit_amount: pd.Series) -> pd.Series:
         bins=[-np.inf, 50_000, 150_000, np.inf],
         labels=[0, 1, 2],
     ).astype(int)
+
+
+def build_attrition_dataset(
+    acceptance_probabilities: np.ndarray,
+    n_rows: int | None = None,
+    hold_period_months: int = 12,
+    rng: np.random.Generator | None = None,
+) -> pd.DataFrame:
+    """Build a synthetic survival dataset from acceptance probabilities.
+
+    Higher acceptance probability -> longer modelled hold duration (customers
+    who accepted are more engaged and churn later). Weibull shape parameter
+    is fixed at 1.5; scale is proportional to acceptance probability.
+
+    Columns:
+      duration        - time in months until churn or censoring (>=1)
+      event_observed  - 1 = churned, 0 = censored (survived to hold_period_months)
+    """
+    if rng is None:
+        rng = np.random.default_rng(42)
+    n = n_rows if n_rows is not None else len(acceptance_probabilities)
+    if len(acceptance_probabilities) != n:
+        raise ValueError("acceptance_probabilities length must equal n_rows.")
+
+    weibull_shape = 1.5
+    # Scale: customers with prob=1.0 get mean duration = 1.5 * hold_period
+    scale = acceptance_probabilities * hold_period_months * 1.5 + 1.0
+
+    # Sample from Weibull: duration = scale * (-ln(u))^(1/shape)
+    u = rng.uniform(0.0, 1.0, n)
+    raw_duration = scale * (-np.log(np.clip(u, 1e-9, 1.0))) ** (1.0 / weibull_shape)
+    duration = np.clip(np.round(raw_duration).astype(int), 1, None)
+
+    event_observed = (duration <= hold_period_months).astype(int)
+    duration = np.minimum(duration, hold_period_months)
+
+    return pd.DataFrame({"duration": duration, "event_observed": event_observed})
