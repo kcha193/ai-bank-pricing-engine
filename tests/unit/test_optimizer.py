@@ -993,7 +993,14 @@ def _evaluate_joint_rate_grid_unhoisted(
             tier1_capital_ratio = 0.10
             required_capital = loan_volume * rwa_weight * tier1_capital_ratio
             return_on_equity = (
-                (loan_interest_income - credit_loss - deposit_cost - wholesale_funding_cost)
+                (
+                    loan_interest_income
+                    - credit_loss
+                    - deposit_cost
+                    - wholesale_funding_cost
+                    - funding.funding_penalty
+                    + excess_deposit_income
+                )
                 / required_capital
                 if required_capital > 0
                 else 0.0

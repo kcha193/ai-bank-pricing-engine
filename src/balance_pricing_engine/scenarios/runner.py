@@ -579,6 +579,8 @@ def _grid_results_from_segmented_result(
             - result.expected_credit_loss
             - result.deposit_interest_cost
             - result.wholesale_funding_cost
+            - result.funding_shortfall_penalty
+            + result.excess_deposit_income
         )
         / required_capital
         if required_capital > 0.0
