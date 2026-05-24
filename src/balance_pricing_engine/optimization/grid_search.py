@@ -88,6 +88,7 @@ GRID_RESULT_COLUMNS = [
     "expected_loan_volume",
     "expected_deposit_volume",
     "funding_shortfall",
+    "return_on_equity",
 ]
 
 
@@ -220,6 +221,14 @@ def evaluate_joint_rate_grid(
                 - funding.funding_penalty
                 + excess_deposit_income
             )
+            tier1_capital_ratio = 0.10
+            required_capital = loan_volume * rwa_weight * tier1_capital_ratio
+            return_on_equity = (
+                (loan_interest_income - credit_loss - deposit_cost - wholesale_funding_cost)
+                / required_capital
+                if required_capital > 0
+                else 0.0
+            )
 
             rows.append(
                 {
@@ -238,6 +247,7 @@ def evaluate_joint_rate_grid(
                     "expected_loan_volume": loan_volume,
                     "expected_deposit_volume": deposit_volume,
                     "funding_shortfall": funding.funding_shortfall,
+                    "return_on_equity": return_on_equity,
                 }
             )
 
@@ -267,16 +277,30 @@ def optimization_result_from_row(row: pd.Series) -> OptimizationResult:
     )
 
 
-def select_best_result(grid_results: pd.DataFrame) -> OptimizationResult:
-    """Select the highest-objective pricing result from evaluated grid results."""
+def select_best_result(
+    grid_results: pd.DataFrame,
+    min_return_on_equity: float | None = None,
+) -> OptimizationResult:
+    """Select the highest-objective pricing result from evaluated grid results.
+
+    When min_return_on_equity is set, prefer rows meeting the floor; fall back
+    to unconstrained best if no row qualifies (avoids hard infeasibility).
+    """
     if grid_results.empty:
         raise ValueError("At least one loan rate and one deposit rate are required.")
+
+    candidates = grid_results
+    if min_return_on_equity is not None and "return_on_equity" in grid_results.columns:
+        qualified = grid_results[grid_results["return_on_equity"] >= min_return_on_equity]
+        if not qualified.empty:
+            candidates = qualified
+
     market_spread_distance = (
-        grid_results["home_loan_spread_to_market_bps"].abs()
-        + grid_results["term_deposit_spread_to_market_bps"].abs()
+        candidates["home_loan_spread_to_market_bps"].abs()
+        + candidates["term_deposit_spread_to_market_bps"].abs()
     )
     best_row = (
-        grid_results.assign(_market_spread_distance=market_spread_distance)
+        candidates.assign(_market_spread_distance=market_spread_distance)
         .sort_values(
             by=["total_objective", "funding_shortfall", "_market_spread_distance"],
             ascending=[False, True, True],

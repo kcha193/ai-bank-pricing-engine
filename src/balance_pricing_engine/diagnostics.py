@@ -282,6 +282,7 @@ def evaluate_adaptive_joint_rate_grid(
     term_deposit_reference_rate: float | None = None,
     max_boundary_expansions: int = 2,
     response_coefficients: ResponseCoefficientsConfig | None = None,
+    min_return_on_equity: float | None = None,
 ) -> AdaptiveGridResult:
     """Evaluate a joint grid, expanding boundaries before accepting edge optima."""
     initial_boundary_diagnostics: BoundaryDiagnostics | None = None
@@ -308,7 +309,10 @@ def evaluate_adaptive_joint_rate_grid(
             term_deposit_reference_rate=term_deposit_reference_rate,
             response_coefficients=response_coefficients,
         )
-        best_result = select_best_result(grid_results)
+        best_result = select_best_result(
+            grid_results,
+            min_return_on_equity=min_return_on_equity,
+        )
         boundary_diagnostics = evaluate_boundary_diagnostics(
             best_result,
             loan_rate_grid,

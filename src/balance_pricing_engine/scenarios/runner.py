@@ -34,6 +34,7 @@ from balance_pricing_engine.optimization.segmented import (
     SegmentedOptimizationResult,
     optimize_segmented_rates,
 )
+from balance_pricing_engine.pricing.profit import maturity_adjusted_rwa_weight
 from balance_pricing_engine.rate_grids import build_configured_rate_grids
 from balance_pricing_engine.synthetic.customers import (
     generate_deposit_customers,
@@ -215,6 +216,10 @@ def run_baseline_diagnostics(
         )
 
     loan_grid, deposit_grid = build_configured_rate_grids(config)
+    effective_rwa_weight = maturity_adjusted_rwa_weight(
+        config.balance_sheet.loan_rwa_weight,
+        config.balance_sheet.average_loan_tenor_years,
+    )
 
     diagnostics = evaluate_adaptive_joint_rate_grid(
         loan_customers=loan_customers,
@@ -228,12 +233,13 @@ def run_baseline_diagnostics(
         deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
         required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
         funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
-        rwa_weight=config.balance_sheet.loan_rwa_weight,
+        rwa_weight=effective_rwa_weight,
         capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
         home_loan_reference_rate=config.market.home_loan_reference_rate,
         term_deposit_reference_rate=config.market.term_deposit_reference_rate,
         max_boundary_expansions=max_boundary_expansions,
         response_coefficients=config.response.coefficients,
+        min_return_on_equity=config.balance_sheet.min_return_on_equity,
     )
 
     return ScenarioDiagnostics(

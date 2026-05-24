@@ -2,7 +2,7 @@
   "best_deposit_rate": 0.0495,
   "best_loan_rate": 0.081,
   "boundary_warning_flag": false,
-  "capital_charge": 2266309.9601225397,
+  "capital_charge": 1722395.5696931302,
   "excess_deposit_income": 0.0,
   "expansion_capped": false,
   "expansion_rounds": 2,
@@ -10,6 +10,6 @@
   "expected_loan_volume": 539597609.5529857,
   "funding_shortfall": 0.0,
   "initial_boundary_warning_flag": true,
-  "objective_value": 10149221.46167361,
+  "objective_value": 10693135.852103017,
   "policy_band_breached": true
 }
