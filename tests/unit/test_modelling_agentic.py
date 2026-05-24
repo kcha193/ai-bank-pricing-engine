@@ -269,7 +269,6 @@ def test_lightgbm_response_model_raises_before_fit():
 def test_lightgbm_response_model_raises_import_error_when_dep_missing():
     with patch.dict(sys.modules, {"lightgbm": None}):
         model = LightGBMResponseModel()
-        df = pd.DataFrame({col: [0.0] for col in LOAN_FEATURE_COLUMNS})
         train = pd.DataFrame({col: [0.0] * 50 for col in LOAN_FEATURE_COLUMNS})
         train[LOAN_TARGET_COLUMN] = [0] * 25 + [1] * 25
         with pytest.raises(ImportError, match="lightgbm"):
