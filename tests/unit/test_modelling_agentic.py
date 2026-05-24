@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 import logging
+import sys
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -11,6 +13,7 @@ from balance_pricing_engine.modelling.agentic import (
     ElasticityBaselineModel,
     ElasticityResponseModel,
     HistGBMResponseModel,
+    LightGBMResponseModel,
     LogisticResponseModel,
     ModelRecord,
     ModelRegistry,
@@ -231,6 +234,76 @@ def test_histgbm_response_model_in_training_agent(tmp_path):
     model_names = {c["model_name"] for c in result.report["candidates"]}
     assert "HistGBMResponseModel" in model_names
     assert len(result.report["candidates"]) == 3
+
+
+def _make_fake_lgbm_classifier():
+    """Build a mock LGBMClassifier that behaves like the real one."""
+    clf = MagicMock()
+    clf.fit.return_value = clf
+    clf.predict_proba.return_value = np.column_stack(
+        [np.full(100, 0.4), np.full(100, 0.6)]
+    )
+    clf.feature_importances_ = np.ones(len(LOAN_FEATURE_COLUMNS))
+    return clf
+
+
+def _make_fake_lgbm_module(clf):
+    lgbm = MagicMock()
+    lgbm.LGBMClassifier.return_value = clf
+    return lgbm
+
+
+def test_lightgbm_response_model_name():
+    assert LightGBMResponseModel.name == "LightGBMResponseModel"
+
+
+def test_lightgbm_response_model_raises_before_fit():
+    model = LightGBMResponseModel()
+    df = pd.DataFrame({"offered_rate": [0.08]})
+    with pytest.raises(ValueError, match="fitted"):
+        model.predict_probability(df, ["offered_rate"])
+
+
+def test_lightgbm_response_model_raises_import_error_when_dep_missing():
+    with patch.dict(sys.modules, {"lightgbm": None}):
+        model = LightGBMResponseModel()
+        df = pd.DataFrame({col: [0.0] for col in LOAN_FEATURE_COLUMNS})
+        train = pd.DataFrame({col: [0.0] * 50 for col in LOAN_FEATURE_COLUMNS})
+        train[LOAN_TARGET_COLUMN] = [0] * 25 + [1] * 25
+        with pytest.raises(ImportError, match="lightgbm"):
+            model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+
+
+def test_lightgbm_response_model_fits_and_predicts():
+    clf = _make_fake_lgbm_classifier()
+    fake_lgbm = _make_fake_lgbm_module(clf)
+
+    with patch.dict(sys.modules, {"lightgbm": fake_lgbm}):
+        model = LightGBMResponseModel(random_state=42)
+        train = pd.DataFrame({col: np.random.rand(100) for col in LOAN_FEATURE_COLUMNS})
+        train[LOAN_TARGET_COLUMN] = np.random.randint(0, 2, 100)
+
+        model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+        probs = model.predict_probability(train, LOAN_FEATURE_COLUMNS)
+
+    assert probs.shape == (100,)
+    assert np.all(probs >= 0) and np.all(probs <= 1)
+
+
+def test_lightgbm_response_model_feature_importances():
+    clf = _make_fake_lgbm_classifier()
+    fake_lgbm = _make_fake_lgbm_module(clf)
+
+    with patch.dict(sys.modules, {"lightgbm": fake_lgbm}):
+        model = LightGBMResponseModel(random_state=42)
+        train = pd.DataFrame({col: np.random.rand(100) for col in LOAN_FEATURE_COLUMNS})
+        train[LOAN_TARGET_COLUMN] = np.random.randint(0, 2, 100)
+        model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+
+        importances = model.feature_importances(LOAN_FEATURE_COLUMNS)
+
+    assert importances is not None
+    assert set(importances.keys()) == set(LOAN_FEATURE_COLUMNS)
 
 
 def test_scoring_agent_schema_and_fallback(tmp_path):

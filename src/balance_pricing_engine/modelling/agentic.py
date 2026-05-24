@@ -34,6 +34,7 @@ __all__ = [
     "ElasticityResponseModel",
     "LogisticResponseModel",
     "HistGBMResponseModel",
+    "LightGBMResponseModel",
     "ModelTrainingAgent",
     "ModelScoringAgent",
     "ModelRegistry",
@@ -246,6 +247,50 @@ class HistGBMResponseModel:
         if fit_data.empty or importance_data.empty:
             return train, None
         return fit_data, importance_data
+
+
+class LightGBMResponseModel:
+    """Governed LightGBM response model. Requires the [ml] optional extra."""
+
+    name = "LightGBMResponseModel"
+
+    def __init__(self, random_state: int = 42, model: Any | None = None):
+        self._random_state = random_state
+        self._model = model
+
+    def fit(self, train: pd.DataFrame, feature_columns: list[str], target_column: str) -> None:
+        try:
+            import lightgbm as lgb
+        except ImportError as exc:
+            raise ImportError(
+                "LightGBMResponseModel requires lightgbm. "
+                "Install it with: pip install 'balance_pricing_engine[ml]'"
+            ) from exc
+        clf = lgb.LGBMClassifier(
+            random_state=self._random_state,
+            n_estimators=100,
+            verbose=-1,
+        )
+        clf.fit(train[feature_columns], train[target_column])
+        self._model = clf
+
+    def predict_probability(self, data: pd.DataFrame, feature_columns: list[str]) -> np.ndarray:
+        if self._model is None:
+            raise ValueError("LightGBMResponseModel must be fitted before scoring.")
+        proba = self._model.predict_proba(data[feature_columns])
+        return proba[:, 1].astype(float)
+
+    def feature_importances(self, feature_columns: list[str]) -> dict[str, float] | None:
+        if self._model is None:
+            raise ValueError("LightGBMResponseModel must be fitted before retrieving importances.")
+        importances = getattr(self._model, "feature_importances_", None)
+        if importances is None:
+            return None
+        return dict(zip(feature_columns, importances.tolist()))
+
+    @property
+    def fitted_model(self) -> Any:
+        return self._model
 
 
 class ModelRegistry:
