@@ -99,6 +99,8 @@ class BalanceSheetConfig(BaseModel):
     funding_shortfall_penalty_rate: float = Field(ge=0)
     loan_rwa_weight: float = Field(default=0.35, ge=0, le=2.5)
     capital_hurdle_rate: float = Field(default=0.12, ge=0, le=1)
+    average_loan_tenor_years: float = Field(default=1.0, gt=0)
+    min_return_on_equity: Optional[float] = Field(default=None, ge=0)
 
 
 class MultiPeriodConfig(BaseModel):

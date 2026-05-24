@@ -48,6 +48,16 @@ def expected_capital_charge(
     return required_capital * capital_hurdle_rate
 
 
+def maturity_adjusted_rwa_weight(base_rwa_weight: float, tenor_years: float) -> float:
+    """Return a maturity-scaled RWA weight using a simplified linear approximation.
+
+    Clamps tenor to [1, 5] years. Factor = 0.70 + 0.06 * tenor.
+    At 1y: 0.76x base. At 5y: 1.00x base. Not a regulatory calculation.
+    """
+    clamped = max(1.0, min(5.0, tenor_years))
+    return base_rwa_weight * (0.70 + 0.06 * clamped)
+
+
 def expected_deposit_cost(
     customers: pd.DataFrame,
     uptake_probability: np.ndarray,
