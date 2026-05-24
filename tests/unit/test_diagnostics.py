@@ -415,6 +415,53 @@ def test_sensitivity_applies_configured_maturity_adjustment_to_case_rwa_weight(m
     assert observed_rwa_weights == pytest.approx([0.35 * 1.12, 0.70 * 1.12])
 
 
+def test_sensitivity_passes_configured_min_return_on_equity(monkeypatch):
+    config = load_config("configs/base.yaml")
+    balance_sheet = config.balance_sheet.model_copy(update={"min_return_on_equity": 0.15})
+    config = config.model_copy(update={"balance_sheet": balance_sheet})
+    cases = diagnostics_module.build_default_sensitivity_cases(config)[:1]
+    observed_min_return_on_equity = []
+
+    def fake_evaluate_adaptive_joint_rate_grid(**kwargs):
+        observed_min_return_on_equity.append(kwargs["min_return_on_equity"])
+        result = OptimizationResult(
+            loan_rate=0.06,
+            deposit_rate=0.04,
+            loan_interest_income=100.0,
+            expected_credit_loss=10.0,
+            capital_charge=4.0,
+            deposit_interest_cost=20.0,
+            wholesale_funding_cost=5.0,
+            excess_deposit_income=0.0,
+            funding_shortfall_penalty=1.0,
+            total_objective=60.0,
+            expected_loan_volume=1_000.0,
+            expected_deposit_volume=700.0,
+            funding_shortfall=0.0,
+        )
+        return SimpleNamespace(
+            best_result=result,
+            initial_boundary_diagnostics=SimpleNamespace(has_warning=False),
+            boundary_diagnostics=SimpleNamespace(has_warning=False),
+            expansion_rounds=0,
+        )
+
+    monkeypatch.setattr(
+        diagnostics_module,
+        "evaluate_adaptive_joint_rate_grid",
+        fake_evaluate_adaptive_joint_rate_grid,
+    )
+
+    diagnostics_module._run_sensitivity_analysis_for_seed(
+        config=config,
+        cases=cases,
+        seed=config.random_seed,
+        max_boundary_expansions=0,
+    )
+
+    assert observed_min_return_on_equity == [0.15]
+
+
 def test_sensitivity_multi_seed_columns_match_contract():
     config = load_config("configs/base.yaml")
     df = run_sensitivity_analysis(config, n_seeds=3)

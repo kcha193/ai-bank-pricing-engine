@@ -323,6 +323,16 @@ def test_segmented_grid_results_emit_one_row_per_winning_tier():
     assert diagnostics.grid_results["return_on_equity"].nunique() == 1
 
 
+def test_segmented_grid_results_compute_return_on_equity_when_hurdle_rate_is_zero():
+    config = load_config("configs/segmented_pricing.yaml")
+    balance_sheet = config.balance_sheet.model_copy(update={"capital_hurdle_rate": 0.0})
+    config = config.model_copy(update={"balance_sheet": balance_sheet})
+
+    diagnostics = run_baseline_diagnostics(config, max_boundary_expansions=0)
+
+    assert (diagnostics.grid_results["return_on_equity"] > 0.0).all()
+
+
 def test_segmented_scenario_applies_maturity_adjusted_rwa_weight():
     config = load_config("configs/segmented_pricing.yaml")
     balance_sheet = config.balance_sheet.model_copy(update={"average_loan_tenor_years": 3.0})

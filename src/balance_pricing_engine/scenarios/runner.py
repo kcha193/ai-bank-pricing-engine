@@ -300,7 +300,7 @@ def _evaluate_adaptive_segmented_rates(
             result,
             segmented_config,
             market,
-            capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
+            loan_rwa_weight=effective_rwa_weight,
             expansion_rounds=expansion_rounds,
             initial_boundary_diagnostics=initial_boundary_diagnostics,
             original_config=original_segmented_config,
@@ -316,7 +316,7 @@ def _evaluate_adaptive_segmented_rates(
                 result,
                 segmented_config,
                 market,
-                capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
+                loan_rwa_weight=effective_rwa_weight,
                 expansion_rounds=expansion_rounds,
                 initial_boundary_diagnostics=initial_boundary_diagnostics,
                 original_config=original_segmented_config,
@@ -335,7 +335,7 @@ def _evaluate_adaptive_segmented_rates(
                 result,
                 segmented_config,
                 market,
-                capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
+                loan_rwa_weight=effective_rwa_weight,
                 expansion_rounds=expansion_rounds,
                 initial_boundary_diagnostics=initial_boundary_diagnostics,
                 original_config=original_segmented_config,
@@ -349,7 +349,7 @@ def _segmented_diagnostics(
     config: SegmentedPricingConfig,
     market: MarketState,
     *,
-    capital_hurdle_rate: float,
+    loan_rwa_weight: float,
     expansion_rounds: int = 0,
     initial_boundary_diagnostics: BoundaryDiagnostics | None = None,
     original_config: SegmentedPricingConfig | None = None,
@@ -359,7 +359,7 @@ def _segmented_diagnostics(
     grid_results = _grid_results_from_segmented_result(
         result,
         best_result,
-        capital_hurdle_rate=capital_hurdle_rate,
+        loan_rwa_weight=loan_rwa_weight,
     )
     boundary_diagnostics = _segmented_boundary_diagnostics(
         result,
@@ -544,14 +544,13 @@ def _grid_results_from_segmented_result(
     segmented_result: SegmentedOptimizationResult,
     result: OptimizationResult,
     *,
-    capital_hurdle_rate: float,
+    loan_rwa_weight: float,
 ) -> pd.DataFrame:
     # Segmented grid rows are synthetic decomposition rows, not independent alternatives.
     # total_objective is always the actual portfolio value so rows never dominate the winner.
     rows: list[dict[str, float]] = []
-    required_capital = (
-        result.capital_charge / capital_hurdle_rate if capital_hurdle_rate > 0.0 else 0.0
-    )
+    tier1_capital_ratio = 0.10
+    required_capital = result.expected_loan_volume * loan_rwa_weight * tier1_capital_ratio
     return_on_equity = (
         (
             result.loan_interest_income

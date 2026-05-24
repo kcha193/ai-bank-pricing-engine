@@ -622,6 +622,7 @@ def _run_sensitivity_analysis_for_seed(
             term_deposit_reference_rate=config.market.term_deposit_reference_rate,
             max_boundary_expansions=max_boundary_expansions,
             response_coefficients=case.response_coefficients,
+            min_return_on_equity=config.balance_sheet.min_return_on_equity,
         )
         best_result = diagnostics.best_result
         rows.append(
