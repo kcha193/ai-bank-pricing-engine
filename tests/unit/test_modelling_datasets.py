@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from balance_pricing_engine.modelling.datasets import (
     DEPOSIT_FEATURE_COLUMNS,
@@ -98,3 +99,11 @@ def test_build_attrition_dataset_high_acceptance_implies_longer_duration():
     low_frame = build_attrition_dataset(low_probs, n_rows=n, rng=rng2)
 
     assert high_frame["duration"].mean() > low_frame["duration"].mean()
+
+
+def test_build_attrition_dataset_rejects_non_positive_hold_period():
+    with pytest.raises(ValueError, match="hold_period_months"):
+        build_attrition_dataset(
+            acceptance_probabilities=np.array([0.5, 0.6]),
+            hold_period_months=0,
+        )

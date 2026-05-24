@@ -214,6 +214,8 @@ def build_attrition_dataset(
     """
     if rng is None:
         rng = np.random.default_rng(42)
+    if hold_period_months <= 0:
+        raise ValueError("hold_period_months must be positive.")
     n = n_rows if n_rows is not None else len(acceptance_probabilities)
     if len(acceptance_probabilities) != n:
         raise ValueError("acceptance_probabilities length must equal n_rows.")

@@ -301,6 +301,7 @@ def _evaluate_adaptive_segmented_rates(
             segmented_config,
             market,
             loan_rwa_weight=effective_rwa_weight,
+            min_return_on_equity=config.balance_sheet.min_return_on_equity,
             expansion_rounds=expansion_rounds,
             initial_boundary_diagnostics=initial_boundary_diagnostics,
             original_config=original_segmented_config,
@@ -317,6 +318,7 @@ def _evaluate_adaptive_segmented_rates(
                 segmented_config,
                 market,
                 loan_rwa_weight=effective_rwa_weight,
+                min_return_on_equity=config.balance_sheet.min_return_on_equity,
                 expansion_rounds=expansion_rounds,
                 initial_boundary_diagnostics=initial_boundary_diagnostics,
                 original_config=original_segmented_config,
@@ -336,6 +338,7 @@ def _evaluate_adaptive_segmented_rates(
                 segmented_config,
                 market,
                 loan_rwa_weight=effective_rwa_weight,
+                min_return_on_equity=config.balance_sheet.min_return_on_equity,
                 expansion_rounds=expansion_rounds,
                 initial_boundary_diagnostics=initial_boundary_diagnostics,
                 original_config=original_segmented_config,
@@ -350,6 +353,7 @@ def _segmented_diagnostics(
     market: MarketState,
     *,
     loan_rwa_weight: float,
+    min_return_on_equity: float | None = None,
     expansion_rounds: int = 0,
     initial_boundary_diagnostics: BoundaryDiagnostics | None = None,
     original_config: SegmentedPricingConfig | None = None,
@@ -366,6 +370,8 @@ def _segmented_diagnostics(
         config,
         best_result,
         market,
+        min_return_on_equity=min_return_on_equity,
+        return_on_equity=float(grid_results["return_on_equity"].iloc[0]),
     )
     return ScenarioDiagnostics(
         best_result=best_result,
@@ -390,6 +396,9 @@ def _segmented_boundary_diagnostics(
     config: SegmentedPricingConfig,
     best_result: OptimizationResult,
     market: MarketState,
+    *,
+    min_return_on_equity: float | None = None,
+    return_on_equity: float | None = None,
 ) -> BoundaryDiagnostics:
     cause = infer_boundary_warning_cause(
         objective_decomposition_from_result(best_result),
@@ -415,6 +424,19 @@ def _segmented_boundary_diagnostics(
                 rate=tier_result.rate,
                 rate_grid=tier_config.rate_grid,
                 cause=cause,
+            )
+        )
+    if (
+        min_return_on_equity is not None
+        and return_on_equity is not None
+        and return_on_equity < min_return_on_equity
+    ):
+        warnings.append(
+            (
+                f"Selected segmented portfolio return on equity {return_on_equity:.2%} "
+                f"is below the configured minimum return on equity "
+                f"{min_return_on_equity:.2%}; no segmented alternative is available "
+                "from the tier-wise optimizer."
             )
         )
     return BoundaryDiagnostics(warnings=tuple(warnings))

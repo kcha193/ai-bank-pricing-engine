@@ -353,6 +353,19 @@ def test_segmented_scenario_applies_maturity_adjusted_rwa_weight():
     )
 
 
+def test_segmented_scenario_warns_when_selected_result_misses_roe_floor():
+    config = load_config("configs/segmented_pricing.yaml")
+    balance_sheet = config.balance_sheet.model_copy(update={"min_return_on_equity": 10.0})
+    config = config.model_copy(update={"balance_sheet": balance_sheet})
+
+    diagnostics = run_baseline_diagnostics(config, max_boundary_expansions=0)
+
+    assert any(
+        "minimum return on equity" in warning
+        for warning in diagnostics.boundary_diagnostics.warnings
+    )
+
+
 def test_segmented_diagnostics_warn_when_tier_winner_is_at_boundary():
     config = EngineConfig.model_validate(_segmented_config_dict())
 
