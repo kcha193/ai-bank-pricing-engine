@@ -45,6 +45,18 @@ from balance_pricing_engine.synthetic.customers import generate_deposit_customer
 from balance_pricing_engine.utils.random import make_rng
 
 
+def test_optional_model_adapters_are_exported_from_modelling_package():
+    from balance_pricing_engine.modelling import (
+        LightGBMResponseModel as PublicLightGBMResponseModel,
+        SurvivalResponseModel as PublicSurvivalResponseModel,
+        XGBoostResponseModel as PublicXGBoostResponseModel,
+    )
+
+    assert PublicLightGBMResponseModel is LightGBMResponseModel
+    assert PublicXGBoostResponseModel is XGBoostResponseModel
+    assert PublicSurvivalResponseModel is SurvivalResponseModel
+
+
 def _loan_dataset(seed: int = 123):
     rng = make_rng(seed)
     customers = generate_loan_customers(200, rng)

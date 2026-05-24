@@ -378,6 +378,54 @@ def test_select_best_result_roe_floor_picks_correct_row():
     assert result.loan_rate in [0.06, 0.07, 0.08]
 
 
+def test_select_best_result_skips_roe_floor_when_all_values_are_nan():
+    grid_results = pd.DataFrame(
+        [
+            {
+                "loan_rate": 0.06,
+                "deposit_rate": 0.03,
+                "home_loan_spread_to_market_bps": 20.0,
+                "term_deposit_spread_to_market_bps": 10.0,
+                "loan_interest_income": 100.0,
+                "expected_credit_loss": 10.0,
+                "capital_charge": 4.0,
+                "return_on_equity": float("nan"),
+                "deposit_interest_cost": 25.0,
+                "wholesale_funding_cost": 5.0,
+                "excess_deposit_income": 0.0,
+                "funding_shortfall_penalty": 1.0,
+                "total_objective": 55.0,
+                "expected_loan_volume": 1_000.0,
+                "expected_deposit_volume": 700.0,
+                "funding_shortfall": 0.0,
+            },
+            {
+                "loan_rate": 0.065,
+                "deposit_rate": 0.03,
+                "home_loan_spread_to_market_bps": 30.0,
+                "term_deposit_spread_to_market_bps": 10.0,
+                "loan_interest_income": 120.0,
+                "expected_credit_loss": 10.0,
+                "capital_charge": 4.0,
+                "return_on_equity": float("nan"),
+                "deposit_interest_cost": 25.0,
+                "wholesale_funding_cost": 5.0,
+                "excess_deposit_income": 0.0,
+                "funding_shortfall_penalty": 1.0,
+                "total_objective": 75.0,
+                "expected_loan_volume": 1_000.0,
+                "expected_deposit_volume": 700.0,
+                "funding_shortfall": 0.0,
+            },
+        ],
+        columns=GRID_RESULT_COLUMNS,
+    )
+
+    result = select_best_result(grid_results, min_return_on_equity=0.10)
+
+    assert result.loan_rate == pytest.approx(0.065)
+
+
 def test_default_capital_charge_reduces_total_objective():
     loan_customers, deposit_customers = _single_customer_portfolios()
     grid_kwargs = {

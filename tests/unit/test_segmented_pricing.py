@@ -13,7 +13,10 @@ from balance_pricing_engine.config import (
     load_config,
 )
 from balance_pricing_engine.optimization.grid_search import GRID_RESULT_COLUMNS
-from balance_pricing_engine.pricing.profit import expected_capital_charge
+from balance_pricing_engine.pricing.profit import (
+    expected_capital_charge,
+    maturity_adjusted_rwa_weight,
+)
 from balance_pricing_engine.optimization.segmented import (
     _optimize_deposit_tier,
     optimize_segmented_rates,
@@ -316,6 +319,27 @@ def test_segmented_grid_results_emit_one_row_per_winning_tier():
     deposit_rows = diagnostics.grid_results.tail(len(tier_rates["deposit_tiers"]))
     assert set(loan_rows["loan_rate"]) == set(tier_rates["loan_tiers"].values())
     assert set(deposit_rows["deposit_rate"]) == set(tier_rates["deposit_tiers"].values())
+    assert diagnostics.grid_results["return_on_equity"].isna().all()
+
+
+def test_segmented_scenario_applies_maturity_adjusted_rwa_weight():
+    config = load_config("configs/segmented_pricing.yaml")
+    balance_sheet = config.balance_sheet.model_copy(update={"average_loan_tenor_years": 3.0})
+    config = config.model_copy(update={"balance_sheet": balance_sheet})
+
+    diagnostics = run_baseline_diagnostics(config, max_boundary_expansions=0)
+
+    expected_rwa_weight = maturity_adjusted_rwa_weight(
+        config.balance_sheet.loan_rwa_weight,
+        config.balance_sheet.average_loan_tenor_years,
+    )
+    assert diagnostics.best_result.capital_charge == pytest.approx(
+        expected_capital_charge(
+            diagnostics.best_result.expected_loan_volume,
+            expected_rwa_weight,
+            config.balance_sheet.capital_hurdle_rate,
+        )
+    )
 
 
 def test_segmented_diagnostics_warn_when_tier_winner_is_at_boundary():

@@ -67,7 +67,12 @@ def test_expected_capital_charge_prices_required_regulatory_capital():
     assert charge == 4_200.0
 
 
-def test_maturity_adjusted_rwa_weight_at_one_year_equals_base():
+def test_maturity_adjusted_rwa_weight_skips_when_tenor_is_none():
+    weight = maturity_adjusted_rwa_weight(base_rwa_weight=0.35, tenor_years=None)
+    assert weight == pytest.approx(0.35)
+
+
+def test_maturity_adjusted_rwa_weight_at_one_year_uses_formula():
     weight = maturity_adjusted_rwa_weight(base_rwa_weight=0.35, tenor_years=1.0)
     assert weight == pytest.approx(0.35 * (0.70 + 0.06 * 1.0))
 
@@ -91,12 +96,12 @@ def test_maturity_adjusted_rwa_weight_clamps_above_five_years():
     assert w_clamped == pytest.approx(w_five)
 
 
-def test_balance_sheet_config_average_loan_tenor_years_defaults_to_one():
+def test_balance_sheet_config_average_loan_tenor_years_defaults_to_none():
     bs = BalanceSheetConfig(
         required_deposit_funding_ratio=0.65,
         funding_shortfall_penalty_rate=0.018,
     )
-    assert bs.average_loan_tenor_years == 1.0
+    assert bs.average_loan_tenor_years is None
 
 
 def test_balance_sheet_config_min_return_on_equity_defaults_to_none():

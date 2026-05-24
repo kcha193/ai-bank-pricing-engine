@@ -291,9 +291,11 @@ def select_best_result(
 
     candidates = grid_results
     if min_return_on_equity is not None and "return_on_equity" in grid_results.columns:
-        qualified = grid_results[grid_results["return_on_equity"] >= min_return_on_equity]
-        if not qualified.empty:
-            candidates = qualified
+        return_on_equity = grid_results["return_on_equity"]
+        if return_on_equity.notna().any():
+            qualified = grid_results[return_on_equity >= min_return_on_equity]
+            if not qualified.empty:
+                candidates = qualified
 
     market_spread_distance = (
         candidates["home_loan_spread_to_market_bps"].abs()

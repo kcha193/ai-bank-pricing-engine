@@ -1,9 +1,11 @@
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
 
+import balance_pricing_engine.diagnostics as diagnostics_module
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.diagnostics import (
     ObjectiveDecomposition,
@@ -333,6 +335,84 @@ def test_sensitivity_result_includes_excess_deposit_income():
     sensitivity = run_sensitivity_analysis(config)
     assert "excess_deposit_income" in sensitivity.columns
     assert (sensitivity["excess_deposit_income"] >= 0).all()
+
+
+def test_sensitivity_applies_configured_maturity_adjustment_to_case_rwa_weight(monkeypatch):
+    config = load_config("configs/base.yaml")
+    balance_sheet = config.balance_sheet.model_copy(update={"average_loan_tenor_years": 3.0})
+    config = config.model_copy(update={"balance_sheet": balance_sheet})
+    cases = [
+        diagnostics_module.SensitivityCase(
+            name="baseline",
+            loan_rate_elasticity=config.response.loan_rate_elasticity,
+            loan_competitor_gap_elasticity=config.response.loan_competitor_gap_elasticity,
+            deposit_rate_elasticity=config.response.deposit_rate_elasticity,
+            deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
+            funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
+            loan_rwa_weight=0.35,
+            capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
+            wholesale_funding_rate=config.market.cash_rate
+            + config.market.wholesale_funding_spread,
+            competitor_loan_rate=config.market.competitor_loan_rate,
+            competitor_deposit_rate=config.market.competitor_deposit_rate,
+            response_coefficients=config.response.coefficients,
+        ),
+        diagnostics_module.SensitivityCase(
+            name="rwa_stress",
+            loan_rate_elasticity=config.response.loan_rate_elasticity,
+            loan_competitor_gap_elasticity=config.response.loan_competitor_gap_elasticity,
+            deposit_rate_elasticity=config.response.deposit_rate_elasticity,
+            deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
+            funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
+            loan_rwa_weight=0.70,
+            capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
+            wholesale_funding_rate=config.market.cash_rate
+            + config.market.wholesale_funding_spread,
+            competitor_loan_rate=config.market.competitor_loan_rate,
+            competitor_deposit_rate=config.market.competitor_deposit_rate,
+            response_coefficients=config.response.coefficients,
+        ),
+    ]
+    observed_rwa_weights = []
+
+    def fake_evaluate_adaptive_joint_rate_grid(**kwargs):
+        observed_rwa_weights.append(kwargs["rwa_weight"])
+        result = OptimizationResult(
+            loan_rate=0.06,
+            deposit_rate=0.04,
+            loan_interest_income=100.0,
+            expected_credit_loss=10.0,
+            capital_charge=4.0,
+            deposit_interest_cost=20.0,
+            wholesale_funding_cost=5.0,
+            excess_deposit_income=0.0,
+            funding_shortfall_penalty=1.0,
+            total_objective=60.0,
+            expected_loan_volume=1_000.0,
+            expected_deposit_volume=700.0,
+            funding_shortfall=0.0,
+        )
+        return SimpleNamespace(
+            best_result=result,
+            initial_boundary_diagnostics=SimpleNamespace(has_warning=False),
+            boundary_diagnostics=SimpleNamespace(has_warning=False),
+            expansion_rounds=0,
+        )
+
+    monkeypatch.setattr(
+        diagnostics_module,
+        "evaluate_adaptive_joint_rate_grid",
+        fake_evaluate_adaptive_joint_rate_grid,
+    )
+
+    diagnostics_module._run_sensitivity_analysis_for_seed(
+        config=config,
+        cases=cases,
+        seed=config.random_seed,
+        max_boundary_expansions=0,
+    )
+
+    assert observed_rwa_weights == pytest.approx([0.35 * 0.88, 0.70 * 0.88])
 
 
 def test_sensitivity_multi_seed_columns_match_contract():

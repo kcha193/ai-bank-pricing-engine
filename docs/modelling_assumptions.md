@@ -6,15 +6,23 @@
 - Term deposit uptake increases as the offered deposit rate increases.
 - Competitor rates influence both products.
 - Home loan profitability is reduced by expected credit loss.
+- Capital charge uses `loan_rwa_weight`; when `average_loan_tenor_years` is set, the profit module
+  applies the maturity-adjusted RWA proxy before optimization and sensitivity runs. When it is
+  unset, the raw RWA weight is used.
 - Deposits are treated as funding for lending.
 - Funding shortfalls receive a financial penalty.
+- `min_return_on_equity`, when configured, is an optimizer floor over the grid's ROE diagnostic
+  column. If no evaluated candidate has a finite qualifying ROE, winner selection falls back to the
+  unconstrained objective ranking.
 - The optimizer chooses one portfolio-level home loan rate and one portfolio-level term deposit rate.
 - ML response models are diagnostic only and are trained on synthetic observed outcomes generated
-  from the explicit response functions.
+  from the explicit response functions. Available adapters include logistic regression, histogram
+  gradient boosting, optional LightGBM, optional XGBoost, and an optional survival/hazard adapter.
 - Multi-period scenario rolls are available for portfolio-level diagnostics. They rerun the baseline
   scenario for `n_periods`, apply `loan_runoff_rate` and `deposit_runoff_rate` to prior-period
-  back-book economics, discount period contributions with `discount_rate`, and can shift future cash
-  rates with `market_cash_rate_drift_bps`.
+  back-book economics, apply `reinvestment_spread_bps` to surviving loan balances, discount period
+  contributions with `discount_rate`, and can shift future cash rates with
+  `market_cash_rate_drift_bps`.
 
 ## Deliberate simplifications
 

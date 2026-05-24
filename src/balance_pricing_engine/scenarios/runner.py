@@ -275,6 +275,10 @@ def _evaluate_adaptive_segmented_rates(
     original_segmented_config = segmented_config
     initial_boundary_diagnostics: BoundaryDiagnostics | None = None
     expansion_rounds = 0
+    effective_rwa_weight = maturity_adjusted_rwa_weight(
+        config.balance_sheet.loan_rwa_weight,
+        config.balance_sheet.average_loan_tenor_years,
+    )
 
     while True:
         result = optimize_segmented_rates(
@@ -288,7 +292,7 @@ def _evaluate_adaptive_segmented_rates(
             deposit_competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
             required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
             funding_shortfall_penalty_rate=config.balance_sheet.funding_shortfall_penalty_rate,
-            loan_rwa_weight=config.balance_sheet.loan_rwa_weight,
+            loan_rwa_weight=effective_rwa_weight,
             capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
             response_coefficients=config.response.coefficients,
         )
@@ -545,6 +549,7 @@ def _grid_results_from_segmented_result(
                 "loan_interest_income": tier.interest_income,
                 "expected_credit_loss": tier.credit_loss,
                 "capital_charge": tier.capital_charge,
+                "return_on_equity": float("nan"),
                 "deposit_interest_cost": result.deposit_interest_cost,
                 "wholesale_funding_cost": result.wholesale_funding_cost,
                 "excess_deposit_income": result.excess_deposit_income,
@@ -565,6 +570,7 @@ def _grid_results_from_segmented_result(
                 "loan_interest_income": result.loan_interest_income,
                 "expected_credit_loss": result.expected_credit_loss,
                 "capital_charge": result.capital_charge,
+                "return_on_equity": float("nan"),
                 "deposit_interest_cost": tier.interest_cost,
                 "wholesale_funding_cost": result.wholesale_funding_cost,
                 "excess_deposit_income": result.excess_deposit_income,

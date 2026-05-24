@@ -25,6 +25,7 @@ response functions
 economic objective
   + loan interest income
   - expected credit loss
+  - capital charge
   - deposit interest cost
   - wholesale funding cost
   - funding shortfall penalty
@@ -48,9 +49,10 @@ scenario diagnostics and sensitivity analysis
 - `src/balance_pricing_engine/synthetic/`: generates synthetic customers, market state, and response
   probabilities.
 - `src/balance_pricing_engine/pricing/`: calculates objective components such as loan income,
-  credit loss, deposit cost, wholesale funding cost, and funding shortfall penalty.
+  credit loss, maturity-adjusted RWA capital charge, deposit cost, wholesale funding cost, and
+  funding shortfall penalty.
 - `src/balance_pricing_engine/optimization/grid_search.py`: evaluates rate pairs and selects the
-  highest-objective result.
+  highest-objective result, optionally applying a portfolio ROE floor before winner selection.
 - `src/balance_pricing_engine/diagnostics.py`: explains objective components, detects boundary
   issues, expands grids when needed, and runs sensitivity cases.
 - `src/balance_pricing_engine/scenarios/runner.py`: orchestrates baseline scenario diagnostics and
@@ -61,7 +63,8 @@ scenario diagnostics and sensitivity analysis
   diagnostics artifacts with metadata, configuration snapshots, pricing memos, and governance
   checklists.
 - `src/balance_pricing_engine/modelling/`: builds synthetic observed datasets and trains
-  diagnostic-only response models.
+  diagnostic-only response models, including optional LightGBM, XGBoost, and survival/hazard
+  adapters.
 
 ## Adaptive Boundary Flow
 
@@ -84,9 +87,11 @@ market assumptions, carries prior-period loan income and deposit cost as back-bo
 NPV using `discount_rate`.
 
 The key configuration fields are `n_periods`, `loan_runoff_rate`, `deposit_runoff_rate`,
-`discount_rate`, and `market_cash_rate_drift_bps`. The cash-rate drift shifts the cash rate used in
-later periods; competitor loan and deposit rates remain fixed, so a warning is emitted when cash-rate
-drift is configured because competitor gaps will move mechanically.
+`discount_rate`, `reinvestment_spread_bps`, and `market_cash_rate_drift_bps`. Surviving back-book
+loan balances earn a reinvestment rate of cash rate plus `reinvestment_spread_bps`. The cash-rate
+drift shifts the cash rate used in later periods; competitor loan and deposit rates remain fixed, so
+a warning is emitted when cash-rate drift is configured because competitor gaps will move
+mechanically.
 
 ## Artifact Flow
 

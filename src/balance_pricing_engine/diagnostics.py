@@ -15,6 +15,7 @@ from balance_pricing_engine.optimization.grid_search import (
     evaluate_joint_rate_grid,
     select_best_result,
 )
+from balance_pricing_engine.pricing.profit import maturity_adjusted_rwa_weight
 from balance_pricing_engine.rate_grids import build_configured_rate_grids
 from balance_pricing_engine.synthetic.customers import (
     generate_deposit_customers,
@@ -612,7 +613,10 @@ def _run_sensitivity_analysis_for_seed(
             deposit_competitor_gap_elasticity=case.deposit_competitor_gap_elasticity,
             required_deposit_funding_ratio=config.balance_sheet.required_deposit_funding_ratio,
             funding_shortfall_penalty_rate=case.funding_shortfall_penalty_rate,
-            rwa_weight=case.loan_rwa_weight,
+            rwa_weight=maturity_adjusted_rwa_weight(
+                case.loan_rwa_weight,
+                config.balance_sheet.average_loan_tenor_years,
+            ),
             capital_hurdle_rate=case.capital_hurdle_rate,
             home_loan_reference_rate=config.market.home_loan_reference_rate,
             term_deposit_reference_rate=config.market.term_deposit_reference_rate,
