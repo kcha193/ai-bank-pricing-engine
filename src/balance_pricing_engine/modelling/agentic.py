@@ -36,6 +36,7 @@ __all__ = [
     "HistGBMResponseModel",
     "LightGBMResponseModel",
     "XGBoostResponseModel",
+    "SurvivalResponseModel",
     "ModelTrainingAgent",
     "ModelScoringAgent",
     "ModelRegistry",
@@ -333,6 +334,62 @@ class XGBoostResponseModel:
         if importances is None:
             return None
         return dict(zip(feature_columns, importances.tolist()))
+
+    @property
+    def fitted_model(self) -> Any:
+        return self._model
+
+
+class SurvivalResponseModel:
+    """Governed Weibull AFT survival model for churn/rollover prediction.
+
+    Requires the [ml] optional extra (lifelines). Predicts the probability of
+    a customer surviving (not churning) to `hold_period_months`.
+
+    Governance note: decision-support only. Must not replace the synthetic
+    response functions in the optimizer until trained on real attrition data
+    and approved through the ModelRegistry governance workflow.
+    """
+
+    name = "SurvivalResponseModel"
+
+    def __init__(
+        self,
+        hold_period_months: int = 12,
+        duration_col: str = "duration",
+        event_col: str = "event_observed",
+        model: Any | None = None,
+    ):
+        self._hold_period_months = hold_period_months
+        self._duration_col = duration_col
+        self._event_col = event_col
+        self._model = model
+
+    def fit(self, train: pd.DataFrame, feature_columns: list[str], target_column: str) -> None:
+        try:
+            import lifelines
+        except ImportError as exc:
+            raise ImportError(
+                "SurvivalResponseModel requires lifelines. "
+                "Install it with: pip install 'balance_pricing_engine[ml]'"
+            ) from exc
+        fitter = lifelines.WeibullAFTFitter()
+        fit_frame = train[feature_columns + [self._duration_col, self._event_col]].copy()
+        fitter.fit(
+            fit_frame,
+            duration_col=self._duration_col,
+            event_col=self._event_col,
+        )
+        self._model = fitter
+
+    def predict_probability(self, data: pd.DataFrame, feature_columns: list[str]) -> np.ndarray:
+        """Return probability of surviving to hold_period_months for each row."""
+        if self._model is None:
+            raise ValueError("SurvivalResponseModel must be fitted before scoring.")
+        survival = self._model.predict_survival_function(
+            data[feature_columns], times=[self._hold_period_months]
+        )
+        return survival.loc[self._hold_period_months].to_numpy(dtype=float)
 
     @property
     def fitted_model(self) -> Any:

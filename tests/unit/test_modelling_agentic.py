@@ -19,6 +19,7 @@ from balance_pricing_engine.modelling.agentic import (
     ModelRegistry,
     ModelScoringAgent,
     ModelTrainingAgent,
+    SurvivalResponseModel,
     TrainingConfig,
     XGBoostResponseModel,
     _optional_feature_importances,
@@ -371,6 +372,86 @@ def test_xgboost_response_model_feature_importances():
 
     assert importances is not None
     assert set(importances.keys()) == set(LOAN_FEATURE_COLUMNS)
+
+
+def _make_fake_lifelines_module():
+    """Mock lifelines.WeibullAFTFitter with plausible behavior."""
+    fitter = MagicMock()
+    fitter.fit.return_value = fitter
+
+    def predict_survival_function(data, times):
+        return pd.DataFrame(
+            {i: [0.7] for i in range(len(data))},
+            index=times,
+        )
+
+    fitter.predict_survival_function.side_effect = predict_survival_function
+    ll = MagicMock()
+    ll.WeibullAFTFitter.return_value = fitter
+    return ll
+
+
+def test_survival_response_model_name():
+    assert SurvivalResponseModel.name == "SurvivalResponseModel"
+
+
+def test_survival_response_model_raises_before_fit():
+    model = SurvivalResponseModel()
+    df = pd.DataFrame({"offered_rate": [0.08], "duration": [12], "event_observed": [1]})
+    with pytest.raises(ValueError, match="fitted"):
+        model.predict_probability(df, ["offered_rate"])
+
+
+def test_survival_response_model_raises_import_error_when_lifelines_missing():
+    with patch.dict(sys.modules, {"lifelines": None}):
+        model = SurvivalResponseModel()
+        train = pd.DataFrame(
+            {
+                "offered_rate": [0.08] * 50,
+                "duration": list(range(1, 51)),
+                "event_observed": [1] * 50,
+            }
+        )
+        with pytest.raises(ImportError, match="lifelines"):
+            model.fit(train, ["offered_rate"], "event_observed")
+
+
+def test_survival_response_model_fits_and_predicts():
+    fake_ll = _make_fake_lifelines_module()
+
+    with patch.dict(sys.modules, {"lifelines": fake_ll}):
+        model = SurvivalResponseModel(hold_period_months=12)
+        train = pd.DataFrame(
+            {
+                "offered_rate": np.random.rand(100),
+                "duration": np.random.randint(1, 13, 100),
+                "event_observed": np.random.randint(0, 2, 100),
+            }
+        )
+        model.fit(train, ["offered_rate"], "event_observed")
+        probs = model.predict_probability(train, ["offered_rate"])
+
+    assert probs.shape == (100,)
+    assert np.all(probs >= 0) and np.all(probs <= 1)
+
+
+def test_survival_response_model_predicts_survival_probability():
+    fake_ll = _make_fake_lifelines_module()
+
+    with patch.dict(sys.modules, {"lifelines": fake_ll}):
+        model = SurvivalResponseModel(hold_period_months=12)
+        train = pd.DataFrame(
+            {
+                "offered_rate": np.random.rand(50),
+                "duration": np.random.randint(1, 13, 50),
+                "event_observed": [1] * 50,
+            }
+        )
+        model.fit(train, ["offered_rate"], "event_observed")
+        probs = model.predict_probability(train, ["offered_rate"])
+
+    # mock returns 0.7 for all rows at t=12
+    assert probs == pytest.approx(np.full(50, 0.7))
 
 
 def test_scoring_agent_schema_and_fallback(tmp_path):
