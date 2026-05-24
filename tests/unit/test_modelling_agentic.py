@@ -20,6 +20,7 @@ from balance_pricing_engine.modelling.agentic import (
     ModelScoringAgent,
     ModelTrainingAgent,
     TrainingConfig,
+    XGBoostResponseModel,
     _optional_feature_importances,
     generate_card_for_champion,
     generate_model_cards_from_registry,
@@ -300,6 +301,72 @@ def test_lightgbm_response_model_feature_importances():
         train[LOAN_TARGET_COLUMN] = np.random.randint(0, 2, 100)
         model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
 
+        importances = model.feature_importances(LOAN_FEATURE_COLUMNS)
+
+    assert importances is not None
+    assert set(importances.keys()) == set(LOAN_FEATURE_COLUMNS)
+
+
+def _make_fake_xgb_classifier():
+    clf = MagicMock()
+    clf.fit.return_value = clf
+    clf.predict_proba.return_value = np.column_stack(
+        [np.full(100, 0.35), np.full(100, 0.65)]
+    )
+    clf.feature_importances_ = np.ones(len(LOAN_FEATURE_COLUMNS))
+    return clf
+
+
+def _make_fake_xgb_module(clf):
+    xgb = MagicMock()
+    xgb.XGBClassifier.return_value = clf
+    return xgb
+
+
+def test_xgboost_response_model_name():
+    assert XGBoostResponseModel.name == "XGBoostResponseModel"
+
+
+def test_xgboost_response_model_raises_before_fit():
+    model = XGBoostResponseModel()
+    df = pd.DataFrame({"offered_rate": [0.08]})
+    with pytest.raises(ValueError, match="fitted"):
+        model.predict_probability(df, ["offered_rate"])
+
+
+def test_xgboost_response_model_raises_import_error_when_dep_missing():
+    with patch.dict(sys.modules, {"xgboost": None}):
+        model = XGBoostResponseModel()
+        train = pd.DataFrame({col: [0.0] * 50 for col in LOAN_FEATURE_COLUMNS})
+        train[LOAN_TARGET_COLUMN] = [0] * 25 + [1] * 25
+        with pytest.raises(ImportError, match="xgboost"):
+            model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+
+
+def test_xgboost_response_model_fits_and_predicts():
+    clf = _make_fake_xgb_classifier()
+    fake_xgb = _make_fake_xgb_module(clf)
+
+    with patch.dict(sys.modules, {"xgboost": fake_xgb}):
+        model = XGBoostResponseModel(random_state=42)
+        train = pd.DataFrame({col: np.random.rand(100) for col in LOAN_FEATURE_COLUMNS})
+        train[LOAN_TARGET_COLUMN] = np.random.randint(0, 2, 100)
+        model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+        probs = model.predict_probability(train, LOAN_FEATURE_COLUMNS)
+
+    assert probs.shape == (100,)
+    assert np.all(probs >= 0) and np.all(probs <= 1)
+
+
+def test_xgboost_response_model_feature_importances():
+    clf = _make_fake_xgb_classifier()
+    fake_xgb = _make_fake_xgb_module(clf)
+
+    with patch.dict(sys.modules, {"xgboost": fake_xgb}):
+        model = XGBoostResponseModel(random_state=42)
+        train = pd.DataFrame({col: np.random.rand(100) for col in LOAN_FEATURE_COLUMNS})
+        train[LOAN_TARGET_COLUMN] = np.random.randint(0, 2, 100)
+        model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
         importances = model.feature_importances(LOAN_FEATURE_COLUMNS)
 
     assert importances is not None
