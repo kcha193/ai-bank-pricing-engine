@@ -192,6 +192,116 @@ def test_tenor_years_overrides_loan_runoff_rate(monkeypatch):
     assert result.loan_runoff_rate == pytest.approx(0.50)
 
 
+def test_tenor_derived_runoff_is_capped_at_one(monkeypatch):
+    period_results = [
+        _fake_period_result_with_volume(
+            total_objective=100.0,
+            loan_income_after_losses=10.0,
+            deposit_cost=2.0,
+            loan_volume=200.0,
+            deposit_volume=150.0,
+        ),
+        _fake_period_result_with_volume(
+            total_objective=100.0,
+            loan_income_after_losses=10.0,
+            deposit_cost=2.0,
+            loan_volume=200.0,
+            deposit_volume=150.0,
+        ),
+    ]
+
+    def fake_run(config, max_boundary_expansions):
+        return period_results.pop(0)
+
+    monkeypatch.setattr(multiperiod_module, "run_baseline_diagnostics", fake_run)
+    config = make_config(MultiPeriodConfig(n_periods=2, loan_tenor_years=0.5))
+
+    result = run_multiperiod_diagnostics(config, max_boundary_expansions=0)
+
+    assert result.loan_runoff_rate == pytest.approx(1.0)
+    assert result.period_discounted_contributions[1] == pytest.approx((100.0 - 1.0) / 1.08**2)
+
+
+def test_back_book_deposit_cost_carries_booked_rates(monkeypatch):
+    period_results = [
+        _fake_period_result_with_volume(
+            total_objective=100.0,
+            loan_income_after_losses=10.0,
+            deposit_cost=12.0,
+            loan_volume=250.0,
+            deposit_volume=200.0,
+        ),
+        _fake_period_result_with_volume(
+            total_objective=100.0,
+            loan_income_after_losses=10.0,
+            deposit_cost=12.0,
+            loan_volume=250.0,
+            deposit_volume=200.0,
+        ),
+    ]
+
+    def fake_run(config, max_boundary_expansions):
+        return period_results.pop(0)
+
+    monkeypatch.setattr(multiperiod_module, "run_baseline_diagnostics", fake_run)
+    config = make_config(
+        MultiPeriodConfig(
+            n_periods=2,
+            loan_runoff_rate=0.25,
+            deposit_runoff_rate=0.50,
+        )
+    )
+
+    result = run_multiperiod_diagnostics(config, max_boundary_expansions=0)
+
+    assert result.period_discounted_contributions[1] == pytest.approx(
+        (100.0 + 250.0 * 0.75 * 0.04 - 12.0 * 0.50) / 1.08**2
+    )
+
+
+def test_back_book_loan_reinvestment_uses_period_cash_rate(monkeypatch):
+    observed_cash_rates = []
+    period_results = [
+        _fake_period_result_with_volume(
+            total_objective=100.0,
+            loan_income_after_losses=10.0,
+            deposit_cost=0.0,
+            loan_volume=250.0,
+            deposit_volume=0.0,
+        ),
+        _fake_period_result_with_volume(
+            total_objective=100.0,
+            loan_income_after_losses=10.0,
+            deposit_cost=0.0,
+            loan_volume=250.0,
+            deposit_volume=0.0,
+        ),
+    ]
+
+    def fake_run(config, max_boundary_expansions):
+        observed_cash_rates.append(config.market.cash_rate)
+        return period_results.pop(0)
+
+    monkeypatch.setattr(multiperiod_module, "run_baseline_diagnostics", fake_run)
+    config = make_config(
+        MultiPeriodConfig(
+            n_periods=2,
+            loan_runoff_rate=0.25,
+            deposit_runoff_rate=0.50,
+            market_cash_rate_drift_bps=100,
+            reinvestment_spread_bps=25,
+        )
+    )
+
+    with pytest.warns(UserWarning, match="competitor rates are not drifted"):
+        result = run_multiperiod_diagnostics(config, max_boundary_expansions=0)
+
+    assert observed_cash_rates == pytest.approx([0.04, 0.05])
+    assert result.period_discounted_contributions[1] == pytest.approx(
+        (100.0 + 250.0 * 0.75 * 0.0525) / 1.08**2
+    )
+
+
 def test_reinvestment_spread_raises_back_book_income(monkeypatch):
     # When reinvestment_spread_bps=100, surviving back-book earns cash_rate + 1%
     # Period 0: loan_income = 10.0 added to back-book

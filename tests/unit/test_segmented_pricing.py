@@ -319,7 +319,8 @@ def test_segmented_grid_results_emit_one_row_per_winning_tier():
     deposit_rows = diagnostics.grid_results.tail(len(tier_rates["deposit_tiers"]))
     assert set(loan_rows["loan_rate"]) == set(tier_rates["loan_tiers"].values())
     assert set(deposit_rows["deposit_rate"]) == set(tier_rates["deposit_tiers"].values())
-    assert diagnostics.grid_results["return_on_equity"].isna().all()
+    assert diagnostics.grid_results["return_on_equity"].notna().all()
+    assert diagnostics.grid_results["return_on_equity"].nunique() == 1
 
 
 def test_segmented_scenario_applies_maturity_adjusted_rwa_weight():

@@ -300,6 +300,7 @@ def _evaluate_adaptive_segmented_rates(
             result,
             segmented_config,
             market,
+            capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
             expansion_rounds=expansion_rounds,
             initial_boundary_diagnostics=initial_boundary_diagnostics,
             original_config=original_segmented_config,
@@ -315,6 +316,7 @@ def _evaluate_adaptive_segmented_rates(
                 result,
                 segmented_config,
                 market,
+                capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
                 expansion_rounds=expansion_rounds,
                 initial_boundary_diagnostics=initial_boundary_diagnostics,
                 original_config=original_segmented_config,
@@ -333,6 +335,7 @@ def _evaluate_adaptive_segmented_rates(
                 result,
                 segmented_config,
                 market,
+                capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
                 expansion_rounds=expansion_rounds,
                 initial_boundary_diagnostics=initial_boundary_diagnostics,
                 original_config=original_segmented_config,
@@ -346,13 +349,18 @@ def _segmented_diagnostics(
     config: SegmentedPricingConfig,
     market: MarketState,
     *,
+    capital_hurdle_rate: float,
     expansion_rounds: int = 0,
     initial_boundary_diagnostics: BoundaryDiagnostics | None = None,
     original_config: SegmentedPricingConfig | None = None,
     expansion_capped: bool = False,
 ) -> ScenarioDiagnostics:
     best_result = _optimization_result_from_segmented_result(result)
-    grid_results = _grid_results_from_segmented_result(result, best_result)
+    grid_results = _grid_results_from_segmented_result(
+        result,
+        best_result,
+        capital_hurdle_rate=capital_hurdle_rate,
+    )
     boundary_diagnostics = _segmented_boundary_diagnostics(
         result,
         config,
@@ -535,10 +543,26 @@ def _optimization_result_from_segmented_result(
 def _grid_results_from_segmented_result(
     segmented_result: SegmentedOptimizationResult,
     result: OptimizationResult,
+    *,
+    capital_hurdle_rate: float,
 ) -> pd.DataFrame:
     # Segmented grid rows are synthetic decomposition rows, not independent alternatives.
     # total_objective is always the actual portfolio value so rows never dominate the winner.
     rows: list[dict[str, float]] = []
+    required_capital = (
+        result.capital_charge / capital_hurdle_rate if capital_hurdle_rate > 0.0 else 0.0
+    )
+    return_on_equity = (
+        (
+            result.loan_interest_income
+            - result.expected_credit_loss
+            - result.deposit_interest_cost
+            - result.wholesale_funding_cost
+        )
+        / required_capital
+        if required_capital > 0.0
+        else 0.0
+    )
     for tier in segmented_result.loan_tiers:
         rows.append(
             {
@@ -549,7 +573,7 @@ def _grid_results_from_segmented_result(
                 "loan_interest_income": tier.interest_income,
                 "expected_credit_loss": tier.credit_loss,
                 "capital_charge": tier.capital_charge,
-                "return_on_equity": float("nan"),
+                "return_on_equity": return_on_equity,
                 "deposit_interest_cost": result.deposit_interest_cost,
                 "wholesale_funding_cost": result.wholesale_funding_cost,
                 "excess_deposit_income": result.excess_deposit_income,
@@ -570,7 +594,7 @@ def _grid_results_from_segmented_result(
                 "loan_interest_income": result.loan_interest_income,
                 "expected_credit_loss": result.expected_credit_loss,
                 "capital_charge": result.capital_charge,
-                "return_on_equity": float("nan"),
+                "return_on_equity": return_on_equity,
                 "deposit_interest_cost": tier.interest_cost,
                 "wholesale_funding_cost": result.wholesale_funding_cost,
                 "excess_deposit_income": result.excess_deposit_income,

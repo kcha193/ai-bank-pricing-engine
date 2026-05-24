@@ -67,11 +67,11 @@ def _apply_single_patch(config: EngineConfig, path: list[str], value: Any) -> En
         raise ValueError("ConfigPatch path must not be empty.")
     if len(path) == 1:
         field = path[0]
-        if not hasattr(config, field):
+        if not _is_model_field(config, field):
             raise AttributeError(f"EngineConfig has no field '{field}'.")
         return _validated_copy(config, {field: value})
     field = path[0]
-    if not hasattr(config, field):
+    if not _is_model_field(config, field):
         raise AttributeError(f"EngineConfig has no field '{field}'.")
     sub_model = getattr(config, field)
     if not hasattr(sub_model, "model_copy"):
@@ -87,11 +87,11 @@ def _apply_nested(model: Any, path: list[str], value: Any) -> Any:
         raise ValueError("ConfigPatch path must not be empty.")
     if len(path) == 1:
         field = path[0]
-        if not hasattr(model, field):
+        if not _is_model_field(model, field):
             raise AttributeError(f"Model {type(model).__name__} has no field '{field}'.")
         return _validated_copy(model, {field: value})
     field = path[0]
-    if not hasattr(model, field):
+    if not _is_model_field(model, field):
         raise AttributeError(f"Model {type(model).__name__} has no field '{field}'.")
     sub = getattr(model, field)
     if not hasattr(sub, "model_copy"):
@@ -105,6 +105,10 @@ def _validated_copy(model: Any, update: dict[str, Any]) -> Any:
     data = model.model_dump()
     data.update(update)
     return type(model).model_validate(data)
+
+
+def _is_model_field(model: Any, field: str) -> bool:
+    return field in getattr(type(model), "model_fields", {})
 
 
 class NLScenarioInterface:

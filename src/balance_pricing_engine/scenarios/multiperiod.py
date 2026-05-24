@@ -50,10 +50,10 @@ def run_multiperiod_diagnostics(
 
     # Determine effective per-period loan runoff rate
     effective_loan_runoff = (
-        1.0 / mp.loan_tenor_years if mp.loan_tenor_years is not None else mp.loan_runoff_rate
+        min(1.0, 1.0 / mp.loan_tenor_years)
+        if mp.loan_tenor_years is not None
+        else mp.loan_runoff_rate
     )
-
-    reinvestment_rate = config.market.cash_rate + mp.reinvestment_spread_bps / 10_000
 
     if mp.market_cash_rate_drift_bps != 0:
         warnings.warn(
@@ -65,17 +65,18 @@ def run_multiperiod_diagnostics(
     period_diagnostics: list[ScenarioDiagnostics] = []
     period_discounted_contributions: list[float] = []
     back_book_loan_volume = 0.0
-    back_book_deposit_volume = 0.0
+    back_book_deposit_cost = 0.0
 
     for period in range(mp.n_periods):
+        scenario_config = _build_period_config(config, period)
+        reinvestment_rate = scenario_config.market.cash_rate + mp.reinvestment_spread_bps / 10_000
+
         # Surviving back-book earns reinvestment_rate on remaining balances
         back_book_loan_volume *= 1 - effective_loan_runoff
-        back_book_deposit_volume *= 1 - mp.deposit_runoff_rate
+        back_book_deposit_cost *= 1 - mp.deposit_runoff_rate
 
         back_book_loan_income = back_book_loan_volume * reinvestment_rate
-        back_book_deposit_cost = back_book_deposit_volume * config.market.cash_rate
 
-        scenario_config = _build_period_config(config, period)
         diagnostics = run_baseline_diagnostics(
             scenario_config,
             max_boundary_expansions=max_boundary_expansions,
@@ -88,7 +89,7 @@ def run_multiperiod_diagnostics(
         period_discounted_contributions.append(discounted_contribution)
 
         back_book_loan_volume += diagnostics.best_result.expected_loan_volume
-        back_book_deposit_volume += diagnostics.best_result.expected_deposit_volume
+        back_book_deposit_cost += diagnostics.best_result.deposit_interest_cost
 
     return MultiPeriodDiagnostics(
         period_diagnostics=period_diagnostics,

@@ -51,6 +51,20 @@ def test_apply_patches_raises_on_unknown_path(base_config):
         apply_patches(base_config, patches)
 
 
+def test_apply_patches_rejects_model_methods_as_paths(base_config):
+    patches = [ConfigPatch(path=["model_dump"], value={})]
+
+    with pytest.raises(AttributeError, match="no field 'model_dump'"):
+        apply_patches(base_config, patches)
+
+
+def test_apply_patches_rejects_nested_model_methods_as_paths(base_config):
+    patches = [ConfigPatch(path=["market", "model_dump"], value={})]
+
+    with pytest.raises(AttributeError, match="MarketConfig has no field 'model_dump'"):
+        apply_patches(base_config, patches)
+
+
 def test_apply_patches_raises_on_invalid_value(base_config):
     # cash_rate must be a float, not a string
     patches = [ConfigPatch(path=["market", "cash_rate"], value="not-a-float")]
