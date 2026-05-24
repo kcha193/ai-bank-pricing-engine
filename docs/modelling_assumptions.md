@@ -8,7 +8,8 @@
 - Home loan profitability is reduced by expected credit loss.
 - Capital charge uses `loan_rwa_weight`; when `average_loan_tenor_years` is set, the profit module
   applies the maturity-adjusted RWA proxy before optimization and sensitivity runs. When it is
-  unset, the raw RWA weight is used.
+  unset, the raw RWA weight is used. A one-year tenor is neutral; longer tenors increase the proxy
+  RWA weight.
 - Deposits are treated as funding for lending.
 - Funding shortfalls receive a financial penalty.
 - `min_return_on_equity`, when configured, is an optimizer floor over the grid's ROE diagnostic
@@ -18,6 +19,8 @@
 - ML response models are diagnostic only and are trained on synthetic observed outcomes generated
   from the explicit response functions. Available adapters include logistic regression, histogram
   gradient boosting, optional LightGBM, optional XGBoost, and an optional survival/hazard adapter.
+  The survival adapter reports event probability to match binary target metrics where `1` means
+  churn/event observed.
 - Multi-period scenario rolls are available for portfolio-level diagnostics. They rerun the baseline
   scenario for `n_periods`, apply `loan_runoff_rate` and `deposit_runoff_rate` to prior-period
   back-book economics, apply `reinvestment_spread_bps` to surviving loan balances, discount period

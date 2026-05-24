@@ -446,7 +446,28 @@ def test_survival_response_model_fits_and_predicts():
     assert np.all(probs >= 0) and np.all(probs <= 1)
 
 
-def test_survival_response_model_predicts_survival_probability():
+def test_survival_response_model_uses_caller_target_column():
+    fake_ll = _make_fake_lifelines_module()
+
+    with patch.dict(sys.modules, {"lifelines": fake_ll}):
+        model = SurvivalResponseModel(hold_period_months=12)
+        train = pd.DataFrame(
+            {
+                "offered_rate": np.random.rand(50),
+                "duration": np.random.randint(1, 13, 50),
+                "event_observed": [0] * 50,
+                "churned": [1] * 50,
+            }
+        )
+        model.fit(train, ["offered_rate"], "churned")
+
+    fitter = fake_ll.WeibullAFTFitter.return_value
+    fit_frame = fitter.fit.call_args.args[0]
+    assert "churned" in fit_frame.columns
+    assert fitter.fit.call_args.kwargs["event_col"] == "churned"
+
+
+def test_survival_response_model_predicts_event_probability():
     fake_ll = _make_fake_lifelines_module()
 
     with patch.dict(sys.modules, {"lifelines": fake_ll}):
@@ -461,8 +482,8 @@ def test_survival_response_model_predicts_survival_probability():
         model.fit(train, ["offered_rate"], "event_observed")
         probs = model.predict_probability(train, ["offered_rate"])
 
-    # mock returns 0.7 for all rows at t=12
-    assert probs == pytest.approx(np.full(50, 0.7))
+    # mock returns 0.7 survival for all rows at t=12, so event probability is 0.3
+    assert probs == pytest.approx(np.full(50, 0.3))
 
 
 def test_scoring_agent_schema_and_fallback(tmp_path):

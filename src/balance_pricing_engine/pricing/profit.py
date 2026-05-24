@@ -52,13 +52,13 @@ def maturity_adjusted_rwa_weight(base_rwa_weight: float, tenor_years: float | No
     """Return a maturity-scaled RWA weight using a simplified linear approximation.
 
     When tenor is not configured, the base RWA weight is returned unchanged.
-    Clamps tenor to [1, 5] years. Factor = 0.70 + 0.06 * tenor.
-    At 1y: 0.76x base. At 5y: 1.00x base. Not a regulatory calculation.
+    Clamps tenor to [1, 5] years. Factor = 1.00 + 0.06 * (tenor - 1).
+    At 1y: 1.00x base. At 5y: 1.24x base. Not a regulatory calculation.
     """
     if tenor_years is None:
         return base_rwa_weight
     clamped = max(1.0, min(5.0, tenor_years))
-    return base_rwa_weight * (0.70 + 0.06 * clamped)
+    return base_rwa_weight * (1.0 + 0.06 * (clamped - 1.0))
 
 
 def expected_deposit_cost(

@@ -72,9 +72,9 @@ def test_maturity_adjusted_rwa_weight_skips_when_tenor_is_none():
     assert weight == pytest.approx(0.35)
 
 
-def test_maturity_adjusted_rwa_weight_at_one_year_uses_formula():
+def test_maturity_adjusted_rwa_weight_at_one_year_is_neutral():
     weight = maturity_adjusted_rwa_weight(base_rwa_weight=0.35, tenor_years=1.0)
-    assert weight == pytest.approx(0.35 * (0.70 + 0.06 * 1.0))
+    assert weight == pytest.approx(0.35)
 
 
 def test_maturity_adjusted_rwa_weight_increases_with_tenor():

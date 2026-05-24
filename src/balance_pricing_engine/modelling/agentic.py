@@ -344,7 +344,8 @@ class SurvivalResponseModel:
     """Governed Weibull AFT survival model for churn/rollover prediction.
 
     Requires the [ml] optional extra (lifelines). Predicts the probability of
-    a customer surviving (not churning) to `hold_period_months`.
+    observing the event/churn label by `hold_period_months`, matching the
+    project's binary target convention where 1 means event observed.
 
     Governance note: decision-support only. Must not replace the synthetic
     response functions in the optimizer until trained on real attrition data
@@ -374,22 +375,24 @@ class SurvivalResponseModel:
                 "Install it with: pip install 'balance_pricing_engine[ml]'"
             ) from exc
         fitter = lifelines.WeibullAFTFitter()
-        fit_frame = train[feature_columns + [self._duration_col, self._event_col]].copy()
+        fit_columns = list(dict.fromkeys(feature_columns + [self._duration_col, target_column]))
+        fit_frame = train[fit_columns].copy()
         fitter.fit(
             fit_frame,
             duration_col=self._duration_col,
-            event_col=self._event_col,
+            event_col=target_column,
         )
         self._model = fitter
 
     def predict_probability(self, data: pd.DataFrame, feature_columns: list[str]) -> np.ndarray:
-        """Return probability of surviving to hold_period_months for each row."""
+        """Return event probability by hold_period_months for each row."""
         if self._model is None:
             raise ValueError("SurvivalResponseModel must be fitted before scoring.")
         survival = self._model.predict_survival_function(
             data[feature_columns], times=[self._hold_period_months]
         )
-        return survival.loc[self._hold_period_months].to_numpy(dtype=float)
+        event_probability = 1.0 - survival.loc[self._hold_period_months].to_numpy(dtype=float)
+        return np.clip(event_probability, 0.0, 1.0)
 
     @property
     def fitted_model(self) -> Any:

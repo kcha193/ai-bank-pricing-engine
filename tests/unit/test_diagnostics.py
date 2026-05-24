@@ -412,7 +412,7 @@ def test_sensitivity_applies_configured_maturity_adjustment_to_case_rwa_weight(m
         max_boundary_expansions=0,
     )
 
-    assert observed_rwa_weights == pytest.approx([0.35 * 0.88, 0.70 * 0.88])
+    assert observed_rwa_weights == pytest.approx([0.35 * 1.12, 0.70 * 1.12])
 
 
 def test_sensitivity_multi_seed_columns_match_contract():
