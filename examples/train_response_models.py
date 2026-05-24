@@ -27,7 +27,6 @@ from balance_pricing_engine.modelling.agentic import (
 )
 from balance_pricing_engine.modelling.evaluation import (
     check_rate_response_direction,
-    compare_models,
     evaluate_binary_classifier,
     evaluate_calibration,
 )
@@ -36,6 +35,7 @@ from balance_pricing_engine.modelling.models import (
     build_logistic_regression_model,
     fit_response_model,
 )
+from balance_pricing_engine.modelling.reports import build_champion_challenger_report
 from balance_pricing_engine.scenarios.runner import build_configured_rate_grids
 from balance_pricing_engine.synthetic.customers import (
     generate_deposit_customers,
@@ -129,11 +129,6 @@ def train_and_report(
         (gbm_cal["mean_predicted_probability"] - gbm_cal["observed_rate"]).abs().mean()
     )
 
-    comparison = compare_models(
-        "logistic_regression", lr_metrics,
-        "hist_gradient_boosting", gbm_metrics, gbm_cal_mae,
-    )
-
     lr_check = check_rate_response_direction(
         lr_model, test.head(1_000), feature_columns, offered_rates, competitor_rate,
         expected_direction,
@@ -143,33 +138,45 @@ def train_and_report(
         expected_direction,
     )
 
+    report = build_champion_challenger_report(
+        champion_name="logistic_regression",
+        challenger_name="hist_gradient_boosting",
+        champion_metrics=lr_metrics,
+        challenger_metrics=gbm_metrics,
+        champion_cal_mae=lr_cal_mae,
+        challenger_cal_mae=gbm_cal_mae,
+        champion_rate_check_pass=lr_check.is_directionally_sane,
+        challenger_rate_check_pass=gbm_check.is_directionally_sane,
+    )
+
     print(title)
-    _print_comparison_table(lr_metrics, gbm_metrics, lr_cal_mae, gbm_cal_mae)
+    print_champion_challenger_report(report)
     _print_governed_candidate_table(
         dataset=dataset,
         feature_columns=feature_columns,
         target_column=target_column,
         random_seed=random_seed,
     )
-    print(f"  Recommendation: {comparison['recommended']}")
-    print(f"    reason: {comparison['reason']}")
     print("  Logistic regression rate response")
     print_rate_response_check(lr_check)
     print("  Hist gradient boosting rate response")
     print_rate_response_check(gbm_check)
 
 
-def _print_comparison_table(
-    lr_metrics: dict,
-    gbm_metrics: dict,
-    lr_cal_mae: float,
-    gbm_cal_mae: float,
-) -> None:
-    header = f"  {'metric':<22}  {'logistic_regression':>22}  {'hist_gradient_boosting':>22}"
+def print_champion_challenger_report(report: dict) -> None:
+    champion = report["champion_name"]
+    challenger = report["challenger_name"]
+    header = f"  {'metric':<22}  {champion:>24}  {challenger:>24}"
     print(header)
-    for key in ["auc", "log_loss", "brier_score"]:
-        print(f"  {key:<22}  {lr_metrics[key]:>22.4f}  {gbm_metrics[key]:>22.4f}")
-    print(f"  {'calibration_mae':<22}  {lr_cal_mae:>22.4f}  {gbm_cal_mae:>22.4f}")
+    for row in report["rows"]:
+        champ_val = row[champion]
+        chall_val = row[challenger]
+        if isinstance(champ_val, float):
+            print(f"  {row['metric']:<22}  {champ_val:>24.4f}  {chall_val:>24.4f}")
+        else:
+            print(f"  {row['metric']:<22}  {champ_val:>24}  {chall_val:>24}")
+    print(f"  Recommendation: {report['recommendation']}")
+    print(f"    reason: {report['reason']}")
 
 
 def _print_governed_candidate_table(

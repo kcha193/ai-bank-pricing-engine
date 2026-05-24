@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from dataclasses import replace
 import logging
 
 import numpy as np
@@ -15,6 +18,8 @@ from balance_pricing_engine.modelling.agentic import (
     ModelTrainingAgent,
     TrainingConfig,
     _optional_feature_importances,
+    generate_card_for_champion,
+    generate_model_cards_from_registry,
     write_model_card,
 )
 from balance_pricing_engine.modelling.datasets import (
@@ -353,6 +358,115 @@ def test_registry_append_accepts_model_record(tmp_path):
     latest = registry.latest_for_model("elasticity_baseline")
     assert latest is not None
     assert latest["version"] == "v1"
+
+
+def _make_record(model_name: str = "logistic", artifact_path: str | None = None) -> ModelRecord:
+    return ModelRecord(
+        model_name=model_name,
+        model_type="LogisticResponseModel",
+        version="v1",
+        trained_at_utc="2026-05-23T00:00:00+00:00",
+        config_hash="abc123",
+        metrics={"auc": 0.71, "log_loss": 0.64, "brier_score": 0.22},
+        calibration_mae=0.03,
+        artifact_path=artifact_path,
+        governance_status="trained",
+        champion_status="challenger",
+        feature_columns=["offered_rate", "competitor_rate"],
+        target_column="accepted",
+    )
+
+
+def test_generate_model_cards_from_registry_writes_one_card_per_record(tmp_path):
+    registry_path = tmp_path / "registry.json"
+    registry = ModelRegistry(registry_path)
+    registry.append(_make_record("logistic"))
+    registry.append(_make_record("histgbm"))
+
+    cards = generate_model_cards_from_registry(registry, tmp_path / "cards")
+
+    assert len(cards) == 2
+    assert all(p.exists() for p in cards)
+
+
+def test_generate_model_cards_from_registry_preserves_duplicate_model_versions(tmp_path):
+    registry_path = tmp_path / "registry.json"
+    registry = ModelRegistry(registry_path)
+    first = _make_record("logistic")
+    second = replace(
+        first,
+        trained_at_utc="2026-05-23T01:00:00+00:00",
+        metrics={"auc": 0.81, "log_loss": 0.54, "brier_score": 0.18},
+    )
+    registry.append(first)
+    registry.append(second)
+
+    cards = generate_model_cards_from_registry(registry, tmp_path / "cards")
+
+    assert len(cards) == 2
+    assert len({path.name for path in cards}) == 2
+    assert len(list((tmp_path / "cards").glob("*.md"))) == 2
+    assert all(path.exists() for path in cards)
+
+
+def test_generate_model_cards_from_registry_skips_incomplete_historical_records(tmp_path):
+    registry_path = tmp_path / "registry.json"
+    registry = ModelRegistry(registry_path)
+    registry.register({"model_name": "historical", "champion_status": "challenger"})
+    registry.append(_make_record("logistic"))
+
+    cards = generate_model_cards_from_registry(registry, tmp_path / "cards")
+
+    assert len(cards) == 1
+    assert cards[0].exists()
+    assert "logistic" in cards[0].read_text()
+
+
+def test_generate_model_cards_from_registry_skips_no_records(tmp_path):
+    registry_path = tmp_path / "registry.json"
+    registry = ModelRegistry(registry_path)
+
+    cards = generate_model_cards_from_registry(registry, tmp_path / "cards")
+
+    assert cards == []
+
+
+def test_generate_model_cards_from_registry_card_contains_model_name(tmp_path):
+    registry_path = tmp_path / "registry.json"
+    registry = ModelRegistry(registry_path)
+    registry.append(_make_record("logistic"))
+
+    cards = generate_model_cards_from_registry(registry, tmp_path / "cards")
+    content = cards[0].read_text()
+
+    assert "logistic" in content
+    assert "LogisticResponseModel" in content
+
+
+def test_generate_card_for_champion_returns_none_when_no_champion(tmp_path):
+    registry_path = tmp_path / "registry.json"
+    registry = ModelRegistry(registry_path)
+    registry.append(_make_record("logistic"))
+
+    result = generate_card_for_champion(registry, tmp_path / "cards")
+
+    assert result is None
+
+
+def test_generate_card_for_champion_writes_card_for_champion(tmp_path):
+    registry_path = tmp_path / "registry.json"
+    registry = ModelRegistry(registry_path)
+    record = _make_record("logistic")
+    registry.append(record)
+    registry.approve_model("logistic", approver="test-user")
+    registry.promote_champion("logistic", approver="test-user")
+
+    card_path = generate_card_for_champion(registry, tmp_path / "cards")
+
+    assert card_path is not None
+    assert card_path.exists()
+    content = card_path.read_text()
+    assert "champion" in content.lower()
 
 
 def test_registered_scoring_reports_fallback_model_when_artifact_missing(tmp_path):
@@ -1110,3 +1224,18 @@ def test_training_agent_uses_candidate_key_for_same_class_model_card_importances
 
     assert "| offered_rate | 0.9000 |" in first_card
     assert "| offered_rate | 0.1000 |" in second_card
+
+
+def test_generate_card_for_champion_skips_partial_registry_record(tmp_path):
+    registry = ModelRegistry(tmp_path / "model_registry.json")
+    registry.register(
+        {
+            "model_name": "ManualChampion",
+            "champion_status": "champion",
+        }
+    )
+
+    card_path = generate_card_for_champion(registry, tmp_path / "model_cards")
+
+    assert card_path is None
+    assert not (tmp_path / "model_cards").exists()

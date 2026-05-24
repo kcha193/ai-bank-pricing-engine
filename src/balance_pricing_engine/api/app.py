@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -8,15 +9,26 @@ from pydantic import BaseModel, ValidationError
 import yaml
 
 from balance_pricing_engine.config import EngineConfig
+from balance_pricing_engine.diagnostics import run_sensitivity_analysis
 from balance_pricing_engine.optimization.grid_search import GRID_RESULT_COLUMNS
 from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
 
 
 class RunScenarioRequest(BaseModel):
     config_yaml: str
+    include_sensitivity: bool = False
 
 
 app = FastAPI(title="AI Bank Pricing Engine")
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    try:
+        pkg_version = _pkg_version("ai-bank-pricing-engine")
+    except PackageNotFoundError:
+        pkg_version = "unknown"
+    return {"status": "ok", "version": pkg_version}
 
 
 @app.post("/run-scenario")
@@ -30,7 +42,7 @@ def run_scenario(request: RunScenarioRequest) -> dict[str, Any]:
     try:
         diagnostics = run_baseline_diagnostics(config)
         best_result = diagnostics.best_result
-        return {
+        payload: dict[str, Any] = {
             "best_loan_rate": float(best_result.loan_rate),
             "best_deposit_rate": float(best_result.deposit_rate),
             "objective_value": float(best_result.total_objective),
@@ -48,8 +60,17 @@ def run_scenario(request: RunScenarioRequest) -> dict[str, Any]:
             "policy_band_breached": bool(diagnostics.policy_band_breached),
             "top_results": _top_results_payload(diagnostics),
         }
+        if request.include_sensitivity:
+            sensitivity_frame = run_sensitivity_analysis(config)
+            payload["sensitivity"] = sensitivity_frame.to_dict(orient="records")
+    except HTTPException:
+        raise
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail="Unexpected scenario execution error") from exc
+
+    return payload
 
 
 def _top_results_payload(diagnostics: Any) -> list[dict[str, float | None]]:
