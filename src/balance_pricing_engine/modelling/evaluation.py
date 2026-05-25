@@ -218,7 +218,7 @@ def compute_lift_table(
 def check_lift_monotonicity(lift_table: pd.DataFrame) -> MonotonicityCheck:
     """Check whether the observed_rate column decreases monotonically across deciles."""
     return check_monotonicity(
-        lift_table.rename(columns={"observed_rate": "mean_predicted_probability"}),
+        lift_table[["decile", "observed_rate"]].rename(columns={"observed_rate": "mean_predicted_probability"}),
         pdp_feature="decile",
         expected_direction="decreasing",
     )

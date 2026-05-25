@@ -428,10 +428,12 @@ def test_compute_lift_table_lift_of_random_model():
 
 
 def test_check_lift_monotonicity_passes_for_good_model():
+    # observed_rate decreases monotonically; mean_predicted_probability is intentionally
+    # different to confirm the check operates on observed_rate, not predicted probabilities.
     lift_table = pd.DataFrame(
         {
             "decile": list(range(1, 11)),
-            "mean_predicted_probability": [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.15, 0.1],
+            "mean_predicted_probability": [0.85, 0.75, 0.65, 0.55, 0.45, 0.35, 0.25, 0.18, 0.12, 0.08],
             "observed_rate": [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.15, 0.1],
             "lift": [1.8, 1.6, 1.4, 1.2, 1.0, 0.8, 0.6, 0.4, 0.3, 0.2],
             "count": [100] * 10,

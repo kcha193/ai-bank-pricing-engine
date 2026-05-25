@@ -532,6 +532,34 @@ def test_distortion_warning_still_fires_when_only_cash_rate_drifts():
         run_multiperiod_diagnostics(config, max_boundary_expansions=0)
 
 
+def test_distortion_warning_fires_for_partial_competitor_drift():
+    # loan drifts but deposit does not — deposit gap still shifts mechanically
+    config = make_config(
+        MultiPeriodConfig(
+            n_periods=2,
+            market_cash_rate_drift_bps=25,
+            competitor_loan_rate_drift_bps=25,
+            competitor_deposit_rate_drift_bps=0,
+        )
+    )
+    with pytest.warns(UserWarning, match="competitor rates are not drifted"):
+        run_multiperiod_diagnostics(config, max_boundary_expansions=0)
+
+
+def test_distortion_warning_fires_when_only_deposit_competitor_drifts():
+    # deposit drifts but loan does not — loan gap still shifts mechanically
+    config = make_config(
+        MultiPeriodConfig(
+            n_periods=2,
+            market_cash_rate_drift_bps=25,
+            competitor_loan_rate_drift_bps=0,
+            competitor_deposit_rate_drift_bps=25,
+        )
+    )
+    with pytest.warns(UserWarning, match="competitor rates are not drifted"):
+        run_multiperiod_diagnostics(config, max_boundary_expansions=0)
+
+
 def test_zero_competitor_drift_preserves_current_behavior():
     config = make_config(
         MultiPeriodConfig(

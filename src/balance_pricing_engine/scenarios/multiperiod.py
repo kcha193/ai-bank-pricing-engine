@@ -55,10 +55,9 @@ def run_multiperiod_diagnostics(
         else mp.loan_runoff_rate
     )
 
-    if (
-        mp.market_cash_rate_drift_bps != 0
-        and mp.competitor_loan_rate_drift_bps == 0
-        and mp.competitor_deposit_rate_drift_bps == 0
+    if mp.market_cash_rate_drift_bps != 0 and (
+        mp.competitor_loan_rate_drift_bps == 0
+        or mp.competitor_deposit_rate_drift_bps == 0
     ):
         reinvestment_note = (
             " reinvestment_spread_bps is also fixed and will not drift with the cash rate."
