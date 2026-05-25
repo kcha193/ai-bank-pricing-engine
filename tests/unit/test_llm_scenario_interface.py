@@ -11,8 +11,11 @@ from balance_pricing_engine.config import load_config
 from balance_pricing_engine.llm.scenario_interface import (
     ConfigPatch,
     NLScenarioInterface,
+    NLScenarioResult,
+    PatchProposal,
     apply_patches,
 )
+from balance_pricing_engine.optimization.response_fn import GovernanceError
 
 
 @pytest.fixture()
@@ -22,7 +25,7 @@ def base_config():
 
 def test_apply_patches_top_level_field(base_config):
     patches = [ConfigPatch(path=["random_seed"], value=99)]
-    patched = apply_patches(base_config, patches)
+    patched = apply_patches(base_config, patches, approved=True)
     assert patched.random_seed == 99
 
 
@@ -30,7 +33,7 @@ def test_apply_patches_nested_field(base_config):
     original_cash_rate = base_config.market.cash_rate
     new_rate = original_cash_rate - 0.0025  # -25 bps
     patches = [ConfigPatch(path=["market", "cash_rate"], value=new_rate)]
-    patched = apply_patches(base_config, patches)
+    patched = apply_patches(base_config, patches, approved=True)
     assert patched.market.cash_rate == pytest.approx(new_rate)
     assert base_config.market.cash_rate == pytest.approx(original_cash_rate)  # immutable
 
@@ -40,7 +43,7 @@ def test_apply_patches_multiple_fields(base_config):
         ConfigPatch(path=["market", "cash_rate"], value=0.05),
         ConfigPatch(path=["market", "competitor_loan_rate"], value=0.07),
     ]
-    patched = apply_patches(base_config, patches)
+    patched = apply_patches(base_config, patches, approved=True)
     assert patched.market.cash_rate == pytest.approx(0.05)
     assert patched.market.competitor_loan_rate == pytest.approx(0.07)
 
@@ -48,28 +51,28 @@ def test_apply_patches_multiple_fields(base_config):
 def test_apply_patches_raises_on_unknown_path(base_config):
     patches = [ConfigPatch(path=["nonexistent_field"], value=42)]
     with pytest.raises((AttributeError, ValueError)):
-        apply_patches(base_config, patches)
+        apply_patches(base_config, patches, approved=True)
 
 
 def test_apply_patches_rejects_model_methods_as_paths(base_config):
     patches = [ConfigPatch(path=["model_dump"], value={})]
 
     with pytest.raises(AttributeError, match="no field 'model_dump'"):
-        apply_patches(base_config, patches)
+        apply_patches(base_config, patches, approved=True)
 
 
 def test_apply_patches_rejects_nested_model_methods_as_paths(base_config):
     patches = [ConfigPatch(path=["market", "model_dump"], value={})]
 
     with pytest.raises(AttributeError, match="MarketConfig has no field 'model_dump'"):
-        apply_patches(base_config, patches)
+        apply_patches(base_config, patches, approved=True)
 
 
 def test_apply_patches_raises_on_invalid_value(base_config):
     # cash_rate must be a float, not a string
     patches = [ConfigPatch(path=["market", "cash_rate"], value="not-a-float")]
     with pytest.raises(Exception):
-        apply_patches(base_config, patches)
+        apply_patches(base_config, patches, approved=True)
 
 
 def _make_mock_client(patches_json: str):
@@ -165,3 +168,60 @@ def test_propose_writes_audit_log(tmp_path, base_config):
     entry = json.loads(audit_log.read_text().strip())
     assert entry["used_llm"] is True
     assert entry["n_patches"] == 1
+
+
+# --- Governance gate tests ---
+
+
+def test_apply_patches_raises_governance_error_without_approval(base_config):
+    patches = [ConfigPatch(path=["random_seed"], value=99)]
+    with pytest.raises(GovernanceError):
+        apply_patches(base_config, patches)
+
+
+def test_apply_patches_succeeds_with_approved_true(base_config):
+    patches = [ConfigPatch(path=["random_seed"], value=99)]
+    result = apply_patches(base_config, patches, approved=True)
+    assert result.random_seed == 99
+
+
+def test_nl_scenario_result_apply_to_raises_without_approval(base_config):
+    proposal = PatchProposal(patches=[ConfigPatch(path=["random_seed"], value=77)])
+    result = NLScenarioResult(
+        proposal=proposal,
+        diff_yaml="# diff",
+        used_llm=False,
+        model_used="disabled",
+        prompt_hash="abc123",
+        timestamp_utc="2026-01-01T00:00:00+00:00",
+    )
+    with pytest.raises(GovernanceError):
+        result.apply_to(base_config)
+
+
+def test_nl_scenario_result_apply_to_succeeds_with_approval(base_config):
+    proposal = PatchProposal(patches=[ConfigPatch(path=["random_seed"], value=77)])
+    result = NLScenarioResult(
+        proposal=proposal,
+        diff_yaml="# diff",
+        used_llm=False,
+        model_used="disabled",
+        prompt_hash="abc123",
+        timestamp_utc="2026-01-01T00:00:00+00:00",
+    )
+    patched = result.apply_to(base_config, approved=True)
+    assert patched.random_seed == 77
+
+
+def test_nl_scenario_result_apply_to_raises_when_no_proposal(base_config):
+    result_no_proposal = NLScenarioResult(
+        proposal=None,
+        diff_yaml="# LLM error: disabled",
+        used_llm=False,
+        model_used="disabled",
+        prompt_hash="abc123",
+        timestamp_utc="2026-01-01T00:00:00+00:00",
+        error="LLM disabled",
+    )
+    with pytest.raises(ValueError):
+        result_no_proposal.apply_to(base_config)

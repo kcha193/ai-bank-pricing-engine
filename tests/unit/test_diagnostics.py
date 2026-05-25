@@ -325,7 +325,7 @@ def test_sensitivity_runner_returns_expected_columns():
         "parameter_family",
     } <= set(sensitivity.columns)
     assert sensitivity["parameter_family"].isin(
-        ["baseline", "elasticity", "funding", "competitor", "wholesale", "other"]
+        ["baseline", "elasticity", "funding", "competitor", "wholesale", "capital", "other"]
     ).all()
     assert (sensitivity["delta_objective_pct"].abs() > 0).any()
 
@@ -655,3 +655,35 @@ def test_expand_grid_for_selected_rate_handles_non_integer_multiplier() -> None:
     # Expanded grid must be step-aligned: (stop − start) / step is an integer.
     step_count = (expanded[-1] - expanded[0]) / step
     assert np.isclose(step_count, round(step_count), rtol=1e-9, atol=1e-12)
+
+
+def test_parameter_family_classifies_capital_hurdle_rate() -> None:
+    from balance_pricing_engine.diagnostics import _parameter_family
+
+    assert _parameter_family("capital_hurdle_rate_lower") == "capital"
+
+
+def test_parameter_family_classifies_loan_rwa_weight() -> None:
+    from balance_pricing_engine.diagnostics import _parameter_family
+
+    assert _parameter_family("loan_rwa_weight_higher") == "capital"
+
+
+def test_parameter_family_classifies_baseline() -> None:
+    from balance_pricing_engine.diagnostics import _parameter_family
+
+    assert _parameter_family("baseline") == "baseline"
+
+
+def test_capital_sensitivity_cases_produce_identical_objectives() -> None:
+    config = load_config("configs/base.yaml")
+    sensitivity = run_sensitivity_analysis(config)
+
+    hurdle_lower = sensitivity.loc[
+        sensitivity["scenario_name"] == "capital_hurdle_rate_lower", "delta_objective_pct"
+    ].iloc[0]
+    rwa_lower = sensitivity.loc[
+        sensitivity["scenario_name"] == "loan_rwa_weight_lower", "delta_objective_pct"
+    ].iloc[0]
+
+    assert hurdle_lower == pytest.approx(rwa_lower, abs=1e-6)

@@ -19,6 +19,7 @@ CALIBRATION_COLUMNS = [
     "observed_rate",
     "count",
 ]
+LIFT_COLUMNS = ["decile", "mean_predicted_probability", "observed_rate", "lift", "count"]
 
 
 @dataclass(frozen=True)
@@ -142,6 +143,13 @@ def evaluate_binary_classifier(
     target_column: str,
 ) -> dict[str, float]:
     """Backward-compatible alias for evaluate_model."""
+    import warnings
+
+    warnings.warn(
+        "evaluate_binary_classifier is a backward-compat alias; use evaluate_model().",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return evaluate_model(model, dataset, feature_columns, target_column)
 
 
@@ -173,6 +181,47 @@ def build_calibration_table(
         count=("target", "size"),
     ).reset_index()
     return table[CALIBRATION_COLUMNS]
+
+
+def compute_lift_table(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    n_deciles: int = 10,
+) -> pd.DataFrame:
+    """Build a decile lift table sorted by descending predicted probability."""
+    if len(y_true) != len(y_pred):
+        raise ValueError("y_true and y_pred must have the same length.")
+    if n_deciles < 2 or n_deciles > len(y_true):
+        raise ValueError("n_deciles must be between 2 and len(y_true).")
+    population_rate = float(np.mean(y_true))
+    order = np.argsort(y_pred)[::-1]
+    sorted_true = y_true[order]
+    sorted_pred = y_pred[order]
+    bins = np.array_split(np.arange(len(y_true)), n_deciles)
+    rows = []
+    for i, idx in enumerate(bins):
+        obs = float(np.mean(sorted_true[idx]))
+        pred = float(np.mean(sorted_pred[idx]))
+        lift = obs / population_rate if population_rate > 0 else float("nan")
+        rows.append(
+            {
+                "decile": i + 1,
+                "mean_predicted_probability": pred,
+                "observed_rate": obs,
+                "lift": lift,
+                "count": len(idx),
+            }
+        )
+    return pd.DataFrame(rows, columns=LIFT_COLUMNS)
+
+
+def check_lift_monotonicity(lift_table: pd.DataFrame) -> MonotonicityCheck:
+    """Check whether the observed_rate column decreases monotonically across deciles."""
+    return check_monotonicity(
+        lift_table[["decile", "observed_rate"]].rename(columns={"observed_rate": "mean_predicted_probability"}),
+        pdp_feature="decile",
+        expected_direction="decreasing",
+    )
 
 
 def evaluate_calibration(

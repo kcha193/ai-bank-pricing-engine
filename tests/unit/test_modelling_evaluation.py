@@ -9,8 +9,13 @@ from balance_pricing_engine.modelling.datasets import (
 )
 from balance_pricing_engine.modelling.evaluation import (
     CALIBRATION_COLUMNS,
+    LIFT_COLUMNS,
     METRIC_KEYS,
+    MonotonicityCheck,
+    check_lift_monotonicity,
     check_rate_response_direction,
+    compute_lift_table,
+    evaluate_binary_classifier,
     evaluate_model,
     evaluate_probabilities,
     evaluate_calibration,
@@ -358,3 +363,98 @@ def test_check_rate_response_direction_custom_min_slope_delta():
         min_slope_delta=0.0,
     )
     assert check.is_directionally_sane
+
+
+# --- P1-C: evaluate_binary_classifier deprecation ---
+
+
+def test_evaluate_binary_classifier_emits_deprecation_warning():
+    rng = make_rng(302)
+    customers = generate_deposit_customers(250, rng)
+    dataset = build_deposit_response_dataset(
+        customers,
+        offered_rates=np.array([0.04, 0.05, 0.06]),
+        competitor_rate=0.045,
+        rate_elasticity=95.0,
+        competitor_gap_elasticity=75.0,
+        rng=rng,
+        n_samples=800,
+    )
+    model = fit_response_model(
+        build_logistic_regression_model(),
+        dataset,
+        DEPOSIT_FEATURE_COLUMNS,
+        DEPOSIT_TARGET_COLUMN,
+    )
+    with pytest.warns(DeprecationWarning, match="backward-compat alias"):
+        evaluate_binary_classifier(model, dataset, DEPOSIT_FEATURE_COLUMNS, DEPOSIT_TARGET_COLUMN)
+
+
+# --- P2/P3-B: compute_lift_table ---
+
+
+def test_compute_lift_table_has_correct_columns():
+    y_true = np.array([0, 1] * 50)
+    y_pred = np.linspace(0, 1, 100)
+    result = compute_lift_table(y_true, y_pred)
+    assert list(result.columns) == LIFT_COLUMNS
+
+
+def test_compute_lift_table_decile_count():
+    y_true = np.array([0, 1] * 50)
+    y_pred = np.linspace(0, 1, 100)
+    result = compute_lift_table(y_true, y_pred, n_deciles=5)
+    assert len(result) == 5
+
+
+def test_compute_lift_table_lift_of_perfect_model():
+    n = 100
+    y_true = np.array([1] * (n // 2) + [0] * (n // 2))
+    y_pred = np.linspace(1, 0, n)
+    result = compute_lift_table(y_true, y_pred)
+    assert result.iloc[0]["lift"] > 1.5
+
+
+def test_compute_lift_table_lift_of_random_model():
+    rng = np.random.default_rng(42)
+    n = 1000
+    y_true = rng.integers(0, 2, size=n).astype(float)
+    y_pred = rng.uniform(0, 1, size=n)
+    result = compute_lift_table(y_true, y_pred)
+    assert all(abs(row["lift"] - 1.0) < 0.5 for _, row in result.iterrows())
+
+
+# --- P2/P3-B: check_lift_monotonicity ---
+
+
+def test_check_lift_monotonicity_passes_for_good_model():
+    # observed_rate decreases monotonically; mean_predicted_probability is intentionally
+    # different to confirm the check operates on observed_rate, not predicted probabilities.
+    lift_table = pd.DataFrame(
+        {
+            "decile": list(range(1, 11)),
+            "mean_predicted_probability": [0.85, 0.75, 0.65, 0.55, 0.45, 0.35, 0.25, 0.18, 0.12, 0.08],
+            "observed_rate": [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.15, 0.1],
+            "lift": [1.8, 1.6, 1.4, 1.2, 1.0, 0.8, 0.6, 0.4, 0.3, 0.2],
+            "count": [100] * 10,
+        }
+    )
+    result = check_lift_monotonicity(lift_table)
+    assert isinstance(result, MonotonicityCheck)
+    assert result.is_monotone is True
+
+
+def test_check_lift_monotonicity_fails_for_random_predictions():
+    rng = np.random.default_rng(99)
+    observed_rates = rng.uniform(0.1, 0.9, size=10).tolist()
+    lift_table = pd.DataFrame(
+        {
+            "decile": list(range(1, 11)),
+            "mean_predicted_probability": sorted(observed_rates, reverse=True),
+            "observed_rate": observed_rates,
+            "lift": [r / 0.5 for r in observed_rates],
+            "count": [100] * 10,
+        }
+    )
+    result = check_lift_monotonicity(lift_table)
+    assert result.violations > 0

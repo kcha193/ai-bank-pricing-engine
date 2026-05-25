@@ -9,12 +9,15 @@ from sklearn.model_selection import train_test_split
 
 from balance_pricing_engine.modelling.evaluation import (
     check_rate_response_direction,
-    evaluate_binary_classifier,
+    check_lift_monotonicity,
+    compute_lift_table,
     evaluate_calibration,
+    evaluate_model,
 )
 from balance_pricing_engine.modelling.models import (
     build_logistic_regression_model,
     fit_response_model,
+    predict_response_probability,
 )
 
 
@@ -43,7 +46,7 @@ def train_response_model_report(
         feature_columns,
         target_column,
     )
-    metrics = evaluate_binary_classifier(model, test, feature_columns, target_column)
+    metrics = evaluate_model(model, test, feature_columns, target_column)
     calibration = evaluate_calibration(
         model,
         test,
@@ -59,12 +62,22 @@ def train_response_model_report(
         competitor_rate,
         expected_direction,
     )
+    n_deciles = min(10, len(test))
+    lift_table = compute_lift_table(
+        test[target_column].to_numpy(),
+        predict_response_probability(model, test, feature_columns),
+        n_deciles=n_deciles,
+    )
+    lift_check = check_lift_monotonicity(lift_table)
     return {
         "title": title,
         "model": model,
         "metrics": metrics,
         "calibration": calibration,
         "response_check": response_check,
+        "lift_table": lift_table,
+        "lift_monotone": lift_check.is_monotone,
+        "lift_violations": lift_check.violations,
         "train_rows": len(train),
         "test_rows": len(test),
     }

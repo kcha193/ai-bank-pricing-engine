@@ -1,5 +1,6 @@
 import pandas as pd
 
+from balance_pricing_engine.modelling.evaluation import LIFT_COLUMNS
 from balance_pricing_engine.modelling.reports import build_champion_challenger_report
 from balance_pricing_engine.modelling.reports import train_response_model_report
 
@@ -180,3 +181,31 @@ def test_build_champion_challenger_report_notes_both_rate_check_failures():
 
     assert report["recommendation"] == "logistic_regression"
     assert "manual review" in report["reason"].lower()
+
+
+def test_train_response_model_report_includes_lift_table():
+    dataset = pd.DataFrame(
+        {
+            "offered_rate": [0.03, 0.04, 0.05, 0.06, 0.07, 0.08],
+            "competitor_rate": [0.05] * 6,
+            "rate_gap_to_competitor": [-0.02, -0.01, 0.0, 0.01, 0.02, 0.03],
+            "accepted": [1, 1, 1, 0, 0, 0],
+        }
+    )
+
+    report = train_response_model_report(
+        title="Lift table test",
+        dataset=dataset,
+        feature_columns=["offered_rate", "competitor_rate", "rate_gap_to_competitor"],
+        target_column="accepted",
+        offered_rates=[0.03, 0.05, 0.08],
+        competitor_rate=0.05,
+        expected_direction="decreasing",
+        random_seed=42,
+        test_size=0.5,
+        calibration_bins=2,
+    )
+
+    assert "lift_table" in report
+    assert isinstance(report["lift_table"], pd.DataFrame)
+    assert list(report["lift_table"].columns) == LIFT_COLUMNS

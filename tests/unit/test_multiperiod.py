@@ -486,3 +486,100 @@ def _fake_period_result_with_volume(
         boundary_diagnostics=None,
         initial_boundary_diagnostics=None,
     )
+
+
+def test_competitor_rates_drift_with_explicit_drift_bps():
+    config = make_config(
+        MultiPeriodConfig(
+            n_periods=2,
+            market_cash_rate_drift_bps=25,
+            competitor_loan_rate_drift_bps=25,
+        )
+    )
+
+    diagnostics = run_multiperiod_diagnostics(config, max_boundary_expansions=0)
+
+    period_0_market = diagnostics.period_diagnostics[0].market
+    period_1_market = diagnostics.period_diagnostics[1].market
+    assert period_0_market is not None
+    assert period_1_market is not None
+    assert period_1_market.competitor_loan_rate == pytest.approx(
+        period_0_market.competitor_loan_rate + 25 / 10_000
+    )
+
+
+def test_no_distortion_warning_when_competitor_rates_also_drifted():
+    config = make_config(
+        MultiPeriodConfig(
+            n_periods=2,
+            market_cash_rate_drift_bps=25,
+            competitor_loan_rate_drift_bps=25,
+            competitor_deposit_rate_drift_bps=25,
+        )
+    )
+
+    import warnings as _warnings
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error", UserWarning)
+        run_multiperiod_diagnostics(config, max_boundary_expansions=0)
+
+
+def test_distortion_warning_still_fires_when_only_cash_rate_drifts():
+    config = make_config(MultiPeriodConfig(n_periods=2, market_cash_rate_drift_bps=25))
+
+    with pytest.warns(UserWarning, match="competitor rates are not drifted"):
+        run_multiperiod_diagnostics(config, max_boundary_expansions=0)
+
+
+def test_distortion_warning_fires_for_partial_competitor_drift():
+    # loan drifts but deposit does not — deposit gap still shifts mechanically
+    config = make_config(
+        MultiPeriodConfig(
+            n_periods=2,
+            market_cash_rate_drift_bps=25,
+            competitor_loan_rate_drift_bps=25,
+            competitor_deposit_rate_drift_bps=0,
+        )
+    )
+    with pytest.warns(UserWarning, match="competitor rates are not drifted"):
+        run_multiperiod_diagnostics(config, max_boundary_expansions=0)
+
+
+def test_distortion_warning_fires_when_only_deposit_competitor_drifts():
+    # deposit drifts but loan does not — loan gap still shifts mechanically
+    config = make_config(
+        MultiPeriodConfig(
+            n_periods=2,
+            market_cash_rate_drift_bps=25,
+            competitor_loan_rate_drift_bps=0,
+            competitor_deposit_rate_drift_bps=25,
+        )
+    )
+    with pytest.warns(UserWarning, match="competitor rates are not drifted"):
+        run_multiperiod_diagnostics(config, max_boundary_expansions=0)
+
+
+def test_zero_competitor_drift_preserves_current_behavior():
+    config = make_config(
+        MultiPeriodConfig(
+            n_periods=2,
+            competitor_loan_rate_drift_bps=0,
+            competitor_deposit_rate_drift_bps=0,
+        )
+    )
+
+    diagnostics = run_multiperiod_diagnostics(config, max_boundary_expansions=0)
+
+    assert diagnostics is not None
+    assert diagnostics.n_periods == 2
+    assert len(diagnostics.period_diagnostics) == 2
+    assert diagnostics.npv == pytest.approx(sum(diagnostics.period_discounted_contributions))
+    period_0_market = diagnostics.period_diagnostics[0].market
+    period_1_market = diagnostics.period_diagnostics[1].market
+    assert period_0_market is not None
+    assert period_1_market is not None
+    assert period_1_market.competitor_loan_rate == pytest.approx(period_0_market.competitor_loan_rate)
+    assert period_1_market.competitor_deposit_rate == pytest.approx(
+        period_0_market.competitor_deposit_rate
+    )

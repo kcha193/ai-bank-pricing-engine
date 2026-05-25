@@ -12,6 +12,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from balance_pricing_engine.config import EngineConfig
+from balance_pricing_engine.optimization.response_fn import GovernanceError
 
 _DECISION_SUPPORT_TAG = "[DECISION-SUPPORT: requires human review]"
 _DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -49,13 +50,30 @@ class NLScenarioResult:
     timestamp_utc: str
     error: str | None = None
 
+    def apply_to(self, config: EngineConfig, *, approved: bool = False) -> EngineConfig:
+        """Apply proposal patches to config. Must pass approved=True after human review."""
+        if self.proposal is None:
+            raise ValueError("No proposal to apply — check NLScenarioResult.error.")
+        return apply_patches(config, self.proposal.patches, approved=approved)
 
-def apply_patches(config: EngineConfig, patches: list[ConfigPatch]) -> EngineConfig:
+
+def apply_patches(
+    config: EngineConfig,
+    patches: list[ConfigPatch],
+    *,
+    approved: bool = False,
+) -> EngineConfig:
     """Apply a list of ConfigPatch objects to an EngineConfig, returning a new config.
 
     Uses model_copy at each nesting level. Raises AttributeError for unknown paths,
     ValidationError for type mismatches.
     """
+    if not approved:
+        raise GovernanceError(
+            "apply_patches requires explicit human approval: pass approved=True "
+            "after reviewing the proposed patches. This is a decision-support tool — "
+            "do not automate the approval step."
+        )
     result = config
     for patch in patches:
         result = _apply_single_patch(result, patch.path, patch.value)
@@ -184,7 +202,7 @@ class NLScenarioInterface:
                 "No valid proposal to apply. "
                 f"Error: {proposal_result.error}"
             )
-        return apply_patches(config, proposal_result.proposal.patches)
+        return apply_patches(config, proposal_result.proposal.patches, approved=True)
 
     def _generate(self, user_prompt: str) -> tuple[PatchProposal | None, bool, str, str | None]:
         if not self._use_llm:

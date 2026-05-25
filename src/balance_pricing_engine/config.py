@@ -109,6 +109,8 @@ class MultiPeriodConfig(BaseModel):
     deposit_runoff_rate: float = Field(default=0.50, ge=0, le=1)
     discount_rate: float = Field(default=0.08, ge=0)
     market_cash_rate_drift_bps: float = 0.0
+    competitor_loan_rate_drift_bps: float = Field(default=0.0)
+    competitor_deposit_rate_drift_bps: float = Field(default=0.0)
     reinvestment_spread_bps: float = 0.0
     loan_tenor_years: Optional[float] = Field(default=None, gt=0)
 

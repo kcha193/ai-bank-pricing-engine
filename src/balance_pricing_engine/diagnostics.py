@@ -356,6 +356,10 @@ def evaluate_adaptive_joint_rate_grid(
     )
 
 
+# capital_hurdle_rate and loan_rwa_weight are multiplicatively confounded in the
+# capital_charge formula (charge = volume × rwa_weight × tier1_ratio × hurdle_rate).
+# A ±N% perturbation of either parameter produces identical objective sensitivity.
+# They are kept as separate cases to verify this invariant, not as independent levers.
 def build_default_sensitivity_cases(config: EngineConfig) -> list[SensitivityCase]:
     """Create a small set of one-at-a-time economic sensitivity cases."""
     base_wholesale_rate = config.market.cash_rate + config.market.wholesale_funding_spread
@@ -674,6 +678,8 @@ def _parameter_family(scenario_name: str) -> str:
         return "wholesale"
     if "penalty" in name or "ratio" in name:
         return "funding"
+    if "capital" in name or "rwa" in name or "hurdle" in name:
+        return "capital"
     return "other"
 
 
