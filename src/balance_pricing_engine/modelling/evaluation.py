@@ -35,6 +35,8 @@ class RateResponseCheck:
     is_directionally_sane: bool
     rate_response: pd.DataFrame
     violations: int
+    slope_range: float
+    min_slope_delta: float
 
 
 def compute_partial_dependence(
@@ -196,6 +198,7 @@ def check_rate_response_direction(
     offered_rates: list[float],
     competitor_rate: float,
     expected_direction: str,
+    min_slope_delta: float = 0.02,
 ) -> RateResponseCheck:
     """Check whether average predicted response moves in the expected rate direction."""
     if expected_direction not in {"decreasing", "increasing"}:
@@ -219,6 +222,10 @@ def check_rate_response_direction(
 
     response = pd.DataFrame(rows)
     deltas = np.diff(response["mean_predicted_probability"].to_numpy())
+    slope_range = float(
+        response["mean_predicted_probability"].max()
+        - response["mean_predicted_probability"].min()
+    )
     tolerance = 1e-6
     if expected_direction == "decreasing":
         violations = int(np.sum(deltas > tolerance))
@@ -227,7 +234,9 @@ def check_rate_response_direction(
 
     return RateResponseCheck(
         expected_direction=expected_direction,
-        is_directionally_sane=violations == 0,
+        is_directionally_sane=violations == 0 and slope_range >= min_slope_delta,
         rate_response=response,
         violations=violations,
+        slope_range=slope_range,
+        min_slope_delta=min_slope_delta,
     )

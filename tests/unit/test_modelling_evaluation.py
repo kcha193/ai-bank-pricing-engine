@@ -291,3 +291,70 @@ def test_compare_models_retains_baseline_when_challenger_fails_calibration():
         "hist_gradient_boosting", gbm_metrics, 0.15,  # cal_mae > 0.10
     )
     assert result["recommended"] == "logistic_regression"
+
+
+# --- flat-model slope detection ---
+
+
+class FlatModel:
+    """Always predicts 0.5 regardless of input."""
+
+    def predict_proba(self, features):
+        n = len(features)
+        return np.column_stack([np.full(n, 0.5), np.full(n, 0.5)])
+
+
+def _flat_dataset(n: int = 50) -> pd.DataFrame:
+    return pd.DataFrame({"offered_rate": np.full(n, 0.05)})
+
+
+def test_check_rate_response_direction_fails_for_flat_model():
+    check = check_rate_response_direction(
+        FlatModel(),
+        _flat_dataset(),
+        feature_columns=["offered_rate"],
+        offered_rates=[0.045, 0.050, 0.055, 0.060],
+        competitor_rate=0.045,
+        expected_direction="increasing",
+    )
+    assert not check.is_directionally_sane
+    assert check.violations == 0  # flat, no direction violations — failure is from slope
+
+
+def test_check_rate_response_direction_passes_with_sufficient_slope():
+    check = check_rate_response_direction(
+        IncreasingRateModel(),
+        _flat_dataset(),
+        feature_columns=["offered_rate"],
+        offered_rates=[0.04, 0.05, 0.06],
+        competitor_rate=0.045,
+        expected_direction="increasing",
+    )
+    assert check.is_directionally_sane
+
+
+def test_check_rate_response_direction_slope_range_is_reported():
+    check = check_rate_response_direction(
+        FlatModel(),
+        _flat_dataset(),
+        feature_columns=["offered_rate"],
+        offered_rates=[0.04, 0.05, 0.06],
+        competitor_rate=0.045,
+        expected_direction="increasing",
+    )
+    assert hasattr(check, "slope_range")
+    assert hasattr(check, "min_slope_delta")
+    assert check.slope_range == pytest.approx(0.0, abs=1e-9)
+
+
+def test_check_rate_response_direction_custom_min_slope_delta():
+    check = check_rate_response_direction(
+        FlatModel(),
+        _flat_dataset(),
+        feature_columns=["offered_rate"],
+        offered_rates=[0.04, 0.05, 0.06],
+        competitor_rate=0.045,
+        expected_direction="increasing",
+        min_slope_delta=0.0,
+    )
+    assert check.is_directionally_sane
