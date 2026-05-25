@@ -55,7 +55,11 @@ def run_multiperiod_diagnostics(
         else mp.loan_runoff_rate
     )
 
-    if mp.market_cash_rate_drift_bps != 0:
+    if (
+        mp.market_cash_rate_drift_bps != 0
+        and mp.competitor_loan_rate_drift_bps == 0
+        and mp.competitor_deposit_rate_drift_bps == 0
+    ):
         reinvestment_note = (
             " reinvestment_spread_bps is also fixed and will not drift with the cash rate."
             if mp.reinvestment_spread_bps != 0
@@ -113,12 +117,19 @@ def _build_period_config(config: EngineConfig, period: int) -> EngineConfig:
     mp = config.multiperiod
     if mp is None:
         raise ValueError("config.multiperiod is required for multi-period diagnostics.")
-    if mp.market_cash_rate_drift_bps != 0:
-        warnings.warn(
-            "market_cash_rate_drift_bps is set but competitor rates are not drifted. "
-            "Competitor gaps will shift mechanically, distorting elasticity calculations.",
-            stacklevel=2,
-        )
     cash_rate = config.market.cash_rate + period * mp.market_cash_rate_drift_bps / 10_000
-    updated_market = config.market.model_copy(update={"cash_rate": cash_rate})
+    competitor_loan_rate = (
+        config.market.competitor_loan_rate + period * mp.competitor_loan_rate_drift_bps / 10_000
+    )
+    competitor_deposit_rate = (
+        config.market.competitor_deposit_rate
+        + period * mp.competitor_deposit_rate_drift_bps / 10_000
+    )
+    updated_market = config.market.model_copy(
+        update={
+            "cash_rate": cash_rate,
+            "competitor_loan_rate": competitor_loan_rate,
+            "competitor_deposit_rate": competitor_deposit_rate,
+        }
+    )
     return config.model_copy(update={"market": updated_market})

@@ -27,7 +27,7 @@ from balance_pricing_engine.modelling.agentic import (
 )
 from balance_pricing_engine.modelling.evaluation import (
     check_rate_response_direction,
-    evaluate_binary_classifier,
+    evaluate_model,
     evaluate_calibration,
 )
 from balance_pricing_engine.modelling.models import (
@@ -35,7 +35,10 @@ from balance_pricing_engine.modelling.models import (
     build_logistic_regression_model,
     fit_response_model,
 )
-from balance_pricing_engine.modelling.reports import build_champion_challenger_report
+from balance_pricing_engine.modelling.reports import (
+    build_champion_challenger_report,
+    train_response_model_report,
+)
 from balance_pricing_engine.scenarios.runner import build_configured_rate_grids
 from balance_pricing_engine.synthetic.customers import (
     generate_deposit_customers,
@@ -117,8 +120,8 @@ def train_and_report(
         build_hist_gradient_boosting_model(random_seed), train, feature_columns, target_column
     )
 
-    lr_metrics = evaluate_binary_classifier(lr_model, test, feature_columns, target_column)
-    gbm_metrics = evaluate_binary_classifier(gbm_model, test, feature_columns, target_column)
+    lr_metrics = evaluate_model(lr_model, test, feature_columns, target_column)
+    gbm_metrics = evaluate_model(gbm_model, test, feature_columns, target_column)
 
     lr_cal = evaluate_calibration(lr_model, test, feature_columns, target_column, n_bins=5)
     gbm_cal = evaluate_calibration(gbm_model, test, feature_columns, target_column, n_bins=5)
@@ -149,6 +152,17 @@ def train_and_report(
         challenger_rate_check_pass=gbm_check.is_directionally_sane,
     )
 
+    lr_report = train_response_model_report(
+        title=title,
+        dataset=dataset,
+        feature_columns=feature_columns,
+        target_column=target_column,
+        offered_rates=offered_rates,
+        competitor_rate=competitor_rate,
+        expected_direction=expected_direction,
+        random_seed=random_seed,
+    )
+
     print(title)
     print_champion_challenger_report(report)
     _print_governed_candidate_table(
@@ -161,6 +175,15 @@ def train_and_report(
     print_rate_response_check(lr_check)
     print("  Hist gradient boosting rate response")
     print_rate_response_check(gbm_check)
+    lift_table = lr_report["lift_table"]
+    lift_monotone = lr_report["lift_monotone"]
+    print("\nLift table (top 3 deciles):")
+    for _, row in lift_table.head(3).iterrows():
+        print(
+            f"  decile {row['decile']}: pred={row['mean_predicted_probability']:.2f},"
+            f" obs={row['observed_rate']:.2f}, lift={row['lift']:.1f}x"
+        )
+    print(f"  lift monotone: {lift_monotone}")
 
 
 def print_champion_challenger_report(report: dict) -> None:
