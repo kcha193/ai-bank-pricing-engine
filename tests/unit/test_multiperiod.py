@@ -117,6 +117,15 @@ def test_cash_rate_drift_warns_when_competitor_rates_are_frozen():
         run_multiperiod_diagnostics(config, max_boundary_expansions=0)
 
 
+def test_cash_rate_drift_warns_mentions_reinvestment_spread_when_both_are_set():
+    config = make_config(
+        MultiPeriodConfig(n_periods=2, market_cash_rate_drift_bps=50, reinvestment_spread_bps=100)
+    )
+
+    with pytest.warns(UserWarning, match="reinvestment"):
+        run_multiperiod_diagnostics(config, max_boundary_expansions=0)
+
+
 def test_runoff_reduces_back_book():
     loan_runoff_rate = 0.30
     deposit_runoff_rate = 0.50

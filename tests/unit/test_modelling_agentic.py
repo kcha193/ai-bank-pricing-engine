@@ -486,6 +486,34 @@ def test_survival_response_model_predicts_event_probability():
     assert probs == pytest.approx(np.full(50, 0.3))
 
 
+def test_survival_response_model_feature_importances_returns_none_before_fit():
+    model = SurvivalResponseModel()
+    result = model.feature_importances(["offered_rate"])
+    assert result is None
+
+
+def test_survival_response_model_feature_importances_returns_dict_after_fit():
+    fake_ll = _make_fake_lifelines_module()
+    fitter = fake_ll.WeibullAFTFitter.return_value
+    # WeibullAFTFitter exposes params_ as a Series keyed by 'lambda__<feature>'
+    fitter.params_ = pd.Series({"lambda__offered_rate": 0.42, "lambda__Intercept": 1.1})
+
+    with patch.dict(sys.modules, {"lifelines": fake_ll}):
+        model = SurvivalResponseModel(hold_period_months=12)
+        train = pd.DataFrame({
+            "offered_rate": np.random.rand(50),
+            "duration": np.random.randint(1, 13, 50),
+            "event_observed": [1] * 50,
+        })
+        model.fit(train, ["offered_rate"], "event_observed")
+        importances = model.feature_importances(["offered_rate"])
+
+    assert importances is not None
+    assert isinstance(importances, dict)
+    assert "offered_rate" in importances
+    assert importances["offered_rate"] == pytest.approx(abs(0.42))
+
+
 def test_scoring_agent_schema_and_fallback(tmp_path):
     dataset = _loan_dataset().head(20)
     scoring_agent = ModelScoringAgent(feature_columns=LOAN_FEATURE_COLUMNS)

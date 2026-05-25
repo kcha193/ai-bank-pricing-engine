@@ -56,9 +56,15 @@ def run_multiperiod_diagnostics(
     )
 
     if mp.market_cash_rate_drift_bps != 0:
+        reinvestment_note = (
+            " reinvestment_spread_bps is also fixed and will not drift with the cash rate."
+            if mp.reinvestment_spread_bps != 0
+            else ""
+        )
         warnings.warn(
             "market_cash_rate_drift_bps is set but competitor rates are not drifted. "
-            "Competitor gaps will shift mechanically, distorting elasticity calculations.",
+            "Competitor gaps will shift mechanically, distorting elasticity calculations."
+            + reinvestment_note,
             stacklevel=2,
         )
 

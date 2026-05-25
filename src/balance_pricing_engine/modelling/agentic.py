@@ -394,6 +394,24 @@ class SurvivalResponseModel:
         event_probability = 1.0 - survival.loc[self._hold_period_months].to_numpy(dtype=float)
         return np.clip(event_probability, 0.0, 1.0)
 
+    def feature_importances(self, feature_columns: list[str]) -> dict[str, float] | None:
+        """Return absolute lambda-sub-model coefficients as a feature importance proxy.
+
+        Uses lifelines' params_ Series (keys 'lambda__<feature>'). Returns None when
+        not yet fitted or when params_ is unavailable.
+        """
+        if self._model is None:
+            return None
+        params = getattr(self._model, "params_", None)
+        if params is None:
+            return None
+        result: dict[str, float] = {}
+        for col in feature_columns:
+            key = f"lambda__{col}"
+            if key in params.index:
+                result[col] = float(abs(params[key]))
+        return result if result else None
+
     @property
     def fitted_model(self) -> Any:
         return self._model
