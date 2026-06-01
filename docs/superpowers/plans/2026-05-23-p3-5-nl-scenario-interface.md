@@ -1,5 +1,7 @@
 # P3-5: Natural Language Scenario-Run Interface (Tier 4)
 
+> **STATUS: ✅ COMPLETE** — NLScenarioInterface with approval gate + audit log — PR #37
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a `NLScenarioInterface` class to `llm/` that accepts a natural-language instruction (e.g. "cut the cash rate by 25 bps and re-run the baseline"), parses it into a validated config diff via the Claude API, shows the diff for human approval, and — when approved — applies the patch and returns the updated `EngineConfig`.

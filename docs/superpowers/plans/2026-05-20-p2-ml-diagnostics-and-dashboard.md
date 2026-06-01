@@ -1,5 +1,7 @@
 # P2 ML Diagnostics & Dashboard Bundle Implementation Plan
 
+> **STATUS: ✅ COMPLETE** — P2 ML diagnostics bundle — PR #36
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement four P2 backlog items — partial dependence + monotonicity checks, champion/challenger comparison, auto-generated model cards, and profit-surface visualisation — on a new branch, then open a PR.

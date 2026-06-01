@@ -1,5 +1,7 @@
 # Post-Review Fixes Implementation Plan
 
+> **STATUS: ✅ COMPLETE** — post-review follow-up fixes — PR #33 + #34
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Address the three remaining findings from the 2026-05-18 codebase review verification: stale baseline numerics in the usage guide (P0-4), a missing post-expansion assertion in the boundary diagnostics test (P1-2), and missing CLI tests for the `--max-staleness-hours` and `--previous-file` validate flags (P1-4).

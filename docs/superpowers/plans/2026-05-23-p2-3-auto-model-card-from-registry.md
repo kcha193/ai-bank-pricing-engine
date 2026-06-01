@@ -1,5 +1,7 @@
 # P2-3: Auto-generate Model Cards from ModelRegistry
 
+> **STATUS: ✅ COMPLETE** — auto-generate model cards from registry — PR #36
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a `generate_model_cards_from_registry(registry, output_dir)` function to `modelling/agentic.py` that iterates all records in a `ModelRegistry` and writes a markdown model card for each one that has an artifact path. Also add a `generate_card_for_champion(registry, output_dir, ...)` convenience wrapper. Both are callable after `approve_model` / `promote_champion` as a post-approval hook.

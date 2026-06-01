@@ -1,5 +1,7 @@
 # P2-6: FastAPI Health Endpoint + Optional Sensitivity Response
 
+> **STATUS: ✅ COMPLETE** — FastAPI /health + include_sensitivity — PR #36
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add `GET /health` to the FastAPI app and extend `POST /run-scenario` to optionally return sensitivity analysis data when the caller passes `include_sensitivity: true` in the request body.

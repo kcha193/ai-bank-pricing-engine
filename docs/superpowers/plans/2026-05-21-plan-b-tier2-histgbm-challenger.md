@@ -1,5 +1,7 @@
 # Plan B: Tier 2 — HistGBM Challenger in Governed Workflow
 
+> **STATUS: ✅ COMPLETE** — HistGBM Tier-2 challenger — PR #36
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Promote `HistGradientBoosting` to a first-class governed challenger by adding `HistGBMResponseModel` to `agentic.py` (parallel to `LogisticResponseModel`), exposing feature importances in model cards, and adding it as a third candidate in `train_response_models.py`.

@@ -1,5 +1,7 @@
 # P3-2: Capital/RWA Term Adjustment and ROE Hurdle Constraint
 
+> **STATUS: ✅ COMPLETE** — capital/RWA term + ROE hurdle constraint — PR #37
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add (a) a maturity-scaled RWA weight that adjusts capital charge by loan tenor, and (b) a `min_return_on_equity` floor that hard-filters rate pairs not meeting the ROE hurdle before the optimizer selects a winner.

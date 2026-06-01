@@ -1,5 +1,7 @@
 # P3-4: Survival/Hazard Response Model (Interface + Synthetic Stub)
 
+> **STATUS: ✅ COMPLETE** — SurvivalResponseModel + synthetic attrition dataset — PR #37
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Define a `SurvivalResponseModel` class in `modelling/agentic.py` that implements the `ResponseModel` Protocol using a Weibull AFT model (via `lifelines`), plus a `SyntheticAttritionDataset` builder in `modelling/datasets.py` that generates survival data from the synthetic engine so the model can be trained and tested without real data.

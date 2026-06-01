@@ -1,5 +1,7 @@
 # Plan C: Tier 4 LLM Layer — Scenario Narration & Config Anomaly Detection
 
+> **STATUS: ✅ COMPLETE** — Tier-4 LLM narration + anomaly layer — PR #32
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement the two "Safe now" Tier 4 LLM use cases from the roadmap: (1) rule-backed config anomaly detection with optional LLM commentary, and (2) scenario explanation narration via the Anthropic API. Both have deterministic fallbacks, full audit logs, and are tagged as decision-support only.

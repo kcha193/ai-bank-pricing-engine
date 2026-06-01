@@ -107,25 +107,27 @@ and the LLM decision-support layer are all live. 369 tests pass; ruff clean.
 
 ## Open items by priority
 
-### P2 — medium value, no blockers
+> **All P2 and P3 items are complete as of 2026-06-01.** See individual plan files in `docs/superpowers/plans/` for implementation details and PR references.
 
-| ID | Item | Size |
+### P2 — ✅ all complete (PR #36)
+
+| ID | Item | Status |
 | --- | --- | --- |
-| P2-2 | Champion/challenger comparison report in `train_response_models.py` + `reports.py` | M |
-| P2-3 | Auto-generate model card from `ModelRegistry` entries (post-approval hook) | S |
-| P2-6 | FastAPI: flesh out `POST /run-scenario` → full `ScenarioDiagnostics` JSON response | M |
-| P2-7 | Streamlit dashboard: profit-surface heat map + sensitivity waterfall | M |
-| P2-10 | Run-ledger checklist sign-off: markdown → JSON schema with structured fields | M |
+| P2-2 | Champion/challenger comparison report | ✅ `build_champion_challenger_report` in `modelling/reports.py` |
+| P2-3 | Auto-generate model card from `ModelRegistry` | ✅ `generate_model_cards_from_registry` / `generate_card_for_champion` in `modelling/agentic.py` |
+| P2-6 | FastAPI `GET /health` + optional sensitivity response | ✅ `/health` + `include_sensitivity` in `api/app.py` |
+| P2-7 | Streamlit dashboard: profit-surface + waterfall | ✅ `dashboard/app.py` |
+| P2-10 | Run-ledger checklist sign-off functions | ✅ `sign_off_item` / `sign_off_all_items` in `run_ledger/checklist.py` |
 
-### P3 — lower priority / needs real data
+### P3 — ✅ all complete (PR #37)
 
-| ID | Item | Notes |
+| ID | Item | Status |
 | --- | --- | --- |
-| P3-1 | Tenor and runoff dynamics in multi-period (roll-off rates, reinvestment spreads) | needs product assumptions |
-| P3-2 | Capital/RWA term and hurdle-rate constraint in objective | needs regulatory parameterisation |
-| P3-3 | LightGBM/XGBoost optional-dep adapters | defer until HistGBM champion approved |
-| P3-4 | Survival/hazard models for churn/rollover | defer until real attrition data available |
-| P3-5 | NL scenario-run interface (Tier 4) | schema validation + approval gate design needed |
+| P3-1 | Tenor and reinvestment dynamics in multi-period | ✅ `reinvestment_spread_bps` + `loan_tenor_years` in `MultiPeriodConfig` |
+| P3-2 | Capital/RWA term + ROE hurdle constraint | ✅ `average_loan_tenor_years` + `min_return_on_equity` + `maturity_adjusted_rwa_weight` |
+| P3-3 | LightGBM/XGBoost optional-dep adapters | ✅ `LightGBMResponseModel` + `XGBoostResponseModel` behind `[ml]` extra |
+| P3-4 | Survival/hazard response model | ✅ `SurvivalResponseModel` + `build_attrition_dataset` in `modelling/agentic.py` |
+| P3-5 | NL scenario-run interface (Tier 4) | ✅ `NLScenarioInterface` with approval gate + audit log in `llm/scenario_interface.py` |
 
 ## Advanced model design notes
 

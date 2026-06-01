@@ -1,5 +1,7 @@
 # Doc Review Fixes Implementation Plan
 
+> **STATUS: ✅ COMPLETE** — doc review fixes — PR #35
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Fix all 11 documented defects (DOC-001 through DOC-011) found in the CLAUDE.md / AGENTS.md / README.md review, restoring accurate cross-file consistency and operational safety.

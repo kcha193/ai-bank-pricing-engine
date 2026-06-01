@@ -1,5 +1,7 @@
 # P2-10: Run-Ledger Checklist Sign-off Functions
 
+> **STATUS: ✅ COMPLETE** — run-ledger checklist sign-off functions — PR #36
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add `sign_off_item(run_dir, item_id, approver, *, notes)` and `sign_off_all_items(run_dir, approver, *, notes)` to `run_ledger/checklist.py`. These update the existing `governance_checklist.json` in-place and regenerate `governance_checklist.md` to reflect current sign-off state, enabling a governed review workflow via Python rather than manual file editing.

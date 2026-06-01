@@ -1,5 +1,7 @@
 # Competitor Rate Ingestion Implementation Plan
 
+> **STATUS: ✅ COMPLETE** — competitor rate ingestion pipeline — PR all PRs pre-#30
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Build an auditable official-source-first NZ bank competitor-rate ingestion, validation,

@@ -1,5 +1,7 @@
 # P2-2: Champion/Challenger Comparison Report
 
+> **STATUS: ✅ COMPLETE** — champion/challenger comparison report — PR #36
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a `build_champion_challenger_report()` function to `reports.py` and use it in `train_response_models.py` to produce a structured side-by-side comparison table that a model risk reviewer can read.

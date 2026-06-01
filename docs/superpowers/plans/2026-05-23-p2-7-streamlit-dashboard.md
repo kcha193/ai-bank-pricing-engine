@@ -1,5 +1,7 @@
 # P2-7: Streamlit Dashboard — Profit Surface + Sensitivity Waterfall
 
+> **STATUS: ✅ COMPLETE** — Streamlit profit-surface + waterfall dashboard — PR #36
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A Streamlit app that accepts a YAML config in a sidebar text area, runs the pricing engine, and shows three tabs: a summary metrics panel, a 2×2 profit-surface heat map, and a sensitivity waterfall bar chart.

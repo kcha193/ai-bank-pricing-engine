@@ -1,5 +1,7 @@
 # P3-3: LightGBM and XGBoost Optional-Dep Adapters
 
+> **STATUS: ✅ COMPLETE** — LightGBM + XGBoost optional-dep adapters — PR #37
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add `LightGBMResponseModel` and `XGBoostResponseModel` to `modelling/agentic.py`, each behind an optional `[ml]` extra, following the exact pattern of the existing `HistGBMResponseModel`.

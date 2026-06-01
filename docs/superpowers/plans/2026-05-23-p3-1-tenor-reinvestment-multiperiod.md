@@ -1,5 +1,7 @@
 # P3-1: Tenor and Reinvestment Dynamics in Multi-Period
 
+> **STATUS: ✅ COMPLETE** — tenor/reinvestment dynamics in multi-period — PR #37
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add `reinvestment_spread_bps` and `loan_tenor_years` to `MultiPeriodConfig` so the back-book income calculation reflects realistic reinvestment economics and tenor-driven runoff, rather than a flat runoff rate decoupled from loan maturity.

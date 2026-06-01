@@ -1,5 +1,7 @@
 # Pricing Run Explainer + Experiment Ledger — Implementation Plan
 
+> **STATUS: ✅ COMPLETE** — run-ledger governance layer — PR #21
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a deterministic, fully offline `run_ledger` layer that turns every pricing run into an auditable decision-support package: a unique timestamped directory containing run metadata, a config snapshot, existing CSV/JSON artifacts, a markdown pricing memo, and a governance checklist.
