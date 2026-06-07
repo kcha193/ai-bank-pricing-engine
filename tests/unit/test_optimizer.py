@@ -917,6 +917,8 @@ def _evaluate_joint_rate_grid_unhoisted(
     home_loan_reference_rate=None,
     term_deposit_reference_rate=None,
     response_coefficients=None,
+    loan_response_fn=None,
+    deposit_response_fn=None,
 ):
     rows = []
     for loan_rate in loan_rate_grid:

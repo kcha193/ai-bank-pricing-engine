@@ -199,6 +199,7 @@ class ScenarioDiagnostics:
 def run_baseline_diagnostics(
     config: EngineConfig,
     max_boundary_expansions: int = 2,
+    registry: object | None = None,
 ) -> ScenarioDiagnostics:
     """Run the baseline scenario and keep all evaluated pricing candidates."""
     rng = make_rng(config.random_seed)
@@ -221,6 +222,35 @@ def run_baseline_diagnostics(
         config.balance_sheet.average_loan_tenor_years,
     )
 
+    loan_response_fn = None
+    deposit_response_fn = None
+    if registry is not None:
+        from balance_pricing_engine.modelling.agentic import ModelScoringAgent
+        from balance_pricing_engine.modelling.datasets import (
+            DEPOSIT_FEATURE_COLUMNS,
+            LOAN_FEATURE_COLUMNS,
+        )
+        from balance_pricing_engine.optimization.response_fn import (
+            SyntheticDepositResponseFn,
+            SyntheticLoanResponseFn,
+        )
+
+        scoring_agent = ModelScoringAgent(registry=registry)
+        loan_fallback = SyntheticLoanResponseFn(
+            elasticity=config.response.loan_rate_elasticity,
+            competitor_gap_elasticity=config.response.loan_competitor_gap_elasticity,
+            coefficients=config.response.coefficients.loan if config.response.coefficients else None,
+        )
+        deposit_fallback = SyntheticDepositResponseFn(
+            elasticity=config.response.deposit_rate_elasticity,
+            competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
+            coefficients=config.response.coefficients.deposit if config.response.coefficients else None,
+        )
+        loan_response_fn = scoring_agent.resolve_response_fn(LOAN_FEATURE_COLUMNS, fallback=loan_fallback)
+        deposit_response_fn = scoring_agent.resolve_response_fn(
+            DEPOSIT_FEATURE_COLUMNS, fallback=deposit_fallback
+        )
+
     diagnostics = evaluate_adaptive_joint_rate_grid(
         loan_customers=loan_customers,
         deposit_customers=deposit_customers,
@@ -240,6 +270,8 @@ def run_baseline_diagnostics(
         max_boundary_expansions=max_boundary_expansions,
         response_coefficients=config.response.coefficients,
         min_return_on_equity=config.balance_sheet.min_return_on_equity,
+        loan_response_fn=loan_response_fn,
+        deposit_response_fn=deposit_response_fn,
     )
 
     return ScenarioDiagnostics(

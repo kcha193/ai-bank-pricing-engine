@@ -15,6 +15,7 @@ from balance_pricing_engine.optimization.grid_search import (
     evaluate_joint_rate_grid,
     select_best_result,
 )
+from balance_pricing_engine.optimization.response_fn import ResponseFn
 from balance_pricing_engine.pricing.profit import maturity_adjusted_rwa_weight
 from balance_pricing_engine.rate_grids import build_configured_rate_grids
 from balance_pricing_engine.synthetic.customers import (
@@ -284,6 +285,8 @@ def evaluate_adaptive_joint_rate_grid(
     max_boundary_expansions: int = 2,
     response_coefficients: ResponseCoefficientsConfig | None = None,
     min_return_on_equity: float | None = None,
+    loan_response_fn: ResponseFn | None = None,
+    deposit_response_fn: ResponseFn | None = None,
 ) -> AdaptiveGridResult:
     """Evaluate a joint grid, expanding boundaries before accepting edge optima."""
     initial_boundary_diagnostics: BoundaryDiagnostics | None = None
@@ -309,6 +312,8 @@ def evaluate_adaptive_joint_rate_grid(
             home_loan_reference_rate=home_loan_reference_rate,
             term_deposit_reference_rate=term_deposit_reference_rate,
             response_coefficients=response_coefficients,
+            loan_response_fn=loan_response_fn,
+            deposit_response_fn=deposit_response_fn,
         )
         best_result = select_best_result(
             grid_results,
