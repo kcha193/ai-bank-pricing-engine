@@ -20,6 +20,7 @@ configured rate grids
 response functions
   - home loan acceptance probability
   - term deposit uptake probability
+  - optional approved-champion ML response adapter with synthetic fallback
         |
         v
 economic objective
@@ -63,8 +64,41 @@ scenario diagnostics and sensitivity analysis
   diagnostics artifacts with metadata, configuration snapshots, pricing memos, and governance
   checklists.
 - `src/balance_pricing_engine/modelling/`: builds synthetic observed datasets and trains
-  diagnostic-only response models, including optional LightGBM, XGBoost, and survival/hazard
-  adapters.
+  response models, including optional LightGBM, XGBoost, and survival/hazard adapters. These models
+  can influence optimization only when `run_baseline_diagnostics(registry=...)` resolves an
+  approved compatible champion through `ModelScoringAgent`; otherwise the deterministic synthetic
+  response functions remain in use.
+
+## Extension Boundaries
+
+`EngineConfig` is the validated input contract for scenario intent. It should remain a boundary for
+assumptions such as market state, pricing mode, balance-sheet settings, response settings, and
+multi-period controls. Avoid storing operational state, run outputs, or audit artifacts on
+`EngineConfig`; those belong in diagnostics, ledgers, or generated artifacts.
+
+`ScenarioDiagnostics` is the output contract for a completed scenario. It packages the winning
+`OptimizationResult`, the evaluated grid surface, boundary metadata, optional cohort context, and
+artifact writing. API, dashboard, reporting, LLM narration, run ledger, and multi-period flows should
+consume this contract rather than reaching into optimizer internals.
+
+The approved-champion ML path is an optional extension seam. The baseline runner may ask
+`ModelScoringAgent` to resolve response functions from a registry, but only an approved compatible
+champion with an existing artifact is adapted into the optimizer. All other cases fall back to the
+deterministic synthetic response functions.
+
+## Architecture Hotspots
+
+`src/balance_pricing_engine/scenarios/runner.py` is the main orchestration hotspot. It currently
+coordinates baseline execution, segmented pricing routing, diagnostics wrapping, artifact
+persistence, cohort attribution, and segmented-to-standard result conversion. Keep future changes
+small here; if responsibilities grow, prefer moving artifact writing or segmented conversion into
+dedicated modules while preserving `ScenarioDiagnostics` as the public output contract.
+
+`src/balance_pricing_engine/modelling/agentic.py` is the governed modelling hotspot. It contains
+model abstractions, registry governance, training, scoring, champion promotion, response adapters,
+and fallback behavior. The current public surface is covered by tests, but future expansion should
+prefer narrower modules such as registry, training, scoring, and response-model adapters while
+keeping existing imports stable.
 
 ## Adaptive Boundary Flow
 

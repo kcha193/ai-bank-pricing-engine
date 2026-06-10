@@ -9,9 +9,16 @@ The current engine optimizes one portfolio-level home loan rate and one portfoli
 deposit rate. It does not perform personalized pricing, customer-level discrimination testing,
 capital allocation, or production limit management.
 
-The response, credit-loss, and funding assumptions are deterministic code-level assumptions. The ML
-response models are diagnostic only: they train on synthetic outcomes generated from the known
-response functions and help check whether learned models recover sensible rate-response direction.
+The response, credit-loss, and funding assumptions are deterministic code-level assumptions by
+default. The ML response models train on synthetic outcomes generated from the known response
+functions and help check whether learned models recover sensible rate-response direction.
+
+An ML response model can influence optimization only through the explicit governed registry path:
+`run_baseline_diagnostics(registry=...)` asks `ModelScoringAgent` for an approved compatible
+champion and receives an `MLResponseFnAdapter` only when the champion is approved and its artifact
+exists. If no approved compatible champion is available, the runner falls back to the deterministic
+synthetic response functions. This path is not enabled by default and does not remove the
+portfolio-level, synthetic-data, human-review boundary of the prototype.
 
 ## Calibration Expectations
 
@@ -113,5 +120,8 @@ commit-specific path, when artifacts need to be reproducible experiment records.
   additive modelling assumption above.
 - Synthetic circularity: ML diagnostics trained on synthetic outcomes do not validate real customer
   behavior.
+- Approved-champion path: ML response models can affect optimization only when explicitly supplied
+  through a registry and approved champion; verify champion scope, artifact existence, and fallback
+  behavior before interpreting results.
 - Conduct scope: portfolio-level pricing does not remove the need for future fairness and conduct
   controls if the project moves toward segmented or personalized pricing.

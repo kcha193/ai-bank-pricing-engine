@@ -16,11 +16,14 @@
   column. If no evaluated candidate has a finite qualifying ROE, winner selection falls back to the
   unconstrained objective ranking.
 - The optimizer chooses one portfolio-level home loan rate and one portfolio-level term deposit rate.
-- ML response models are diagnostic only and are trained on synthetic observed outcomes generated
-  from the explicit response functions. Available adapters include logistic regression, histogram
-  gradient boosting, optional LightGBM, optional XGBoost, and an optional survival/hazard adapter.
-  The survival adapter reports event probability to match binary target metrics where `1` means
-  churn/event observed.
+- ML response models are trained on synthetic observed outcomes generated from the explicit
+  response functions. By default, scenario runs use the deterministic synthetic response functions.
+  If a caller passes a model registry into `run_baseline_diagnostics()`, an approved compatible
+  champion model can provide response probabilities through the governed `MLResponseFnAdapter`;
+  otherwise the runner falls back to the synthetic response functions. Available adapters include
+  logistic regression, histogram gradient boosting, optional LightGBM, optional XGBoost, and an
+  optional survival/hazard adapter. The survival adapter reports event probability to match binary
+  target metrics where `1` means churn/event observed.
 - Multi-period scenario rolls are available for portfolio-level diagnostics. They rerun the baseline
   scenario for `n_periods`, apply `loan_runoff_rate` and `deposit_runoff_rate` to prior-period
   back-book economics, apply `reinvestment_spread_bps` to surviving loan balances, discount period
@@ -30,7 +33,9 @@
 ## Deliberate simplifications
 
 - No personalized pricing yet.
-- Trained ML response models do not feed the optimizer yet.
+- Trained ML response models do not feed the optimizer by default. They can feed the optimizer only
+  through the explicit approved-champion registry path in `run_baseline_diagnostics(registry=...)`,
+  with deterministic synthetic fallback when no approved compatible champion is available.
 - No prepayment or behavioural maturity modelling yet.
 - Multi-period cash-rate drift does not automatically drift competitor loan or deposit rates; the
   implementation warns because competitor gaps will shift mechanically.
