@@ -1,5 +1,10 @@
 # Codebase Review — 2026-05-18
 
+> **Status (2026-06-13): RESOLVED.** All P0, P1, and P2 items below are closed and verified
+> against current source (P2 via PR #36, P3 via PR #37; see `agentic_modelling_roadmap.md`).
+> The "Recommended next PR" section is historical. This file is retained as a dated review
+> record — do not treat its items as live backlog.
+
 Produced by a full-repository audit covering architecture, implementation vs design,
 code quality, banking/pricing model, diagnostic ML, competitor-rate ingestion, and tests.
 
@@ -42,7 +47,7 @@ YAML config
 
 ---
 
-## P0 — Must fix (confirmed bugs / active data problems)
+## P0 — Must fix (confirmed bugs / active data problems) — ✅ all resolved (2026-06-13)
 
 ### P0-1 — `datetime.utcnow()` deprecation in run-ledger (3 files)
 
@@ -112,7 +117,7 @@ but actual output is $393.9M, and the same section's result box already correctl
 
 ---
 
-## P1 — High-value next improvements
+## P1 — High-value next improvements — ✅ all resolved (2026-06-13)
 
 ### P1-1 — `excess_deposit_income` missing from `SENSITIVITY_RESULT_COLUMNS`
 
@@ -173,7 +178,7 @@ steer, not to enforce a hard constraint. Needs a one-paragraph governance note.
 
 ---
 
-## P2 — Strategic extensions
+## P2 — Strategic extensions — ✅ all resolved (PR #36)
 
 | # | Title | Effort |
 |---|-------|--------|
@@ -190,7 +195,9 @@ steer, not to enforce a hard constraint. Needs a one-paragraph governance note.
 
 ---
 
-## Recommended next PR
+## Recommended next PR (historical — completed)
+
+> This recommendation was actioned; both fixes are in current source. Retained for context.
 
 Fix P0-1 + P0-2 together:
 
