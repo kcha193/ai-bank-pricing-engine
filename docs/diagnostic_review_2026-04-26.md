@@ -1,5 +1,7 @@
 # Diagnostic Review — 2026-04-26
 
+> **Status (2026-06-13): RESOLVED.** All actionable items from this review are closed and verified against current source. The only outstanding item is the empirical parameter-calibration cadence/approval process (documentation). This file is retained as a historical review record; do not treat its ⬜→✅ items as live work.
+
 _Updated 2026-05-13 to reflect items addressed in [PR #20](https://github.com/kcha193/ai-bank-pricing-engine/pull/20)._
 
 ## 1) Repository structure and current engine summary
@@ -111,7 +113,7 @@ Current engine behaviour:
 
 1. ✅ **API-level grid bug** — `build_rate_grid` now validates step, bounds, and divisibility via `grid_utils.build_inclusive_numeric_grid`. Raises `ValueError` on misuse.
 2. ✅ **Code duplication** — `grid_search.py`, `market.py`, and `diagnostics.py` all delegate to `grid_utils.build_inclusive_numeric_grid`; inline `n_steps`/`np.arange` pattern removed.
-3. ⬜ **Example import hack** — examples still modify `sys.path` manually. Low risk given `pythonpath = ["src"]` in `pyproject.toml`; defer to a packaging cleanup pass.
+3. ✅ **Example import hack** — resolved (verified 2026-06-13). No `sys.path` manipulation remains in `examples/`; imports rely on `pythonpath = ["src"]` in `pyproject.toml`.
 
 ### Missing tests
 
@@ -119,12 +121,12 @@ Current engine behaviour:
 - ✅ Objective interaction tests (wholesale cost + funding penalty combined effect) — `test_objective_properties.py`.
 - ✅ Tie-breaking behaviour — `test_optimizer.py::test_select_best_result_prefers_lower_funding_shortfall_when_objectives_tie` and sibling test.
 - ✅ Two-way sensitivity stresses — `test_diagnostics.py::test_default_sensitivity_includes_two_way_stresses`.
-- ⬜ Explicit boundary-warning remediation workflow tests — adaptive re-grid exists but no dedicated test for the expand-then-recheck path.
+- ✅ Explicit boundary-warning remediation workflow tests — resolved (verified 2026-06-13). Dedicated expand-then-recheck tests in `test_diagnostics.py` (e.g. lines ~215, ~237) assert `initial_boundary_warning_flag`, `expansion_rounds >= 1`, and cleared `boundary_warning_flag`.
 
 ### Unclear assumptions
 
 - ✅ Wholesale funding cost vs shortfall penalty interaction — now documented in `usage_guide.md` as intentionally additive with distinct economic roles.
-- ⬜ Interpretation of required deposit funding ratio as hard strategic target vs soft risk appetite metric — still implicit in config; no governance note yet.
+- ✅ Interpretation of required deposit funding ratio as hard strategic target vs soft risk appetite metric — resolved (verified 2026-06-13). `model_governance.md` now states it is a _soft risk appetite signal_, not a hard constraint, and documents how to enforce a hard floor.
 - ⬜ Annualized single-period treatment for both loans and deposits — no tenor dynamics; acknowledged in `modelling_assumptions.md`.
 
 ### Model-risk concerns
@@ -159,9 +161,13 @@ Current engine behaviour:
 
 ### Remaining open items
 
-- ⬜ Fix example `sys.path` hack (low priority).
-- ⬜ Add dedicated test for adaptive boundary expansion + re-check path.
-- ⬜ Formalise deposit funding ratio interpretation (hard target vs soft risk appetite) in governance docs.
+_All items below resolved as of 2026-06-13 (verified against source); retained for audit trail._
+
+- ✅ Fix example `sys.path` hack — no `sys.path` manipulation remains in `examples/`.
+- ✅ Add dedicated test for adaptive boundary expansion + re-check path — present in `test_diagnostics.py`.
+- ✅ Formalise deposit funding ratio interpretation (hard target vs soft risk appetite) in governance docs — documented in `model_governance.md`.
+
+The only item from this review still genuinely open is the model-governance note for **parameter calibration cadence and approval process** (empirical calibration process not yet defined). The single-period annualized treatment remains an acknowledged modelling assumption (multi-period diagnostics with tenor dynamics now exist as an extension).
 
 ### Future enhancements
 

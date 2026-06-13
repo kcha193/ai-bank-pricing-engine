@@ -16,9 +16,16 @@ functions and help check whether learned models recover sensible rate-response d
 An ML response model can influence optimization only through the explicit governed registry path:
 `run_baseline_diagnostics(registry=...)` asks `ModelScoringAgent` for an approved compatible
 champion and receives an `MLResponseFnAdapter` only when the champion is approved and its artifact
-exists. If no approved compatible champion is available, the runner falls back to the deterministic
-synthetic response functions. This path is not enabled by default and does not remove the
-portfolio-level, synthetic-data, human-review boundary of the prototype.
+exists. If no approved compatible champion is available — no champion at all, or one that is not
+yet approved — the runner falls back to the deterministic synthetic response functions.
+
+Fallback is deliberately restricted to those benign cases. If an *approved* champion is selected
+but its artifact is missing or cannot be loaded, that is an inconsistent governed state: the
+registry promises an approved model that cannot actually set prices. The runner raises
+`GovernanceError` rather than silently repricing on the synthetic fallback, so a pricing run can
+never be recorded as "used approved champion X" while actually having used synthetic. Repair the
+registry/artifact or retire the champion before pricing. This path is not enabled by default and
+does not remove the portfolio-level, synthetic-data, human-review boundary of the prototype.
 
 ## Calibration Expectations
 

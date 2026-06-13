@@ -1177,10 +1177,11 @@ class ModelScoringAgent:
         feature_columns: list[str] | None = None,
         fallback_model: ResponseModel | None = None,
         registry_path: str | Path = "artifacts/model_registry.json",
+        registry: "ModelRegistry | None" = None,
     ):
         self.feature_columns = feature_columns
         self.fallback_model = fallback_model or ElasticityBaselineModel()
-        self.registry = ModelRegistry(registry_path)
+        self.registry = registry if registry is not None else ModelRegistry(registry_path)
 
     def score(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         if args and isinstance(args[0], str):
@@ -1273,18 +1274,40 @@ class ModelScoringAgent:
         feature_columns: list[str],
         fallback: Any,
     ) -> Any:
-        """Return MLResponseFnAdapter for the approved champion, or fallback."""
-        from balance_pricing_engine.optimization.response_fn import MLResponseFnAdapter
+        """Return MLResponseFnAdapter for the approved champion, or fallback.
+
+        Falls back to the synthetic ``fallback`` when there is no approved champion
+        (no champion at all, or one that is not yet approved). However, when an
+        *approved* champion is selected but its artifact cannot be loaded, that is an
+        inconsistent governed state — the registry promises an approved model that
+        cannot actually drive prices — and we raise ``GovernanceError`` rather than
+        silently repricing on the synthetic fallback.
+        """
+        from balance_pricing_engine.optimization.response_fn import (
+            GovernanceError,
+            MLResponseFnAdapter,
+        )
 
         champion = self.registry.get_champion(feature_columns=feature_columns)
         if champion is None:
             return fallback
         if champion.get("governance_status") != "approved":
             return fallback
+        model_name = champion.get("model_name", "<unknown>")
         artifact_path = champion.get("artifact_path")
         if artifact_path is None or not Path(str(artifact_path)).exists():
-            return fallback
-        model = load_model(str(artifact_path))
+            raise GovernanceError(
+                f"Approved champion '{model_name}' has a missing artifact "
+                f"(artifact_path={artifact_path!r}); cannot load the governed model. "
+                "Repair the registry/artifact before pricing, or retire the champion."
+            )
+        try:
+            model = load_model(str(artifact_path))
+        except Exception as exc:  # noqa: BLE001 - surface any load failure as governance error
+            raise GovernanceError(
+                f"Approved champion '{model_name}' artifact at {artifact_path!r} is "
+                f"present but could not be loaded: {exc}. Repair the artifact before pricing."
+            ) from exc
         logging.info(
             "Resolved approved champion response model: model_name=%s artifact_path=%s "
             "governance_status=%s",
