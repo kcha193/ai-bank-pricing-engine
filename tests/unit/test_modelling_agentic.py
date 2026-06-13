@@ -36,6 +36,7 @@ from balance_pricing_engine.modelling.datasets import (
     build_loan_response_dataset,
 )
 from balance_pricing_engine.optimization.response_fn import (
+    GovernanceError,
     MLResponseFnAdapter,
     SyntheticDepositResponseFn,
     SyntheticLoanResponseFn,
@@ -783,19 +784,25 @@ def test_scoring_agent_resolve_response_fn_returns_fallback_when_no_champion(tmp
     assert fn is fallback
 
 
-def test_scoring_agent_resolve_response_fn_returns_fallback_when_artifact_missing(tmp_path):
+def test_scoring_agent_resolve_response_fn_raises_when_approved_champion_artifact_missing(
+    tmp_path,
+):
+    """An approved champion with a missing artifact is an inconsistent governed
+    state: the registry promises an approved model but it cannot drive prices.
+    This must fail loud rather than silently fall back to synthetic."""
     registry = ModelRegistry(tmp_path / "registry.json")
     registry.register({
         "model_name": "LogisticResponseModel",
         "champion_status": "champion",
         "governance_status": "approved",
         "artifact_path": str(tmp_path / "missing.joblib"),
+        "feature_columns": LOAN_FEATURE_COLUMNS,
     })
     agent = ModelScoringAgent(registry_path=tmp_path / "registry.json")
     fallback = SyntheticLoanResponseFn(elasticity=-85.0, competitor_gap_elasticity=-65.0)
 
-    fn = agent.resolve_response_fn(feature_columns=LOAN_FEATURE_COLUMNS, fallback=fallback)
-    assert fn is fallback
+    with pytest.raises(GovernanceError, match="missing"):
+        agent.resolve_response_fn(feature_columns=LOAN_FEATURE_COLUMNS, fallback=fallback)
 
 
 def test_scoring_agent_resolve_response_fn_returns_ml_adapter_for_approved_champion(

@@ -83,8 +83,10 @@ consume this contract rather than reaching into optimizer internals.
 
 The approved-champion ML path is an optional extension seam. The baseline runner may ask
 `ModelScoringAgent` to resolve response functions from a registry, but only an approved compatible
-champion with an existing artifact is adapted into the optimizer. All other cases fall back to the
-deterministic synthetic response functions.
+champion with a loadable artifact is adapted into the optimizer. When no approved compatible
+champion exists, the runner falls back to the deterministic synthetic response functions. An
+approved champion whose artifact is missing or unloadable instead raises `GovernanceError` — that
+inconsistent governed state must fail loud rather than silently reprice on synthetic.
 
 ## Architecture Hotspots
 
