@@ -39,6 +39,75 @@ Before any production use, replace synthetic assumptions with governed calibrati
 Each calibration update should record source data, sample window, transformations, validation
 results, approval owner, and effective date.
 
+## Calibration Cadence and Approval Process
+
+The list above defines *what* must be calibrated and *what evidence* each update records. This
+section defines *when* parameters are reviewed, *who* approves a change, and *what gates* a
+proposed value before it can drive a priced recommendation. It applies to the governed pricing
+parameters carried in config — response elasticities and intercepts (`response.coefficients.*`),
+credit-loss assumptions (`expected_loss_rate`), funding parameters (`wholesale_funding_spread`,
+`required_deposit_funding_ratio`, `funding_shortfall_penalty_rate`), and competitor/reference
+rates — and to any ML champion whose response function can replace them via the registry path.
+
+### Cadence
+
+- **Periodic review (scheduled).** Re-validate every governed parameter on a fixed cycle —
+  recommended quarterly for response elasticities and funding parameters, at least semi-annually
+  for credit-loss assumptions, aligned to the cycle of the upstream PD/LGD/EAD and treasury-curve
+  owners. A review may *reaffirm* the current value; reaffirmation is itself a recorded approval.
+- **Event-triggered (off-cycle) review.** Recalibrate ahead of the scheduled cycle when any of the
+  following occurs: a cash-rate or competitor-rate regime shift; a sustained breach between
+  predicted and realised acceptance/uptake or loss outcomes; a final `boundary_warning_flag` that
+  recurs across runs (see *Optimization Diagnostics Governance*); a change to the response
+  functional form or feature schema; or a new champion proposed for promotion.
+
+### Roles and approval workflow
+
+Mirror the ML champion approval pattern already implemented in `ModelRegistry`
+(`approve_model` / `promote_champion`), which records the approver and the `config_hash` the
+approval is bound to:
+
+1. **Proposer** assembles the evidence package (below) and the proposed parameter value(s).
+2. **Independent reviewer** — not the proposer — checks the evidence against the acceptance gates.
+3. **Approver** (model-risk owner) records sign-off. For an ML champion this is
+   `ModelRegistry.approve_model(model_name, approver, config_hash=...)`; for config-level
+   parameters it is a run-ledger governance-checklist sign-off
+   (`sign_off_item` / `sign_off_all_items` in `run_ledger/checklist.py`) on the run that first
+   uses the new value. No parameter change is "approved" until this record exists.
+
+Separation of duties is mandatory: the proposer must not be the sole approver.
+
+### Acceptance gates
+
+A proposed value (or champion) is rejected unless **all** of the following hold:
+
+- **Provenance complete** — every field in the *Calibration Expectations* evidence list is
+  populated (source data, sample window, transformations, validation results, approval owner,
+  effective date).
+- **Directional sanity** — loan own-rate and competitor-gap elasticities stay negative; deposit
+  elasticities stay positive; an ML champion passes the rate-response direction and monotonicity
+  checks in `modelling/evaluation.py` before it is eligible for `approve_model`.
+- **Baseline comparison** — re-run the canonical scenario and diff against the prior approved
+  baseline artifacts (`ScenarioDiagnostics.write_artifacts()` into a run-specific directory). A
+  recommendation reversal, a material objective/volume shift, or a *new* persistent
+  `boundary_warning_flag` requires written justification, not silent acceptance.
+- **Bounded, explained change** — large jumps in any single parameter are explained by the
+  evidence, not curve-fitted to a desired price.
+
+### Rejection and rollback
+
+If the gates are not met, the change is rejected and the **prior approved value is retained** —
+the default-safe state. A rejected ML champion is left unapproved, so the registry path falls back
+to the deterministic synthetic response (see *Current Model Boundary*); it never silently reprices.
+Record the rejection rationale alongside the proposal.
+
+### Audit trail
+
+Every priced run already records the `config_hash`, `git_commit`, and UTC `timestamp` in
+`RunMetadata`, so the exact parameter set behind a recommendation is reconstructible. Approvals are
+bound to that `config_hash` (registry) or to the run's governance checklist (config parameters),
+giving a complete who-approved-what-when chain from approved parameter value to priced output.
+
 ## Canonical Funding Economics Assumption
 
 Wholesale funding cost and funding shortfall penalty are intentionally additive in the current

@@ -63,6 +63,11 @@ explicit intent.** Exclude it with: `python3 -m pytest -q -m 'not live_rates'`
 4. **LLM layer is decision-support only.** `llm/narrative.py` and `llm/anomaly.py` are tagged
    `[DECISION-SUPPORT: requires human review]` — never wire their output into automated decisions.
 5. **`live_rates` marker must never run in CI.**
+6. **Governed ML pricing path must fail loud.** An ML champion can drive the optimiser only via
+   `run_baseline_diagnostics(registry=...)` (→ `ModelScoringAgent.resolve_response_fn` →
+   `MLResponseFnAdapter`, in `optimization/response_fn.py`). No champion or an unapproved champion
+   ⇒ synthetic fallback, price unchanged. An *approved* champion with a missing/unloadable artifact
+   ⇒ raise `GovernanceError`; never silently reprice on the synthetic fallback.
 
 ## Do not break — regression contract
 
