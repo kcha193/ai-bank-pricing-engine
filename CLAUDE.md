@@ -137,3 +137,7 @@ The boundary fields distinguish "needed expansion" from "still hitting boundary 
 ### Do NOT
 - Don't manually modify files inside `graphify-out/`
 - Don't re-read the entire codebase if the graph already has the information
+
+## Session wrap-up
+
+If this session changed the project's status, milestone, or current focus, update the "AI bank pricing engine" entry in `~/ai-context/kevin/current-projects.md` (status, current focus, last-updated date) before ending the session. Skip this if nothing status-relevant changed.
