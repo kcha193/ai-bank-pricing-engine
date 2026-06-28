@@ -82,3 +82,7 @@ deliberately. Do not remove without auditing all call sites.
 
 The response model uses **two elasticities per product** (own-rate + competitor-gap).
 Collapsing them into one is not equivalent and will silently change recommendations.
+
+## Session wrap-up
+
+If this session changed the project's status, milestone, or current focus, update the "AI bank pricing engine" entry in `~/ai-context/kevin/current-projects.md` (status, current focus, last-updated date) before ending the session. Skip this if nothing status-relevant changed.
