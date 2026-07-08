@@ -1,0 +1,3 @@
+[mcp_servers.codebase-memory-mcp]
+command = "/Users/kevinchang/.local/bin/codebase-memory-mcp"
+args = []

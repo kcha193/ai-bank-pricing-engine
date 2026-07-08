@@ -16,3 +16,4 @@ graphify-out/graph.html
 graphify-out/GRAPH_TREE.html
 graphify-out/
 .claude/
+.codebase-memory/

@@ -119,14 +119,18 @@ The boundary fields distinguish "needed expansion" from "still hitting boundary 
 - Step-by-step business+technical walkthrough: [docs/usage_guide.md](docs/usage_guide.md) (includes restricted-network setup).
 - Run ledger usage guide: [docs/run_ledger_guide.md](docs/run_ledger_guide.md) (how to produce, read, and sign off ledger artifacts).
 
-## Context Navigation (Graphify)
+## Context Navigation (Graphify + Codebase Memory)
 
-### 3-Layer Query Rule
+### 4-Layer Query Rule
 1. **First:** query `graphify-out/graph.json` or `graphify-out/wiki/index.md`
    to understand code structure and connections
 2. **Second:** query the Obsidian vault for decisions, progress, and project context
-3. **Third:** only read raw code files when editing
-   or when the first two layers don't have the answer
+3. **Third:** for live/ad-hoc structural questions the static graphify graph
+   doesn't answer (call chains, impact of uncommitted changes, dead code,
+   symbol search), use codebase-memory-mcp's MCP tools directly. It
+   auto-updates via a background watcher, with no manual rebuild step
+4. **Fourth:** only read raw code files when editing
+   or when the first three layers don't have the answer
 
 ### When to rebuild the graph
 - After structural changes (new modules, major refactors)
@@ -137,6 +141,13 @@ The boundary fields distinguish "needed expansion" from "still hitting boundary 
 ### Do NOT
 - Don't manually modify files inside `graphify-out/`
 - Don't re-read the entire codebase if the graph already has the information
+
+### Codebase Memory (codebase-memory-mcp)
+- codebase-memory-mcp is a structural code index only; it has no LLM inside it.
+- It does not replace graphify or `AI_Context`.
+- If this project is not already indexed in the current agent session, ask the
+  agent to "index this project" once.
+- Its cache lives outside the repo at `~/.cache/codebase-memory-mcp/`.
 
 ## Session wrap-up
 
