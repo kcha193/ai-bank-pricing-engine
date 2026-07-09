@@ -90,4 +90,4 @@ Collapsing them into one is not equivalent and will silently change recommendati
 
 ## Session wrap-up
 
-If this session changed the project's status, milestone, or current focus, update the "AI bank pricing engine" entry in `~/ai-context/kevin/current-projects.md` (status, current focus, last-updated date) before ending the session. Skip this if nothing status-relevant changed.
+If this session changed the project's status, milestone, or current focus, update the "AI bank pricing engine" entry in `~/vault/AI_Context/Memory/Durable_Facts/Kevin/current-projects.md` (status, current focus, last-updated date) before ending the session. Skip this if nothing status-relevant changed.
