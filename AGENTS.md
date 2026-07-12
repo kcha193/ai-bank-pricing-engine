@@ -28,6 +28,11 @@ Codex does not auto-load `CLAUDE.md`, so these rules are inlined here too
 - Its cache lives outside the repo at `~/.cache/codebase-memory-mcp/`.
 - If codebase-memory-mcp is unavailable, skip to raw code reads; nothing
   depends on it being present.
+- The project's `.codex/config.toml` is a template only — Codex CLI loads
+  config exclusively from `~/.codex/config.toml`, not a project-local file.
+  Copy the `[mcp_servers.codebase-memory-mcp]` stanza into your real
+  `~/.codex/config.toml` to get these tools under Codex; committing this repo
+  file alone does not register the server.
 
 ## Project context
 
