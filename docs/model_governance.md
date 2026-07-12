@@ -44,10 +44,23 @@ results, approval owner, and effective date.
 The list above defines *what* must be calibrated and *what evidence* each update records. This
 section defines *when* parameters are reviewed, *who* approves a change, and *what gates* a
 proposed value before it can drive a priced recommendation. It applies to the governed pricing
-parameters carried in config — response elasticities and intercepts (`response.coefficients.*`),
-credit-loss assumptions (`expected_loss_rate`), funding parameters (`wholesale_funding_spread`,
-`required_deposit_funding_ratio`, `funding_shortfall_penalty_rate`), and competitor/reference
-rates — and to any ML champion whose response function can replace them via the registry path.
+parameters carried in config — response elasticities (`response.loan_rate_elasticity`,
+`response.loan_competitor_gap_elasticity`, `response.deposit_rate_elasticity`,
+`response.deposit_competitor_gap_elasticity`) and response intercepts/feature coefficients
+(`response.coefficients.loan.*`, `response.coefficients.deposit.*`); funding parameters
+(`market.wholesale_funding_spread`, `balance_sheet.required_deposit_funding_ratio`,
+`balance_sheet.funding_shortfall_penalty_rate`); and competitor/reference rates
+(`market.competitor_loan_rate`, `market.competitor_deposit_rate`,
+`market.home_loan_reference_rate`, `market.term_deposit_reference_rate`) — and to any ML champion
+whose response function can replace the response parameters via the registry path.
+
+Credit-loss assumptions are **not** currently a config field, so this process does not yet cover
+them end to end: `expected_loss_rate` is generated per loan customer from `risk_score` by a
+hardcoded formula in `synthetic/customers.py` and consumed in `pricing/profit.py`. Calibrating it
+today means changing that code, not a config value, so it falls outside the `config_hash`/run-ledger
+audit trail described below. Treat this as an open gap — either promote the credit-loss formula's
+coefficients into `EngineConfig` before relying on this section for credit-loss sign-off, or track
+credit-loss calibration through a separate, code-level review record until it is.
 
 ### Cadence
 
