@@ -1,0 +1,19 @@
+# Secrets — never index, even if one is created on disk later
+.env
+.env.*
+.runner.env
+*.pem
+*.key
+*.p12
+*.token
+credentials/
+secrets/
+logs/
+*.log
+
+# Data / generated outputs — not source, no benefit to indexing
+data/raw/
+data/processed/
+data/synthetic/
+data/outputs/
+outputs/

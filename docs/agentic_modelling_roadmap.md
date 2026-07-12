@@ -64,9 +64,9 @@ and the LLM decision-support layer are all live. 369 tests pass; ruff clean.
   hallucination checks, full audit logs.
 - **Done:** `ScenarioNarrativeAgent` (narration + structured fallback + audit log),
   `ConfigAnomalyChecker` (rule-backed, no LLM required), competitor-rate ingestion pipeline
-  with CLI (`fetch | validate | apply | report`), `[llm]` optional extra.
-- **Remaining:** Natural language scenario-run interface (schema validation + approval gate),
-  model validation report drafting (human sign-off).
+  with CLI (`fetch | validate | apply | report`), `[llm]` optional extra,
+  `NLScenarioInterface` with approval gate + audit log (`llm/scenario_interface.py`, P3-5).
+- **Remaining:** Model validation report drafting (human sign-off).
 
 ## LLM use-case assessment
 
@@ -75,7 +75,7 @@ and the LLM decision-support layer are all live. 369 tests pass; ruff clean.
 | Competitor-rate extraction | **Live** | Source citations + parser validation in place |
 | Scenario explanation / narration | **Live** | `ScenarioNarrativeAgent`; deterministic fallback |
 | Config anomaly detection | **Live** | `ConfigAnomalyChecker`; pure-rules, no LLM required |
-| Natural language scenario-run interface | **Safe with controls** | Schema validation + approval gate still needed |
+| Natural language scenario-run interface | **Live** | `NLScenarioInterface`; schema validation + approval gate + audit log |
 | Model validation report drafting | **Safe with controls** | Human sign-off mandatory; not yet implemented |
 | Synthetic data support | **Future only** | Bias/control risk |
 | Customer-level pricing explanation | **Not recommended** | Until customer-level decisioning + mature governance |

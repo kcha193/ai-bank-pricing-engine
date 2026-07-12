@@ -15,7 +15,8 @@ The engine maximises expected risk-adjusted profit subject to a funding-shortfal
 - [rate_grids.py](src/balance_pricing_engine/rate_grids.py) — `build_configured_rate_grids`: dispatches between market-relative spread grids and absolute fallback grids.
 - [synthetic/](src/balance_pricing_engine/synthetic/) — `customers.py` (loan + deposit generators), `market.py` (`MarketState`), `response.py` (`loan_acceptance_probability`, `deposit_uptake_probability`).
 - [pricing/](src/balance_pricing_engine/pricing/) — `profit.py` (loan income, ECL, deposit cost, wholesale funding) + `balance_sheet.py` (`calculate_funding_result`, shortfall + penalty).
-- [optimization/grid_search.py](src/balance_pricing_engine/optimization/grid_search.py) — `evaluate_joint_rate_grid`, `select_best_result`, `optimize_joint_rates`, `optimize_joint_market_relative_rates`. Returns `OptimizationResult` dataclass with backward-compat aliases (`objective_value`, `deposit_cost`, `funding_penalty`, `loan_income_after_losses`).
+- [optimization/grid_search.py](src/balance_pricing_engine/optimization/grid_search.py) — `evaluate_joint_rate_grid`, `select_best_result`, `optimize_joint_rates`, `optimize_joint_market_relative_rates`. Returns `OptimizationResult` dataclass with backward-compat aliases (`objective_value`, `deposit_cost`, `funding_penalty`, `loan_income_after_losses`). Accepts optional `loan_response_fn` / `deposit_response_fn` callables so an approved ML champion can drive acceptance/uptake instead of the synthetic response.
+- [optimization/response_fn.py](src/balance_pricing_engine/optimization/response_fn.py) — pluggable response interface that decouples the optimiser from the response source: `ResponseFn` Protocol, `SyntheticLoanResponseFn` / `SyntheticDepositResponseFn` adapters, `MLResponseFnAdapter` (wraps a scored ML model), and the governance guards `GovernanceError` / `require_approved`.
 - [diagnostics.py](src/balance_pricing_engine/diagnostics.py) — `BoundaryDiagnostics`, `ObjectiveDecomposition`, `evaluate_adaptive_joint_rate_grid` (boundary-expansion wrapper), `run_sensitivity_analysis` (returns `delta_loan_rate_bps`, `delta_deposit_rate_bps`, `delta_objective_pct`, `parameter_family`; accepts `n_seeds` for Monte Carlo cohort uncertainty). Default sensitivity cases perturb all four elasticities and two customer-feature coefficients by ±25%.
 - [scenarios/runner.py](src/balance_pricing_engine/scenarios/runner.py) — `run_baseline_diagnostics`, `ScenarioDiagnostics` dataclass, `write_artifacts()` persistence. `ScenarioDiagnostics` also exposes `counterfactual_decompositions(top_n)` and `cohort_attribution()`.
 - [scenarios/experiments.py](src/balance_pricing_engine/scenarios/experiments.py) — small scenario helpers (e.g. `run_higher_funding_penalty_scenario`).
@@ -107,7 +108,7 @@ The boundary fields distinguish "needed expansion" from "still hitting boundary 
 - Honour the synthetic-data-only invariant. Do not add real customer or counterparty data paths.
 - Keep portfolio-level scope unless the user explicitly opens up personalised pricing.
 - `OptimizationResult` is a frozen dataclass; backward-compat aliases (`objective_value`, `deposit_cost`, `funding_penalty`, `loan_income_after_losses`) exist deliberately — don't remove without checking call sites.
-- Modelling layer is **diagnostic only** — its predictions are not yet wired into the optimiser. Don't conflate ML response models with the synthetic response functions used inside the grid search. The single `train()` entry point in `agentic.py` replaced the former dual `train` / `train_and_recommend` API; `evaluate_binary_classifier` is a backward-compat alias for `evaluate_model` that emits a `DeprecationWarning`; use `evaluate_probabilities` / `evaluate_model` from `evaluation.py` for new code.
+- Modelling layer is **diagnostic by default, but no longer hard-walled off from the optimiser.** `run_baseline_diagnostics(registry=...)` resolves an **approved registry champion** via `ModelScoringAgent.resolve_response_fn(...)` and wires it into the grid search through `MLResponseFnAdapter` (see [optimization/response_fn.py](src/balance_pricing_engine/optimization/response_fn.py)). Governance invariants — **preserve these**: with no champion, or an *unapproved* champion, the path falls back to the synthetic response and the price is unchanged; an *approved* champion whose artifact is missing or unloadable raises `GovernanceError` (**fail loud — never silently reprice on the synthetic fallback**). Don't conflate ML response models with the synthetic response functions used inside the grid search. The single `train()` entry point in `agentic.py` replaced the former dual `train` / `train_and_recommend` API; `evaluate_binary_classifier` is a backward-compat alias for `evaluate_model` that emits a `DeprecationWarning`; use `evaluate_probabilities` / `evaluate_model` from `evaluation.py` for new code.
 - Competitor-rate ingestion is gated behind `competitor_rates.enabled` and `strict` flags. Strict-mode failures should error, not warn.
 - Update [docs/architecture.md](docs/architecture.md) and [docs/modelling_assumptions.md](docs/modelling_assumptions.md) when changing structural behaviour.
 
@@ -118,14 +119,19 @@ The boundary fields distinguish "needed expansion" from "still hitting boundary 
 - Step-by-step business+technical walkthrough: [docs/usage_guide.md](docs/usage_guide.md) (includes restricted-network setup).
 - Run ledger usage guide: [docs/run_ledger_guide.md](docs/run_ledger_guide.md) (how to produce, read, and sign off ledger artifacts).
 
-## Context Navigation (Graphify)
+## Context Navigation (Graphify + Codebase Memory)
 
-### 3-Layer Query Rule
+### 4-Layer Query Rule
 1. **First:** query `graphify-out/graph.json` or `graphify-out/wiki/index.md`
    to understand code structure and connections
 2. **Second:** query the Obsidian vault for decisions, progress, and project context
-3. **Third:** only read raw code files when editing
-   or when the first two layers don't have the answer
+3. **Third:** for live/ad-hoc structural questions the static graphify graph
+   doesn't answer (call chains, impact of uncommitted changes, dead code,
+   symbol search), use codebase-memory-mcp's MCP tools directly. Call
+   `detect_changes` first — it does not auto-watch or auto-reindex; if it
+   reports drift, re-run `index_repository` before trusting graph results
+4. **Fourth:** only read raw code files when editing
+   or when the first three layers don't have the answer
 
 ### When to rebuild the graph
 - After structural changes (new modules, major refactors)
@@ -136,3 +142,14 @@ The boundary fields distinguish "needed expansion" from "still hitting boundary 
 ### Do NOT
 - Don't manually modify files inside `graphify-out/`
 - Don't re-read the entire codebase if the graph already has the information
+
+### Codebase Memory (codebase-memory-mcp)
+- codebase-memory-mcp is a structural code index only; it has no LLM inside it.
+- It does not replace graphify or `AI_Context`.
+- If this project is not already indexed in the current agent session, ask the
+  agent to "index this project" once.
+- Its cache lives outside the repo at `~/.cache/codebase-memory-mcp/`.
+
+## Session wrap-up
+
+If this session changed the project's status, milestone, or current focus, update the "AI bank pricing engine" entry in `~/vault/AI_Context/Memory/Durable_Facts/Kevin/current-projects.md` (status, current focus, last-updated date) before ending the session. Skip this if nothing status-relevant changed.
