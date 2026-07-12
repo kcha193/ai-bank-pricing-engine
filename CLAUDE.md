@@ -127,8 +127,9 @@ The boundary fields distinguish "needed expansion" from "still hitting boundary 
 2. **Second:** query the Obsidian vault for decisions, progress, and project context
 3. **Third:** for live/ad-hoc structural questions the static graphify graph
    doesn't answer (call chains, impact of uncommitted changes, dead code,
-   symbol search), use codebase-memory-mcp's MCP tools directly. It
-   auto-updates via a background watcher, with no manual rebuild step
+   symbol search), use codebase-memory-mcp's MCP tools directly. Call
+   `detect_changes` first — it does not auto-watch or auto-reindex; if it
+   reports drift, re-run `index_repository` before trusting graph results
 4. **Fourth:** only read raw code files when editing
    or when the first three layers don't have the answer
 

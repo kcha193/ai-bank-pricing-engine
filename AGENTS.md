@@ -3,6 +3,32 @@
 > This file is read by Codex and other agent runtimes. For Claude-session-specific architectural
 > detail see [CLAUDE.md](CLAUDE.md), which is the source of truth for module-level invariants.
 
+## Context Navigation (Graphify + Codebase Memory)
+
+Codex does not auto-load `CLAUDE.md`, so these rules are inlined here too
+(kept in sync with `CLAUDE.md`'s "Context Navigation" section).
+
+### 4-Layer Query Rule
+1. **First:** query `graphify-out/graph.json` or `graphify-out/wiki/index.md`
+   to understand code structure and connections
+2. **Second:** query the Obsidian vault for decisions, progress, and project context
+3. **Third:** for live/ad-hoc structural questions the static graphify graph
+   doesn't answer (call chains, impact of uncommitted changes, dead code,
+   symbol search), use codebase-memory-mcp's MCP tools directly. Call
+   `detect_changes` first — it does not auto-watch or auto-reindex; if it
+   reports drift, re-run `index_repository` before trusting graph results
+4. **Fourth:** only read raw code files when editing
+   or when the first three layers don't have the answer
+
+### Codebase Memory (codebase-memory-mcp)
+- codebase-memory-mcp is a structural code index only; it has no LLM inside it.
+- It does not replace graphify or `AI_Context`.
+- If this project is not already indexed in the current agent session, ask the
+  agent to "index this project" once.
+- Its cache lives outside the repo at `~/.cache/codebase-memory-mcp/`.
+- If codebase-memory-mcp is unavailable, skip to raw code reads; nothing
+  depends on it being present.
+
 ## Project context
 
 Python retail bank balance-sheet pricing engine. **Synthetic data only. Portfolio-level only**
