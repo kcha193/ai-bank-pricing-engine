@@ -1,14 +1,18 @@
 """Tests for the application-layer PricingService orchestrator."""
 
 import json
+from importlib.metadata import PackageNotFoundError
+from types import SimpleNamespace
 
 import pytest
 
+from balance_pricing_engine.application import pricing_service
 from balance_pricing_engine.application.contracts import (
     PricingScenarioRequest,
 )
 from balance_pricing_engine.application.pricing_service import PricingService
-from balance_pricing_engine.config import load_config
+from balance_pricing_engine.competitor_rates.store import load_rate_run
+from balance_pricing_engine.config import EngineConfig, load_config
 from balance_pricing_engine.events.models import DomainEvent
 from balance_pricing_engine.events.publisher import InMemoryEventPublisher
 from balance_pricing_engine.governance.gates import DecisionStatus
@@ -29,6 +33,29 @@ def _small_config():
         update={"n_loan_customers": 500, "n_deposit_customers": 500}
     )
     return config.model_copy(update={"simulation": simulation})
+
+
+def _competitor_rate_config(tmp_path, *, validation_status: str = "valid") -> EngineConfig:
+    run = load_rate_run("tests/fixtures/competitor_rates/latest.json")
+    if validation_status != "valid":
+        run = run.model_copy(
+            update={
+                "validation_summary": run.validation_summary.model_copy(
+                    update={"status": validation_status, "error_count": 1}
+                )
+            }
+        )
+    source_file = tmp_path / "latest.json"
+    source_file.write_text(run.model_dump_json(), encoding="utf-8")
+    raw_config = _small_config().model_dump()
+    raw_config["competitor_rates"] = {
+        **raw_config["competitor_rates"],
+        "enabled": True,
+        "source_file": str(source_file),
+        "max_staleness_hours": 10_000,
+        "strict": True,
+    }
+    return EngineConfig.model_validate(raw_config)
 
 
 def test_run_scenario_matches_baseline_recommendation_exactly():
@@ -248,3 +275,160 @@ def test_run_scenario_feature_lineage_covers_both_products():
     assert set(decision.feature_lineage) == {"loan", "deposit"}
     for lineage in decision.feature_lineage.values():
         assert lineage.schema_fingerprint
+
+
+def test_run_scenario_rejects_failed_strict_competitor_rates_before_pricing(tmp_path, monkeypatch):
+    config = _competitor_rate_config(tmp_path, validation_status="failed")
+
+    def _optimisation_must_not_run(*args, **kwargs):
+        pytest.fail("optimisation must not run for failed strict competitor-rate data")
+
+    monkeypatch.setattr(
+        "balance_pricing_engine.application.pricing_service.run_baseline_diagnostics",
+        _optimisation_must_not_run,
+    )
+
+    with pytest.raises(ValueError, match="failed validation"):
+        PricingService().run_scenario(PricingScenarioRequest(config=config))
+
+
+def test_run_scenario_applies_enabled_competitor_rates_before_optimisation(tmp_path, monkeypatch):
+    config = _competitor_rate_config(tmp_path)
+    captured: dict[str, EngineConfig] = {}
+
+    def _capture_config(effective_config, **kwargs):
+        captured["config"] = effective_config
+        return run_baseline_diagnostics(effective_config, **kwargs)
+
+    monkeypatch.setattr(
+        "balance_pricing_engine.application.pricing_service.run_baseline_diagnostics",
+        _capture_config,
+    )
+
+    PricingService().run_scenario(
+        PricingScenarioRequest(config=config, max_boundary_expansions=0)
+    )
+
+    assert captured["config"].market.competitor_loan_rate == pytest.approx((5.5 + 5.7 + 5.6 + 5.8) / 4 / 100)
+    assert captured["config"].market.competitor_deposit_rate == pytest.approx(
+        (4.1 + 4.3 + 4.4 + 4.2 + 4.5) / 5 / 100
+    )
+
+
+def test_evaluate_shadow_returns_available_product_results(monkeypatch):
+    config = _small_config()
+    diagnostics = SimpleNamespace(
+        best_result=SimpleNamespace(loan_rate=0.06, deposit_rate=0.045)
+    )
+    expected = {
+        "loan": SimpleNamespace(product="loan"),
+        "deposit": SimpleNamespace(product="deposit"),
+    }
+
+    monkeypatch.setattr(
+        pricing_service,
+        "evaluate_shadow_challenger",
+        lambda _registry, _features, product, _frame: expected[product],
+    )
+
+    results = PricingService()._evaluate_shadow(
+        PricingScenarioRequest(config=config, registry=object()), diagnostics
+    )
+
+    assert results == [expected["loan"], expected["deposit"]]
+
+
+def test_publish_outcome_event_emits_status_specific_and_produced_events():
+    config = _small_config()
+    diagnostics = SimpleNamespace(
+        best_result=SimpleNamespace(loan_rate=0.06, deposit_rate=0.045, total_objective=1.0)
+    )
+    service = PricingService()
+
+    blocked_publisher = InMemoryEventPublisher()
+    service._publish_outcome_event(
+        PricingScenarioRequest(config=config, event_publisher=blocked_publisher),
+        "correlation-id",
+        "decision-id",
+        DecisionStatus.BLOCKED,
+        ("failed gate",),
+        (),
+        "run-id",
+        diagnostics,
+    )
+    assert [event.event_type for event in blocked_publisher.events] == [
+        "PricingDecisionBlocked",
+        "PricingDecisionProduced",
+    ]
+
+    review_publisher = InMemoryEventPublisher()
+    service._publish_outcome_event(
+        PricingScenarioRequest(config=config, event_publisher=review_publisher),
+        "correlation-id",
+        "decision-id",
+        DecisionStatus.REVIEW_REQUIRED,
+        (),
+        ("review gate",),
+        None,
+        diagnostics,
+    )
+    assert [event.event_type for event in review_publisher.events] == [
+        "GovernanceReviewRequired",
+        "PricingDecisionProduced",
+    ]
+
+
+def test_pricing_service_helpers_handle_unavailable_optional_data(tmp_path, monkeypatch):
+    config = _small_config()
+    assert pricing_service._reference_or_competitor(None, 0.05) == 0.05
+    assert pricing_service._read_run_id(tmp_path) is None
+    assert pricing_service._shadow_payload([]) is None
+
+    def _unavailable_version(_package: str) -> str:
+        raise PackageNotFoundError
+
+    def _unavailable_sensitivity(_config):
+        raise NotImplementedError
+
+    def _unavailable_git(*args, **kwargs):
+        raise OSError("git unavailable")
+
+    monkeypatch.setattr(pricing_service, "_pkg_version", _unavailable_version)
+    monkeypatch.setattr(
+        "balance_pricing_engine.diagnostics.run_sensitivity_analysis",
+        _unavailable_sensitivity,
+    )
+    monkeypatch.setattr(pricing_service.subprocess, "run", _unavailable_git)
+
+    assert pricing_service._package_version() is None
+    assert pricing_service._run_sensitivity_safely(config) is None
+    assert pricing_service._git_commit() is None
+
+
+def test_competitor_rate_issues_report_missing_and_non_strict_failed_sources(tmp_path):
+    missing_source_config = _competitor_rate_config(tmp_path)
+    missing_source_config = missing_source_config.model_copy(
+        update={
+            "competitor_rates": missing_source_config.competitor_rates.model_copy(
+                update={"source_file": str(tmp_path / "missing.json")}
+            )
+        }
+    )
+    missing_issues = pricing_service._competitor_rate_issues(missing_source_config)
+
+    assert missing_issues is not None
+    assert missing_issues[0].severity == "error"
+
+    non_strict_failed_config = _competitor_rate_config(tmp_path, validation_status="failed")
+    non_strict_failed_config = non_strict_failed_config.model_copy(
+        update={
+            "competitor_rates": non_strict_failed_config.competitor_rates.model_copy(
+                update={"strict": False}
+            )
+        }
+    )
+    failed_issues = pricing_service._competitor_rate_issues(non_strict_failed_config)
+
+    assert failed_issues is not None
+    assert failed_issues[0].severity == "warning"
+    assert failed_issues[0].message == "Competitor-rate source file failed validation."

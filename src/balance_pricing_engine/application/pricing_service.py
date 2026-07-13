@@ -25,6 +25,7 @@ import logging
 import subprocess
 import time
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
@@ -36,6 +37,7 @@ from balance_pricing_engine.application.contracts import (
     PricingDecision,
     PricingScenarioRequest,
 )
+from balance_pricing_engine.competitor_rates.apply import apply_competitor_rates_to_config
 from balance_pricing_engine.competitor_rates.models import ValidationIssue
 from balance_pricing_engine.competitor_rates.store import load_rate_run
 from balance_pricing_engine.competitor_rates.validate import validate_staleness
@@ -90,6 +92,7 @@ class PricingService:
         self._feature_store = feature_store or LocalFeatureStore()
 
     def run_scenario(self, request: PricingScenarioRequest) -> PricingDecision:
+        request = replace(request, config=apply_competitor_rates_to_config(request.config))
         correlation_id = request.correlation_id or str(uuid.uuid4())
         decision_id = str(uuid.uuid4())
         metrics = ExecutionMetrics(correlation_id=correlation_id, decision_id=decision_id)
@@ -402,7 +405,20 @@ def _competitor_rate_issues(config: EngineConfig) -> list[ValidationIssue] | Non
             )
         ]
     run = load_rate_run(source_path)
-    return validate_staleness(run, competitor_rates.max_staleness_hours, competitor_rates.strict)
+    severity = "error" if competitor_rates.strict else "warning"
+    validation_issues = [
+        issue.model_copy(update={"severity": severity}) for issue in run.validation_summary.issues
+    ]
+    if run.validation_summary.status == "failed" and not validation_issues:
+        validation_issues.append(
+            ValidationIssue(
+                severity=severity,
+                message="Competitor-rate source file failed validation.",
+            )
+        )
+    return validation_issues + validate_staleness(
+        run, competitor_rates.max_staleness_hours, competitor_rates.strict
+    )
 
 
 def _read_run_id(run_dir: Path) -> str | None:
