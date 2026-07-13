@@ -3,6 +3,44 @@
 This project is a synthetic retail bank balance-sheet pricing prototype. It is not a production
 pricing approval system.
 
+## Governance Control Plane (`governance/`)
+
+The primitives below (registry approval, fail-loud artifact checks, boundary/policy-band
+diagnostics) are unified per decision by an explicit governance layer:
+
+- `governance.gates.evaluate_gates()` runs a fixed set of typed `GateResult` checks (config
+  validity, competitor-rate freshness, model approval status, model artifact availability,
+  model/feature compatibility, boundary warning, expansion-cap, policy-band breach, funding
+  shortfall, lineage completeness, objective finiteness) and derives a `DecisionStatus`:
+  `RECOMMENDED`, `REVIEW_REQUIRED`, or `BLOCKED`. Policy is conservative but not maximal: any
+  `BLOCK` gate yields `BLOCKED`; otherwise any `WARN` yields `REVIEW_REQUIRED`; a clean gate set
+  is `RECOMMENDED`. The underlying optimiser recommendation is preserved for `REVIEW_REQUIRED` —
+  governance withholds the "safe to act on" label, it does not discard the result.
+- `governance.lineage.resolve_model_lineage()` re-derives (read-only) which response source
+  (deterministic synthetic vs. an approved ML champion) drove each product's pricing, for
+  recording — it does not duplicate the `GovernanceError` fail-loud check, which still lives
+  solely in `ModelScoringAgent.resolve_response_fn`.
+- `governance.decision_record.DecisionRecord` packages the decision status, gates, model/feature
+  lineage, boundary/policy-band flags, and stage timings into an **additive**
+  `decision_record.json` artifact, written alongside (never replacing) the existing run-ledger
+  files documented in [docs/run_ledger_guide.md](docs/run_ledger_guide.md).
+- `governance.shadow.evaluate_shadow_challenger()` is a narrow, optional champion/challenger
+  comparison: it scores the same synthetic feature sample with the current approved champion and
+  the latest compatible, non-champion challenger, purely for observation. It never changes the
+  selected rates, never bypasses champion approval, and never raises — a missing or unscoreable
+  challenger is recorded as an `error` field on the result, not propagated.
+
+See [docs/adr/0003-governance-centred-decision-record.md](docs/adr/0003-governance-centred-decision-record.md)
+for the design rationale and alternatives considered.
+
+**Invariant preserved, not re-implemented:** `application.PricingService.run_scenario()` calls
+`run_baseline_diagnostics(registry=...)` exactly as before. If an approved champion's artifact is
+missing or unloadable, `GovernanceError` still propagates out of `run_scenario()` unchanged — it
+is never downgraded to a `BLOCKED` `PricingDecision`. An inconsistent governed model state must
+fail loud, not be represented as a normal (if blocked) decision. The FastAPI `/v1/pricing/scenarios`
+endpoint is the only place this exception is translated — into a `503` with a structured
+`MODEL_ARTIFACT_UNAVAILABLE` error body, never a raw stack trace.
+
 ## Current Model Boundary
 
 The current engine optimizes one portfolio-level home loan rate and one portfolio-level term
