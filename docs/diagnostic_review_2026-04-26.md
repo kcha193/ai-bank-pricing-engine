@@ -1,6 +1,6 @@
 # Diagnostic Review — 2026-04-26
 
-> **Status (2026-06-13): RESOLVED.** All actionable items from this review are closed and verified against current source. The only outstanding item is the empirical parameter-calibration cadence/approval process (documentation). This file is retained as a historical review record; do not treat its ⬜→✅ items as live work.
+> **Status (2026-06-15): RESOLVED.** All actionable items from this review are closed and verified against current source, including the empirical parameter-calibration cadence/approval process — now documented in [model_governance.md](model_governance.md) under *Calibration Cadence and Approval Process*. This file is retained as a historical review record; do not treat its ⬜→✅ items as live work.
 
 _Updated 2026-05-13 to reflect items addressed in [PR #20](https://github.com/kcha193/ai-bank-pricing-engine/pull/20)._
 
@@ -141,7 +141,7 @@ Current engine behaviour:
 - ✅ Offline/air-gapped installation — wheelhouse instructions fixed in `usage_guide.md`.
 - ✅ Architecture diagram updated with excess deposit income term.
 - ✅ Tie-break policy documented in `model_governance.md`.
-- ⬜ Model-governance note for parameter calibration cadence and approval process — partially in `model_governance.md`; empirical calibration process not yet defined.
+- ✅ Model-governance note for parameter calibration cadence and approval process — resolved (2026-06-15). `model_governance.md` now has a *Calibration Cadence and Approval Process* section defining periodic + event-triggered cadence, proposer/reviewer/approver roles, acceptance gates, rejection/rollback, and audit trail.
 
 ## 5) Ranked action plan
 
@@ -167,7 +167,7 @@ _All items below resolved as of 2026-06-13 (verified against source); retained f
 - ✅ Add dedicated test for adaptive boundary expansion + re-check path — present in `test_diagnostics.py`.
 - ✅ Formalise deposit funding ratio interpretation (hard target vs soft risk appetite) in governance docs — documented in `model_governance.md`.
 
-The only item from this review still genuinely open is the model-governance note for **parameter calibration cadence and approval process** (empirical calibration process not yet defined). The single-period annualized treatment remains an acknowledged modelling assumption (multi-period diagnostics with tenor dynamics now exist as an extension).
+As of 2026-06-15 every item from this review is resolved. The model-governance note for **parameter calibration cadence and approval process** is now documented in `model_governance.md`. The single-period annualized treatment remains an acknowledged modelling assumption (multi-period diagnostics with tenor dynamics now exist as an extension).
 
 ### Future enhancements
 

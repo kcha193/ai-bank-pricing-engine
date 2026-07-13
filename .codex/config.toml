@@ -1,0 +1,7 @@
+# Codex CLI loads config only from ~/.codex/config.toml, not a project-local
+# .codex/config.toml — this file is not read automatically. Copy the stanza
+# below into your real ~/.codex/config.toml to register the MCP server for
+# Codex. See AGENTS.md > Codebase Memory (codebase-memory-mcp).
+[mcp_servers.codebase-memory-mcp]
+command = "codebase-memory-mcp"
+args = []
