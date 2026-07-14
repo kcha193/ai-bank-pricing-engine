@@ -1,16 +1,19 @@
 """Tests for the application-layer PricingService orchestrator."""
 
+import hashlib
 import json
 from importlib.metadata import PackageNotFoundError
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from balance_pricing_engine.application import pricing_service
 from balance_pricing_engine.application.contracts import (
     PricingScenarioRequest,
 )
 from balance_pricing_engine.application.pricing_service import PricingService
+from balance_pricing_engine.competitor_rates.apply import apply_competitor_rates_to_config
 from balance_pricing_engine.competitor_rates.store import load_rate_run
 from balance_pricing_engine.config import EngineConfig, load_config
 from balance_pricing_engine.events.models import DomainEvent
@@ -29,6 +32,14 @@ class _FailingEventPublisher:
 
 def _small_config():
     config = load_config("configs/base.yaml")
+    simulation = config.simulation.model_copy(
+        update={"n_loan_customers": 500, "n_deposit_customers": 500}
+    )
+    return config.model_copy(update={"simulation": simulation})
+
+
+def _small_segmented_config():
+    config = load_config("configs/segmented_pricing.yaml")
     simulation = config.simulation.model_copy(
         update={"n_loan_customers": 500, "n_deposit_customers": 500}
     )
@@ -240,6 +251,31 @@ def test_run_scenario_with_unapproved_champion_falls_back_to_synthetic(tmp_path)
     assert decision.model_lineage["loan"].response_source == "deterministic_synthetic"
 
 
+def test_run_scenario_segmented_pricing_ignores_registry_and_records_synthetic_lineage(tmp_path):
+    """Guard: segmented runs never call ModelScoringAgent.resolve_response_fn (see
+    scenarios/runner.py), so lineage must not claim an approved champion drove the
+    response even when the caller supplies a registry with an approved champion."""
+    config = _small_segmented_config()
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.register(
+        {
+            "model_name": "SegmentedIrrelevantChampion",
+            "champion_status": "champion",
+            "governance_status": "approved",
+            "artifact_path": str(tmp_path / "does_not_exist.joblib"),
+            "feature_columns": LOAN_FEATURE_COLUMNS,
+        }
+    )
+    service = PricingService()
+
+    decision = service.run_scenario(PricingScenarioRequest(config=config, registry=registry))
+
+    assert decision.model_lineage["loan"].response_source == "deterministic_synthetic"
+    assert decision.model_lineage["loan"].used_fallback is True
+    assert decision.model_lineage["deposit"].response_source == "deterministic_synthetic"
+    assert decision.model_lineage["deposit"].used_fallback is True
+
+
 def test_run_scenario_records_stage_durations():
     config = _small_config()
     service = PricingService()
@@ -312,6 +348,49 @@ def test_run_scenario_applies_enabled_competitor_rates_before_optimisation(tmp_p
     assert captured["config"].market.competitor_loan_rate == pytest.approx((5.5 + 5.7 + 5.6 + 5.8) / 4 / 100)
     assert captured["config"].market.competitor_deposit_rate == pytest.approx(
         (4.1 + 4.3 + 4.4 + 4.2 + 4.5) / 5 / 100
+    )
+
+
+def test_run_scenario_persists_effective_config_snapshot_when_competitor_rates_applied(
+    tmp_path,
+):
+    """The ledger snapshot/hash must reflect the resolved competitor rates that
+    actually drove pricing, not the caller's original (pre-resolution) YAML at
+    config_path -- otherwise two different competitor-rate files could produce
+    different decisions with an identical archived config."""
+    config = _competitor_rate_config(tmp_path)
+    original_config_path = tmp_path / "original_config.yaml"
+    original_config_path.write_text(
+        yaml.safe_dump(load_config("configs/base.yaml").model_dump(mode="json")),
+        encoding="utf-8",
+    )
+
+    decision = PricingService().run_scenario(
+        PricingScenarioRequest(
+            config=config,
+            scenario_name="competitor_ledger_test",
+            config_path=str(original_config_path),
+            persist_ledger=True,
+            ledger_base_dir=tmp_path / "runs",
+            max_boundary_expansions=0,
+        )
+    )
+
+    metadata = json.loads((decision.run_dir / "metadata.json").read_text(encoding="utf-8"))
+    # config_path is recorded verbatim for traceability...
+    assert metadata["config_path"] == str(original_config_path)
+    # ...but the hash and snapshot must NOT match the untouched original file, since the
+    # priced market rates differ from what that file contains.
+    original_hash = hashlib.sha256(original_config_path.read_bytes()).hexdigest()
+    assert metadata["config_hash"] != original_hash
+    assert metadata["config_hash"] == decision.decision_record.config_hash
+
+    snapshot = yaml.safe_load(
+        (decision.run_dir / "config_snapshot.yaml").read_text(encoding="utf-8")
+    )
+    resolved_config = apply_competitor_rates_to_config(config)
+    assert snapshot["market"]["competitor_loan_rate"] == pytest.approx(
+        resolved_config.market.competitor_loan_rate
     )
 
 

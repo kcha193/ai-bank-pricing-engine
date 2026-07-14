@@ -23,6 +23,7 @@ import hashlib
 import json
 import logging
 import subprocess
+import tempfile
 import time
 import uuid
 from dataclasses import replace
@@ -31,6 +32,8 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from balance_pricing_engine.application.contracts import (
     GovernanceSummary,
@@ -63,7 +66,11 @@ from balance_pricing_engine.governance.gates import (
     decision_status_from_gates,
     evaluate_gates,
 )
-from balance_pricing_engine.governance.lineage import ModelLineage, resolve_model_lineage
+from balance_pricing_engine.governance.lineage import (
+    ModelLineage,
+    resolve_model_lineage,
+    synthetic_model_lineage,
+)
 from balance_pricing_engine.governance.shadow import (
     ShadowEvaluationResult,
     evaluate_shadow_challenger,
@@ -93,6 +100,7 @@ class PricingService:
 
     def run_scenario(self, request: PricingScenarioRequest) -> PricingDecision:
         request = replace(request, config=apply_competitor_rates_to_config(request.config))
+        effective_config_path = _effective_config_path(request.config, request.config_path)
         correlation_id = request.correlation_id or str(uuid.uuid4())
         decision_id = str(uuid.uuid4())
         metrics = ExecutionMetrics(correlation_id=correlation_id, decision_id=decision_id)
@@ -172,6 +180,7 @@ class PricingService:
                     sensitivity=sensitivity,
                     competitor_rate_source=request.competitor_rate_source,
                     base_dir=request.ledger_base_dir,
+                    effective_config_path=effective_config_path,
                 )
                 run_id = _read_run_id(run_dir)
                 publish_safely(
@@ -194,7 +203,7 @@ class PricingService:
             scenario_name=request.scenario_name,
             timestamp=datetime.now(timezone.utc).isoformat(),
             decision_status=status.value,
-            config_hash=_config_hash(request.config, request.config_path),
+            config_hash=_config_hash(request.config, effective_config_path),
             package_version=_package_version(),
             git_commit=_git_commit(),
             diagnostics=diagnostics,
@@ -277,10 +286,21 @@ class PricingService:
         correlation_id: str,
         decision_id: str,
     ) -> dict[str, ModelLineage]:
-        model_lineage = {
-            "loan": resolve_model_lineage(request.registry, LOAN_FEATURE_COLUMNS, "loan"),
-            "deposit": resolve_model_lineage(request.registry, DEPOSIT_FEATURE_COLUMNS, "deposit"),
-        }
+        if request.config.segmented_pricing is not None:
+            # Segmented runs return through _evaluate_adaptive_segmented_rates before
+            # run_baseline_diagnostics ever calls ModelScoringAgent.resolve_response_fn
+            # (see scenarios/runner.py) -- the registry is never consulted for pricing,
+            # so lineage must not claim an approved champion drove a response it never
+            # touched, regardless of what registry the caller happened to pass.
+            model_lineage = {
+                "loan": synthetic_model_lineage("loan"),
+                "deposit": synthetic_model_lineage("deposit"),
+            }
+        else:
+            model_lineage = {
+                "loan": resolve_model_lineage(request.registry, LOAN_FEATURE_COLUMNS, "loan"),
+                "deposit": resolve_model_lineage(request.registry, DEPOSIT_FEATURE_COLUMNS, "deposit"),
+            }
         for product, lineage in model_lineage.items():
             publish_safely(
                 request.event_publisher,
@@ -380,6 +400,28 @@ class PricingService:
 
 def _reference_or_competitor(reference_rate: float | None, competitor_rate: float) -> float:
     return reference_rate if reference_rate is not None else competitor_rate
+
+
+def _effective_config_path(
+    config: EngineConfig, config_path: str | Path | None
+) -> str | Path | None:
+    """Materialize the resolved config to a temp YAML file when competitor rates
+    were applied, so ledger snapshot/hash reflect the rates that actually drove
+    pricing rather than the caller's original (pre-resolution) file at
+    ``config_path``. Returns ``config_path`` unchanged otherwise."""
+    if config_path is None:
+        return None
+    competitor_rates = config.competitor_rates
+    if competitor_rates is None or not competitor_rates.enabled:
+        return config_path
+    tmp_dir = Path(tempfile.gettempdir()) / "bank_pricing_effective_configs"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / f"{uuid.uuid4().hex}.yaml"
+    tmp_path.write_text(
+        yaml.safe_dump(config.model_dump(mode="json"), sort_keys=False),
+        encoding="utf-8",
+    )
+    return tmp_path
 
 
 def _run_sensitivity_safely(config: EngineConfig) -> Any:

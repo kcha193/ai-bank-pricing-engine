@@ -148,6 +148,14 @@ def create_pricing_scenario(
                 status_code=422,
                 detail=_error_detail("UNSUPPORTED_SCENARIO", str(exc), correlation_id),
             ) from exc
+        except (ValueError, FileNotFoundError) as exc:
+            # PricingService.run_scenario applies competitor rates before optimisation;
+            # a stale/failed/missing strict competitor-rate source raises here (see
+            # apply_competitor_rates_to_config), not a server-side failure.
+            raise HTTPException(
+                status_code=422,
+                detail=_error_detail("COMPETITOR_RATE_VALIDATION_ERROR", str(exc), correlation_id),
+            ) from exc
         except HTTPException:
             raise
         except Exception as exc:

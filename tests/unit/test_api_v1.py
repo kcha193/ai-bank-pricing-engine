@@ -3,6 +3,7 @@
 import importlib
 from pathlib import Path
 
+import yaml
 from fastapi.testclient import TestClient
 
 from balance_pricing_engine.api import app
@@ -108,6 +109,27 @@ def test_v1_pricing_scenarios_returns_503_for_governance_error(monkeypatch):
 
     assert response.status_code == 503
     assert response.json()["detail"]["error_code"] == "MODEL_ARTIFACT_UNAVAILABLE"
+
+
+def test_v1_pricing_scenarios_returns_422_for_missing_strict_competitor_rate_source():
+    """A missing/failed strict competitor-rate source is caller input, not a server
+    outage: PricingService.run_scenario raises before optimisation (from
+    apply_competitor_rates_to_config), and this must surface as 422, not 500."""
+    raw_config = yaml.safe_load(CONFIG_YAML)
+    raw_config["competitor_rates"] = {
+        **raw_config["competitor_rates"],
+        "enabled": True,
+        "strict": True,
+        "source_file": "data/processed/competitor_rates/does_not_exist.json",
+    }
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/pricing/scenarios", json={"config_yaml": yaml.safe_dump(raw_config)}
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["error_code"] == "COMPETITOR_RATE_VALIDATION_ERROR"
 
 
 def test_v1_pricing_scenarios_returns_500_for_unexpected_error_without_stack_trace(monkeypatch):

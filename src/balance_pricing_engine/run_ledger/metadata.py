@@ -67,8 +67,16 @@ def build_run_metadata(
     diagnostics: "ScenarioDiagnostics",
     competitor_rate_source: Optional[str] = None,
     timestamp: datetime | None = None,
+    config_hash_source: str | Path | None = None,
 ) -> RunMetadata:
-    """Build a RunMetadata record from a completed ScenarioDiagnostics."""
+    """Build a RunMetadata record from a completed ScenarioDiagnostics.
+
+    ``config_hash_source``, when given, is hashed instead of ``config_path``.
+    Callers use this when ``config_path`` points at the caller's original YAML
+    but the config that actually drove pricing was later modified (e.g.
+    competitor-rate resolution) -- ``config_path`` still records where the
+    request came from, while the hash reflects what was actually priced.
+    """
     vi = sys.version_info
     run_timestamp = timestamp or datetime.now(timezone.utc)
     return RunMetadata(
@@ -77,7 +85,7 @@ def build_run_metadata(
         timestamp=run_timestamp.isoformat(),
         git_commit=_git_commit(),
         config_path=str(config_path),
-        config_hash=_config_hash(config_path),
+        config_hash=_config_hash(config_hash_source if config_hash_source is not None else config_path),
         python_version=f"{vi.major}.{vi.minor}.{vi.micro}",
         package_version=_package_version(),
         boundary_warning_flag=diagnostics.boundary_diagnostics.has_warning,
