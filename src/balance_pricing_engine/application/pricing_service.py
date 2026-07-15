@@ -100,7 +100,19 @@ class PricingService:
 
     def run_scenario(self, request: PricingScenarioRequest) -> PricingDecision:
         request = replace(request, config=apply_competitor_rates_to_config(request.config))
-        effective_config_path = _effective_config_path(request.config, request.config_path)
+        materialized_config_path = _materialize_effective_config(
+            request.config, request.config_path
+        )
+        effective_config_path = materialized_config_path or request.config_path
+        try:
+            return self._run_scenario(request, effective_config_path)
+        finally:
+            if materialized_config_path is not None:
+                materialized_config_path.unlink(missing_ok=True)
+
+    def _run_scenario(
+        self, request: PricingScenarioRequest, effective_config_path: str | Path | None
+    ) -> PricingDecision:
         correlation_id = request.correlation_id or str(uuid.uuid4())
         decision_id = str(uuid.uuid4())
         metrics = ExecutionMetrics(correlation_id=correlation_id, decision_id=decision_id)
@@ -402,18 +414,19 @@ def _reference_or_competitor(reference_rate: float | None, competitor_rate: floa
     return reference_rate if reference_rate is not None else competitor_rate
 
 
-def _effective_config_path(
+def _materialize_effective_config(
     config: EngineConfig, config_path: str | Path | None
-) -> str | Path | None:
+) -> Path | None:
     """Materialize the resolved config to a temp YAML file when competitor rates
     were applied, so ledger snapshot/hash reflect the rates that actually drove
     pricing rather than the caller's original (pre-resolution) file at
-    ``config_path``. Returns ``config_path`` unchanged otherwise."""
+    ``config_path``. Returns ``None`` when no materialization is needed. The
+    caller owns the returned path's lifecycle and must delete it once done."""
     if config_path is None:
         return None
     competitor_rates = config.competitor_rates
     if competitor_rates is None or not competitor_rates.enabled:
-        return config_path
+        return None
     tmp_dir = Path(tempfile.gettempdir()) / "bank_pricing_effective_configs"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     tmp_path = tmp_dir / f"{uuid.uuid4().hex}.yaml"

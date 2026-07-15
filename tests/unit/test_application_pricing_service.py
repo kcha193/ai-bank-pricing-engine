@@ -394,6 +394,79 @@ def test_run_scenario_persists_effective_config_snapshot_when_competitor_rates_a
     )
 
 
+def test_run_scenario_cleans_up_materialized_effective_config_temp_file(tmp_path, monkeypatch):
+    """The temp YAML written by _materialize_effective_config must not leak: it is
+    only ever consumed within run_scenario (config hash + ledger snapshot), so
+    PricingService owns its lifecycle and must delete it once the scenario
+    completes."""
+    config = _competitor_rate_config(tmp_path)
+    original_config_path = tmp_path / "original_config.yaml"
+    original_config_path.write_text(
+        yaml.safe_dump(load_config("configs/base.yaml").model_dump(mode="json")),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+    original_materialize = pricing_service._materialize_effective_config
+
+    def _capture_materialize(cfg, config_path):
+        result = original_materialize(cfg, config_path)
+        captured["path"] = result
+        return result
+
+    monkeypatch.setattr(pricing_service, "_materialize_effective_config", _capture_materialize)
+
+    PricingService().run_scenario(
+        PricingScenarioRequest(
+            config=config,
+            config_path=str(original_config_path),
+            max_boundary_expansions=0,
+        )
+    )
+
+    assert captured["path"] is not None
+    assert not captured["path"].exists()
+
+
+def test_run_scenario_cleans_up_materialized_effective_config_temp_file_on_failure(
+    tmp_path, monkeypatch
+):
+    """The materialized temp config must be cleaned up even when run_scenario
+    raises partway through -- a failed scenario must not leak the temp file."""
+    config = _competitor_rate_config(tmp_path)
+    original_config_path = tmp_path / "original_config.yaml"
+    original_config_path.write_text(
+        yaml.safe_dump(load_config("configs/base.yaml").model_dump(mode="json")),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+    original_materialize = pricing_service._materialize_effective_config
+
+    def _capture_materialize(cfg, config_path):
+        result = original_materialize(cfg, config_path)
+        captured["path"] = result
+        return result
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(pricing_service, "_materialize_effective_config", _capture_materialize)
+    monkeypatch.setattr(
+        "balance_pricing_engine.application.pricing_service.run_baseline_diagnostics", _raise
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        PricingService().run_scenario(
+            PricingScenarioRequest(
+                config=config,
+                config_path=str(original_config_path),
+                max_boundary_expansions=0,
+            )
+        )
+
+    assert captured["path"] is not None
+    assert not captured["path"].exists()
+
+
 def test_evaluate_shadow_returns_available_product_results(monkeypatch):
     config = _small_config()
     diagnostics = SimpleNamespace(

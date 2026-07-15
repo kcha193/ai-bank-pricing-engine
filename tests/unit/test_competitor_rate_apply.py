@@ -1,6 +1,7 @@
 import pytest
 
 from balance_pricing_engine.competitor_rates.apply import (
+    CompetitorRateResolutionError,
     _resolve_strategy,
     apply_competitor_rates_to_config,
     load_and_resolve_competitor_rates,
@@ -137,6 +138,29 @@ def test_bank_specific_strategy_requires_bank():
     config = EngineConfig.model_validate(raw)
 
     with pytest.raises(ValueError, match="requires bank"):
+        load_and_resolve_competitor_rates(config.competitor_rates)
+
+
+def test_strict_failures_raise_the_dedicated_resolution_error_type(tmp_path):
+    """Callers (e.g. the API layer) need to distinguish competitor-rate-specific
+    resolution failures from unrelated ValueErrors elsewhere in the pricing
+    pipeline, so these raises must be CompetitorRateResolutionError, not a bare
+    ValueError."""
+    run = load_rate_run(FIXTURE)
+    failed = run.model_copy(
+        update={
+            "validation_summary": run.validation_summary.model_copy(
+                update={"status": "failed", "error_count": 1}
+            )
+        }
+    )
+    source_file = tmp_path / "failed.json"
+    source_file.write_text(failed.model_dump_json(), encoding="utf-8")
+    raw = _base_config()
+    raw["competitor_rates"]["source_file"] = str(source_file)
+    config = EngineConfig.model_validate(raw)
+
+    with pytest.raises(CompetitorRateResolutionError, match="failed validation"):
         load_and_resolve_competitor_rates(config.competitor_rates)
 
 

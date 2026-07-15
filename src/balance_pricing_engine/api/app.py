@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 import yaml
 
@@ -26,6 +27,7 @@ from balance_pricing_engine.application.contracts import (
     PricingScenarioRequest as ApplicationPricingScenarioRequest,
 )
 from balance_pricing_engine.application.pricing_service import PricingService
+from balance_pricing_engine.competitor_rates.apply import CompetitorRateResolutionError
 from balance_pricing_engine.config import EngineConfig, load_config
 from balance_pricing_engine.diagnostics import run_sensitivity_analysis
 from balance_pricing_engine.optimization.grid_search import GRID_RESULT_COLUMNS
@@ -52,6 +54,20 @@ app = FastAPI(
     ),
 )
 _pricing_service = PricingService()
+
+
+@app.exception_handler(HTTPException)
+async def _structured_http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Serialize structured error details (dicts built by ``_error_detail``, matching
+    the ``ErrorResponse`` schema) as the top-level response body instead of FastAPI's
+    default ``{"detail": ...}`` wrapper -- the 422/503/500 responses this route
+    advertises must actually match ``ErrorResponse``. Plain-string details (the
+    legacy /run-scenario endpoint) keep the standard ``{"detail": ...}`` shape."""
+    if isinstance(exc.detail, dict):
+        return JSONResponse(status_code=exc.status_code, content=exc.detail, headers=exc.headers)
+    return JSONResponse(
+        status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers
+    )
 
 
 @app.get("/health")
@@ -148,10 +164,14 @@ def create_pricing_scenario(
                 status_code=422,
                 detail=_error_detail("UNSUPPORTED_SCENARIO", str(exc), correlation_id),
             ) from exc
-        except (ValueError, FileNotFoundError) as exc:
+        except (CompetitorRateResolutionError, FileNotFoundError) as exc:
             # PricingService.run_scenario applies competitor rates before optimisation;
             # a stale/failed/missing strict competitor-rate source raises here (see
-            # apply_competitor_rates_to_config), not a server-side failure.
+            # apply_competitor_rates_to_config), not a server-side failure. Scoped to
+            # this specific exception type (rather than a bare ValueError) so unrelated
+            # ValueErrors from elsewhere in run_scenario (e.g. FeatureSchemaError, a
+            # segmented-optimizer config error) aren't mislabeled as a competitor-rate
+            # failure -- they fall through to the generic 500 handler below instead.
             raise HTTPException(
                 status_code=422,
                 detail=_error_detail("COMPETITOR_RATE_VALIDATION_ERROR", str(exc), correlation_id),
