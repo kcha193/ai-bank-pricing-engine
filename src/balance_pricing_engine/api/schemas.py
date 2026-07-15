@@ -121,6 +121,14 @@ class PricingDecisionResponseV1(BaseModel):
     execution_duration_seconds: float
     run_id: str | None = None
     run_dir: str | None = None
+    sensitivity: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Present only when the request set include_sensitivity=true: one row per "
+            "sensitivity case (delta_loan_rate_bps, delta_deposit_rate_bps, "
+            "delta_objective_pct, parameter_family, ...)."
+        ),
+    )
 
 
 class ErrorResponse(BaseModel):

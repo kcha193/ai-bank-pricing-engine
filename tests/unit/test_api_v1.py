@@ -229,6 +229,38 @@ def test_v1_pricing_scenarios_can_persist_ledger_and_include_decision_record(tmp
     assert (run_dir / "decision_record.json").exists()
 
 
+def test_v1_pricing_scenarios_returns_sensitivity_when_requested():
+    # Regression: include_sensitivity=true made PricingService run the analysis, but
+    # _decision_to_response() dropped decision.sensitivity and the response schema had
+    # no field for it, so callers paid for the extra analysis and got an
+    # indistinguishable response from include_sensitivity=false.
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/pricing/scenarios",
+        json={"config_yaml": CONFIG_YAML, "include_sensitivity": True},
+    )
+
+    assert response.status_code == 200
+    sensitivity = response.json()["sensitivity"]
+    assert isinstance(sensitivity, list)
+    assert len(sensitivity) > 0
+    assert "delta_objective_pct" in sensitivity[0]
+    assert "parameter_family" in sensitivity[0]
+
+
+def test_v1_pricing_scenarios_omits_sensitivity_when_not_requested():
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/pricing/scenarios",
+        json={"config_yaml": CONFIG_YAML, "include_sensitivity": False},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["sensitivity"] is None
+
+
 def test_run_scenario_backward_compatible_response_unchanged():
     """Regression: the original endpoint's response shape must not change."""
     client = TestClient(app)

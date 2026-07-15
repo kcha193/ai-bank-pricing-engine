@@ -164,6 +164,22 @@ def test_strict_failures_raise_the_dedicated_resolution_error_type(tmp_path):
         load_and_resolve_competitor_rates(config.competitor_rates)
 
 
+def test_overlay_that_drives_the_spread_floor_negative_raises_resolution_error():
+    """model_copy(update=...) skips EngineConfig's model_validator, so a spread floor
+    that was valid against the caller's original reference rate can still go negative
+    once overlaid with the resolved competitor reference rate. This must surface here
+    as a CompetitorRateResolutionError (422 upstream), not a bare ValueError raised
+    much later and deeper, inside build_market_relative_grid (mapped to a 500)."""
+    raw = _base_config()
+    # Original reference rate (10%) keeps the *pre-overlay* config valid: 0.10 - 0.09 = 0.01.
+    raw["market"]["home_loan_reference_rate"] = 0.10
+    raw["pricing_strategy"]["home_loan_spread_bps"] = {"min": -900, "max": -800, "step": 10}
+    config = EngineConfig.model_validate(raw)
+
+    with pytest.raises(CompetitorRateResolutionError, match="invalid configuration"):
+        apply_competitor_rates_to_config(config)
+
+
 def test_unsupported_strategy_fails_clearly():
     run = load_rate_run(FIXTURE)
 

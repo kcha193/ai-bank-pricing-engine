@@ -263,6 +263,11 @@ def _decision_to_response(decision: PricingDecision) -> PricingDecisionResponseV
         execution_duration_seconds=decision.execution_duration_seconds,
         run_id=decision.run_id,
         run_dir=str(decision.run_dir) if decision.run_dir else None,
+        sensitivity=(
+            decision.sensitivity.to_dict(orient="records")
+            if decision.sensitivity is not None
+            else None
+        ),
     )
 
 

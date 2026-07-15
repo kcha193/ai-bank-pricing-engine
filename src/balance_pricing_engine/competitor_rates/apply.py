@@ -5,6 +5,8 @@ from __future__ import annotations
 from statistics import median
 from typing import Iterable
 
+from pydantic import ValidationError
+
 from balance_pricing_engine.competitor_rates.models import (
     CompetitorRateRecord,
     CompetitorRatesConfig,
@@ -40,7 +42,24 @@ def apply_competitor_rates_to_config(config):
             "term_deposit_reference_rate": resolved.term_deposit_reference_rate,
         }
     )
-    return config.model_copy(update={"market": updated_market})
+    updated_config = config.model_copy(update={"market": updated_market})
+    return _revalidate(updated_config)
+
+
+def _revalidate(config):
+    """Re-run EngineConfig's ``model_validator``s that ``model_copy(update=...)`` skips.
+
+    The overlay above can push a previously-valid config outside its constraints
+    (e.g. a competitor reference rate that drives the spread floor negative). Without
+    this, that only surfaces later as an opaque ``ValueError`` deep in the grid
+    builder, mapped to a generic 500 instead of a competitor-rate-specific 422.
+    """
+    try:
+        return type(config).model_validate(config.model_dump())
+    except ValidationError as exc:
+        raise CompetitorRateResolutionError(
+            f"competitor-rate overlay produced an invalid configuration: {exc}"
+        ) from exc
 
 
 def load_and_resolve_competitor_rates(
