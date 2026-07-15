@@ -21,7 +21,12 @@ The engine maximises expected risk-adjusted profit subject to a funding-shortfal
 - [scenarios/runner.py](src/balance_pricing_engine/scenarios/runner.py) — `run_baseline_diagnostics`, `ScenarioDiagnostics` dataclass, `write_artifacts()` persistence. `ScenarioDiagnostics` also exposes `counterfactual_decompositions(top_n)` and `cohort_attribution()`.
 - [scenarios/experiments.py](src/balance_pricing_engine/scenarios/experiments.py) — small scenario helpers (e.g. `run_higher_funding_penalty_scenario`).
 - [run_ledger/](src/balance_pricing_engine/run_ledger/) — governed pricing-run ledger layer. Single `write_run_ledger()` entry point (re-exported from `__init__.py`) orchestrates: `directory.py` (timestamped `data/outputs/runs/{timestamp}_{scenario_name}/` directory), `metadata.py` (`RunMetadata` dataclass + `build_run_metadata` + `write_run_metadata`), `config_snapshot.py` (YAML copy), `memo.py` (`write_pricing_memo` — markdown recommendation/decomposition/risk memo), `checklist.py` (`write_governance_checklist` — markdown approval checklist). Wraps `ScenarioDiagnostics.write_artifacts()` and adds new artifacts on top.
-- [api/app.py](src/balance_pricing_engine/api/app.py) — FastAPI serving layer. Exposes `POST /run-scenario` (accepts YAML config string, returns optimization summary dict). Optional; not imported by core engine. Requires `fastapi` extra.
+- [api/app.py](src/balance_pricing_engine/api/app.py) — FastAPI serving layer. Exposes `POST /run-scenario` (original, stable — accepts YAML config string, returns optimization summary dict), `POST /v1/pricing/scenarios` (versioned, governed — backed by `application.PricingService`, typed request/response in [api/schemas.py](src/balance_pricing_engine/api/schemas.py)), `GET /health`, `GET /ready`. Optional; not imported by core engine. Requires `fastapi` extra.
+- [application/](src/balance_pricing_engine/application/) — application-layer orchestration seam. `pricing_service.py` — `PricingService.run_scenario(request: PricingScenarioRequest) -> PricingDecision`: resolves feature lineage, calls `run_baseline_diagnostics(registry=...)`, resolves model lineage, evaluates governance gates, optionally runs the shadow-challenger seam and sensitivity analysis, optionally persists a run ledger + additive `decision_record.json`, publishes domain events, and returns a `PricingDecision`. Imports no delivery-layer dependency (no FastAPI). `contracts.py` — `PricingScenarioRequest`, `PricingDecision`, `GovernanceSummary`, `ExecutionContext`. `GovernanceError` from a broken approved champion propagates out of `run_scenario()` unchanged — never downgraded to a `BLOCKED` decision.
+- [features/](src/balance_pricing_engine/features/) — lightweight, versioned feature-store boundary for the synthetic diagnostic models only. `contracts.py` — `FeatureSchema` (name/version/columns/target + SHA-256 `fingerprint`), `FeatureLineage`, `FeatureProvider` protocol. `definitions.py` — centralizes `modelling/datasets.py`'s `LOAN_FEATURE_COLUMNS`/`DEPOSIT_FEATURE_COLUMNS` into versioned schemas. `local_store.py` — `LocalFeatureStore`, the only implementation, backed by existing synthetic dataset builders. Does not wire unapproved ML output into the optimizer; does not introduce personalised pricing.
+- [governance/](src/balance_pricing_engine/governance/) — governance control plane. `gates.py` — `GateStatus`/`GateResult`/`evaluate_gates()`/`DecisionStatus`/`decision_status_from_gates()`. `lineage.py` — `ModelLineage`, `resolve_model_lineage()` (read-only re-derivation of the same registry decision `ModelScoringAgent.resolve_response_fn` already made — does not duplicate its `GovernanceError` check). `decision_record.py` — `DecisionRecord`, `build_decision_record()`, `write_decision_record()` (additive `decision_record.json`). `shadow.py` — `evaluate_shadow_challenger()`: narrow, optional champion/challenger comparison; never alters selected rates, never raises.
+- [events/](src/balance_pricing_engine/events/) — in-process domain events. `models.py` — immutable `DomainEvent` + factory functions (`pricing_scenario_requested`, `pricing_decision_produced`, `governance_review_required`, `pricing_decision_blocked`, `model_resolved`, `run_ledger_written`). `publisher.py` — `EventPublisher` protocol, `NoOpEventPublisher` (default), `InMemoryEventPublisher` (tests), `JSONLEventPublisher` (local audit file), `publish_safely()` (catches/logs publish failures — never fails the pricing decision).
+- [observability/](src/balance_pricing_engine/observability/) — `logging.py`: `configure_json_logging()`, `log_event()`, `ExecutionMetrics`, `stage_timer()`. Standard library only.
 - [llm/](src/balance_pricing_engine/llm/) — Tier 4 LLM decision-support layer: `narrative.py` (plain-language scenario narration), `anomaly.py` (config anomaly detection), `_client.py` (Claude API wrapper, default model `claude-sonnet-4-6`). **Decision-support only** — every response tagged `[DECISION-SUPPORT: requires human review]`. Never wired into automated pricing decisions.
 - [modelling/](src/balance_pricing_engine/modelling/) — diagnostic ML layer:
   - `datasets.py` — feature schemas (`LOAN_FEATURE_COLUMNS`, `DEPOSIT_FEATURE_COLUMNS`) and dataset builders.
@@ -35,7 +40,7 @@ The engine maximises expected risk-adjusted profit subject to a funding-shortfal
 - [reporting.py](src/balance_pricing_engine/reporting.py), [plotting.py](src/balance_pricing_engine/plotting.py) — output formatting.
 - [utils/random.py](src/balance_pricing_engine/utils/random.py) — `make_rng` for reproducible RNGs.
 
-Full flow diagram: [docs/architecture.md](docs/architecture.md). Modelling assumptions: [docs/modelling_assumptions.md](docs/modelling_assumptions.md). Governance: [docs/model_governance.md](docs/model_governance.md). Response model card: [docs/response_model_card.md](docs/response_model_card.md). Competitor ingestion: [docs/competitor_rate_ingestion.md](docs/competitor_rate_ingestion.md).
+Full flow diagram: [docs/architecture.md](docs/architecture.md) (includes the target-architecture Mermaid diagram). Modelling assumptions: [docs/modelling_assumptions.md](docs/modelling_assumptions.md). Governance: [docs/model_governance.md](docs/model_governance.md). Response model card: [docs/response_model_card.md](docs/response_model_card.md). Competitor ingestion: [docs/competitor_rate_ingestion.md](docs/competitor_rate_ingestion.md). Deployment: [docs/deployment.md](docs/deployment.md). Architecture decisions: [docs/adr/](docs/adr/).
 
 ## Response model — dual elasticity
 
@@ -59,6 +64,14 @@ python3 examples/run_with_competitor_rates.py
 python3 examples/run_llm_diagnostics.py
 python3 examples/run_multiperiod.py
 python3 examples/train_response_models.py
+
+# Optional FastAPI serving layer (requires the `api` extra):
+python3 -m pip install -e ".[api]"
+uvicorn balance_pricing_engine.api.app:app --reload   # POST /run-scenario, /v1/pricing/scenarios, /health, /ready
+
+# Docker (see docs/deployment.md):
+docker build -t ai-bank-pricing-engine .
+docker run --rm -p 8000:8000 ai-bank-pricing-engine
 
 # Competitor-rate CLI (separate subcommand surface):
 python3 -m balance_pricing_engine.competitor_rates.cli fetch    --output-dir data/processed/competitor_rates
@@ -103,6 +116,8 @@ python3 -m balance_pricing_engine.competitor_rates.cli report   --run-file <path
 
 The boundary fields distinguish "needed expansion" from "still hitting boundary after expansion" — preserve their semantics when refactoring. `excess_deposit_income` credits surplus deposits at `cash_rate` when deposit volume exceeds loan volume.
 
+`decision_record.json` (written by `application.PricingService` when `persist_ledger=True`) is an **additive** artifact on top of this contract — never rename/restructure the files above to make room for it, and never let a decision-record change alter `summary.json`/`metadata.json` semantics.
+
 ## When making changes
 
 - Honour the synthetic-data-only invariant. Do not add real customer or counterparty data paths.
@@ -110,6 +125,10 @@ The boundary fields distinguish "needed expansion" from "still hitting boundary 
 - `OptimizationResult` is a frozen dataclass; backward-compat aliases (`objective_value`, `deposit_cost`, `funding_penalty`, `loan_income_after_losses`) exist deliberately — don't remove without checking call sites.
 - Modelling layer is **diagnostic by default, but no longer hard-walled off from the optimiser.** `run_baseline_diagnostics(registry=...)` resolves an **approved registry champion** via `ModelScoringAgent.resolve_response_fn(...)` and wires it into the grid search through `MLResponseFnAdapter` (see [optimization/response_fn.py](src/balance_pricing_engine/optimization/response_fn.py)). Governance invariants — **preserve these**: with no champion, or an *unapproved* champion, the path falls back to the synthetic response and the price is unchanged; an *approved* champion whose artifact is missing or unloadable raises `GovernanceError` (**fail loud — never silently reprice on the synthetic fallback**). Don't conflate ML response models with the synthetic response functions used inside the grid search. The single `train()` entry point in `agentic.py` replaced the former dual `train` / `train_and_recommend` API; `evaluate_binary_classifier` is a backward-compat alias for `evaluate_model` that emits a `DeprecationWarning`; use `evaluate_probabilities` / `evaluate_model` from `evaluation.py` for new code.
 - Competitor-rate ingestion is gated behind `competitor_rates.enabled` and `strict` flags. Strict-mode failures should error, not warn.
+- Prefer `application.PricingService` over calling `run_baseline_diagnostics()` directly from new callers (API endpoints, CLI commands). It wraps, not replaces, the domain math — do not duplicate governance/lineage/event logic at a new call site instead of going through it.
+- `GovernanceError` must keep propagating out of `PricingService.run_scenario()` unchanged — never catch it there and turn it into a `BLOCKED` `PricingDecision`. Only a delivery layer (e.g. the `/v1/pricing/scenarios` FastAPI handler) may translate it into a transport-appropriate error response.
+- `governance.gates.evaluate_gates()` policy is intentionally conservative but not maximal (any `BLOCK` → `BLOCKED`; otherwise any `WARN` → `REVIEW_REQUIRED`; else `RECOMMENDED`) — don't add a new gate that blocks on a mere warning-level condition without updating this documented policy.
+- `events.publisher.publish_safely()` must keep swallowing publisher exceptions (logged, not raised) — a broken event publisher must never fail or alter a pricing decision.
 - Update [docs/architecture.md](docs/architecture.md) and [docs/modelling_assumptions.md](docs/modelling_assumptions.md) when changing structural behaviour.
 
 ## Roadmap & recent reviews

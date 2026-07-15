@@ -1,6 +1,7 @@
 import pytest
 
 from balance_pricing_engine.competitor_rates.apply import (
+    CompetitorRateResolutionError,
     _resolve_strategy,
     apply_competitor_rates_to_config,
     load_and_resolve_competitor_rates,
@@ -138,6 +139,45 @@ def test_bank_specific_strategy_requires_bank():
 
     with pytest.raises(ValueError, match="requires bank"):
         load_and_resolve_competitor_rates(config.competitor_rates)
+
+
+def test_strict_failures_raise_the_dedicated_resolution_error_type(tmp_path):
+    """Callers (e.g. the API layer) need to distinguish competitor-rate-specific
+    resolution failures from unrelated ValueErrors elsewhere in the pricing
+    pipeline, so these raises must be CompetitorRateResolutionError, not a bare
+    ValueError."""
+    run = load_rate_run(FIXTURE)
+    failed = run.model_copy(
+        update={
+            "validation_summary": run.validation_summary.model_copy(
+                update={"status": "failed", "error_count": 1}
+            )
+        }
+    )
+    source_file = tmp_path / "failed.json"
+    source_file.write_text(failed.model_dump_json(), encoding="utf-8")
+    raw = _base_config()
+    raw["competitor_rates"]["source_file"] = str(source_file)
+    config = EngineConfig.model_validate(raw)
+
+    with pytest.raises(CompetitorRateResolutionError, match="failed validation"):
+        load_and_resolve_competitor_rates(config.competitor_rates)
+
+
+def test_overlay_that_drives_the_spread_floor_negative_raises_resolution_error():
+    """model_copy(update=...) skips EngineConfig's model_validator, so a spread floor
+    that was valid against the caller's original reference rate can still go negative
+    once overlaid with the resolved competitor reference rate. This must surface here
+    as a CompetitorRateResolutionError (422 upstream), not a bare ValueError raised
+    much later and deeper, inside build_market_relative_grid (mapped to a 500)."""
+    raw = _base_config()
+    # Original reference rate (10%) keeps the *pre-overlay* config valid: 0.10 - 0.09 = 0.01.
+    raw["market"]["home_loan_reference_rate"] = 0.10
+    raw["pricing_strategy"]["home_loan_spread_bps"] = {"min": -900, "max": -800, "step": 10}
+    config = EngineConfig.model_validate(raw)
+
+    with pytest.raises(CompetitorRateResolutionError, match="invalid configuration"):
+        apply_competitor_rates_to_config(config)
 
 
 def test_unsupported_strategy_fails_clearly():

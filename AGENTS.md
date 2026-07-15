@@ -54,6 +54,13 @@ python3 examples/run_llm_diagnostics.py
 python3 examples/run_multiperiod.py
 python3 examples/train_response_models.py
 
+# Optional FastAPI serving layer (requires the `api` extra):
+python3 -m pip install -e ".[api]"
+uvicorn balance_pricing_engine.api.app:app --reload   # /run-scenario, /v1/pricing/scenarios, /health, /ready
+
+# Docker (see docs/deployment.md):
+docker build -t ai-bank-pricing-engine .
+
 # Competitor-rate CLI (separate subcommand surface):
 python3 -m balance_pricing_engine.competitor_rates.cli fetch    --output-dir data/processed/competitor_rates
 python3 -m balance_pricing_engine.competitor_rates.cli validate --source-file <path>
@@ -98,7 +105,18 @@ explicit intent.** Exclude it with: `python3 -m pytest -q -m 'not live_rates'`
    `run_baseline_diagnostics(registry=...)` (→ `ModelScoringAgent.resolve_response_fn` →
    `MLResponseFnAdapter`, in `optimization/response_fn.py`). No champion or an unapproved champion
    ⇒ synthetic fallback, price unchanged. An *approved* champion with a missing/unloadable artifact
-   ⇒ raise `GovernanceError`; never silently reprice on the synthetic fallback.
+   ⇒ raise `GovernanceError`; never silently reprice on the synthetic fallback. This propagates
+   unchanged through `application.PricingService.run_scenario()` — only a delivery layer (e.g. the
+   `/v1/pricing/scenarios` FastAPI handler) may translate it into an error response.
+7. **Event publishing must never affect pricing.** `events.publisher.publish_safely()` catches and
+   logs publisher exceptions; a broken/misconfigured event publisher must never fail or alter a
+   pricing decision.
+
+New orchestration/governance packages: `application/` (`PricingService`), `governance/` (gates,
+lineage, decision record, shadow evaluation), `features/` (versioned local feature-store
+boundary), `events/` (in-process domain events), `observability/` (structured logging). See
+[CLAUDE.md](CLAUDE.md), [docs/architecture.md](docs/architecture.md),
+[docs/deployment.md](docs/deployment.md), and [docs/adr/](docs/adr/) for detail.
 
 ## Do not break — regression contract
 

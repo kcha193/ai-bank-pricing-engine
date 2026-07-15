@@ -5,6 +5,8 @@ from __future__ import annotations
 from statistics import median
 from typing import Iterable
 
+from pydantic import ValidationError
+
 from balance_pricing_engine.competitor_rates.models import (
     CompetitorRateRecord,
     CompetitorRatesConfig,
@@ -13,6 +15,14 @@ from balance_pricing_engine.competitor_rates.models import (
 )
 from balance_pricing_engine.competitor_rates.store import load_rate_run
 from balance_pricing_engine.competitor_rates.validate import validate_staleness
+
+
+class CompetitorRateResolutionError(ValueError):
+    """A strict competitor-rate source could not be resolved (stale, failed
+    validation, or an unresolvable strategy). Distinguishes competitor-rate-specific
+    validation failures from unrelated ``ValueError``s elsewhere in the pricing
+    pipeline, so callers (e.g. the API layer) can map only this failure to a
+    competitor-rate-specific error response."""
 
 
 def apply_competitor_rates_to_config(config):
@@ -32,7 +42,24 @@ def apply_competitor_rates_to_config(config):
             "term_deposit_reference_rate": resolved.term_deposit_reference_rate,
         }
     )
-    return config.model_copy(update={"market": updated_market})
+    updated_config = config.model_copy(update={"market": updated_market})
+    return _revalidate(updated_config)
+
+
+def _revalidate(config):
+    """Re-run EngineConfig's ``model_validator``s that ``model_copy(update=...)`` skips.
+
+    The overlay above can push a previously-valid config outside its constraints
+    (e.g. a competitor reference rate that drives the spread floor negative). Without
+    this, that only surfaces later as an opaque ``ValueError`` deep in the grid
+    builder, mapped to a generic 500 instead of a competitor-rate-specific 422.
+    """
+    try:
+        return type(config).model_validate(config.model_dump())
+    except ValidationError as exc:
+        raise CompetitorRateResolutionError(
+            f"competitor-rate overlay produced an invalid configuration: {exc}"
+        ) from exc
 
 
 def load_and_resolve_competitor_rates(
@@ -47,9 +74,9 @@ def load_and_resolve_competitor_rates(
     )
     errors = [issue for issue in staleness_issues if issue.severity == "error"]
     if errors:
-        raise ValueError("; ".join(issue.message for issue in errors))
+        raise CompetitorRateResolutionError("; ".join(issue.message for issue in errors))
     if competitor_config.strict and run.validation_summary.status == "failed":
-        raise ValueError("competitor-rate source file failed validation")
+        raise CompetitorRateResolutionError("competitor-rate source file failed validation")
 
     mortgage_records = _filter_mortgage_records(run.records, competitor_config)
     term_deposit_records = _filter_term_deposit_records(run.records, competitor_config)
@@ -143,10 +170,10 @@ def _resolve_strategy(
 ) -> float:
     if strategy == "bank_specific":
         if not bank:
-            raise ValueError("bank_specific competitor-rate strategy requires bank")
+            raise CompetitorRateResolutionError("bank_specific competitor-rate strategy requires bank")
         records = [record for record in records if record.bank == bank]
     if not records:
-        raise ValueError("No competitor rates matched the configured strategy")
+        raise CompetitorRateResolutionError("No competitor rates matched the configured strategy")
     rates = [record.advertised_rate_pct for record in records]
     if strategy in {"bank_specific", "market_average"}:
         return sum(rates) / len(rates)
@@ -156,4 +183,4 @@ def _resolve_strategy(
         return max(rates)
     if strategy == "market_median":
         return float(median(rates))
-    raise ValueError(f"Unsupported competitor-rate strategy: {strategy}")
+    raise CompetitorRateResolutionError(f"Unsupported competitor-rate strategy: {strategy}")

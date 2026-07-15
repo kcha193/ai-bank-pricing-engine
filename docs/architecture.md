@@ -42,6 +42,58 @@ adaptive boundary follow-up
 scenario diagnostics and sensitivity analysis
 ```
 
+## Target Application Architecture (Modular Monolith)
+
+The diagram above is the domain math pipeline. Around it, callers (the API, CLI, and
+example scripts) go through a narrow application service instead of calling
+`run_baseline_diagnostics()` directly:
+
+```mermaid
+flowchart TD
+    Caller["API / CLI / examples"] --> Service["application.PricingService"]
+    Service --> Validate["Config & eligibility\n(EngineConfig, already validated)"]
+    Service --> Features["Feature resolution\nfeatures.LocalFeatureStore"]
+    Service --> Optimise["Scenario diagnostics & optimiser\nrun_baseline_diagnostics()\n(resolves governed model internally)"]
+    Optimise --> Lineage["Model lineage re-derivation\ngovernance.resolve_model_lineage"]
+    Service --> Shadow["Optional shadow challenger\ngovernance.evaluate_shadow_challenger"]
+    Lineage --> Gates["Governance gate evaluation\ngovernance.evaluate_gates"]
+    Features --> Gates
+    Gates --> Decision["Decision & lineage record\ngovernance.DecisionRecord"]
+    Decision --> Events["Domain event publication\nevents.EventPublisher"]
+    Decision --> Ledger["Run-ledger persistence\nrun_ledger.write_run_ledger\n+ decision_record.json"]
+    Events --> Response["PricingDecision"]
+    Ledger --> Response
+```
+
+This is a **modular monolith** (see `docs/adr/0001-modular-monolith-before-microservices.md`):
+one deployable package with service-shaped internal boundaries, not a distributed system.
+Note one sequencing nuance versus the idealised flow: `run_baseline_diagnostics(registry=...)`
+already resolves the governed response function internally (existing behaviour, unchanged);
+`PricingService` re-derives the same registry decision read-only afterwards
+(`governance.lineage.resolve_model_lineage`) purely to attach lineage metadata, rather than
+refactoring `scenarios/runner.py` to split "resolve" from "optimise" — see
+`scenarios/runner.py`'s hotspot note below for why that refactor was deliberately not done.
+
+New packages supporting this flow:
+
+- `src/balance_pricing_engine/application/`: `PricingService.run_scenario()` — the single
+  orchestration entry point. Accepts a `PricingScenarioRequest`, returns a `PricingDecision`.
+  Imports no delivery-layer dependency (no FastAPI). `GovernanceError` from a broken approved
+  champion propagates out unchanged — never downgraded to a soft decision.
+- `src/balance_pricing_engine/features/`: `FeatureProvider` protocol, versioned/fingerprinted
+  `FeatureSchema` definitions centralizing `modelling/datasets.py`'s column lists, and
+  `LocalFeatureStore` (the only implementation today). See
+  `docs/adr/0002-local-feature-store-interface.md`.
+- `src/balance_pricing_engine/governance/`: `evaluate_gates()` (typed `GateResult`s →
+  `DecisionStatus`), `resolve_model_lineage()`, `DecisionRecord` (+ additive
+  `decision_record.json`), and a narrow champion/challenger `evaluate_shadow_challenger()`
+  seam. See `docs/adr/0003-governance-centred-decision-record.md`.
+- `src/balance_pricing_engine/events/`: immutable `DomainEvent`s and an `EventPublisher`
+  protocol (`NoOpEventPublisher` / `InMemoryEventPublisher` / `JSONLEventPublisher`). See
+  `docs/adr/0004-in-process-events-before-streaming-platform.md`.
+- `src/balance_pricing_engine/observability/`: structured JSON logging, correlation-ID
+  propagation, and `ExecutionMetrics` stage timing — standard library only.
+
 ## Main Modules
 
 - `src/balance_pricing_engine/config.py`: loads and validates YAML configuration.
@@ -88,6 +140,12 @@ champion exists, the runner falls back to the deterministic synthetic response f
 approved champion whose artifact is missing or unloadable instead raises `GovernanceError` — that
 inconsistent governed state must fail loud rather than silently reprice on synthetic.
 
+`PricingDecision` is the application-level output contract for a *decision*, layered on top
+of `ScenarioDiagnostics` rather than replacing it. It should remain the entry point for new
+delivery surfaces (new API endpoints, CLI commands); it wraps `ScenarioDiagnostics` in
+governance evaluation, lineage, and event publication without changing what
+`ScenarioDiagnostics`/`OptimizationResult` mean or contain.
+
 ## Architecture Hotspots
 
 `src/balance_pricing_engine/scenarios/runner.py` is the main orchestration hotspot. It currently
@@ -95,6 +153,9 @@ coordinates baseline execution, segmented pricing routing, diagnostics wrapping,
 persistence, cohort attribution, and segmented-to-standard result conversion. Keep future changes
 small here; if responsibilities grow, prefer moving artifact writing or segmented conversion into
 dedicated modules while preserving `ScenarioDiagnostics` as the public output contract.
+`application.PricingService` orchestrates *around* this module (governance, lineage, events,
+decision records) rather than inside it — that orchestration growth was deliberately kept out of
+`runner.py` to avoid making this hotspot larger.
 
 `src/balance_pricing_engine/modelling/agentic.py` is the governed modelling hotspot. It contains
 model abstractions, registry governance, training, scoring, champion promotion, response adapters,

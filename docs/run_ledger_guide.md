@@ -217,8 +217,29 @@ data/outputs/runs/
     ├── counterfactuals.csv     # one-axis decompositions for top candidates
     ├── cohort_attribution.csv  # expected volumes by synthetic customer segment
     ├── pricing_memo.md         # business-facing recommendation document
-    └── governance_checklist.md # manual sign-off checklist
+    ├── governance_checklist.md # manual sign-off checklist
+    ├── governance_checklist.json # machine-readable checklist (sign-off source of truth)
+    └── decision_record.json    # additive: governance gates, decision status, model/feature
+                                 # lineage, stage timings (only when written via
+                                 # application.PricingService with persist_ledger=True)
 ```
+
+### `decision_record.json`
+
+Written **additively** by `application.PricingService.run_scenario()` when
+`persist_ledger=True` — it never replaces or restructures any file above. It is the
+governance-centred counterpart to `summary.json`/`metadata.json`: where those record *what*
+was recommended, `decision_record.json` records *whether it was safe to act on and why*,
+via a `decision_status` (`RECOMMENDED` / `REVIEW_REQUIRED` / `BLOCKED`), the full list of
+evaluated governance gates (code, status, message, severity, evidence, remediation), model
+lineage (which response source — deterministic synthetic or approved ML champion — drove
+each product), feature lineage (schema name/version/fingerprint), and per-stage execution
+timings. See [docs/model_governance.md](docs/model_governance.md) and
+[docs/adr/0003-governance-centred-decision-record.md](docs/adr/0003-governance-centred-decision-record.md).
+
+Runs written via `write_run_ledger()` directly (e.g. `examples/run_baseline.py`, without
+going through `PricingService`) do not get a `decision_record.json` — that file is specific
+to the governed application-service path.
 
 The directory name starts with a timestamp so runs sort chronologically in any file browser.
 If two runs complete within the same microsecond (rare), the second directory gets a numeric
