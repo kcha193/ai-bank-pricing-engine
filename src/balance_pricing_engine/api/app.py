@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 import yaml
@@ -62,11 +64,40 @@ async def _structured_http_exception_handler(request: Request, exc: HTTPExceptio
     the ``ErrorResponse`` schema) as the top-level response body instead of FastAPI's
     default ``{"detail": ...}`` wrapper -- the 422/503/500 responses this route
     advertises must actually match ``ErrorResponse``. Plain-string details (the
-    legacy /run-scenario endpoint) keep the standard ``{"detail": ...}`` shape."""
+    legacy /run-scenario endpoint) keep the standard ``{"detail": ...}`` shape.
+
+    The correlation-ID header set on the injected ``Response`` in
+    ``create_pricing_scenario`` never reaches the client on an error path -- once an
+    exception propagates, this handler builds a brand-new ``JSONResponse`` instead of
+    reusing that ``Response`` object, so the header is copied from the structured
+    detail (which already carries ``correlation_id``) instead."""
+    headers = dict(exc.headers or {})
     if isinstance(exc.detail, dict):
-        return JSONResponse(status_code=exc.status_code, content=exc.detail, headers=exc.headers)
+        correlation_id = exc.detail.get("correlation_id")
+        if correlation_id:
+            headers.setdefault(CORRELATION_ID_HEADER, correlation_id)
+        return JSONResponse(status_code=exc.status_code, content=exc.detail, headers=headers)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """FastAPI raises this before the route body runs -- e.g. a request that fails
+    ``PricingScenarioRequestV1`` schema validation itself (missing/mistyped fields) --
+    so it never reaches ``_error_detail``/``_structured_http_exception_handler`` above.
+    Scoped to ``/v1/pricing/scenarios``, the only route that advertises ``ErrorResponse``
+    for 422; other routes (the legacy /run-scenario) keep FastAPI's default
+    ``{"detail": [...]}`` shape."""
+    if request.url.path != "/v1/pricing/scenarios":
+        return await request_validation_exception_handler(request, exc)
+    correlation_id = request.headers.get(CORRELATION_ID_HEADER) or str(uuid.uuid4())
+    detail = _error_detail("VALIDATION_ERROR", str(exc), correlation_id)
     return JSONResponse(
-        status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers
+        status_code=422,
+        content=detail,
+        headers={CORRELATION_ID_HEADER: correlation_id},
     )
 
 

@@ -91,6 +91,10 @@ def test_v1_pricing_scenarios_returns_422_for_invalid_yaml():
     # The route advertises `ErrorResponse` (error_code/message/correlation_id) as the
     # top-level 422/503/500 schema -- it must not be nested under a "detail" wrapper.
     assert set(body) == {"error_code", "message", "correlation_id"}
+    # Regression: the correlation-ID header set on the injected Response never reaches
+    # an error path (a fresh JSONResponse is built by the exception handler instead),
+    # so it must be copied from the structured detail onto the response headers.
+    assert response.headers["X-Correlation-ID"] == body["correlation_id"]
 
 
 def test_v1_pricing_scenarios_returns_422_for_missing_required_fields():
@@ -100,6 +104,38 @@ def test_v1_pricing_scenarios_returns_422_for_missing_required_fields():
 
     assert response.status_code == 422
     assert response.json()["error_code"] == "VALIDATION_ERROR"
+
+
+def test_v1_pricing_scenarios_returns_structured_422_for_request_schema_violation():
+    """A body that fails `PricingScenarioRequestV1` validation itself (missing the
+    required `config_yaml` field) raises `RequestValidationError` before
+    `create_pricing_scenario` ever runs, bypassing `_error_detail` entirely. The route
+    still advertises `ErrorResponse` for 422, so this pre-handler path must be shaped
+    the same way as every other validation failure, with a correlation ID header."""
+    client = TestClient(app)
+
+    response = client.post("/v1/pricing/scenarios", json={})
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error_code"] == "VALIDATION_ERROR"
+    assert set(body) == {"error_code", "message", "correlation_id"}
+    assert response.headers["X-Correlation-ID"] == body["correlation_id"]
+
+
+def test_run_scenario_request_schema_violation_keeps_default_shape():
+    """The `RequestValidationError` handler is scoped to `/v1/pricing/scenarios` --
+    the legacy /run-scenario endpoint doesn't advertise `ErrorResponse` or correlation
+    IDs, so its pre-handler validation failures must keep FastAPI's default
+    `{"detail": [...]}` shape unchanged."""
+    client = TestClient(app)
+
+    response = client.post("/run-scenario", json={})
+
+    assert response.status_code == 422
+    body = response.json()
+    assert "detail" in body
+    assert isinstance(body["detail"], list)
 
 
 def test_v1_pricing_scenarios_returns_503_for_governance_error(monkeypatch):
@@ -112,7 +148,9 @@ def test_v1_pricing_scenarios_returns_503_for_governance_error(monkeypatch):
     response = client.post("/v1/pricing/scenarios", json={"config_yaml": CONFIG_YAML})
 
     assert response.status_code == 503
-    assert response.json()["error_code"] == "MODEL_ARTIFACT_UNAVAILABLE"
+    body = response.json()
+    assert body["error_code"] == "MODEL_ARTIFACT_UNAVAILABLE"
+    assert response.headers["X-Correlation-ID"] == body["correlation_id"]
 
 
 def test_v1_pricing_scenarios_returns_422_for_missing_strict_competitor_rate_source():
