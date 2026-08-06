@@ -53,7 +53,7 @@ def main() -> None:
     print()
     print("Governance gates")
     for gate in decision.governance.gates:
-        print(f"  {gate.code}: {gate.status.value} — {gate.message}")
+        print(f"  {gate.code}: {gate.status.value} - {gate.message}")
     print()
     print("Model lineage")
     for product, lineage in decision.model_lineage.items():

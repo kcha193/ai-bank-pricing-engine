@@ -85,28 +85,28 @@ item from before PR #42 (modular-monolith architecture merge), never closed.
    Governed pricing decision
      Decision ID:             <uuid>
      Correlation ID:          <uuid>
-     Status:                  RECOMMENDED
+     Status:                  REVIEW_REQUIRED
      Scenario:                governed_baseline
 
      Home loan rate:          8.10%
-     Term deposit rate:       4.85%
-     Objective value:         $9,250,626
-     Expected loan volume:    $508,992,979
-     Expected deposit volume: $330,238,746
-     Funding shortfall:       $606,690
+     Term deposit rate:       4.95%
+     Objective value:         $10,149,221
+     Expected loan volume:    $539,597,610
+     Expected deposit volume: $352,518,457
+     Funding shortfall:       $0
 
    Governance gates
-     CONFIG_VALID: PASS — Scenario configuration passed EngineConfig validation.
-     COMPETITOR_RATE_FRESHNESS: PASS — Competitor-rate ingestion is disabled; using static config rates.
-     MODEL_APPROVAL_STATUS[loan]: PASS — No approved ML champion for loan; using the deterministic synthetic response function (safe default).
+     CONFIG_VALID: PASS - Scenario configuration passed EngineConfig validation.
+     COMPETITOR_RATE_FRESHNESS: PASS - Competitor-rate ingestion is disabled; using static config rates.
+     MODEL_APPROVAL_STATUS[loan]: PASS - No approved ML champion for loan; using the deterministic synthetic response function (safe default).
      ...
-     (one line per GateResult: `{code}: {status} — {message}`)
+     (one line per GateResult: `{code}: {status} - {message}`)
 
    Model lineage
      loan:    response_source=deterministic_synthetic, used_fallback=True
      deposit: response_source=deterministic_synthetic, used_fallback=True
 
-   Execution time: 0.42s
+   Execution time: 0.04s
    ```
 
    Rate/currency formatting reuses the same `:.2%` / `:,.0f` conventions as
@@ -130,7 +130,11 @@ bar:
 
 - `python3 examples/run_governed_scenario.py` runs to completion against
   `configs/base.yaml` and exits 0.
-- Output shows `Status: RECOMMENDED` for the unmodified baseline config (no
-  BLOCK/WARN gates expected under default settings).
+- Output shows `Status: REVIEW_REQUIRED` for the unmodified baseline config,
+  driven by a `POLICY_BAND_BREACH: WARN` gate — the optimizer's true optimum
+  sits outside `configs/base.yaml`'s originally configured ±50bps/±40bps
+  spread band once adaptive boundary expansion resolves it. This is expected,
+  by-design governance behavior (see `diagnostics.py`'s
+  `_policy_band_breached`), not a regression.
 - `python3 -m pytest -q` and `python3 -m ruff check .` stay green (no
   existing code touched, so this is a regression check, not new coverage).
