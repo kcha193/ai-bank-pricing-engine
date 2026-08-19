@@ -60,6 +60,7 @@ python3 -m pip install -e ".[dev]"
 python3 -m pytest -q
 python3 -m ruff check .
 python3 examples/run_baseline.py
+python3 examples/run_governed_scenario.py
 python3 examples/run_with_competitor_rates.py
 python3 examples/run_llm_diagnostics.py
 python3 examples/run_multiperiod.py
