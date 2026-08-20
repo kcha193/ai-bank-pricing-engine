@@ -208,6 +208,45 @@ def test_bootstrap_ensemble_response_model_in_training_agent(tmp_path):
     assert "BootstrapEnsembleResponseModel" in model_names
 
 
+def test_bootstrap_ensemble_response_model_champion_scores_after_persistence(tmp_path):
+    """A promoted BootstrapEnsembleResponseModel champion must survive save/load and score
+    through resolve_response_fn(), not just in-memory. `fitted_model` used to return the raw
+    list of estimators, which has neither `predict_probability` nor `predict_proba`, so the
+    approved champion failed with an AttributeError instead of scoring (or raising
+    GovernanceError) the first time the optimizer called it.
+    """
+    dataset = _loan_dataset()
+    trainer = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=42,
+        ),
+        artifacts_dir=tmp_path,
+    )
+    registry = trainer.registry
+    trainer.train(
+        dataset=dataset,
+        candidates={"bootstrap_ensemble": BootstrapEnsembleResponseModel(n_estimators=5, random_state=42)},
+        registry=registry,
+        run_name="loan_bootstrap",
+    )
+    registry.promote_champion("BootstrapEnsembleResponseModel", approver="integration_test")
+
+    scoring_agent = ModelScoringAgent(registry_path=tmp_path / "model_registry.json")
+    fallback = SyntheticLoanResponseFn(elasticity=-85.0, competitor_gap_elasticity=-65.0)
+    loan_fn = scoring_agent.resolve_response_fn(
+        feature_columns=LOAN_FEATURE_COLUMNS, fallback=fallback
+    )
+    assert isinstance(loan_fn, MLResponseFnAdapter)
+
+    customers = generate_loan_customers(50, make_rng(7))
+    probabilities = loan_fn(customers, offered_rate=0.065, competitor_rate=0.062)
+
+    assert probabilities.shape == (len(customers),)
+    assert np.all(probabilities >= 0) and np.all(probabilities <= 1)
+
+
 def test_histgbm_response_model_fits_and_predicts(tmp_path):
     dataset = _loan_dataset()
     model = HistGBMResponseModel(random_state=42)

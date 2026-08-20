@@ -60,3 +60,22 @@ def test_require_api_key_accepts_any_configured_key_when_multiple_keys_set():
     response = client.get("/protected", headers={API_KEY_HEADER: "key-two"})
 
     assert response.status_code == 200
+
+
+def test_require_api_key_fails_closed_when_configured_value_has_no_valid_keys():
+    """PRICING_ENGINE_API_KEYS set but containing only separators/whitespace is a
+    misconfiguration, not an intent to disable auth — must not silently expose the route.
+    """
+    client = TestClient(_protected_app({"PRICING_ENGINE_API_KEYS": " , "}))
+
+    response = client.get("/protected", headers={API_KEY_HEADER: "anything"})
+
+    assert response.status_code == 500
+
+
+def test_require_api_key_fails_closed_when_configured_value_is_empty_string():
+    client = TestClient(_protected_app({"PRICING_ENGINE_API_KEYS": ""}))
+
+    response = client.get("/protected", headers={API_KEY_HEADER: "anything"})
+
+    assert response.status_code == 500

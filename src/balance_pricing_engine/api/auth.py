@@ -21,10 +21,11 @@ def _default_secrets_provider() -> SecretsProvider:
     return EnvSecretsProvider()
 
 
-def _configured_keys(secrets_provider: SecretsProvider) -> list[str]:
+def _configured_keys(secrets_provider: SecretsProvider) -> list[str] | None:
+    """Return configured keys, `[]` if set but malformed, or `None` if unset entirely."""
     raw = secrets_provider.get_secret(_API_KEYS_SECRET_NAME)
-    if not raw:
-        return []
+    if raw is None:
+        return None
     return [key.strip() for key in raw.split(",") if key.strip()]
 
 
@@ -32,10 +33,19 @@ def require_api_key(
     request: Request,
     secrets_provider: SecretsProvider = Depends(_default_secrets_provider),
 ) -> None:
-    """FastAPI dependency: enforce X-API-Key only when PRICING_ENGINE_API_KEYS is set."""
+    """FastAPI dependency: enforce X-API-Key only when PRICING_ENGINE_API_KEYS is set.
+
+    A configured-but-invalid secret (empty, or only whitespace/separators) fails closed
+    with a 500 rather than silently disabling auth like an unset secret would.
+    """
     configured = _configured_keys(secrets_provider)
-    if not configured:
+    if configured is None:
         return
+    if not configured:
+        raise HTTPException(
+            status_code=500,
+            detail="PRICING_ENGINE_API_KEYS is set but contains no valid keys.",
+        )
     presented = request.headers.get(API_KEY_HEADER)
     if presented is None or not any(hmac.compare_digest(presented, key) for key in configured):
         raise HTTPException(status_code=401, detail="Missing or invalid API key.")

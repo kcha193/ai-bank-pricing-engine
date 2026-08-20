@@ -310,7 +310,7 @@ class BootstrapEnsembleResponseModel:
 
     @property
     def fitted_model(self) -> Any:
-        return self._models
+        return self
 
 
 class LightGBMResponseModel:
