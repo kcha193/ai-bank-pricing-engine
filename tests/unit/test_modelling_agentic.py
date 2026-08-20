@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from balance_pricing_engine.modelling.agentic import (
+    BootstrapEnsembleResponseModel,
     ElasticityBaselineModel,
     ElasticityResponseModel,
     HistGBMResponseModel,
@@ -115,6 +116,96 @@ def test_training_agent_trains_and_recommends(tmp_path):
         "LogisticResponseModel",
     }
     assert result.report_path.endswith(".json")
+
+
+def test_bootstrap_ensemble_response_model_fits_and_predicts():
+    dataset = _loan_dataset()
+    model = BootstrapEnsembleResponseModel(n_estimators=5, random_state=42)
+    train = dataset.iloc[:800]
+    test_data = dataset.iloc[800:]
+
+    model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+    probs = model.predict_probability(test_data, LOAN_FEATURE_COLUMNS)
+
+    assert probs.shape == (len(test_data),)
+    assert np.all(probs >= 0) and np.all(probs <= 1)
+
+
+def test_bootstrap_ensemble_response_model_raises_before_fit():
+    model = BootstrapEnsembleResponseModel(n_estimators=5, random_state=42)
+    df = pd.DataFrame({"offered_rate": [0.08]})
+    with pytest.raises(ValueError, match="fitted"):
+        model.predict_probability(df, ["offered_rate"])
+
+
+def test_bootstrap_ensemble_response_model_name():
+    assert BootstrapEnsembleResponseModel.name == "BootstrapEnsembleResponseModel"
+
+
+def test_bootstrap_ensemble_response_model_quantiles_are_ordered_and_track_mean():
+    dataset = _loan_dataset()
+    model = BootstrapEnsembleResponseModel(n_estimators=10, random_state=42)
+    train = dataset.iloc[:800]
+    test_data = dataset.iloc[800:850]
+
+    model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+    quantiles = model.predict_probability_quantiles(
+        test_data, LOAN_FEATURE_COLUMNS, quantiles=(0.1, 0.5, 0.9)
+    )
+    mean_probs = model.predict_probability(test_data, LOAN_FEATURE_COLUMNS)
+
+    assert list(quantiles.columns) == ["q10", "q50", "q90"]
+    assert len(quantiles) == len(test_data)
+    assert (quantiles["q10"] <= quantiles["q50"]).all()
+    assert (quantiles["q50"] <= quantiles["q90"]).all()
+    assert np.corrcoef(quantiles["q50"], mean_probs)[0, 1] > 0.5
+
+
+def test_bootstrap_ensemble_response_model_raises_before_fit_for_quantiles():
+    model = BootstrapEnsembleResponseModel(n_estimators=5, random_state=42)
+    df = pd.DataFrame({"offered_rate": [0.08]})
+    with pytest.raises(ValueError, match="fitted"):
+        model.predict_probability_quantiles(df, ["offered_rate"])
+
+
+def test_bootstrap_ensemble_response_model_deterministic_given_random_state():
+    dataset = _loan_dataset()
+    train = dataset.iloc[:800]
+    test_data = dataset.iloc[800:850]
+
+    model1 = BootstrapEnsembleResponseModel(n_estimators=5, random_state=7)
+    model1.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+    probs1 = model1.predict_probability(test_data, LOAN_FEATURE_COLUMNS)
+
+    model2 = BootstrapEnsembleResponseModel(n_estimators=5, random_state=7)
+    model2.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+    probs2 = model2.predict_probability(test_data, LOAN_FEATURE_COLUMNS)
+
+    np.testing.assert_array_equal(probs1, probs2)
+
+
+def test_bootstrap_ensemble_response_model_in_training_agent(tmp_path):
+    dataset = _loan_dataset()
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=7,
+        ),
+        artifacts_dir=tmp_path,
+    )
+
+    result = agent.train(
+        dataset=dataset,
+        candidates={
+            "bootstrap_ensemble": BootstrapEnsembleResponseModel(n_estimators=5, random_state=7),
+        },
+        registry=agent.registry,
+        run_name="loan",
+    )
+
+    model_names = {c["model_name"] for c in result.report["candidates"]}
+    assert "BootstrapEnsembleResponseModel" in model_names
 
 
 def test_histgbm_response_model_fits_and_predicts(tmp_path):

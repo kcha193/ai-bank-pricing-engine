@@ -134,19 +134,49 @@ There is no database-backed ledger store in this prototype; the filesystem direc
 The following are explicitly out of scope for this prototype and must be addressed before
 any real production use:
 
-- **Authentication/authorisation.** No auth is implemented on any endpoint. Put the
-  service behind an API gateway, mTLS, or an auth proxy before exposing it beyond a
-  trusted network.
-- **Secrets management.** No secrets are read today; if any are introduced, use a secrets
-  manager (Vault, cloud KMS, etc.), not config files or environment variables checked into
-  source control.
-- **TLS.** `uvicorn` here serves plain HTTP. Terminate TLS at a reverse proxy or load
-  balancer in front of the container.
+- **Authentication/authorisation.** **Recommended:** put the service behind an API gateway,
+  mTLS, or an auth proxy before exposing it beyond a trusted network — that's still the
+  primary control. **Opt-in defense-in-depth** for deployments with no fronting proxy: set
+  `PRICING_ENGINE_API_KEYS` (comma-separated for key rotation) and `POST /run-scenario` /
+  `POST /v1/pricing/scenarios` require a matching `X-API-Key` header (constant-time
+  comparison via `api/auth.py`); `GET /health` and `/ready` stay open, matching standard
+  orchestrator-probe convention. Unset (the default), behaviour is unchanged from before.
+- **Secrets management.** The one secret this project reads today (`ANTHROPIC_API_KEY`, used
+  by the optional `[llm]` layer) goes through `secrets.provider.SecretsProvider` — protocol:
+  `get_secret(name) -> str | None`. The default `EnvSecretsProvider` reads environment
+  variables (still not committed to source control). A future Vault/AWS Secrets
+  Manager/GCP Secret Manager adapter implementing the same protocol can be injected into
+  `llm.build_client()`/`is_llm_available()` without changing call sites — see
+  `StaticSecretsProvider` for the test/local-dev injection pattern.
+- **TLS.** The container serves plain HTTP by default. **Recommended:** terminate TLS at a
+  reverse proxy or load balancer in front of the container — that's where cert rotation via
+  ACME/Let's Encrypt and HTTP/2 belong, and it keeps the app process out of the cert-handling
+  business. **Direct TLS** (for deployments with no fronting proxy, e.g. a bare container on an
+  internal network) is supported: set both `PRICING_ENGINE_TLS_CERTFILE` and
+  `PRICING_ENGINE_TLS_KEYFILE` to mounted cert/key paths (`resolve_tls_kwargs` in
+  `api/server.py` raises if only one is set — fail fast on partial config) and the launcher
+  passes them to uvicorn. To generate a self-signed cert for local testing:
+
+  ```bash
+  openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
+    -keyout server.key -out server.crt -subj "/CN=localhost"
+  docker run --rm -p 8443:8000 \
+    -v "$(pwd)/server.crt:/certs/server.crt:ro" \
+    -v "$(pwd)/server.key:/certs/server.key:ro" \
+    -e PRICING_ENGINE_TLS_CERTFILE=/certs/server.crt \
+    -e PRICING_ENGINE_TLS_KEYFILE=/certs/server.key \
+    ai-bank-pricing-engine
+  curl -k https://localhost:8443/health
+  ```
+
 - **Durable event delivery.** `events/publisher.py` ships `NoOpEventPublisher`,
-  `InMemoryEventPublisher`, and a local `JSONLEventPublisher`. None of these survive a
-  process crash between "event constructed" and "event flushed," and none offer
-  at-least-once delivery guarantees to external consumers. A Kafka/Pub/Sub/Event Hubs
-  adapter implementing the same `EventPublisher` protocol is the documented upgrade path
+  `InMemoryEventPublisher`, `JSONLEventPublisher`, and `KafkaEventPublisher` (requires the
+  `[kafka]` extra — `pip install 'balance_pricing_engine[kafka]'`). `KafkaEventPublisher`
+  blocks on the send future's broker ack, giving at-least-once delivery to a real Kafka
+  cluster; the first three don't survive a process crash between "event constructed" and
+  "event flushed." No live Kafka cluster is provisioned by this repo — point
+  `bootstrap_servers` at your own broker. A Pub/Sub/Event Hubs adapter implementing the
+  same `EventPublisher` protocol is the same documented upgrade path for other clouds
   (`docs/adr/0004-in-process-events-before-streaming-platform.md`).
 - **Durable model registry.** `ModelRegistry` is a local JSON file. A multi-instance
   deployment needs a shared, concurrency-safe registry (e.g. MLflow Model Registry or a

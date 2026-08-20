@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from balance_pricing_engine.events.models import DomainEvent
 
@@ -56,6 +56,47 @@ class JSONLEventPublisher:
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(event.to_json())
             handle.write("\n")
+
+
+class KafkaEventPublisher:
+    """Publishes events to a Kafka topic. Requires the [kafka] optional extra.
+
+    A durable, at-least-once-capable EventPublisher — the documented upgrade path from
+    JSONLEventPublisher (docs/adr/0004-in-process-events-before-streaming-platform.md).
+    ``publish`` blocks on the send future's broker ack; failures propagate to the caller —
+    swallowing failures is ``publish_safely``'s job, not this class's.
+    """
+
+    def __init__(
+        self,
+        topic: str,
+        bootstrap_servers: str | list[str] = "localhost:9092",
+        producer: Any | None = None,
+        ack_timeout_seconds: float = 10.0,
+        **producer_kwargs: Any,
+    ) -> None:
+        self.topic = topic
+        self._ack_timeout_seconds = ack_timeout_seconds
+        self._producer = producer or self._build_producer(bootstrap_servers, **producer_kwargs)
+
+    @staticmethod
+    def _build_producer(bootstrap_servers: str | list[str], **producer_kwargs: Any) -> Any:
+        try:
+            from kafka import KafkaProducer
+        except ImportError as exc:
+            raise ImportError(
+                "KafkaEventPublisher requires kafka-python. "
+                "Install it with: pip install 'balance_pricing_engine[kafka]'"
+            ) from exc
+        return KafkaProducer(
+            bootstrap_servers=bootstrap_servers,
+            value_serializer=lambda v: v.encode("utf-8"),
+            **producer_kwargs,
+        )
+
+    def publish(self, event: DomainEvent) -> None:
+        future = self._producer.send(self.topic, value=event.to_json())
+        future.get(timeout=self._ack_timeout_seconds)
 
 
 def publish_safely(publisher: EventPublisher, event: DomainEvent) -> None:

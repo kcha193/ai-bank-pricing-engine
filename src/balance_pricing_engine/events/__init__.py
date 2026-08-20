@@ -13,6 +13,7 @@ from balance_pricing_engine.events.publisher import (
     EventPublisher,
     InMemoryEventPublisher,
     JSONLEventPublisher,
+    KafkaEventPublisher,
     NoOpEventPublisher,
     publish_safely,
 )
@@ -29,5 +30,6 @@ __all__ = [
     "NoOpEventPublisher",
     "InMemoryEventPublisher",
     "JSONLEventPublisher",
+    "KafkaEventPublisher",
     "publish_safely",
 ]

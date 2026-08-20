@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from inspect import signature
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 import numpy as np
 import pandas as pd
@@ -34,6 +34,7 @@ __all__ = [
     "ElasticityResponseModel",
     "LogisticResponseModel",
     "HistGBMResponseModel",
+    "BootstrapEnsembleResponseModel",
     "LightGBMResponseModel",
     "XGBoostResponseModel",
     "SurvivalResponseModel",
@@ -249,6 +250,67 @@ class HistGBMResponseModel:
         if fit_data.empty or importance_data.empty:
             return train, None
         return fit_data, importance_data
+
+
+class BootstrapEnsembleResponseModel:
+    """Bootstrap ensemble exposing predictive quantile uncertainty on response probability.
+
+    Fits `n_estimators` copies of a base estimator on bootstrap-resampled training rows.
+    `predict_probability` (the ResponseModel protocol method) returns the ensemble mean, so
+    this slots into `train()` candidates unchanged. `predict_probability_quantiles` exposes the
+    spread across replicas — a sampling-noise uncertainty band, not a quantile-loss model
+    (sklearn's classifiers here have no quantile-loss objective for probabilities).
+    """
+
+    name = "BootstrapEnsembleResponseModel"
+
+    def __init__(
+        self,
+        n_estimators: int = 25,
+        random_state: int = 42,
+        base_estimator_factory: Callable[[int], Any] | None = None,
+    ):
+        self._n_estimators = n_estimators
+        self._random_state = random_state
+        self._base_estimator_factory = base_estimator_factory or build_hist_gradient_boosting_model
+        self._models: list[Any] = []
+
+    def fit(self, train: pd.DataFrame, feature_columns: list[str], target_column: str) -> None:
+        rng = np.random.default_rng(self._random_state)
+        n = len(train)
+        self._models = []
+        for i in range(self._n_estimators):
+            idx = rng.integers(0, n, size=n)
+            resampled = train.iloc[idx]
+            estimator = self._base_estimator_factory(self._random_state + i)
+            fit_response_model(estimator, resampled, feature_columns, target_column)
+            self._models.append(estimator)
+
+    def predict_probability(self, data: pd.DataFrame, feature_columns: list[str]) -> np.ndarray:
+        return self._predict_matrix(data, feature_columns).mean(axis=0)
+
+    def predict_probability_quantiles(
+        self,
+        data: pd.DataFrame,
+        feature_columns: list[str],
+        quantiles: tuple[float, ...] = (0.1, 0.5, 0.9),
+    ) -> pd.DataFrame:
+        matrix = self._predict_matrix(data, feature_columns)
+        columns = {
+            f"q{int(round(q * 100))}": np.quantile(matrix, q, axis=0) for q in quantiles
+        }
+        return pd.DataFrame(columns)
+
+    def _predict_matrix(self, data: pd.DataFrame, feature_columns: list[str]) -> np.ndarray:
+        if not self._models:
+            raise ValueError("BootstrapEnsembleResponseModel must be fitted before scoring.")
+        return np.vstack(
+            [predict_response_probability(m, data, feature_columns) for m in self._models]
+        )
+
+    @property
+    def fitted_model(self) -> Any:
+        return self._models
 
 
 class LightGBMResponseModel:

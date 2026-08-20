@@ -1,0 +1,49 @@
+"""Launcher for the FastAPI serving layer. Requires the `api` optional extra.
+
+Wraps `uvicorn.run` so TLS is an env-var-driven option (see docs/deployment.md) without
+requiring a live certificate authority to test against — pass a self-signed dev cert or a
+cert mounted by the deployment environment (reverse proxy, orchestrator TLS secret, etc.).
+"""
+from __future__ import annotations
+
+import os
+from typing import Mapping
+
+_CERTFILE_VAR = "PRICING_ENGINE_TLS_CERTFILE"
+_KEYFILE_VAR = "PRICING_ENGINE_TLS_KEYFILE"
+
+
+def resolve_tls_kwargs(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Resolve uvicorn TLS kwargs from environment variables.
+
+    Returns {} (plain HTTP) if neither var is set, {"ssl_certfile": ..., "ssl_keyfile": ...}
+    if both are set, and raises ValueError if only one is set.
+    """
+    env = os.environ if env is None else env
+    certfile = env.get(_CERTFILE_VAR)
+    keyfile = env.get(_KEYFILE_VAR)
+    if certfile and keyfile:
+        return {"ssl_certfile": certfile, "ssl_keyfile": keyfile}
+    if certfile or keyfile:
+        raise ValueError(
+            f"{_CERTFILE_VAR} and {_KEYFILE_VAR} must both be set, or neither — "
+            f"got certfile={certfile!r}, keyfile={keyfile!r}."
+        )
+    return {}
+
+
+def main() -> None:
+    import uvicorn
+
+    host = os.environ.get("PRICING_ENGINE_API_HOST", "0.0.0.0")
+    port = int(os.environ.get("PRICING_ENGINE_API_PORT", "8000"))
+    uvicorn.run(
+        "balance_pricing_engine.api.app:app",
+        host=host,
+        port=port,
+        **resolve_tls_kwargs(),
+    )
+
+
+if __name__ == "__main__":
+    main()

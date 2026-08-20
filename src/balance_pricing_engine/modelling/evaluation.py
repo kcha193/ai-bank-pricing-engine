@@ -61,6 +61,40 @@ def compute_partial_dependence(
     return pd.DataFrame(rows)
 
 
+def compute_rate_uplift(
+    model: Any,
+    dataset: pd.DataFrame,
+    feature_columns: list[str],
+    rate_feature: str,
+    baseline_rate: float,
+    treatment_rate: float,
+) -> dict[str, float]:
+    """Estimate the uplift in predicted response probability from changing one rate feature.
+
+    Scores an already-fitted model at two rate scenarios (holding all other features at their
+    observed values) via compute_partial_dependence and reports the probability delta. This is
+    a two-point scenario comparison, not a trained causal uplift model — the synthetic
+    generators have no treatment/control structure to train one against.
+    """
+    pdp = compute_partial_dependence(
+        model, dataset, feature_columns, rate_feature, [baseline_rate, treatment_rate]
+    )
+    baseline_probability = float(
+        pdp.loc[pdp[rate_feature] == baseline_rate, "mean_predicted_probability"].iloc[0]
+    )
+    treatment_probability = float(
+        pdp.loc[pdp[rate_feature] == treatment_rate, "mean_predicted_probability"].iloc[0]
+    )
+    uplift = treatment_probability - baseline_probability
+    uplift_pct = (uplift / baseline_probability * 100) if baseline_probability else float("nan")
+    return {
+        "baseline_probability": baseline_probability,
+        "treatment_probability": treatment_probability,
+        "uplift": uplift,
+        "uplift_pct": uplift_pct,
+    }
+
+
 def check_monotonicity(
     pdp_frame: pd.DataFrame,
     pdp_feature: str,

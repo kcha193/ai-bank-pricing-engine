@@ -1,6 +1,7 @@
 """Tests for domain events and the event-publisher seam."""
 
 import json
+import sys
 
 import pytest
 
@@ -13,6 +14,7 @@ from balance_pricing_engine.events.models import (
 from balance_pricing_engine.events.publisher import (
     InMemoryEventPublisher,
     JSONLEventPublisher,
+    KafkaEventPublisher,
     NoOpEventPublisher,
     publish_safely,
 )
@@ -21,6 +23,30 @@ from balance_pricing_engine.events.publisher import (
 class _FailingPublisher:
     def publish(self, event: DomainEvent) -> None:
         raise RuntimeError("simulated publisher outage")
+
+
+class _FakeFuture:
+    def __init__(self, *, raises: Exception | None = None):
+        self._raises = raises
+        self.get_called_with_timeout: float | None = None
+
+    def get(self, timeout=None):
+        self.get_called_with_timeout = timeout
+        if self._raises is not None:
+            raise self._raises
+        return None
+
+
+class _FakeKafkaProducer:
+    def __init__(self, *, raises: Exception | None = None):
+        self.sent: list[tuple[str, str]] = []
+        self._raises = raises
+        self.last_future: _FakeFuture | None = None
+
+    def send(self, topic, value):
+        self.sent.append((topic, value))
+        self.last_future = _FakeFuture(raises=self._raises)
+        return self.last_future
 
 
 def test_domain_event_has_stable_envelope_fields():
@@ -119,6 +145,53 @@ def test_publish_safely_calls_through_on_success():
 @pytest.mark.parametrize("publisher_cls", [NoOpEventPublisher, InMemoryEventPublisher])
 def test_publishers_satisfy_the_protocol_signature(publisher_cls):
     publisher = publisher_cls()
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    result = publisher.publish(event)
+
+    assert result is None
+
+
+def test_kafka_publisher_sends_event_json_to_configured_topic():
+    producer = _FakeKafkaProducer()
+    publisher = KafkaEventPublisher(topic="pricing-events", producer=producer)
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    result = publisher.publish(event)
+
+    assert result is None
+    assert producer.sent == [("pricing-events", event.to_json())]
+
+
+def test_kafka_publisher_blocks_on_send_future_ack():
+    producer = _FakeKafkaProducer()
+    publisher = KafkaEventPublisher(topic="pricing-events", producer=producer)
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    publisher.publish(event)
+
+    assert producer.last_future.get_called_with_timeout is not None
+
+
+def test_kafka_publisher_propagates_send_failures():
+    producer = _FakeKafkaProducer(raises=RuntimeError("broker unavailable"))
+    publisher = KafkaEventPublisher(topic="pricing-events", producer=producer)
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    with pytest.raises(RuntimeError, match="broker unavailable"):
+        publisher.publish(event)
+
+
+def test_kafka_publisher_raises_import_error_when_library_missing(monkeypatch):
+    monkeypatch.setitem(sys.modules, "kafka", None)
+
+    with pytest.raises(ImportError, match="kafka-python"):
+        KafkaEventPublisher(topic="pricing-events")
+
+
+def test_kafka_publisher_satisfies_the_protocol_signature():
+    producer = _FakeKafkaProducer()
+    publisher = KafkaEventPublisher(topic="pricing-events", producer=producer)
     event = pricing_scenario_requested("corr-1", scenario_name="baseline")
 
     result = publisher.publish(event)

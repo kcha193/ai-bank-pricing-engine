@@ -8,13 +8,14 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 import yaml
 
+from balance_pricing_engine.api.auth import require_api_key
 from balance_pricing_engine.api.schemas import (
     ErrorResponse,
     FeatureLineageSchema,
@@ -51,8 +52,9 @@ app = FastAPI(
         "Synthetic retail bank balance-sheet pricing engine. POST /run-scenario is the "
         "original, stable endpoint. POST /v1/pricing/scenarios is the versioned, "
         "governed endpoint backed by the application PricingService — prefer it for new "
-        "integrations. Authentication/authorisation is a documented production boundary, "
-        "not implemented here; see docs/deployment.md."
+        "integrations. Both require an X-API-Key header only when PRICING_ENGINE_API_KEYS "
+        "is set (opt-in; unset by default) — an API gateway/auth proxy in front of the "
+        "service is still the recommended primary control; see docs/deployment.md."
     ),
 )
 _pricing_service = PricingService()
@@ -137,7 +139,9 @@ def ready() -> ReadyResponse:
     response_model=PricingDecisionResponseV1,
     tags=["pricing"],
     summary="Run a governed pricing scenario",
+    dependencies=[Depends(require_api_key)],
     responses={
+        401: {"description": "Missing or invalid API key (only when PRICING_ENGINE_API_KEYS is set)"},
         422: {"model": ErrorResponse, "description": "Config validation or unsupported scenario"},
         503: {"model": ErrorResponse, "description": "Governed model artifact unavailable"},
         500: {"model": ErrorResponse, "description": "Unexpected server error"},
@@ -271,7 +275,7 @@ def _decision_to_response(decision: PricingDecision) -> PricingDecisionResponseV
     )
 
 
-@app.post("/run-scenario")
+@app.post("/run-scenario", dependencies=[Depends(require_api_key)])
 def run_scenario(request: RunScenarioRequest) -> dict[str, Any]:
     try:
         raw_config = yaml.safe_load(request.config_yaml)

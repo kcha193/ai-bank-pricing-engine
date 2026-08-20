@@ -20,12 +20,20 @@ def test_dockerfile_declares_healthcheck_and_exposes_port():
     assert "EXPOSE 8000" in dockerfile
 
 
-def test_dockerfile_installs_api_extra_and_runs_uvicorn():
+def test_dockerfile_installs_api_extra_and_runs_the_api_server_launcher():
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
 
     assert '.[api]' in dockerfile
-    assert "uvicorn" in dockerfile
-    assert "balance_pricing_engine.api.app:app" in dockerfile
+    assert "balance_pricing_engine.api.server" in dockerfile
+
+
+def test_api_server_launcher_runs_uvicorn_against_the_app():
+    server_module = (
+        REPO_ROOT / "src" / "balance_pricing_engine" / "api" / "server.py"
+    ).read_text(encoding="utf-8")
+
+    assert "uvicorn" in server_module
+    assert "balance_pricing_engine.api.app:app" in server_module
 
 
 def test_dockerignore_excludes_dev_and_data_directories():
