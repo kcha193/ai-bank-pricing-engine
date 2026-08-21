@@ -312,7 +312,7 @@ class BootstrapEnsembleResponseModel:
         columns = {
             f"q{int(round(q * 100))}": np.quantile(matrix, q, axis=0) for q in quantiles
         }
-        return pd.DataFrame(columns)
+        return pd.DataFrame(columns, index=data.index)
 
     def _predict_matrix(self, data: pd.DataFrame, feature_columns: list[str]) -> np.ndarray:
         if not self._models:

@@ -159,6 +159,9 @@ def test_bootstrap_ensemble_response_model_quantiles_are_ordered_and_track_mean(
     assert (quantiles["q10"] <= quantiles["q50"]).all()
     assert (quantiles["q50"] <= quantiles["q90"]).all()
     assert np.corrcoef(quantiles["q50"], mean_probs)[0, 1] > 0.5
+    # test_data.iloc[800:850] carries index labels 800-849, not a fresh 0-49 range --
+    # quantiles must keep those labels so joining back to the scored frame aligns rows.
+    assert list(quantiles.index) == list(test_data.index)
 
 
 def test_bootstrap_ensemble_response_model_raises_before_fit_for_quantiles():
