@@ -270,6 +270,8 @@ class BootstrapEnsembleResponseModel:
         random_state: int = 42,
         base_estimator_factory: Callable[[int], Any] | None = None,
     ):
+        if n_estimators < 1:
+            raise ValueError(f"n_estimators must be >= 1, got {n_estimators}.")
         self._n_estimators = n_estimators
         self._random_state = random_state
         self._base_estimator_factory = base_estimator_factory or build_hist_gradient_boosting_model

@@ -142,6 +142,15 @@ def test_bootstrap_ensemble_response_model_name():
     assert BootstrapEnsembleResponseModel.name == "BootstrapEnsembleResponseModel"
 
 
+@pytest.mark.parametrize("n_estimators", [0, -1])
+def test_bootstrap_ensemble_response_model_rejects_non_positive_n_estimators(n_estimators):
+    """n_estimators <= 0 must fail immediately and actionably at construction, not let
+    fit() silently succeed with an empty model list and defer the failure to the first
+    prediction with a misleading 'must be fitted' error."""
+    with pytest.raises(ValueError, match="n_estimators"):
+        BootstrapEnsembleResponseModel(n_estimators=n_estimators)
+
+
 def test_bootstrap_ensemble_response_model_quantiles_are_ordered_and_track_mean():
     dataset = _loan_dataset()
     model = BootstrapEnsembleResponseModel(n_estimators=10, random_state=42)
