@@ -49,9 +49,13 @@ durable, auditable record of what happened.
   configuration. This bounds what any future consumer (or this local JSONL file) can leak.
 - Publishing is best-effort from the pricing decision's point of view:
   `events.publisher.publish_safely()` catches and logs any exception from
-  `publisher.publish()` rather than propagating it. A failing or misconfigured event
-  publisher must never fail, block, or alter a pricing decision — this is enforced by a
-  test (`FailingEventPublisher` in the application-layer test suite).
+  `publisher.publish()` rather than propagating it, and runs the publish on a worker
+  thread capped at `deadline_seconds` (default 2s) so a slow or hung publisher (e.g. a
+  Kafka broker that stops acknowledging sends) can't stall the request either. A failing,
+  slow, or misconfigured event publisher must never fail, block, or alter a pricing
+  decision — this is enforced by tests (`_FailingEventPublisher` in the application-layer
+  test suite for failure; `_SlowPublisher` in `tests/unit/test_events.py` for the
+  deadline).
 - `JSONLEventPublisher` is explicitly documented as a local integration/audit seam, not a
   durable event log, in both its docstring and `docs/deployment.md`.
 - A future streaming adapter implements `EventPublisher.publish(event: DomainEvent) ->

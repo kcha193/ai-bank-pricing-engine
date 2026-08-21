@@ -176,10 +176,13 @@ any real production use:
   blocks on the send future's broker ack and raises on failure or timeout; the first three
   don't survive a process crash between "event constructed" and "event flushed." In
   practice this is still best-effort, not durable at-least-once delivery end-to-end: every
-  `PricingService` call routes publishing through `publish_safely()`, which logs a broker
-  error or ack timeout rather than retrying it, and a process crash before the ack leaves
-  no recoverable copy either way. A durable outbox/retry layer would be needed to close
-  that gap. No live Kafka cluster is provisioned by this repo — point `bootstrap_servers`
+  `PricingService` call routes publishing through `publish_safely()`, which runs the
+  publish on a worker thread capped at `deadline_seconds` (default 2s) — so a broker
+  that stops acknowledging sends can't stall the pricing request past that cap — and
+  logs the outcome (including a late failure that finishes after the cap) rather than
+  retrying it. A process crash before the ack leaves no recoverable copy either way. A
+  durable outbox/retry layer would be needed to close that gap. No live Kafka cluster is
+  provisioned by this repo — point `bootstrap_servers`
   at your own broker. A Pub/Sub/Event Hubs adapter implementing the same `EventPublisher`
   protocol is the same documented upgrade path for other clouds
   (`docs/adr/0004-in-process-events-before-streaming-platform.md`).

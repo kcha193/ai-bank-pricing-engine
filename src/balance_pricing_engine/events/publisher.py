@@ -9,12 +9,17 @@ docs/adr/0004-in-process-events-before-streaming-platform.md.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any, Protocol
 
 from balance_pricing_engine.events.models import DomainEvent
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_PUBLISH_DEADLINE_SECONDS = 2.0
+_PUBLISH_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="event-publish")
 
 
 class EventPublisher(Protocol):
@@ -105,18 +110,53 @@ class KafkaEventPublisher:
         future.get(timeout=self._ack_timeout_seconds)
 
 
-def publish_safely(publisher: EventPublisher, event: DomainEvent) -> None:
-    """Publish an event, logging (not raising) on failure.
+def publish_safely(
+    publisher: EventPublisher,
+    event: DomainEvent,
+    *,
+    deadline_seconds: float = DEFAULT_PUBLISH_DEADLINE_SECONDS,
+) -> None:
+    """Publish an event, logging (not raising) on failure — and never blocking the
+    pricing path past `deadline_seconds`, regardless of how long the publisher takes.
 
-    Publishing integration events is an optional side-channel. A failure here
-    must never fail or alter the pricing decision it describes.
+    Publishing integration events is an optional side-channel. A failure — or a slow or
+    hung publisher, e.g. a Kafka broker that stops acknowledging sends — must never fail,
+    block, or alter the pricing decision it describes. `PricingService` calls this once
+    per event and several times per request, so without a deadline a single unresponsive
+    publisher could stall every request that publishes events by several times
+    `KafkaEventPublisher`'s own (much longer) ack timeout. The publish runs on a shared
+    worker thread; if it hasn't finished within the deadline this returns anyway and the
+    publish keeps running in the background — its eventual outcome is still logged, just
+    not waited on.
     """
+    future = _PUBLISH_EXECUTOR.submit(publisher.publish, event)
     try:
-        publisher.publish(event)
+        future.result(timeout=deadline_seconds)
+    except FutureTimeoutError:
+        future.add_done_callback(lambda f: _log_late_outcome(f, event))
+        logger.warning(
+            "Event publish exceeded %.1fs deadline; continuing without waiting "
+            "event_type=%s correlation_id=%s",
+            deadline_seconds,
+            event.event_type,
+            event.correlation_id,
+        )
     except Exception:  # noqa: BLE001 - publishing failures are non-fatal by design
         logger.warning(
             "Failed to publish event event_type=%s correlation_id=%s",
             event.event_type,
             event.correlation_id,
             exc_info=True,
+        )
+
+
+def _log_late_outcome(future: Future[None], event: DomainEvent) -> None:
+    """Log a background publish's failure if it finishes after publish_safely stopped waiting."""
+    exc = future.exception()
+    if exc is not None:
+        logger.warning(
+            "Backgrounded event publish failed event_type=%s correlation_id=%s",
+            event.event_type,
+            event.correlation_id,
+            exc_info=exc,
         )

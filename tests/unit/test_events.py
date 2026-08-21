@@ -2,6 +2,8 @@
 
 import json
 import sys
+import threading
+import time
 
 import pytest
 
@@ -140,6 +142,56 @@ def test_publish_safely_calls_through_on_success():
     publish_safely(publisher, event)
 
     assert publisher.events == [event]
+
+
+class _SlowPublisher:
+    """Blocks well past any reasonable deadline, simulating a hung broker connection."""
+
+    def __init__(self, *, block_seconds: float, raises: Exception | None = None):
+        self._block_seconds = block_seconds
+        self._raises = raises
+        self.finished = threading.Event()
+
+    def publish(self, event) -> None:
+        time.sleep(self._block_seconds)
+        self.finished.set()
+        if self._raises is not None:
+            raise self._raises
+
+
+def test_publish_safely_does_not_block_past_the_deadline():
+    publisher = _SlowPublisher(block_seconds=1.0)
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    start = time.monotonic()
+    publish_safely(publisher, event, deadline_seconds=0.05)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 0.5
+    publisher.finished.wait(timeout=2.0)  # let the background publish finish before teardown
+
+
+def test_publish_safely_logs_timeout_without_raising(caplog):
+    publisher = _SlowPublisher(block_seconds=1.0)
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    with caplog.at_level("WARNING"):
+        publish_safely(publisher, event, deadline_seconds=0.05)  # must not raise
+
+    assert any("exceeded" in record.message for record in caplog.records)
+    publisher.finished.wait(timeout=2.0)
+
+
+def test_publish_safely_logs_late_failure_after_timeout(caplog):
+    publisher = _SlowPublisher(block_seconds=0.2, raises=RuntimeError("late broker error"))
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    with caplog.at_level("WARNING"):
+        publish_safely(publisher, event, deadline_seconds=0.05)
+        publisher.finished.wait(timeout=2.0)
+        time.sleep(0.05)  # let the done-callback run after the background publish raises
+
+    assert any("Backgrounded event publish failed" in record.message for record in caplog.records)
 
 
 @pytest.mark.parametrize("publisher_cls", [NoOpEventPublisher, InMemoryEventPublisher])
