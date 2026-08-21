@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import threading
+import time
 from importlib.metadata import PackageNotFoundError
 from types import SimpleNamespace
 
@@ -163,6 +165,47 @@ def test_run_scenario_with_failing_event_publisher_still_returns_decision():
         DecisionStatus.REVIEW_REQUIRED,
         DecisionStatus.BLOCKED,
     )
+
+
+def test_run_scenario_bounds_total_publish_wait_to_one_request_wide_deadline(monkeypatch):
+    """_run_scenario calls publish_safely several times per request (request + two
+    model-resolution + outcome events). Joining a fresh DEFAULT_PUBLISH_DEADLINE_SECONDS
+    on every one of those calls against a hung publisher would let a single broken
+    publisher add several multiples of that deadline to every request; a shared
+    request-wide budget must keep the total added wait near one deadline's worth
+    regardless of how many events the request happens to publish.
+    """
+    monkeypatch.setattr(pricing_service, "DEFAULT_PUBLISH_DEADLINE_SECONDS", 0.2)
+    config = _small_config()
+
+    baseline_start = time.monotonic()
+    PricingService().run_scenario(
+        PricingScenarioRequest(config=config, event_publisher=InMemoryEventPublisher())
+    )
+    baseline_elapsed = time.monotonic() - baseline_start
+
+    hang = threading.Event()
+
+    class _HangingPublisher:
+        def publish(self, event: DomainEvent) -> None:
+            hang.wait()
+
+    hung_start = time.monotonic()
+    try:
+        decision = PricingService().run_scenario(
+            PricingScenarioRequest(config=config, event_publisher=_HangingPublisher())
+        )
+    finally:
+        hang.set()
+    hung_elapsed = time.monotonic() - hung_start
+
+    assert decision.best_loan_rate > 0
+    publish_overhead = hung_elapsed - baseline_elapsed
+    # A per-call deadline would add roughly 4x DEFAULT_PUBLISH_DEADLINE_SECONDS (request +
+    # 2 model-resolution + outcome events); a shared budget adds roughly one deadline's
+    # worth. 3x leaves headroom above the fixed behaviour while still catching a
+    # regression back to per-call waiting.
+    assert publish_overhead < 3 * 0.2
 
 
 def test_persist_ledger_requires_config_path():

@@ -53,7 +53,7 @@ from balance_pricing_engine.events.models import (
     pricing_scenario_requested,
     run_ledger_written,
 )
-from balance_pricing_engine.events.publisher import publish_safely
+from balance_pricing_engine.events.publisher import DEFAULT_PUBLISH_DEADLINE_SECONDS, publish_safely
 from balance_pricing_engine.features.contracts import FeatureLineage
 from balance_pricing_engine.features.local_store import LocalFeatureStore
 from balance_pricing_engine.governance.decision_record import (
@@ -118,6 +118,16 @@ class PricingService:
         metrics = ExecutionMetrics(correlation_id=correlation_id, decision_id=decision_id)
         start = time.monotonic()
 
+        # One request-wide publish budget rather than a fresh deadline per call: this
+        # method calls publish_safely() up to six times (request + two model-resolution
+        # + optional ledger-written + up to two outcome events), and each call joining
+        # its own DEFAULT_PUBLISH_DEADLINE_SECONDS against a hung publisher would let a
+        # single broken publisher add several times that to every request. Once the
+        # budget is spent, later calls in the same request pass a 0s deadline: the
+        # publish still fires on its own background thread, this call just stops
+        # waiting on it.
+        publish_deadline = time.monotonic() + DEFAULT_PUBLISH_DEADLINE_SECONDS
+
         log_event(
             logger,
             "pricing_scenario.started",
@@ -128,6 +138,7 @@ class PricingService:
         publish_safely(
             request.event_publisher,
             pricing_scenario_requested(correlation_id, scenario_name=request.scenario_name),
+            deadline_seconds=_remaining_publish_seconds(publish_deadline),
         )
 
         with stage_timer(metrics, "feature_resolution"):
@@ -152,7 +163,9 @@ class PricingService:
             raise
 
         with stage_timer(metrics, "model_resolution"):
-            model_lineage = self._resolve_model_lineage(request, correlation_id, decision_id)
+            model_lineage = self._resolve_model_lineage(
+                request, correlation_id, decision_id, publish_deadline
+            )
 
         shadow_evaluations: list[ShadowEvaluationResult] = []
         if request.enable_shadow_challenger and request.registry is not None:
@@ -203,6 +216,7 @@ class PricingService:
                         run_id=run_id or "",
                         run_dir=str(run_dir),
                     ),
+                    deadline_seconds=_remaining_publish_seconds(publish_deadline),
                 )
 
         total_duration = time.monotonic() - start
@@ -231,7 +245,15 @@ class PricingService:
             write_decision_record(run_dir, decision_record)
 
         self._publish_outcome_event(
-            request, correlation_id, decision_id, status, blocking, review, run_id, diagnostics
+            request,
+            correlation_id,
+            decision_id,
+            status,
+            blocking,
+            review,
+            run_id,
+            diagnostics,
+            publish_deadline,
         )
         log_event(
             logger,
@@ -297,6 +319,7 @@ class PricingService:
         request: PricingScenarioRequest,
         correlation_id: str,
         decision_id: str,
+        publish_deadline: float | None = None,
     ) -> dict[str, ModelLineage]:
         if request.config.segmented_pricing is not None:
             # Segmented runs return through _evaluate_adaptive_segmented_rates before
@@ -324,6 +347,7 @@ class PricingService:
                     model_name=lineage.model_name,
                     used_fallback=lineage.used_fallback,
                 ),
+                deadline_seconds=_remaining_publish_seconds(publish_deadline),
             )
         return model_lineage
 
@@ -372,6 +396,7 @@ class PricingService:
         review: tuple[str, ...],
         run_id: str | None,
         diagnostics: Any,
+        publish_deadline: float | None = None,
     ) -> None:
         if status is DecisionStatus.BLOCKED:
             publish_safely(
@@ -383,6 +408,7 @@ class PricingService:
                     blocking_reasons=list(blocking),
                     run_id=run_id,
                 ),
+                deadline_seconds=_remaining_publish_seconds(publish_deadline),
             )
         elif status is DecisionStatus.REVIEW_REQUIRED:
             publish_safely(
@@ -394,6 +420,7 @@ class PricingService:
                     review_reasons=list(review),
                     run_id=run_id,
                 ),
+                deadline_seconds=_remaining_publish_seconds(publish_deadline),
             )
         publish_safely(
             request.event_publisher,
@@ -407,7 +434,19 @@ class PricingService:
                 objective_value=float(diagnostics.best_result.total_objective),
                 run_id=run_id,
             ),
+            deadline_seconds=_remaining_publish_seconds(publish_deadline),
         )
+
+
+def _remaining_publish_seconds(deadline: float | None) -> float:
+    """Time left against a shared request-wide publish deadline (a monotonic timestamp),
+    floored at 0 so an exhausted budget stops waiting entirely rather than going negative
+    (`Thread.join` treats a negative timeout as block-forever). `None` means the caller
+    has no shared budget (e.g. a helper invoked directly, outside `_run_scenario`), so
+    fall back to `publish_safely`'s own per-call default."""
+    if deadline is None:
+        return DEFAULT_PUBLISH_DEADLINE_SECONDS
+    return max(0.0, deadline - time.monotonic())
 
 
 def _reference_or_competitor(reference_rate: float | None, competitor_rate: float) -> float:
