@@ -18,6 +18,8 @@ from balance_pricing_engine.events.models import DomainEvent
 logger = logging.getLogger(__name__)
 
 DEFAULT_PUBLISH_DEADLINE_SECONDS = 2.0
+MAX_CONCURRENT_PUBLISHES = 16
+_publish_slots = threading.Semaphore(MAX_CONCURRENT_PUBLISHES)
 
 
 class EventPublisher(Protocol):
@@ -125,15 +127,31 @@ def publish_safely(
     `KafkaEventPublisher`'s own (much longer) ack timeout.
 
     Each call runs the publish on its own daemon thread rather than a shared worker pool:
-    a bounded pool would let a publisher that never returns permanently pin every worker,
-    so once as many calls as there are workers have hung, every *later* request would pay
-    the full deadline on every event too, indefinitely — and non-daemon pool threads would
-    also block clean process shutdown. A dedicated thread per call has neither failure
-    mode; the only cost of a permanently hung publisher is one abandoned daemon thread per
-    publish call made against it, which does not add latency to any other request and
-    exits with the process. If a call times out, this returns immediately and the publish
-    keeps running on its own thread — if it later fails, that failure is still logged.
+    reusing a bounded pool of *threads* would let a publisher that never returns
+    permanently pin every worker, so once as many calls as there are workers have hung,
+    every later request would pay the full deadline on every event too, indefinitely.
+    A thread per call has no such ceiling on its own — but an uncapped one instead lets
+    a permanently hung publisher accumulate one abandoned thread per publish call
+    forever, which under sustained traffic eventually exhausts the process's thread
+    limit and makes `Thread.start()` itself raise. `_publish_slots`, a semaphore capped
+    at `MAX_CONCURRENT_PUBLISHES`, bounds how many of these threads may be alive at
+    once regardless of how long they individually hang: once the cap is reached
+    (which only happens during a sustained outage, never in healthy operation), further
+    calls skip spawning a thread entirely, are dropped, and return immediately without
+    waiting `deadline_seconds` at all — so both thread count and per-call latency stay
+    bounded no matter how long the publisher stays broken. If a call times out (or is
+    dropped), this returns immediately and does not fail; a publish that later fails on
+    its own thread still has that failure logged.
     """
+    if not _publish_slots.acquire(blocking=False):
+        logger.warning(
+            "Dropping event publish: %d publishes already in flight (publisher likely "
+            "hung) event_type=%s correlation_id=%s",
+            MAX_CONCURRENT_PUBLISHES,
+            event.event_type,
+            event.correlation_id,
+        )
+        return
 
     def _run() -> None:
         try:
@@ -145,6 +163,8 @@ def publish_safely(
                 event.correlation_id,
                 exc_info=True,
             )
+        finally:
+            _publish_slots.release()
 
     thread = threading.Thread(target=_run, name="event-publish", daemon=True)
     thread.start()

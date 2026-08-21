@@ -49,13 +49,18 @@ durable, auditable record of what happened.
   configuration. This bounds what any future consumer (or this local JSONL file) can leak.
 - Publishing is best-effort from the pricing decision's point of view:
   `events.publisher.publish_safely()` catches and logs any exception from
-  `publisher.publish()` rather than propagating it, and runs the publish on a worker
-  thread capped at `deadline_seconds` (default 2s) so a slow or hung publisher (e.g. a
-  Kafka broker that stops acknowledging sends) can't stall the request either. A failing,
-  slow, or misconfigured event publisher must never fail, block, or alter a pricing
-  decision — this is enforced by tests (`_FailingEventPublisher` in the application-layer
-  test suite for failure; `_SlowPublisher` in `tests/unit/test_events.py` for the
-  deadline).
+  `publisher.publish()` rather than propagating it, and runs the publish on its own
+  daemon thread capped at `deadline_seconds` (default 2s) so a slow or hung publisher
+  (e.g. a Kafka broker that stops acknowledging sends) can't stall the request either.
+  Threads are per-call, not a shared pool, so one hung publisher can't pin every worker
+  and degrade later requests too — and a shared semaphore (`MAX_CONCURRENT_PUBLISHES`,
+  default 16) bounds how many such threads may be in flight at once, so a sustained
+  outage can't leak threads without bound either; once the cap is hit, further publishes
+  are dropped (logged) instead of queued or spawned. A failing, slow, or misconfigured
+  event publisher must never fail, block, or alter a pricing decision — this is enforced
+  by tests (`_FailingEventPublisher` in the application-layer test suite for failure;
+  `_SlowPublisher`/`_HangingPublisher` in `tests/unit/test_events.py` for the deadline
+  and concurrency cap).
 - `JSONLEventPublisher` is explicitly documented as a local integration/audit seam, not a
   durable event log, in both its docstring and `docs/deployment.md`.
 - A future streaming adapter implements `EventPublisher.publish(event: DomainEvent) ->

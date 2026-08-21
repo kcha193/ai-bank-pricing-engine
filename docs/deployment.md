@@ -177,10 +177,13 @@ any real production use:
   don't survive a process crash between "event constructed" and "event flushed." In
   practice this is still best-effort, not durable at-least-once delivery end-to-end: every
   `PricingService` call routes publishing through `publish_safely()`, which runs the
-  publish on a worker thread capped at `deadline_seconds` (default 2s) — so a broker
-  that stops acknowledging sends can't stall the pricing request past that cap — and
-  logs the outcome (including a late failure that finishes after the cap) rather than
-  retrying it. A process crash before the ack leaves no recoverable copy either way. A
+  publish on its own daemon thread capped at `deadline_seconds` (default 2s) — so a
+  broker that stops acknowledging sends can't stall the pricing request past that cap —
+  and logs the outcome (including a late failure that finishes after the cap) rather
+  than retrying it. A `MAX_CONCURRENT_PUBLISHES`-sized semaphore (default 16) also caps
+  how many such threads may be in flight at once, so a sustained outage drops further
+  publishes instead of leaking threads without bound. A process crash before the ack
+  leaves no recoverable copy either way. A
   durable outbox/retry layer would be needed to close that gap. No live Kafka cluster is
   provisioned by this repo — point `bootstrap_servers`
   at your own broker. A Pub/Sub/Event Hubs adapter implementing the same `EventPublisher`

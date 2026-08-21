@@ -13,6 +13,7 @@ from balance_pricing_engine.events.models import (
     pricing_decision_produced,
     pricing_scenario_requested,
 )
+import balance_pricing_engine.events.publisher as publisher_module
 from balance_pricing_engine.events.publisher import (
     InMemoryEventPublisher,
     JSONLEventPublisher,
@@ -219,6 +220,40 @@ def test_publish_safely_uses_a_fresh_thread_per_call_not_a_shared_pool(caplog):
             assert elapsed < 0.5
     finally:
         hang.set()  # release the abandoned threads so they don't leak past the test
+
+
+def test_publish_safely_drops_events_once_the_concurrency_cap_is_reached(monkeypatch, caplog):
+    """An uncapped thread-per-call would let a permanently hung publisher accumulate one
+    abandoned thread per publish call forever, eventually exhausting the process's thread
+    limit and making Thread.start() itself raise. The shared semaphore bounds how many
+    hung calls may be in flight at once: once the cap is reached, further calls must be
+    dropped immediately (not spawn a thread, not wait out the deadline) rather than add to
+    the pile.
+    """
+    monkeypatch.setattr(publisher_module, "_publish_slots", threading.Semaphore(2))
+    hang = threading.Event()
+
+    class _HangingPublisher:
+        def publish(self, event) -> None:
+            hang.wait()
+
+    publisher = _HangingPublisher()
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    try:
+        # Fill both slots with calls that never return within the deadline.
+        publish_safely(publisher, event, deadline_seconds=0.05)
+        publish_safely(publisher, event, deadline_seconds=0.05)
+
+        with caplog.at_level("WARNING"):
+            start = time.monotonic()
+            publish_safely(publisher, event, deadline_seconds=0.05)
+            elapsed = time.monotonic() - start
+
+        assert elapsed < 0.03  # dropped immediately, did not wait out the 0.05s deadline
+        assert any("Dropping event publish" in r.message for r in caplog.records)
+    finally:
+        hang.set()
 
 
 @pytest.mark.parametrize("publisher_cls", [NoOpEventPublisher, InMemoryEventPublisher])
