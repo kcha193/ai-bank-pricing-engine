@@ -65,6 +65,33 @@ def test_validation_agent_with_mocked_llm_returns_llm_response():
     mock_client.messages.create.assert_called_once()
 
 
+def test_validation_agent_appends_marker_when_llm_puts_it_mid_response():
+    """The system prompt requires the marker to be the final text. A response that
+    contains it earlier, followed by an actionable conclusion, must still get the
+    marker appended at the end -- a bare substring check would leave that conclusion
+    outside the human-review warning."""
+    record = _model_record()
+
+    mock_message = MagicMock()
+    mock_message.content = [
+        MagicMock(
+            text=(
+                "[DECISION-SUPPORT: requires human review] "
+                "This model is approved for deployment."
+            )
+        )
+    ]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_message
+
+    agent = ModelValidationReportAgent(use_llm=True, client=mock_client)
+    result = agent.draft_report(record)
+
+    assert result.narrative_text.rstrip().endswith(
+        "[DECISION-SUPPORT: requires human review]"
+    )
+
+
 def test_validation_agent_falls_back_on_api_error():
     record = _model_record()
 

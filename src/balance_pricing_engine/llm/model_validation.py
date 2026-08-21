@@ -54,9 +54,14 @@ class ModelValidationReportAgent:
         timestamp = datetime.now(timezone.utc).isoformat()
 
         narrative, used_llm, model_used = self._generate(user_prompt)
+        # Must check the marker is the *final* text, not merely present anywhere: the
+        # system prompt requires every response to end with it, and an LLM response that
+        # contains it mid-text (e.g. followed by an actionable conclusion) must still get
+        # the marker appended -- a bare substring check would leave that conclusion
+        # outside the human-review warning.
         tagged = (
             narrative
-            if _DECISION_SUPPORT_TAG in narrative
+            if narrative.rstrip().endswith(_DECISION_SUPPORT_TAG)
             else narrative + f"\n\n{_DECISION_SUPPORT_TAG}"
         )
 
