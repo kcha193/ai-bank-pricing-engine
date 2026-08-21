@@ -172,11 +172,15 @@ any real production use:
 - **Durable event delivery.** `events/publisher.py` ships `NoOpEventPublisher`,
   `InMemoryEventPublisher`, `JSONLEventPublisher`, and `KafkaEventPublisher` (requires the
   `[kafka]` extra — `pip install 'balance_pricing_engine[kafka]'`). `KafkaEventPublisher`
-  blocks on the send future's broker ack, giving at-least-once delivery to a real Kafka
-  cluster; the first three don't survive a process crash between "event constructed" and
-  "event flushed." No live Kafka cluster is provisioned by this repo — point
-  `bootstrap_servers` at your own broker. A Pub/Sub/Event Hubs adapter implementing the
-  same `EventPublisher` protocol is the same documented upgrade path for other clouds
+  blocks on the send future's broker ack and raises on failure or timeout; the first three
+  don't survive a process crash between "event constructed" and "event flushed." In
+  practice this is still best-effort, not durable at-least-once delivery end-to-end: every
+  `PricingService` call routes publishing through `publish_safely()`, which logs a broker
+  error or ack timeout rather than retrying it, and a process crash before the ack leaves
+  no recoverable copy either way. A durable outbox/retry layer would be needed to close
+  that gap. No live Kafka cluster is provisioned by this repo — point `bootstrap_servers`
+  at your own broker. A Pub/Sub/Event Hubs adapter implementing the same `EventPublisher`
+  protocol is the same documented upgrade path for other clouds
   (`docs/adr/0004-in-process-events-before-streaming-platform.md`).
 - **Durable model registry.** `ModelRegistry` is a local JSON file. A multi-instance
   deployment needs a shared, concurrency-safe registry (e.g. MLflow Model Registry or a

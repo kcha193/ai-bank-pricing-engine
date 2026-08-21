@@ -296,6 +296,27 @@ def test_build_lift_stability_report_pass_rate_higher_for_strong_signal_than_ran
     assert strong_report["monotonicity_pass_rate"] > random_report["monotonicity_pass_rate"]
 
 
+def test_build_lift_stability_report_skips_degenerate_single_class_draws():
+    """With 2 positives among 100 rows, many bootstrap draws lose the positive class
+    entirely, which used to make compute_lift_table() return NaN lift for every decile
+    and poison the mean/std aggregation for the whole report.
+    """
+    rng = np.random.default_rng(3)
+    n = 100
+    y_true = np.zeros(n, dtype=int)
+    y_true[:2] = 1
+    y_true = rng.permutation(y_true)
+    y_pred = rng.uniform(0, 1, size=n)
+
+    report = build_lift_stability_report(
+        y_true, y_pred, n_deciles=5, n_bootstrap=100, random_state=3
+    )
+
+    assert report["n_bootstrap"] == 100
+    table = report["stability_table"]
+    assert not table[["mean_lift", "std_lift", "min_lift", "max_lift"]].isna().any().any()
+
+
 def test_build_lift_stability_report_deterministic_given_random_state():
     y_true, y_pred = _strong_signal_arrays()
     report1 = build_lift_stability_report(

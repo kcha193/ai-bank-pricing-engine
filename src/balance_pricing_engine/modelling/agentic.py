@@ -278,9 +278,22 @@ class BootstrapEnsembleResponseModel:
     def fit(self, train: pd.DataFrame, feature_columns: list[str], target_column: str) -> None:
         rng = np.random.default_rng(self._random_state)
         n = len(train)
+        targets = train[target_column].to_numpy()
+        max_attempts = 20
         self._models = []
         for i in range(self._n_estimators):
-            idx = rng.integers(0, n, size=n)
+            for attempt in range(max_attempts):
+                idx = rng.integers(0, n, size=n)
+                # A single-class draw makes fit_response_model() raise for classifiers
+                # (e.g. logistic regression) that require both target classes present.
+                if len(np.unique(targets[idx])) >= 2:
+                    break
+            else:
+                raise ValueError(
+                    f"Could not draw a bootstrap resample containing both target classes "
+                    f"for estimator {i} after {max_attempts} attempts; the outcome is too "
+                    "rare for bootstrap ensembling."
+                )
             resampled = train.iloc[idx]
             estimator = self._base_estimator_factory(self._random_state + i)
             fit_response_model(estimator, resampled, feature_columns, target_column)
@@ -311,6 +324,19 @@ class BootstrapEnsembleResponseModel:
     @property
     def fitted_model(self) -> Any:
         return self
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Drop the base-estimator factory from persisted/pickled state.
+
+        `fitted_model` returns `self`, so this whole wrapper is what gets `joblib.dump`-ed
+        as the scoring artifact. The factory is only needed during `fit()`; if a caller
+        passed a lambda/closure, persisting it makes the artifact unpicklable and
+        `joblib.dump` raises before the model can be registered. Scoring only needs the
+        already-fitted `_models`.
+        """
+        state = self.__dict__.copy()
+        state["_base_estimator_factory"] = None
+        return state
 
 
 class LightGBMResponseModel:

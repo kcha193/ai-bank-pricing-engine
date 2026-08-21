@@ -205,7 +205,9 @@ def build_lift_stability_report(
     Resamples (y_true, y_pred) pairs with replacement `n_bootstrap` times, recomputing the
     decile lift table each draw. Reports how often the lift ordering stays monotone and how
     much each decile's lift varies across draws — not model-refit stability across training
-    splits, which is a different (and much more expensive) question.
+    splits, which is a different (and much more expensive) question. Draws containing only
+    one target class (likely with low-prevalence outcomes) have undefined lift and are
+    redrawn rather than counted, so `n_bootstrap` always reflects valid draws.
     """
     y_true = np.asarray(y_true)
     y_pred = np.asarray(y_pred)
@@ -214,9 +216,25 @@ def build_lift_stability_report(
 
     lift_draws: list[list[float]] = [[] for _ in range(n_deciles)]
     monotone_count = 0
-    for _ in range(n_bootstrap):
+    valid_draws = 0
+    max_attempts = n_bootstrap * 20
+    attempts = 0
+    while valid_draws < n_bootstrap:
+        attempts += 1
+        if attempts > max_attempts:
+            raise ValueError(
+                f"Could not draw {n_bootstrap} bootstrap resamples containing both target "
+                f"classes after {max_attempts} attempts; the outcome is too rare/rare-free "
+                "for lift stability estimation."
+            )
         idx = rng.integers(0, n, size=n)
+        # A resample with only one target class has an undefined population rate, so
+        # compute_lift_table() returns NaN lift for every decile and would silently
+        # poison the mean/std aggregation below. Skip and redraw instead.
+        if len(np.unique(y_true[idx])) < 2:
+            continue
         table = compute_lift_table(y_true[idx], y_pred[idx], n_deciles=n_deciles)
+        valid_draws += 1
         if check_lift_monotonicity(table).is_monotone:
             monotone_count += 1
         for row in table.itertuples():

@@ -61,10 +61,16 @@ class JSONLEventPublisher:
 class KafkaEventPublisher:
     """Publishes events to a Kafka topic. Requires the [kafka] optional extra.
 
-    A durable, at-least-once-capable EventPublisher — the documented upgrade path from
-    JSONLEventPublisher (docs/adr/0004-in-process-events-before-streaming-platform.md).
-    ``publish`` blocks on the send future's broker ack; failures propagate to the caller —
-    swallowing failures is ``publish_safely``'s job, not this class's.
+    The documented upgrade path from JSONLEventPublisher
+    (docs/adr/0004-in-process-events-before-streaming-platform.md). ``publish`` blocks on
+    the send future's broker ack and raises on failure or timeout; swallowing failures is
+    ``publish_safely``'s job, not this class's.
+
+    This is best-effort, not durable at-least-once delivery: every ``PricingService`` call
+    routes through ``publish_safely()``, which logs a broker error or ack timeout rather
+    than retrying it, and a process crash before the ack leaves no recoverable copy either
+    way. A durable outbox/retry layer would be needed to close that gap; this adapter
+    intentionally never blocks or fails the pricing decision it accompanies.
     """
 
     def __init__(

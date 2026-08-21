@@ -42,7 +42,7 @@ from balance_pricing_engine.optimization.response_fn import (
     SyntheticDepositResponseFn,
     SyntheticLoanResponseFn,
 )
-from balance_pricing_engine.modelling.persistence import save_model
+from balance_pricing_engine.modelling.persistence import load_model, save_model
 from balance_pricing_engine.synthetic.customers import generate_deposit_customers, generate_loan_customers
 from balance_pricing_engine.utils.random import make_rng
 
@@ -182,6 +182,68 @@ def test_bootstrap_ensemble_response_model_deterministic_given_random_state():
     probs2 = model2.predict_probability(test_data, LOAN_FEATURE_COLUMNS)
 
     np.testing.assert_array_equal(probs1, probs2)
+
+
+def test_bootstrap_ensemble_response_model_fits_with_imbalanced_target():
+    """With 2 positives among 100 rows and logistic-regression base estimators, an
+    unstratified bootstrap draw has a high chance of losing the positive class entirely,
+    which used to make fit_response_model() raise and abort the whole candidate run.
+    """
+    from balance_pricing_engine.modelling.models import build_logistic_regression_model
+
+    rng = np.random.default_rng(11)
+    n = 100
+    accepted = np.zeros(n, dtype=int)
+    accepted[:2] = 1
+    accepted = rng.permutation(accepted)
+    train = pd.DataFrame(
+        {
+            "offered_rate": rng.uniform(0.03, 0.08, size=n),
+            "competitor_rate": np.full(n, 0.05),
+            "rate_gap_to_competitor": rng.uniform(-0.02, 0.02, size=n),
+            "accepted": accepted,
+        }
+    )
+    feature_columns = ["offered_rate", "competitor_rate", "rate_gap_to_competitor"]
+
+    model = BootstrapEnsembleResponseModel(
+        n_estimators=10,
+        random_state=11,
+        base_estimator_factory=build_logistic_regression_model,
+    )
+    model.fit(train, feature_columns, "accepted")
+
+    probs = model.predict_probability(train, feature_columns)
+    assert probs.shape == (n,)
+    assert np.all(probs >= 0) and np.all(probs <= 1)
+
+
+def test_bootstrap_ensemble_response_model_drops_unpicklable_factory_from_state(tmp_path):
+    """`fitted_model` returns `self`, so a lambda/closure factory passed by the caller
+    would otherwise be persisted verbatim and make joblib.dump() raise PicklingError.
+    Round-trips through the project's own save_model/load_model (joblib) helpers, the
+    same boundary _scoring_artifact() is persisted through in production.
+    """
+    from balance_pricing_engine.modelling.models import build_hist_gradient_boosting_model
+
+    dataset = _loan_dataset()
+    train = dataset.iloc[:200]
+
+    model = BootstrapEnsembleResponseModel(
+        n_estimators=3,
+        random_state=5,
+        base_estimator_factory=lambda seed: build_hist_gradient_boosting_model(seed),
+    )
+    model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+
+    artifact_path = tmp_path / "ensemble.joblib"
+    save_model(model, artifact_path)
+    reloaded = load_model(artifact_path)
+
+    assert reloaded._base_estimator_factory is None
+    test_data = dataset.iloc[800:850]
+    probs = reloaded.predict_probability(test_data, LOAN_FEATURE_COLUMNS)
+    assert probs.shape == (len(test_data),)
 
 
 def test_bootstrap_ensemble_response_model_in_training_agent(tmp_path):
