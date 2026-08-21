@@ -189,9 +189,36 @@ def test_publish_safely_logs_late_failure_after_timeout(caplog):
     with caplog.at_level("WARNING"):
         publish_safely(publisher, event, deadline_seconds=0.05)
         publisher.finished.wait(timeout=2.0)
-        time.sleep(0.05)  # let the done-callback run after the background publish raises
+        time.sleep(0.05)  # let the background thread's except block log after it raises
 
-    assert any("Backgrounded event publish failed" in record.message for record in caplog.records)
+    messages = [record.message for record in caplog.records]
+    assert any("exceeded" in m for m in messages)
+    assert any("Failed to publish event" in m for m in messages)
+
+
+def test_publish_safely_uses_a_fresh_thread_per_call_not_a_shared_pool(caplog):
+    """A bounded shared worker pool would let enough hung publishers permanently pin every
+    worker, adding the full deadline to every later request's publishes indefinitely. A
+    thread per call has no such ceiling: many hung calls in a row must each still return
+    within their own deadline, not queue behind previous ones.
+    """
+    hang = threading.Event()
+
+    class _HangingPublisher:
+        def publish(self, event) -> None:
+            hang.wait()  # blocks until the test releases it, simulating a dead connection
+
+    publisher = _HangingPublisher()
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    try:
+        for _ in range(8):
+            start = time.monotonic()
+            publish_safely(publisher, event, deadline_seconds=0.05)
+            elapsed = time.monotonic() - start
+            assert elapsed < 0.5
+    finally:
+        hang.set()  # release the abandoned threads so they don't leak past the test
 
 
 @pytest.mark.parametrize("publisher_cls", [NoOpEventPublisher, InMemoryEventPublisher])

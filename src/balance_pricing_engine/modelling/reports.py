@@ -215,6 +215,8 @@ def build_lift_stability_report(
         raise ValueError("y_true and y_pred must have the same length.")
     if len(y_true) == 0:
         raise ValueError("y_true and y_pred must be non-empty.")
+    if n_bootstrap < 1:
+        raise ValueError("n_bootstrap must be at least 1.")
     rng = np.random.default_rng(random_state)
     n = len(y_true)
 

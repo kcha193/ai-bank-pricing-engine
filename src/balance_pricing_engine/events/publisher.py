@@ -9,8 +9,7 @@ docs/adr/0004-in-process-events-before-streaming-platform.md.
 from __future__ import annotations
 
 import logging
-from concurrent.futures import Future, ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeoutError
+import threading
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -19,7 +18,6 @@ from balance_pricing_engine.events.models import DomainEvent
 logger = logging.getLogger(__name__)
 
 DEFAULT_PUBLISH_DEADLINE_SECONDS = 2.0
-_PUBLISH_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="event-publish")
 
 
 class EventPublisher(Protocol):
@@ -124,39 +122,39 @@ def publish_safely(
     block, or alter the pricing decision it describes. `PricingService` calls this once
     per event and several times per request, so without a deadline a single unresponsive
     publisher could stall every request that publishes events by several times
-    `KafkaEventPublisher`'s own (much longer) ack timeout. The publish runs on a shared
-    worker thread; if it hasn't finished within the deadline this returns anyway and the
-    publish keeps running in the background — its eventual outcome is still logged, just
-    not waited on.
+    `KafkaEventPublisher`'s own (much longer) ack timeout.
+
+    Each call runs the publish on its own daemon thread rather than a shared worker pool:
+    a bounded pool would let a publisher that never returns permanently pin every worker,
+    so once as many calls as there are workers have hung, every *later* request would pay
+    the full deadline on every event too, indefinitely — and non-daemon pool threads would
+    also block clean process shutdown. A dedicated thread per call has neither failure
+    mode; the only cost of a permanently hung publisher is one abandoned daemon thread per
+    publish call made against it, which does not add latency to any other request and
+    exits with the process. If a call times out, this returns immediately and the publish
+    keeps running on its own thread — if it later fails, that failure is still logged.
     """
-    future = _PUBLISH_EXECUTOR.submit(publisher.publish, event)
-    try:
-        future.result(timeout=deadline_seconds)
-    except FutureTimeoutError:
-        future.add_done_callback(lambda f: _log_late_outcome(f, event))
+
+    def _run() -> None:
+        try:
+            publisher.publish(event)
+        except Exception:  # noqa: BLE001 - publishing failures are non-fatal by design
+            logger.warning(
+                "Failed to publish event event_type=%s correlation_id=%s",
+                event.event_type,
+                event.correlation_id,
+                exc_info=True,
+            )
+
+    thread = threading.Thread(target=_run, name="event-publish", daemon=True)
+    thread.start()
+    thread.join(timeout=deadline_seconds)
+
+    if thread.is_alive():
         logger.warning(
             "Event publish exceeded %.1fs deadline; continuing without waiting "
             "event_type=%s correlation_id=%s",
             deadline_seconds,
             event.event_type,
             event.correlation_id,
-        )
-    except Exception:  # noqa: BLE001 - publishing failures are non-fatal by design
-        logger.warning(
-            "Failed to publish event event_type=%s correlation_id=%s",
-            event.event_type,
-            event.correlation_id,
-            exc_info=True,
-        )
-
-
-def _log_late_outcome(future: Future[None], event: DomainEvent) -> None:
-    """Log a background publish's failure if it finishes after publish_safely stopped waiting."""
-    exc = future.exception()
-    if exc is not None:
-        logger.warning(
-            "Backgrounded event publish failed event_type=%s correlation_id=%s",
-            event.event_type,
-            event.correlation_id,
-            exc_info=exc,
         )

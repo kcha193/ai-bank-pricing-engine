@@ -229,6 +229,16 @@ def _random_signal_arrays(n: int = 400, seed: int = 1):
     return y_true, y_pred
 
 
+def test_build_lift_stability_report_rejects_non_positive_n_bootstrap():
+    """n_bootstrap=0 used to skip the sampling loop entirely and then raise a confusing
+    'zero-size array to reduction operation minimum' from np.min() on an empty draw list.
+    """
+    y_true, y_pred = _strong_signal_arrays()
+
+    with pytest.raises(ValueError, match="n_bootstrap"):
+        build_lift_stability_report(y_true, y_pred, n_deciles=5, n_bootstrap=0)
+
+
 def test_build_lift_stability_report_structure():
     y_true, y_pred = _strong_signal_arrays()
     report = build_lift_stability_report(
