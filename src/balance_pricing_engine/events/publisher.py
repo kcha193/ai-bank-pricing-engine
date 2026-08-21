@@ -141,7 +141,11 @@ def publish_safely(
     waiting `deadline_seconds` at all — so both thread count and per-call latency stay
     bounded no matter how long the publisher stays broken. If a call times out (or is
     dropped), this returns immediately and does not fail; a publish that later fails on
-    its own thread still has that failure logged.
+    its own thread still has that failure logged. If `Thread.start()` itself raises
+    (the OS thread limit is exactly what the cap above is meant to keep this codebase
+    away from, but a shared process-wide limit could still be hit for other reasons),
+    the just-acquired semaphore slot is released before returning so that failure can't
+    also leak a permit — this must never raise either.
     """
     if not _publish_slots.acquire(blocking=False):
         logger.warning(
@@ -167,7 +171,17 @@ def publish_safely(
             _publish_slots.release()
 
     thread = threading.Thread(target=_run, name="event-publish", daemon=True)
-    thread.start()
+    try:
+        thread.start()
+    except Exception:  # noqa: BLE001 - e.g. RuntimeError: can't start new thread
+        _publish_slots.release()
+        logger.warning(
+            "Failed to start event-publish thread event_type=%s correlation_id=%s",
+            event.event_type,
+            event.correlation_id,
+            exc_info=True,
+        )
+        return
     thread.join(timeout=deadline_seconds)
 
     if thread.is_alive():

@@ -256,6 +256,32 @@ def test_publish_safely_drops_events_once_the_concurrency_cap_is_reached(monkeyp
         hang.set()
 
 
+def test_publish_safely_releases_its_slot_and_does_not_raise_if_thread_start_fails(
+    monkeypatch, caplog
+):
+    """If Thread.start() itself raises (e.g. RuntimeError: can't start new thread under
+    OS thread-limit pressure — exactly the scenario the concurrency cap exists to keep
+    this codebase away from, but a process-wide limit could still be hit for other
+    reasons), publish_safely() must neither raise (it must never fail a pricing decision)
+    nor leak the semaphore slot it had already acquired.
+    """
+    monkeypatch.setattr(publisher_module, "_publish_slots", threading.Semaphore(1))
+    monkeypatch.setattr(
+        threading.Thread,
+        "start",
+        lambda self: (_ for _ in ()).throw(RuntimeError("can't start new thread")),
+    )
+    publisher = InMemoryEventPublisher()
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    with caplog.at_level("WARNING"):
+        publish_safely(publisher, event)  # must not raise
+
+    assert any("Failed to start event-publish thread" in r.message for r in caplog.records)
+    # The slot must have been released, not leaked: it can be acquired again immediately.
+    assert publisher_module._publish_slots.acquire(blocking=False)
+
+
 @pytest.mark.parametrize("publisher_cls", [NoOpEventPublisher, InMemoryEventPublisher])
 def test_publishers_satisfy_the_protocol_signature(publisher_cls):
     publisher = publisher_cls()
