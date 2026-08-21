@@ -18,6 +18,14 @@ def build_client(
     (default: environment variables, preserving prior behaviour). A future
     Vault/AWS Secrets Manager/GCP Secret Manager provider can be injected here
     without changing callers.
+
+    An explicitly injected `secrets_provider` is authoritative: if it has no key, this
+    raises rather than constructing a bare `anthropic.Anthropic()`, which would let the
+    SDK silently rediscover an ambient `ANTHROPIC_API_KEY` from the process environment
+    -- bypassing the caller's selected provider and disagreeing with
+    `is_llm_available(secrets_provider)`, which returns False for the same
+    configuration. No `secrets_provider` at all still defaults to `EnvSecretsProvider`,
+    preserving prior behaviour (including its own fall-through to the SDK's env lookup).
     """
     try:
         import anthropic
@@ -26,8 +34,17 @@ def build_client(
             "The 'anthropic' package is required for LLM features. "
             "Install it with: pip install 'balance_pricing_engine[llm]'"
         ) from exc
-    resolved_key = api_key or (secrets_provider or EnvSecretsProvider()).get_secret(_API_KEY_NAME)
-    return anthropic.Anthropic(api_key=resolved_key) if resolved_key else anthropic.Anthropic()
+    if api_key:
+        return anthropic.Anthropic(api_key=api_key)
+    resolved_key = (secrets_provider or EnvSecretsProvider()).get_secret(_API_KEY_NAME)
+    if resolved_key:
+        return anthropic.Anthropic(api_key=resolved_key)
+    if secrets_provider is not None:
+        raise ValueError(
+            f"No {_API_KEY_NAME} available from the injected secrets provider; refusing "
+            "to fall back to the Anthropic SDK's own environment lookup."
+        )
+    return anthropic.Anthropic()
 
 
 def is_sdk_installed() -> bool:
