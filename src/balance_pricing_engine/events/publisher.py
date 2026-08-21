@@ -146,8 +146,17 @@ def publish_safely(
     away from, but a shared process-wide limit could still be hit for other reasons),
     the just-acquired semaphore slot is released before returning so that failure can't
     also leak a permit — this must never raise either.
+
+    The semaphore instance is captured once into ``slots`` up front and reused for both
+    the acquire and every release path, rather than re-reading the module-level
+    ``_publish_slots`` each time: if a caller (e.g. a test) reassigns that module
+    attribute while this call's background thread is still running, releasing via the
+    global would hit whichever semaphore instance happens to be installed at release
+    time instead of the one actually acquired, over-incrementing it and defeating its
+    concurrency cap.
     """
-    if not _publish_slots.acquire(blocking=False):
+    slots = _publish_slots
+    if not slots.acquire(blocking=False):
         logger.warning(
             "Dropping event publish: %d publishes already in flight (publisher likely "
             "hung) event_type=%s correlation_id=%s",
@@ -168,13 +177,13 @@ def publish_safely(
                 exc_info=True,
             )
         finally:
-            _publish_slots.release()
+            slots.release()
 
     thread = threading.Thread(target=_run, name="event-publish", daemon=True)
     try:
         thread.start()
     except Exception:  # noqa: BLE001 - e.g. RuntimeError: can't start new thread
-        _publish_slots.release()
+        slots.release()
         logger.warning(
             "Failed to start event-publish thread event_type=%s correlation_id=%s",
             event.event_type,

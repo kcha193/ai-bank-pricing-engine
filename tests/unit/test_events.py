@@ -282,6 +282,48 @@ def test_publish_safely_releases_its_slot_and_does_not_raise_if_thread_start_fai
     assert publisher_module._publish_slots.acquire(blocking=False)
 
 
+def test_publish_safely_releases_the_semaphore_instance_it_acquired(monkeypatch):
+    """If `_publish_slots` is reassigned while an earlier background publish is still in
+    flight (as happens when tests -- or a module reload -- swap it mid-run), the release
+    must go to the instance actually acquired, not whatever instance the module attribute
+    currently points at. Releasing into the wrong instance over-increments it and defeats
+    its concurrency cap.
+    """
+    release_log: list[str] = []
+
+    class _TrackedSemaphore(threading.Semaphore):
+        def __init__(self, value: int, name: str):
+            super().__init__(value)
+            self._name = name
+
+        def release(self, n: int = 1) -> None:
+            release_log.append(self._name)
+            super().release(n)
+
+    original = _TrackedSemaphore(1, "original")
+    replacement = _TrackedSemaphore(1, "replacement")
+    monkeypatch.setattr(publisher_module, "_publish_slots", original)
+
+    hang = threading.Event()
+
+    class _HangingPublisher:
+        def publish(self, event) -> None:
+            hang.wait()
+
+    publisher = _HangingPublisher()
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    publish_safely(publisher, event, deadline_seconds=0.05)  # acquires original's only slot
+    monkeypatch.setattr(publisher_module, "_publish_slots", replacement)
+
+    hang.set()  # let the background publish return so its `finally` releases a slot
+    deadline = time.monotonic() + 2.0
+    while not release_log and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert release_log == ["original"]
+
+
 @pytest.mark.parametrize("publisher_cls", [NoOpEventPublisher, InMemoryEventPublisher])
 def test_publishers_satisfy_the_protocol_signature(publisher_cls):
     publisher = publisher_cls()
