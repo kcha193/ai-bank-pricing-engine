@@ -79,3 +79,19 @@ def test_run_scenario_unaffected_when_no_keys_configured(monkeypatch):
     response = client.post("/run-scenario", json={"config_yaml": CONFIG_YAML})
 
     assert response.status_code == 200
+
+
+def test_v1_pricing_scenarios_returns_structured_error_for_malformed_keys(monkeypatch):
+    """The route advertises ErrorResponse (error_code/message/correlation_id) for its
+    500s -- a malformed PRICING_ENGINE_API_KEYS must fail closed with that same shape,
+    not FastAPI's default {"detail": "..."} string wrapper."""
+    monkeypatch.setenv("PRICING_ENGINE_API_KEYS", " , ")
+    client = TestClient(app)
+
+    response = client.post("/v1/pricing/scenarios", json={"config_yaml": CONFIG_YAML})
+
+    assert response.status_code == 500
+    body = response.json()
+    assert body["error_code"] == "AUTH_CONFIG_INVALID"
+    assert isinstance(body["message"], str) and body["message"]
+    assert body["correlation_id"]
