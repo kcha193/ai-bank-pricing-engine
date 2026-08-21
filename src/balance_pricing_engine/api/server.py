@@ -16,20 +16,22 @@ _KEYFILE_VAR = "PRICING_ENGINE_TLS_KEYFILE"
 def resolve_tls_kwargs(env: Mapping[str, str] | None = None) -> dict[str, str]:
     """Resolve uvicorn TLS kwargs from environment variables.
 
-    Returns {} (plain HTTP) if neither var is set, {"ssl_certfile": ..., "ssl_keyfile": ...}
-    if both are set, and raises ValueError if only one is set.
+    Returns {} (plain HTTP) only if neither var is set at all. Raises ValueError if only
+    one is set, or if either is set but empty — a malformed TLS config (e.g. a secret
+    mounted as an empty string) must fail closed rather than silently falling back to
+    plain HTTP.
     """
     env = os.environ if env is None else env
     certfile = env.get(_CERTFILE_VAR)
     keyfile = env.get(_KEYFILE_VAR)
+    if certfile is None and keyfile is None:
+        return {}
     if certfile and keyfile:
         return {"ssl_certfile": certfile, "ssl_keyfile": keyfile}
-    if certfile or keyfile:
-        raise ValueError(
-            f"{_CERTFILE_VAR} and {_KEYFILE_VAR} must both be set, or neither — "
-            f"got certfile={certfile!r}, keyfile={keyfile!r}."
-        )
-    return {}
+    raise ValueError(
+        f"{_CERTFILE_VAR} and {_KEYFILE_VAR} must both be set to non-empty values, or "
+        f"neither — got certfile={certfile!r}, keyfile={keyfile!r}."
+    )
 
 
 def main() -> None:

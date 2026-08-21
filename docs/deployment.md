@@ -154,8 +154,9 @@ any real production use:
   business. **Direct TLS** (for deployments with no fronting proxy, e.g. a bare container on an
   internal network) is supported: set both `PRICING_ENGINE_TLS_CERTFILE` and
   `PRICING_ENGINE_TLS_KEYFILE` to mounted cert/key paths (`resolve_tls_kwargs` in
-  `api/server.py` raises if only one is set — fail fast on partial config) and the launcher
-  passes them to uvicorn. To generate a self-signed cert for local testing:
+  `api/server.py` raises if only one is set, or if either is set but empty — fail fast on
+  partial or malformed config rather than silently falling back to plain HTTP) and the
+  launcher passes them to uvicorn. To generate a self-signed cert for local testing:
 
   ```bash
   openssl req -x509 -newkey rsa:2048 -nodes -days 30 \

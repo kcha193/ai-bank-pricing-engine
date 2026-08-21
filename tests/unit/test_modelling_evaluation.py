@@ -547,6 +547,39 @@ def test_compute_rate_uplift_recomputes_competitor_gap_for_offered_rate_scenario
     assert result["uplift"] == pytest.approx(expected_treatment - expected_baseline)
 
 
+def test_compute_rate_uplift_recomputes_competitor_gap_for_competitor_rate_scenarios():
+    """Varying competitor_rate must also recompute rate_gap_to_competitor (as
+    offered_rate - value), not just offered_rate scenarios.
+    """
+    from balance_pricing_engine.modelling.evaluation import compute_rate_uplift
+
+    n = 50
+    offered_rate = 0.06
+    baseline_competitor_rate = 0.05
+    dataset = pd.DataFrame(
+        {
+            "offered_rate": np.full(n, offered_rate),
+            "competitor_rate": np.full(n, baseline_competitor_rate),
+            "rate_gap_to_competitor": np.full(n, offered_rate - baseline_competitor_rate),
+        }
+    )
+
+    result = compute_rate_uplift(
+        CompetitorGapOnlyModel(),
+        dataset,
+        ["competitor_rate", "rate_gap_to_competitor"],
+        "competitor_rate",
+        baseline_rate=baseline_competitor_rate,
+        treatment_rate=0.07,
+    )
+
+    expected_baseline = 0.5 + 5.0 * (offered_rate - baseline_competitor_rate)
+    expected_treatment = 0.5 + 5.0 * (offered_rate - 0.07)
+    assert result["baseline_probability"] == pytest.approx(expected_baseline)
+    assert result["treatment_probability"] == pytest.approx(expected_treatment)
+    assert result["uplift"] == pytest.approx(expected_treatment - expected_baseline)
+
+
 def test_compute_rate_uplift_raises_when_feature_not_in_feature_columns():
     from balance_pricing_engine.modelling.evaluation import compute_rate_uplift
 

@@ -30,6 +30,19 @@ def test_resolve_tls_kwargs_raises_when_only_keyfile_set():
         resolve_tls_kwargs(env)
 
 
+def test_resolve_tls_kwargs_raises_when_both_vars_set_but_empty():
+    """A secret mounted as an empty string must fail closed, not silently start plain HTTP."""
+    env = {"PRICING_ENGINE_TLS_CERTFILE": "", "PRICING_ENGINE_TLS_KEYFILE": ""}
+    with pytest.raises(ValueError, match="both.*or neither"):
+        resolve_tls_kwargs(env)
+
+
+def test_resolve_tls_kwargs_raises_when_certfile_set_but_empty():
+    env = {"PRICING_ENGINE_TLS_CERTFILE": "", "PRICING_ENGINE_TLS_KEYFILE": "/certs/server.key"}
+    with pytest.raises(ValueError, match="both.*or neither"):
+        resolve_tls_kwargs(env)
+
+
 def test_resolve_tls_kwargs_defaults_to_os_environ(monkeypatch):
     monkeypatch.delenv("PRICING_ENGINE_TLS_CERTFILE", raising=False)
     monkeypatch.delenv("PRICING_ENGINE_TLS_KEYFILE", raising=False)

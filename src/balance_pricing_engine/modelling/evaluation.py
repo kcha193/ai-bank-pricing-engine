@@ -76,25 +76,32 @@ def compute_rate_uplift(
     comparison, not a trained causal uplift model — the synthetic generators have no
     treatment/control structure to train one against.
 
-    When `rate_feature` is `offered_rate` and both `rate_gap_to_competitor` and
-    `competitor_rate` are available, `rate_gap_to_competitor` is recomputed for each
-    scenario to stay consistent with the new offered rate — otherwise the scenario rows
-    would be internally inconsistent and the uplift would silently omit the model's
+    When `rate_feature` is `offered_rate` or `competitor_rate` and both
+    `rate_gap_to_competitor` and the other side of the gap are available,
+    `rate_gap_to_competitor` (= offered_rate - competitor_rate) is recomputed for each
+    scenario to stay consistent with the changed rate — otherwise the scenario rows would
+    be internally inconsistent and the uplift would silently omit the model's
     competitor-gap effect, capturing only the own-rate effect.
     """
     if rate_feature not in feature_columns:
         raise ValueError(f"rate_feature '{rate_feature}' is not in feature_columns.")
+    other_gap_side = {"offered_rate": "competitor_rate", "competitor_rate": "offered_rate"}.get(
+        rate_feature
+    )
     recompute_gap = (
-        rate_feature == "offered_rate"
+        other_gap_side is not None
         and "rate_gap_to_competitor" in feature_columns
-        and "competitor_rate" in dataset.columns
+        and other_gap_side in dataset.columns
     )
 
     def _scenario_probability(value: float) -> float:
         scenario = dataset.copy()
         scenario[rate_feature] = value
         if recompute_gap:
-            scenario["rate_gap_to_competitor"] = value - dataset["competitor_rate"]
+            if rate_feature == "offered_rate":
+                scenario["rate_gap_to_competitor"] = value - dataset["competitor_rate"]
+            else:
+                scenario["rate_gap_to_competitor"] = dataset["offered_rate"] - value
         probability = predict_response_probability(model, scenario, feature_columns)
         return float(np.mean(probability))
 
