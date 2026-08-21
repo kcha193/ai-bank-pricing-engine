@@ -296,6 +296,16 @@ def test_build_lift_stability_report_pass_rate_higher_for_strong_signal_than_ran
     assert strong_report["monotonicity_pass_rate"] > random_report["monotonicity_pass_rate"]
 
 
+def test_build_lift_stability_report_rejects_mismatched_lengths():
+    """Deriving n only from y_true would silently discard extra y_pred entries (or raise a
+    confusing IndexError when y_pred is shorter); reject the mismatch up front instead.
+    """
+    y_true, y_pred = _strong_signal_arrays(n=400, seed=0)
+
+    with pytest.raises(ValueError, match="same length"):
+        build_lift_stability_report(y_true, y_pred[:-1], n_deciles=5, n_bootstrap=10)
+
+
 def test_build_lift_stability_report_skips_degenerate_single_class_draws():
     """With 2 positives among 100 rows, many bootstrap draws lose the positive class
     entirely, which used to make compute_lift_table() return NaN lift for every decile

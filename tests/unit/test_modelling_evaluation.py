@@ -504,6 +504,49 @@ def test_compute_rate_uplift_pct_matches_relative_change():
     assert result["uplift_pct"] == pytest.approx(expected_pct)
 
 
+class CompetitorGapOnlyModel:
+    """Toy model: responds only to rate_gap_to_competitor, ignores offered_rate itself."""
+
+    def predict_proba(self, features):
+        probability = 0.5 + 5.0 * features["rate_gap_to_competitor"].to_numpy()
+        probability = np.clip(probability, 0.01, 0.99)
+        return np.column_stack([1 - probability, probability])
+
+
+def test_compute_rate_uplift_recomputes_competitor_gap_for_offered_rate_scenarios():
+    """Varying offered_rate must recompute rate_gap_to_competitor for each scenario, or a
+    model that only responds to the gap sees no change and reports zero uplift even though
+    the rate genuinely moved relative to the competitor.
+    """
+    from balance_pricing_engine.modelling.evaluation import compute_rate_uplift
+
+    n = 50
+    competitor_rate = 0.05
+    baseline_rate = 0.06
+    dataset = pd.DataFrame(
+        {
+            "offered_rate": np.full(n, baseline_rate),
+            "competitor_rate": np.full(n, competitor_rate),
+            "rate_gap_to_competitor": np.full(n, baseline_rate - competitor_rate),
+        }
+    )
+
+    result = compute_rate_uplift(
+        CompetitorGapOnlyModel(),
+        dataset,
+        ["offered_rate", "rate_gap_to_competitor"],
+        "offered_rate",
+        baseline_rate=baseline_rate,
+        treatment_rate=0.08,
+    )
+
+    expected_baseline = 0.5 + 5.0 * (baseline_rate - competitor_rate)
+    expected_treatment = 0.5 + 5.0 * (0.08 - competitor_rate)
+    assert result["baseline_probability"] == pytest.approx(expected_baseline)
+    assert result["treatment_probability"] == pytest.approx(expected_treatment)
+    assert result["uplift"] == pytest.approx(expected_treatment - expected_baseline)
+
+
 def test_compute_rate_uplift_raises_when_feature_not_in_feature_columns():
     from balance_pricing_engine.modelling.evaluation import compute_rate_uplift
 

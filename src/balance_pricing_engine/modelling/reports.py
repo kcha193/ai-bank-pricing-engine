@@ -211,6 +211,10 @@ def build_lift_stability_report(
     """
     y_true = np.asarray(y_true)
     y_pred = np.asarray(y_pred)
+    if len(y_true) != len(y_pred):
+        raise ValueError("y_true and y_pred must have the same length.")
+    if len(y_true) == 0:
+        raise ValueError("y_true and y_pred must be non-empty.")
     rng = np.random.default_rng(random_state)
     n = len(y_true)
 

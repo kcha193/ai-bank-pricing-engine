@@ -72,19 +72,34 @@ def compute_rate_uplift(
     """Estimate the uplift in predicted response probability from changing one rate feature.
 
     Scores an already-fitted model at two rate scenarios (holding all other features at their
-    observed values) via compute_partial_dependence and reports the probability delta. This is
-    a two-point scenario comparison, not a trained causal uplift model — the synthetic
-    generators have no treatment/control structure to train one against.
+    observed values) and reports the probability delta. This is a two-point scenario
+    comparison, not a trained causal uplift model — the synthetic generators have no
+    treatment/control structure to train one against.
+
+    When `rate_feature` is `offered_rate` and both `rate_gap_to_competitor` and
+    `competitor_rate` are available, `rate_gap_to_competitor` is recomputed for each
+    scenario to stay consistent with the new offered rate — otherwise the scenario rows
+    would be internally inconsistent and the uplift would silently omit the model's
+    competitor-gap effect, capturing only the own-rate effect.
     """
-    pdp = compute_partial_dependence(
-        model, dataset, feature_columns, rate_feature, [baseline_rate, treatment_rate]
+    if rate_feature not in feature_columns:
+        raise ValueError(f"rate_feature '{rate_feature}' is not in feature_columns.")
+    recompute_gap = (
+        rate_feature == "offered_rate"
+        and "rate_gap_to_competitor" in feature_columns
+        and "competitor_rate" in dataset.columns
     )
-    baseline_probability = float(
-        pdp.loc[pdp[rate_feature] == baseline_rate, "mean_predicted_probability"].iloc[0]
-    )
-    treatment_probability = float(
-        pdp.loc[pdp[rate_feature] == treatment_rate, "mean_predicted_probability"].iloc[0]
-    )
+
+    def _scenario_probability(value: float) -> float:
+        scenario = dataset.copy()
+        scenario[rate_feature] = value
+        if recompute_gap:
+            scenario["rate_gap_to_competitor"] = value - dataset["competitor_rate"]
+        probability = predict_response_probability(model, scenario, feature_columns)
+        return float(np.mean(probability))
+
+    baseline_probability = _scenario_probability(baseline_rate)
+    treatment_probability = _scenario_probability(treatment_rate)
     uplift = treatment_probability - baseline_probability
     uplift_pct = (uplift / baseline_probability * 100) if baseline_probability else float("nan")
     return {
