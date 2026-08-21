@@ -59,4 +59,15 @@ def require_api_key(
         )
     presented = request.headers.get(API_KEY_HEADER)
     if presented is None or not any(hmac.compare_digest(presented, key) for key in configured):
-        raise HTTPException(status_code=401, detail="Missing or invalid API key.")
+        # This dependency runs before the route body is parsed, so there's no request-body
+        # correlation_id to consult -- only the header-or-generate half of the documented
+        # resolution order (see PricingScenarioRequestV1.correlation_id). Set directly via
+        # HTTPException.headers rather than a structured dict detail: _structured_http_
+        # exception_handler merges exc.headers into the response regardless of detail
+        # shape, so this preserves the plain-string 401 body both routes already return.
+        correlation_id = request.headers.get(_CORRELATION_ID_HEADER) or str(uuid.uuid4())
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid API key.",
+            headers={_CORRELATION_ID_HEADER: correlation_id},
+        )
