@@ -20,6 +20,19 @@ def test_dockerfile_declares_healthcheck_and_exposes_port():
     assert "EXPOSE 8000" in dockerfile
 
 
+def test_dockerfile_healthcheck_honours_configured_port():
+    """server.py listens on PRICING_ENGINE_API_PORT (default 8000, see
+    api/server.py::main). A HEALTHCHECK hardcoded to localhost:8000 would mark a
+    container started with a non-default port unhealthy even while it serves fine."""
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    healthcheck_line = next(
+        line for line in dockerfile.splitlines() if "curl" in line and "/health" in line
+    )
+
+    assert "PRICING_ENGINE_API_PORT" in healthcheck_line
+    assert "localhost:8000" not in healthcheck_line
+
+
 def test_dockerfile_installs_api_extra_and_runs_the_api_server_launcher():
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
 
