@@ -8,6 +8,16 @@ import streamlit as st
 
 from balance_pricing_engine.config import EngineConfig
 from balance_pricing_engine.diagnostics import run_sensitivity_analysis
+from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
+from balance_pricing_engine.pricing_intelligence.dashboard_data import (
+    build_changes_frame,
+    build_history_series,
+    build_market_grid_frame,
+    build_ranking_frame,
+    build_term_summary,
+)
+from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
+from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 from balance_pricing_engine.plotting import (
     build_profit_surface_figure,
     build_sensitivity_waterfall_figure,
@@ -41,6 +51,80 @@ with st.sidebar:
     )
     include_sensitivity = st.checkbox("Include sensitivity analysis", value=False)
     run_button = st.button("Run scenario", type="primary")
+
+
+def _render_market_intelligence() -> None:
+    """Render the NZ market-intelligence section.
+
+    Rendered before the scenario gate: the advertised market is worth seeing
+    without first running an optimisation. Shows guidance rather than an error
+    when no collection has happened yet.
+    """
+    st.header("NZ market intelligence")
+
+    intelligence_config = PricingIntelligenceConfig()
+    database_path = Path(intelligence_config.database_path)
+    if not database_path.exists():
+        st.info(
+            "No market data collected yet. Run "
+            "`python3 -m balance_pricing_engine.pricing_intelligence collect` "
+            "to populate the observation store."
+        )
+        return
+
+    with PricingIntelligenceService(
+        config=intelligence_config, store=ObservationStore(database_path)
+    ) as service:
+        snapshot = service.get_market_snapshot()
+        if not snapshot.terms:
+            st.info("The observation store is empty. Run a collection first.")
+            return
+
+        st.subheader("Current mortgage market (advertised specials)")
+        st.dataframe(build_market_grid_frame(snapshot), width="stretch")
+
+        terms = list(snapshot.term_months)
+        default_term = 12 if 12 in terms else terms[0]
+        selected_term = st.selectbox(
+            "Term for market summary", terms, index=terms.index(default_term)
+        )
+
+        summary = build_term_summary(snapshot, selected_term)
+        if summary:
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Best", f"{summary['best_rate']:.2f}%")
+            col2.metric("Median", f"{summary['median_rate']:.2f}%")
+            col3.metric("Highest", f"{summary['highest_rate']:.2f}%")
+            col4.metric("Spread", f"{summary['spread_bps']:.0f} bps")
+            st.caption(
+                f"Market leader: {summary['market_leader']} "
+                f"across {summary['bank_count']} banks"
+            )
+            st.dataframe(build_ranking_frame(snapshot, selected_term), width="stretch")
+
+        state = service.get_market_state()
+        st.subheader(f"Market state: {state.state.value}")
+        st.caption(state.rationale)
+
+        st.subheader("Recent repricing")
+        changes_frame = build_changes_frame(service.get_changes(days=30))
+        if changes_frame.empty:
+            st.info("No repricing detected in the last 30 days.")
+        else:
+            st.dataframe(changes_frame, width="stretch")
+
+        st.subheader("Rate history")
+        history = service.get_rate_history(
+            term_months=selected_term, rate_category="special"
+        )
+        history_series = build_history_series(history, term_months=selected_term)
+        if history_series.empty:
+            st.info("Not enough history yet. History builds up as collections run.")
+        else:
+            st.line_chart(history_series)
+
+
+_render_market_intelligence()
 
 if not run_button:
     st.info("Paste a YAML config in the sidebar and click **Run scenario**.")
