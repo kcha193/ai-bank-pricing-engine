@@ -122,6 +122,45 @@ class CollectionReport:
         return "\n".join(lines)
 
 
+def build_browser_fetcher(config: CollectionConfig) -> Fetcher:
+    """Return a fetcher that renders the page in a headless browser first.
+
+    Every tracked bank now builds its rate table client-side, so the static HTML
+    contains the page furniture but not the rates. This path is opt-in and needs
+    the optional ``playwright`` dependency; without it the caller gets a clear
+    :class:`FetchError` rather than a silent empty parse.
+    """
+
+    def fetch(url: str) -> bytes:
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as exc:  # pragma: no cover - depends on optional extra
+            raise FetchError(
+                "JavaScript rendering was requested but playwright is not installed. "
+                "Install the optional extra: pip install -e '.[browser]' "
+                "&& python3 -m playwright install chromium"
+            ) from exc
+
+        try:  # pragma: no cover - exercised only against live pages
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                page = browser.new_page(user_agent=config.user_agent)
+                page.goto(
+                    url,
+                    wait_until="networkidle",
+                    timeout=int(config.request_timeout_seconds * 1000),
+                )
+                html = page.content()
+                browser.close()
+            return html.encode("utf-8")
+        except FetchError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - normalised into FetchError
+            raise FetchError(f"browser rendering failed for {url}: {exc}") from exc
+
+    return fetch
+
+
 def build_default_fetcher(config: CollectionConfig) -> Fetcher:
     """Return a fetcher applying the configured timeout, retries, and backoff."""
 
@@ -178,9 +217,16 @@ class BankPricingCollector(abc.ABC):
         config: Optional[CollectionConfig] = None,
         fetcher: Optional[Fetcher] = None,
         raw_root: str | Path = "data/raw/competitor_rates",
+        render_javascript: bool = False,
     ) -> None:
         self.config = config or CollectionConfig()
-        self._fetcher = fetcher or build_default_fetcher(self.config)
+        self.render_javascript = render_javascript
+        if fetcher is not None:
+            self._fetcher = fetcher
+        elif render_javascript:
+            self._fetcher = build_browser_fetcher(self.config)
+        else:
+            self._fetcher = build_default_fetcher(self.config)
         self.raw_root = Path(raw_root)
 
     # ------------------------------------------------------------------ public

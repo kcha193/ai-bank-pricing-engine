@@ -112,11 +112,28 @@ explicit intent.** Exclude it with: `python3 -m pytest -q -m 'not live_rates'`
 7. **Event publishing must never affect pricing.** `events.publisher.publish_safely()` catches and
    logs publisher exceptions; a broken/misconfigured event publisher must never fail or alter a
    pricing decision.
+8. **Pricing intelligence never prices.** `pricing_intelligence/` answers "what is the market
+   doing?"; the optimiser answers "what should we price?". The only seam is
+   `pricing_intelligence.strategy` — nothing in `optimization/`, `pricing/`, or `scenarios/` may
+   import the rest of the package. Under `CompetitorRateStrategy.MANUAL`,
+   `apply_market_strategy_to_config()` returns the config object **unchanged**, preserving every
+   pre-existing scenario's behaviour.
+9. **A collection failure is not a market event.** `detect_changes(banks_collected=...)` scopes
+   withdrawal events to banks that were actually collected; an unreachable bank is unknown, not
+   withdrawn. Suspicious movements are excluded from market-activity/market-state by default so a
+   parser fault cannot fake a repricing round. Basis points come from `pricing_intelligence.bps`
+   (Decimal), never float subtraction.
 
 New orchestration/governance packages: `application/` (`PricingService`), `governance/` (gates,
 lineage, decision record, shadow evaluation), `features/` (versioned local feature-store
-boundary), `events/` (in-process domain events), `observability/` (structured logging). See
-[CLAUDE.md](CLAUDE.md), [docs/architecture.md](docs/architecture.md),
+boundary), `events/` (in-process domain events), `observability/` (structured logging).
+
+Market intelligence: `pricing_intelligence/` (SQLite observation store, change detection, market
+snapshot/ranking, deterministic market state, alerts, CLI) built on top of
+`competitor_rates/collectors/` (per-bank adapters for ANZ, ASB, BNZ, Westpac, Kiwibank). See
+[docs/pricing_intelligence.md](docs/pricing_intelligence.md).
+
+See [CLAUDE.md](CLAUDE.md), [docs/architecture.md](docs/architecture.md),
 [docs/deployment.md](docs/deployment.md), and [docs/adr/](docs/adr/) for detail.
 
 ## Do not break — regression contract

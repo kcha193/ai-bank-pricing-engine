@@ -43,7 +43,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     try:
         with PricingIntelligenceService(
-            config=config, store=ObservationStore(config.database_path)
+            config=config,
+            store=ObservationStore(config.database_path),
+            render_javascript=getattr(args, "render_javascript", False),
         ) as service:
             handlers = {
                 "collect": _collect,
@@ -83,6 +85,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-snapshot", action="store_true", help="Do not save raw HTML snapshots"
     )
     collect.add_argument("--alerts", action="store_true", help="Print alerts for changes")
+    collect.add_argument(
+        "--render-javascript",
+        action="store_true",
+        help=(
+            "Render pages in a headless browser before parsing. Currently required "
+            "for live collection: every tracked bank builds its rate table "
+            "client-side. Needs the optional 'browser' extra."
+        ),
+    )
 
     snapshot = subparsers.add_parser("snapshot", help="Show the current advertised market")
     snapshot.add_argument("--term", type=int, default=None, help="Detail one term, in months")

@@ -189,3 +189,39 @@ def test_snapshot_persistence_writes_raw_html(fixture_fetcher, tmp_path):
 def test_build_collectors_rejects_an_unknown_bank():
     with pytest.raises(KeyError, match="Rabobank"):
         build_collectors(banks=["Rabobank"])
+
+
+def test_browser_fetcher_reports_a_clear_error_when_playwright_is_absent():
+    """Live collection needs JS rendering; a missing extra must say so plainly."""
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        pytest.skip("playwright is installed; the missing-dependency path cannot run")
+
+    from balance_pricing_engine.competitor_rates.collectors import build_browser_fetcher
+    from balance_pricing_engine.competitor_rates.collectors.base import FetchError
+    from balance_pricing_engine.pricing_intelligence.config import CollectionConfig
+
+    fetcher = build_browser_fetcher(CollectionConfig())
+    with pytest.raises(FetchError, match="playwright is not installed"):
+        fetcher("https://www.anz.co.nz/rates-fees-agreements/home-loans/")
+
+
+def test_render_javascript_selects_the_browser_fetcher():
+    collectors = build_collectors(banks=["ANZ"], render_javascript=True)
+
+    assert collectors[0].render_javascript is True
+
+
+def test_an_injected_fetcher_wins_over_render_javascript(fixture_fetcher):
+    """Tests must never be routed to a browser by a config flag."""
+    collectors = build_collectors(
+        banks=["ANZ"], fetcher=fixture_fetcher(), render_javascript=True
+    )
+    result = collectors[0].collect_mortgage_rates(
+        captured_at_utc=OBSERVED_AT, persist_snapshot=False
+    )
+
+    assert result.status is CollectionStatus.SUCCESS

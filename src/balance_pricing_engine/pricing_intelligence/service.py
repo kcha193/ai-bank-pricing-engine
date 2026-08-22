@@ -103,12 +103,14 @@ class PricingIntelligenceService:
         collectors: Optional[Sequence[BankPricingCollector]] = None,
         fetcher: Optional[Fetcher] = None,
         raw_root: str | Path = "data/raw/competitor_rates",
+        render_javascript: bool = False,
     ) -> None:
         self.config = config or PricingIntelligenceConfig()
         self.store = store or ObservationStore(self.config.database_path)
         self._collectors = collectors
         self._fetcher = fetcher
         self._raw_root = raw_root
+        self.render_javascript = render_javascript
 
     # ------------------------------------------------------------- collection
 
@@ -121,6 +123,7 @@ class PricingIntelligenceService:
             config=self.config.collection,
             fetcher=self._fetcher,
             raw_root=self._raw_root,
+            render_javascript=self.render_javascript,
         )
 
     def collect(

@@ -21,6 +21,7 @@ from balance_pricing_engine.competitor_rates.collectors.base import (
     Fetcher,
     FetchError,
     ParserError,
+    build_browser_fetcher,
     build_default_fetcher,
     collect_all_mortgage_rates,
 )
@@ -47,8 +48,14 @@ def build_collectors(
     config: Optional[CollectionConfig] = None,
     fetcher: Optional[Fetcher] = None,
     raw_root: str | Path = "data/raw/competitor_rates",
+    render_javascript: bool = False,
 ) -> list[BankPricingCollector]:
-    """Instantiate collectors for the requested banks (all five by default)."""
+    """Instantiate collectors for the requested banks (all five by default).
+
+    ``render_javascript`` routes fetching through a headless browser, which is
+    currently required for live collection: every tracked bank renders its rate
+    table client-side.
+    """
     config = config or CollectionConfig()
     selected = COLLECTOR_CLASSES
     if banks is not None:
@@ -57,7 +64,12 @@ def build_collectors(
             raise KeyError(f"no collector registered for: {', '.join(missing)}")
         selected = tuple(COLLECTORS_BY_BANK[bank] for bank in banks)
     return [
-        collector_class(config=config, fetcher=fetcher, raw_root=raw_root)
+        collector_class(
+            config=config,
+            fetcher=fetcher,
+            raw_root=raw_root,
+            render_javascript=render_javascript,
+        )
         for collector_class in selected
     ]
 
@@ -78,6 +90,7 @@ __all__ = [
     "KiwibankCollector",
     "ParserError",
     "WestpacCollector",
+    "build_browser_fetcher",
     "build_collectors",
     "build_default_fetcher",
     "collect_all_mortgage_rates",
