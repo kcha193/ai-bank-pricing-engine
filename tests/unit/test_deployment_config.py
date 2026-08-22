@@ -56,6 +56,18 @@ def test_dockerignore_excludes_dev_and_data_directories():
         assert entry in dockerignore
 
 
+def test_deployment_doc_lists_both_secrets_read_by_the_service():
+    """PRICING_ENGINE_API_KEYS is a second secret read through SecretsProvider (via
+    require_api_key), alongside ANTHROPIC_API_KEY -- the deployment inventory must list
+    both, not just the LLM key, so operators migrating secrets to Vault/etc. don't miss
+    the auth credential."""
+    deployment_doc = (REPO_ROOT / "docs" / "deployment.md").read_text(encoding="utf-8")
+
+    assert "ANTHROPIC_API_KEY" in deployment_doc
+    assert "PRICING_ENGINE_API_KEYS" in deployment_doc
+    assert "SecretsProvider" in deployment_doc
+
+
 def test_deployment_doc_covers_required_topics():
     deployment_doc = (REPO_ROOT / "docs" / "deployment.md").read_text(encoding="utf-8")
 

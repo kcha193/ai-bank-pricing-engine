@@ -141,13 +141,21 @@ any real production use:
   `POST /v1/pricing/scenarios` require a matching `X-API-Key` header (constant-time
   comparison via `api/auth.py`); `GET /health` and `/ready` stay open, matching standard
   orchestrator-probe convention. Unset (the default), behaviour is unchanged from before.
-- **Secrets management.** The one secret this project reads today (`ANTHROPIC_API_KEY`, used
-  by the optional `[llm]` layer) goes through `secrets.provider.SecretsProvider` — protocol:
-  `get_secret(name) -> str | None`. The default `EnvSecretsProvider` reads environment
-  variables (still not committed to source control). A future Vault/AWS Secrets
-  Manager/GCP Secret Manager adapter implementing the same protocol can be injected into
-  `llm.build_client()`/`is_llm_available()` without changing call sites — see
-  `StaticSecretsProvider` for the test/local-dev injection pattern.
+- **Secrets management.** Two secrets are actively read today through
+  `secrets.provider.SecretsProvider` — protocol: `get_secret(name) -> str | None`. Both
+  default to `EnvSecretsProvider`, reading environment variables (still not committed to
+  source control):
+  - `ANTHROPIC_API_KEY` (used by the optional `[llm]` layer) — injected per call via
+    `llm.build_client(secrets_provider=...)`/`is_llm_available(secrets_provider=...)`, so a
+    future Vault/AWS Secrets Manager/GCP Secret Manager adapter implementing the same
+    protocol can be passed in without changing call sites.
+  - `PRICING_ENGINE_API_KEYS` (the opt-in API-key auth described above) — resolved through
+    the `require_api_key` FastAPI dependency's `_default_secrets_provider`. There's no
+    per-call injection point for this one today; swapping it to a different provider means
+    overriding `api.auth._default_secrets_provider` (the pattern tests already use via
+    `app.dependency_overrides`), not a runtime config flag.
+
+  See `StaticSecretsProvider` for the test/local-dev injection pattern for either secret.
 - **TLS.** The container serves plain HTTP by default. **Recommended:** terminate TLS at a
   reverse proxy or load balancer in front of the container — that's where cert rotation via
   ACME/Let's Encrypt and HTTP/2 belong, and it keeps the app process out of the cert-handling
