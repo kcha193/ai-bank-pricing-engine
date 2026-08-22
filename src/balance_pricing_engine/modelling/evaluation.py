@@ -102,7 +102,16 @@ def compute_rate_uplift(
                 scenario["rate_gap_to_competitor"] = value - dataset["competitor_rate"]
             else:
                 scenario["rate_gap_to_competitor"] = dataset["offered_rate"] - value
-        probability = predict_response_probability(model, scenario, feature_columns)
+        # Support this package's ResponseModel wrappers (LogisticResponseModel,
+        # HistGBMResponseModel, BootstrapEnsembleResponseModel, ...), which expose
+        # predict_probability(data, feature_columns), not just raw sklearn estimators --
+        # matching the dispatch MLResponseFnAdapter and ModelScoringAgent already use.
+        # predict_response_probability() always calls predict_proba directly, which the
+        # wrappers don't implement.
+        if hasattr(model, "predict_probability"):
+            probability = model.predict_probability(scenario, feature_columns)
+        else:
+            probability = predict_response_probability(model, scenario, feature_columns)
         return float(np.mean(probability))
 
     baseline_probability = _scenario_probability(baseline_rate)

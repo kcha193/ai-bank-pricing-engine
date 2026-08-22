@@ -595,6 +595,35 @@ def test_compute_rate_uplift_raises_when_feature_not_in_feature_columns():
         )
 
 
+class OfferedRateDecreasingResponseModelWrapper:
+    """Toy stand-in for this package's ResponseModel wrappers (LogisticResponseModel,
+    HistGBMResponseModel, BootstrapEnsembleResponseModel, ...): exposes
+    predict_probability(data, feature_columns), not predict_proba(X). compute_rate_uplift
+    must dispatch to this method rather than assuming a raw sklearn estimator.
+    """
+
+    def predict_probability(self, data, feature_columns):
+        prob = 0.9 - 5.0 * data["offered_rate"].to_numpy()
+        return np.clip(prob, 0.01, 0.99)
+
+
+def test_compute_rate_uplift_supports_response_model_wrappers():
+    from balance_pricing_engine.modelling.evaluation import compute_rate_uplift
+
+    dataset = _minimal_dataset()
+
+    result = compute_rate_uplift(
+        OfferedRateDecreasingResponseModelWrapper(),
+        dataset,
+        ["offered_rate", "feat_b"],
+        "offered_rate",
+        baseline_rate=0.075,
+        treatment_rate=0.085,
+    )
+
+    assert result["uplift"] < 0
+
+
 def test_check_lift_monotonicity_fails_for_random_predictions():
     rng = np.random.default_rng(99)
     observed_rates = rng.uniform(0.1, 0.9, size=10).tolist()
