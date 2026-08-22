@@ -1,10 +1,11 @@
 """End-to-end service behaviour, driven entirely by saved fixtures."""
 
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from balance_pricing_engine.pricing_intelligence.changes import ChangeType
+from balance_pricing_engine.pricing_intelligence.changes import ChangeType, detect_changes
 from balance_pricing_engine.pricing_intelligence.config import (
     CollectionConfig,
     PricingIntelligenceConfig,
@@ -57,6 +58,31 @@ def test_the_first_collection_reports_no_changes(service):
     outcome = service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
 
     assert outcome.changes == ()
+
+
+def test_new_products_are_reported_after_the_market_goes_fully_quiet(fixture_fetcher):
+    """An empty baseline from every product being withdrawn is not a first collection."""
+    with build_service(fixture_fetcher()) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)  # genuine first run
+
+        # Confirm every currently-known key withdrawn, directly via the store,
+        # so the baseline is empty afterwards without this being a first run.
+        baseline = service.store.get_current_observations()
+        withdrawal = detect_changes(
+            previous=baseline,
+            current=[],
+            detected_at=DAY_TWO,
+            banks_collected=[record.bank for record in baseline],
+        )
+        service.store.record_changes(withdrawal)
+        assert service.store.get_current_observations() == [], "sanity check"
+
+        outcome = service.collect(captured_at_utc=DAY_THREE, persist_snapshot=False)
+
+    new_products = [
+        change for change in outcome.changes if change.change_type is ChangeType.NEW_PRODUCT
+    ]
+    assert len(new_products) > 0
 
 
 def test_an_unchanged_second_collection_produces_no_changes(service):
@@ -163,6 +189,32 @@ def test_a_withdrawal_is_not_re_reported_on_a_later_collection(fixture_fetcher):
     assert withdrawals == []
 
 
+def test_a_partial_parse_regression_is_not_reported_as_a_mass_withdrawal(fixture_fetcher):
+    """A page-layout regression leaving one parseable row is not six withdrawals."""
+
+    def strip_asb_to_one_row(bank, html):
+        if bank != "ASB":
+            return html
+        return re.sub(
+            r"<tbody>.*?</tbody>",
+            "<tbody><tr><td>Fixed Special</td><td>1 year</td><td>4.89% p.a.</td></tr></tbody>",
+            html,
+            flags=re.DOTALL,
+        )
+
+    with build_service(fixture_fetcher()) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=strip_asb_to_one_row)
+        outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    asb_withdrawals = [
+        change
+        for change in outcome.changes
+        if change.change_type is ChangeType.REMOVED_PRODUCT and change.bank == "ASB"
+    ]
+    assert asb_withdrawals == []
+
+
 def test_a_validation_rejected_record_is_not_reported_as_a_withdrawal(fixture_fetcher):
     """A single implausible rate must not read as the bank withdrawing that line."""
 
@@ -195,7 +247,7 @@ def test_a_validation_rejected_line_keeps_its_last_known_rate_in_the_snapshot(fi
         service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
         service._fetcher = fixture_fetcher(mutate=corrupt_kiwibank_three_year)
         service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
-        snapshot = service.get_market_snapshot()
+        snapshot = service.get_market_snapshot(now=DAY_TWO)
 
     assert snapshot.term(36).rate_for("Kiwibank") == 5.35
 
@@ -230,7 +282,7 @@ def test_a_suspicious_observation_is_excluded_from_the_market_snapshot(fixture_f
         service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
         service._fetcher = fixture_fetcher(mutate=break_kiwibank)
         service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
-        snapshot = service.get_market_snapshot()
+        snapshot = service.get_market_snapshot(now=DAY_TWO)
 
     term_36 = snapshot.term(36)
     assert term_36 is None or "Kiwibank" not in {entry.bank for entry in term_36.entries}
@@ -246,14 +298,27 @@ def test_a_suspicious_observation_is_excluded_from_the_competitor_assumption(fix
         service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
         service._fetcher = fixture_fetcher(mutate=break_kiwibank)
         service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
-        assumption = service.resolve_competitor_assumption("MARKET_LEADER", term_months=36)
+        assumption = service.resolve_competitor_assumption(
+            "MARKET_LEADER", term_months=36, now=DAY_TWO
+        )
 
     assert assumption.rate_pct != 8.49
 
 
+def test_a_stale_observation_is_excluded_from_the_market_snapshot(fixture_fetcher):
+    """A bank silent well past the freshness window must drop out of live pricing."""
+    with build_service(fixture_fetcher(), max_observation_age_hours=24) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        stale_snapshot = service.get_market_snapshot(now=DAY_ONE + timedelta(days=10))
+        fresh_snapshot = service.get_market_snapshot(now=DAY_ONE + timedelta(hours=1))
+
+    assert stale_snapshot.term(12) is None
+    assert fresh_snapshot.term(12) is not None
+
+
 def test_the_market_snapshot_covers_every_bank(service):
     service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
-    snapshot = service.get_market_snapshot()
+    snapshot = service.get_market_snapshot(now=DAY_ONE)
 
     assert set(snapshot.banks) == {"ANZ", "ASB", "BNZ", "Westpac", "Kiwibank"}
     market = snapshot[12]
@@ -300,7 +365,7 @@ def test_changes_are_queryable_by_window(fixture_fetcher):
 
 def test_competitive_position_is_computed_against_the_live_market(service):
     service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
-    position = service.get_competitive_position(our_rate=4.95, term_months=12)
+    position = service.get_competitive_position(our_rate=4.95, term_months=12, now=DAY_ONE)
 
     assert position.market_best == 4.79
     assert position.our_rate_minus_best_bps == 16.0
@@ -311,14 +376,14 @@ def test_competitive_position_reports_a_missing_term_clearly(service):
     service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
 
     with pytest.raises(ValueError, match="no advertised market data at 120 months"):
-        service.get_competitive_position(our_rate=4.95, term_months=120)
+        service.get_competitive_position(our_rate=4.95, term_months=120, now=DAY_ONE)
 
 
 def test_the_service_resolves_a_competitor_assumption(service):
     service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
 
-    median = service.resolve_competitor_assumption("MARKET_MEDIAN", term_months=12)
-    leader = service.resolve_competitor_assumption("MARKET_LEADER", term_months=12)
+    median = service.resolve_competitor_assumption("MARKET_MEDIAN", term_months=12, now=DAY_ONE)
+    leader = service.resolve_competitor_assumption("MARKET_LEADER", term_months=12, now=DAY_ONE)
 
     assert median.rate_pct == 4.85
     assert leader.rate_pct == 4.79

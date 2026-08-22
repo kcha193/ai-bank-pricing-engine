@@ -43,6 +43,13 @@ class ValidationThresholds(BaseModel):
     # far more often a parser regression or a special/standard mix-up than a
     # genuine repricing.
     suspicious_change_bps: float = Field(default=75.0, gt=0)
+    # A bank reporting SUCCESS after extracting fewer than this fraction of its
+    # previously known product range is more likely a page-layout regression
+    # than a mass withdrawal: below this ratio (records extracted this run
+    # divided by keys previously known for the bank), it is treated as not
+    # reliably collected for withdrawal detection -- the same treatment as an
+    # outright fetch failure.
+    min_bank_coverage_ratio: float = Field(default=0.5, gt=0, le=1.0)
 
     @model_validator(mode="after")
     def validate_bounds(self) -> "ValidationThresholds":
@@ -102,6 +109,12 @@ class PricingIntelligenceConfig(BaseModel):
     # means "we are not one of the tracked public banks" (the default for the
     # synthetic engine), and positioning is computed against a supplied rate.
     our_bank: Optional[str] = None
+    # A bank's last-known rate stops feeding market-derived pricing once it is
+    # older than this. An unreachable bank is "unknown, not withdrawn" (so it
+    # stays in change-detection's baseline indefinitely), but an unknown value
+    # left in a live pricing view forever is itself a risk: MARKET_LEADER or
+    # MARKET_MEDIAN could otherwise keep tracking a months-stale rate.
+    max_observation_age_hours: float = Field(default=168.0, gt=0)
     collection: CollectionConfig = Field(default_factory=CollectionConfig)
     validation: ValidationThresholds = Field(default_factory=ValidationThresholds)
     market_state: MarketStateThresholds = Field(default_factory=MarketStateThresholds)

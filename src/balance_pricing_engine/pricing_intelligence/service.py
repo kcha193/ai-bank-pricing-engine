@@ -72,6 +72,54 @@ def _exclude_suspicious(
     return [record for record in records if record.validation_status != "warning"]
 
 
+def _exclude_stale(
+    records: Sequence[CompetitorRateRecord], now: datetime, max_age_hours: float
+) -> list[CompetitorRateRecord]:
+    """Drop a record whose last confirmation is older than the freshness limit.
+
+    Complements :func:`_exclude_suspicious`. An unreachable bank's last-known
+    rate stays in change detection's baseline indefinitely (AGENTS.md: an
+    unreachable bank is unknown, not withdrawn), but that same "unknown"
+    value must not keep feeding a live market-derived pricing view forever --
+    a months-stale rate could otherwise silently drive MARKET_LEADER or
+    MARKET_MEDIAN.
+    """
+    cutoff = now - timedelta(hours=max_age_hours)
+    return [record for record in records if record.captured_at_utc >= cutoff]
+
+
+def _reliably_collected_banks(
+    report: CollectionReport,
+    accepted: Sequence[CompetitorRateRecord],
+    baseline: Sequence[CompetitorRateRecord],
+    min_coverage_ratio: float,
+) -> tuple[str, ...]:
+    """Banks whose collection this run plausibly covered their known range.
+
+    A bank can report SUCCESS with just one parseable row after a page-layout
+    regression silently drops the rest of its table. Passing that bank
+    straight to withdrawal detection would then read every other, still
+    genuinely-current product as withdrawn. A bank whose accepted-record
+    count this run falls short of its previously known key count (below
+    ``min_coverage_ratio``) is excluded here, same as a bank that failed to
+    fetch outright: unknown, not withdrawn.
+    """
+    baseline_counts: dict[str, int] = {}
+    for record in baseline:
+        baseline_counts[record.bank] = baseline_counts.get(record.bank, 0) + 1
+    accepted_counts: dict[str, int] = {}
+    for record in accepted:
+        accepted_counts[record.bank] = accepted_counts.get(record.bank, 0) + 1
+
+    reliable: list[str] = []
+    for bank in (result.bank for result in report.succeeded):
+        known = baseline_counts.get(bank, 0)
+        seen = accepted_counts.get(bank, 0)
+        if known == 0 or seen >= known * min_coverage_ratio:
+            reliable.append(bank)
+    return tuple(reliable)
+
+
 @dataclass(frozen=True)
 class CollectionOutcome:
     """Everything one collection run produced."""
@@ -159,6 +207,12 @@ class PricingIntelligenceService:
             inter_request_delay_seconds=self.config.collection.inter_request_delay_seconds,
         )
 
+        # Captured before this run's own storage creates a collection_runs
+        # row: an empty baseline does not by itself mean "first collection
+        # ever" (every currently tracked product could simply have been
+        # withdrawn), so first-run suppression below needs this instead.
+        is_first_collection = self.store.latest_run_id() is None
+
         # The last known state per key, not scoped to the latest completed
         # run: a bank that failed a prior run would otherwise fall out of the
         # baseline entirely, making its next (unchanged) collection look like
@@ -202,9 +256,13 @@ class PricingIntelligenceService:
             detected_at=captured_at_utc,
             thresholds=self.config.validation,
             run_id=write_result.run_id if write_result is not None else None,
-            # Scoped to banks that actually responded, so an unreachable bank is
-            # never reported as having withdrawn its whole range.
-            banks_collected=self.succeeded_bank_names(report),
+            # Scoped to banks that both responded and whose coverage this run
+            # plausibly matches their known range, so neither an unreachable
+            # bank nor a partial-parse regression is read as withdrawing its
+            # whole range.
+            banks_collected=_reliably_collected_banks(
+                report, accepted, baseline, self.config.validation.min_bank_coverage_ratio
+            ),
             # A record rejected by validation this run is unknown, not
             # withdrawn -- a single implausible line must not read as a
             # market event.
@@ -212,7 +270,7 @@ class PricingIntelligenceService:
         )
         # A first-ever collection would otherwise report every rate as a new
         # product, which is noise rather than market intelligence.
-        if not baseline:
+        if is_first_collection:
             logger.info("first collection for this store; suppressing new-product events")
             changes = []
         if changes and persist:
@@ -225,11 +283,6 @@ class PricingIntelligenceService:
             changes=tuple(changes),
         )
 
-    @staticmethod
-    def succeeded_bank_names(report: CollectionReport) -> tuple[str, ...]:
-        """Banks whose pages were read and parsed successfully in a run."""
-        return tuple(result.bank for result in report.succeeded)
-
     # ------------------------------------------------------------ market view
 
     def get_market_snapshot(
@@ -237,6 +290,7 @@ class PricingIntelligenceService:
         product_type: ProductType | str = ProductType.HOME_LOAN,
         rate_category: Optional[str] = "special",
         as_of_run_id: Optional[str] = None,
+        now: Optional[datetime] = None,
     ) -> MarketSnapshot:
         """Return the currently-advertised market across tracked terms.
 
@@ -244,7 +298,13 @@ class PricingIntelligenceService:
         not a strict "last run" filter: a bank's rate that failed to fetch, or
         a single line another bank had rejected by validation, must not drop
         out of the market view just because it wasn't reconfirmed this exact
-        run -- only a confirmed withdrawal does that.
+        run -- only a confirmed withdrawal does that. That last-known state is
+        not kept forever, though: one older than
+        ``config.max_observation_age_hours`` is dropped, so a bank gone quiet
+        for weeks cannot keep driving MARKET_LEADER/MARKET_MEDIAN on a stale
+        rate. Only applies to the live view -- an explicit ``as_of_run_id``
+        reconstruction is exempt, since staleness relative to "now" is not
+        the question being asked.
 
         ``as_of_run_id`` reconstructs an older run's state via
         ``get_observations_as_of()``: ``last_seen_run_id`` (what
@@ -262,6 +322,11 @@ class PricingIntelligenceService:
             )
         else:
             records = self.store.get_current_observations(product_type=product_type)
+            records = _exclude_stale(
+                records,
+                now=now or datetime.now(timezone.utc),
+                max_age_hours=self.config.max_observation_age_hours,
+            )
         return build_market_snapshot(
             _exclude_suspicious(records),
             product_type=product_type,
@@ -352,9 +417,10 @@ class PricingIntelligenceService:
         our_rate: float,
         term_months: int = 12,
         rate_category: Optional[str] = "special",
+        now: Optional[datetime] = None,
     ) -> CompetitivePosition:
         """Position a rate (in advertised percent) against the current market."""
-        snapshot = self.get_market_snapshot(rate_category=rate_category)
+        snapshot = self.get_market_snapshot(rate_category=rate_category, now=now)
         term_market = snapshot.term(term_months)
         if term_market is None:
             raise ValueError(
@@ -374,9 +440,10 @@ class PricingIntelligenceService:
         manual_rate: Optional[float] = None,
         offset_bps: float = 0.0,
         rate_category: Optional[str] = "special",
+        now: Optional[datetime] = None,
     ) -> ResolvedCompetitorAssumption:
         """Resolve the competitor assumption the optimiser should run with."""
-        snapshot = self.get_market_snapshot(rate_category=rate_category)
+        snapshot = self.get_market_snapshot(rate_category=rate_category, now=now)
         return resolve_competitor_rate(
             strategy=strategy,
             snapshot=snapshot,
