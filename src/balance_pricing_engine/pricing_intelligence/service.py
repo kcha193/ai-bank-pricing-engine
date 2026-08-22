@@ -30,6 +30,7 @@ from balance_pricing_engine.pricing_intelligence.changes import (
     RateChange,
     detect_changes,
     load_changes,
+    resolve_pairing,
 )
 from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
 from balance_pricing_engine.pricing_intelligence.market_state import (
@@ -77,16 +78,23 @@ def _exclude_suspicious(
 
 def _resolve_suspicious(
     records: Sequence[CompetitorRateRecord],
-    fallback_by_key: dict[str, CompetitorRateRecord],
+    confirmed: Sequence[CompetitorRateRecord],
 ) -> list[CompetitorRateRecord]:
     """Replace a suspicious-tagged record with its last confirmed state.
 
     A parser fault such as 5.35% becoming 8.49% must not be able to move a
     MARKET_LEADER/MARKET_MEDIAN assumption simply by making the old,
-    confirmed rate disappear from the view. A key with no confirmed
-    fallback (a suspicious value on its very first-ever observation) is
-    dropped, matching :func:`_exclude_suspicious`.
+    confirmed rate disappear from the view. Matched via
+    :func:`~.changes.resolve_pairing` (exact key, falling back to an
+    unambiguous eligibility-group match) rather than a plain key lookup: a
+    record whose eligibility field moved alongside its suspicious rate
+    changes its own key too, so an exact lookup into ``confirmed`` would miss
+    the very predecessor it needs to fall back to and drop the record
+    regardless. A key with no confirmed fallback (a suspicious value on its
+    very first-ever observation) is dropped, matching :func:`_exclude_suspicious`.
     """
+    suspicious = [record for record in records if record.validation_status == "warning"]
+    fallback_by_key = resolve_pairing(confirmed, suspicious) if suspicious else {}
     resolved: list[CompetitorRateRecord] = []
     for record in records:
         if record.validation_status != "warning":
@@ -352,13 +360,10 @@ class PricingIntelligenceService:
         else:
             records = self.store.get_current_observations(product_type=product_type)
             if any(record.validation_status == "warning" for record in records):
-                fallback_by_key = {
-                    record.observation_key(): record
-                    for record in self.store.get_last_confirmed_observations(
-                        product_type=product_type
-                    )
-                }
-                records = _resolve_suspicious(records, fallback_by_key)
+                confirmed = self.store.get_last_confirmed_observations(
+                    product_type=product_type
+                )
+                records = _resolve_suspicious(records, confirmed)
             records = _exclude_stale(
                 records,
                 now=now or datetime.now(timezone.utc),

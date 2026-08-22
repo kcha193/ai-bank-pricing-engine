@@ -288,6 +288,31 @@ def test_a_suspicious_observation_falls_back_to_its_last_confirmed_rate(fixture_
     assert snapshot.term(36).rate_for("Kiwibank") == 5.35
 
 
+def test_a_suspicious_observation_with_an_eligibility_edit_still_falls_back(service, make_record):
+    """The eligibility-group fallback must also resolve a suspicious tag's predecessor.
+
+    An eligibility edit changes observation_key(), so an exact-key lookup
+    into the confirmed set would miss the very predecessor a suspicious
+    record needs to fall back to -- dropping it from the view exactly as if
+    no fallback existed at all.
+    """
+    confirmed = make_record(bank="ANZ", max_lvr=0.80, min_equity=0.20, rate_pct=4.79)
+    suspicious = make_record(
+        bank="ANZ",
+        max_lvr=0.75,
+        min_equity=0.25,
+        rate_pct=1.50,
+        validation_status="warning",
+        observed_at=DAY_TWO,
+    )
+    service.store.record_observations([confirmed], observed_at=DAY_ONE)
+    service.store.record_observations([suspicious], observed_at=DAY_TWO)
+
+    snapshot = service.get_market_snapshot(now=DAY_TWO)
+
+    assert snapshot.term(12).rate_for("ANZ") == 4.79
+
+
 def test_a_suspicious_observation_is_excluded_from_the_competitor_assumption(fixture_fetcher):
     def break_kiwibank(bank, html):
         if bank == "Kiwibank":
