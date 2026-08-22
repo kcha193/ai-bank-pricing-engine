@@ -170,7 +170,7 @@ class PricingIntelligenceService:
         for issue in validation.issues:
             logger.warning("validation: %s", issue)
 
-        if not persist or not validation.accepted:
+        if not validation.accepted:
             return CollectionOutcome(
                 report=report, validation=validation, write_result=None, changes=()
             )
@@ -188,13 +188,20 @@ class PricingIntelligenceService:
             for record in validation.accepted
         ]
 
-        write_result = self.store.record_observations(accepted, observed_at=captured_at_utc)
+        # A dry run (persist=False) skips writing, but still detects changes
+        # against the stored baseline -- otherwise --no-persist could not be
+        # used to preview what a real collection would do.
+        write_result = (
+            self.store.record_observations(accepted, observed_at=captured_at_utc)
+            if persist
+            else None
+        )
         changes = detect_changes(
             previous=baseline,
             current=accepted,
             detected_at=captured_at_utc,
             thresholds=self.config.validation,
-            run_id=write_result.run_id,
+            run_id=write_result.run_id if write_result is not None else None,
             # Scoped to banks that actually responded, so an unreachable bank is
             # never reported as having withdrawn its whole range.
             banks_collected=self.succeeded_bank_names(report),
@@ -208,7 +215,7 @@ class PricingIntelligenceService:
         if not baseline:
             logger.info("first collection for this store; suppressing new-product events")
             changes = []
-        if changes:
+        if changes and persist:
             self.store.record_changes(changes)
 
         return CollectionOutcome(
@@ -231,10 +238,23 @@ class PricingIntelligenceService:
         rate_category: Optional[str] = "special",
         as_of_run_id: Optional[str] = None,
     ) -> MarketSnapshot:
-        """Return the currently-advertised market across tracked terms."""
-        records = self.store.get_latest_rates(
-            product_type=product_type, run_id=as_of_run_id
-        )
+        """Return the currently-advertised market across tracked terms.
+
+        ``as_of_run_id`` reconstructs an older run's state via
+        ``get_observations_as_of()``: ``last_seen_run_id`` (what
+        ``get_latest_rates()`` filters on) is overwritten forward on every
+        unchanged re-observation, so it cannot answer for a run that isn't
+        the latest one.
+        """
+        if as_of_run_id is not None:
+            started_at = self.store.get_run_started_at(as_of_run_id)
+            records = (
+                self.store.get_observations_as_of(as_of=started_at, product_type=product_type)
+                if started_at is not None
+                else []
+            )
+        else:
+            records = self.store.get_latest_rates(product_type=product_type)
         return build_market_snapshot(
             _exclude_suspicious(records),
             product_type=product_type,

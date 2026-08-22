@@ -294,6 +294,13 @@ def _withdraw_bnz_on_day_two(store, make_record):
     store.record_changes(changes)
 
 
+def test_current_observations_exclude_a_confirmed_withdrawal(store, make_record):
+    """Unlike a transient collection failure, a recorded withdrawal must not linger."""
+    _withdraw_bnz_on_day_two(store, make_record)
+
+    assert {record.bank for record in store.get_current_observations()} == {"ANZ"}
+
+
 def test_observations_as_of_does_not_resurrect_a_withdrawn_product(store, make_record):
     """A product withdrawn before the cutoff must not be reconstructed as present."""
     _withdraw_bnz_on_day_two(store, make_record)

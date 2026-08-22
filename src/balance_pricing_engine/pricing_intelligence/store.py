@@ -352,6 +352,15 @@ class ObservationStore:
         ).fetchone()
         return row["run_id"] if row else None
 
+    def get_run_started_at(self, run_id: str) -> Optional[datetime]:
+        """Resolve a run's start time, for reconstructing its state via
+        :meth:`get_observations_as_of` -- ``last_seen_run_id`` cannot answer
+        this for an older run once later runs have touched its rows."""
+        row = self._connection.execute(
+            "SELECT started_at FROM collection_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        return _parse_iso(row["started_at"]) if row else None
+
     def get_latest_rates(
         self,
         bank: Optional[str] = None,
@@ -399,11 +408,22 @@ class ObservationStore:
         "what is on the market right now" should use :meth:`get_latest_rates`;
         this is for reconstructing the baseline change detection compares
         against.
+
+        A key with a confirmed withdrawal (a ``REMOVED_PRODUCT`` event
+        recorded after its row was last touched) is excluded, not merely
+        stale: otherwise every subsequent successful collection would keep
+        comparing against a row that's genuinely gone, and detect_changes()
+        would emit -- and this store would persist -- the same withdrawal
+        again on every run. A key merely absent because its bank failed to
+        collect has no such event recorded and stays in the baseline.
         """
         rows = self._connection.execute(
             "SELECT * FROM observations o WHERE product_type = ? AND id = ("
             "  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
             "  ORDER BY first_observed_at DESC, id DESC LIMIT 1"
+            ") AND NOT EXISTS ("
+            "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
+            "  AND rc.change_type = 'REMOVED_PRODUCT' AND rc.detected_at > o.last_seen_at"
             ") ORDER BY bank, term_months",
             (_product_value(product_type),),
         ).fetchall()
@@ -489,15 +509,13 @@ class ObservationStore:
         before_run_id = before_run_id or self.latest_run_id()
         if before_run_id is None:
             return []
-        row = self._connection.execute(
-            "SELECT started_at FROM collection_runs WHERE run_id = ?", (before_run_id,)
-        ).fetchone()
-        if row is None:
+        started_at = self.get_run_started_at(before_run_id)
+        if started_at is None:
             return []
         previous = self._connection.execute(
             "SELECT started_at FROM collection_runs WHERE started_at < ? "
             "ORDER BY started_at DESC, rowid DESC LIMIT 1",
-            (row["started_at"],),
+            (_iso(started_at),),
         ).fetchone()
         if previous is None:
             return []

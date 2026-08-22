@@ -141,6 +141,28 @@ def test_a_genuine_withdrawal_is_still_reported(fixture_fetcher):
     assert withdrawals[0].term_months == 60
 
 
+def test_a_withdrawal_is_not_re_reported_on_a_later_collection(fixture_fetcher):
+    """Once recorded, a withdrawal must not be re-detected every subsequent run."""
+
+    def withdraw_asb_five_year(bank, html):
+        if bank == "ASB":
+            return html.replace(
+                "<tr><td>Fixed Special</td><td>5 years</td><td>5.75% p.a.</td></tr>", ""
+            )
+        return html
+
+    with build_service(fixture_fetcher()) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=withdraw_asb_five_year)
+        service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+        outcome = service.collect(captured_at_utc=DAY_THREE, persist_snapshot=False)
+
+    withdrawals = [
+        change for change in outcome.changes if change.change_type is ChangeType.REMOVED_PRODUCT
+    ]
+    assert withdrawals == []
+
+
 def test_a_validation_rejected_record_is_not_reported_as_a_withdrawal(fixture_fetcher):
     """A single implausible rate must not read as the bank withdrawing that line."""
 
@@ -223,6 +245,21 @@ def test_the_market_snapshot_covers_every_bank(service):
     assert market.bank_count == 5
 
 
+def test_market_snapshot_reconstructs_an_older_run_by_id(fixture_fetcher):
+    """last_seen_run_id gets overwritten by later unchanged runs; the snapshot must not."""
+    with build_service(fixture_fetcher()) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        run_two = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)  # unchanged
+        service._fetcher = fixture_fetcher(mutate=cut_anz_one_year)
+        service.collect(captured_at_utc=DAY_THREE, persist_snapshot=False)  # ANZ reprices
+
+        snapshot_at_run_two = service.get_market_snapshot(
+            as_of_run_id=run_two.write_result.run_id
+        )
+
+    assert snapshot_at_run_two.term(12).rate_for("ANZ") == 4.79
+
+
 def test_history_is_queryable_after_a_reprice(fixture_fetcher):
     with build_service(fixture_fetcher()) as service:
         service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
@@ -276,6 +313,24 @@ def test_a_dry_run_stores_nothing(service):
 
     assert outcome.write_result is None
     assert service.store.get_latest_rates() == []
+
+
+def test_a_dry_run_previews_changes_without_persisting_them(fixture_fetcher):
+    """--no-persist must still show what a real collection would detect."""
+    with build_service(fixture_fetcher()) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=cut_anz_one_year)
+        outcome = service.collect(
+            captured_at_utc=DAY_TWO, persist=False, persist_snapshot=False
+        )
+        stored = service.store.get_latest_rates(bank="ANZ", term_months=12)[0]
+        persisted_changes = service.store.get_changes_since(days=7, now=DAY_TWO)
+
+    assert outcome.write_result is None
+    assert len(outcome.changes) == 1
+    assert outcome.changes[0].change_type is ChangeType.RATE_DECREASE
+    assert stored.advertised_rate_pct == 4.79, "the dry run must not persist the reprice"
+    assert persisted_changes == [], "nor its change event"
 
 
 def test_a_run_where_every_bank_fails_is_reported_as_such(fixture_fetcher):

@@ -17,7 +17,7 @@ from statistics import fmean, median
 from typing import Optional, Sequence
 
 from balance_pricing_engine.competitor_rates.models import ProductType
-from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
+from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps, spread_bps
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange
 from balance_pricing_engine.pricing_intelligence.snapshot import TermMarket
 
@@ -75,11 +75,12 @@ def compute_competitive_position(
     competitor_rates = [entry.rate_pct for entry in competitors]
     best = min(competitor_rates) if lower_is_better else max(competitor_rates)
     worst = max(competitor_rates) if lower_is_better else min(competitor_rates)
-    # Computed from the competitor set, not term_market.median_rate/mean_rate:
+    # Computed from the competitor set, not term_market's own properties:
     # those describe every entry including our own, which would let the rate
-    # being positioned shift the very benchmark it's compared against.
+    # being positioned shift the very benchmarks it's compared against.
     competitor_median = round(median(competitor_rates), 6)
     competitor_mean = round(fmean(competitor_rates), 6)
+    competitor_spread_bps = spread_bps(min(competitor_rates), max(competitor_rates))
 
     below = sum(1 for rate in competitor_rates if rate_change_bps(our_rate, rate) < 0)
     above = sum(1 for rate in competitor_rates if rate_change_bps(our_rate, rate) > 0)
@@ -102,7 +103,7 @@ def compute_competitive_position(
         competitors_below_us=below,
         competitors_above_us=above,
         competitors_matching_us=matching,
-        market_spread_bps=term_market.spread_bps,
+        market_spread_bps=competitor_spread_bps,
         bank_count=len(competitors) + 1,
     )
 

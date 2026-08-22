@@ -80,11 +80,12 @@ def test_our_own_bank_is_not_counted_as_a_competitor(term_market):
     assert position.bank_count == 5
     assert position.market_best == 4.85, "ANZ excluded, so BNZ/Westpac lead"
     assert position.market_rank == 1
-    # Median/mean over the competitor set [4.85, 4.85, 4.89, 4.89], not the
-    # full market including the 4.79 rate being positioned.
+    # Median/mean/spread over the competitor set [4.85, 4.85, 4.89, 4.89], not
+    # the full market including the 4.79 rate being positioned.
     assert position.market_median == 4.87
     assert position.market_mean == 4.87
     assert position.our_rate_minus_median_bps == rate_change_bps(4.87, 4.79)
+    assert position.market_spread_bps == 4.0, "4.85-4.89 among competitors, not 4.79-4.89"
 
 
 def test_position_reports_market_spread(term_market):
