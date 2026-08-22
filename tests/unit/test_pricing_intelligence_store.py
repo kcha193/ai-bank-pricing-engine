@@ -388,6 +388,42 @@ def test_no_delayed_withdrawal_follows_an_eligibility_transition(store, make_rec
     assert changes_at_run_three == []
 
 
+def test_observations_as_of_exclude_a_superseded_eligibility_state(store, make_record):
+    """A historical reconstruction must not show both the old and new eligibility
+    state as simultaneously current once the transition has happened."""
+    store.record_observations(
+        [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.79)], observed_at=DAY_ONE
+    )
+    store.record_observations(
+        [make_record(max_lvr=0.75, min_equity=0.25, rate_pct=4.99)], observed_at=DAY_TWO
+    )
+
+    before_transition = store.get_observations_as_of(as_of=DAY_ONE)
+    after_transition = store.get_observations_as_of(as_of=DAY_TWO)
+
+    assert [r.max_lvr for r in before_transition] == [0.80]
+    assert [r.max_lvr for r in after_transition] == [0.75]
+
+
+def test_observations_as_of_keep_simultaneous_lvr_tiers_that_started_later(store, make_record):
+    """A genuinely new simultaneous tier must not exclude an older sibling tier."""
+    store.record_observations(
+        [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.79)], observed_at=DAY_ONE
+    )
+    # A second, distinct tier starts later -- not a replacement of the first.
+    store.record_observations(
+        [
+            make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.79),  # reconfirmed
+            make_record(max_lvr=0.70, min_equity=0.30, rate_pct=4.65),  # new tier
+        ],
+        observed_at=DAY_THREE,
+    )
+
+    current = store.get_observations_as_of(as_of=DAY_THREE)
+
+    assert {r.max_lvr for r in current} == {0.80, 0.70}
+
+
 def test_observations_as_of_does_not_resurrect_a_withdrawn_product(store, make_record):
     """A product withdrawn before the cutoff must not be reconstructed as present."""
     _withdraw_bnz_on_day_two(store, make_record)

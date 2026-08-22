@@ -4,6 +4,8 @@ The manual path is legacy behaviour that every existing scenario depends on, so
 it is asserted as strictly as the new market-derived paths.
 """
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from balance_pricing_engine.config import load_config
@@ -62,6 +64,25 @@ def test_market_leader_resolves_to_the_best_rate(snapshot):
     assert resolved.rate_pct == 4.79
     assert resolved.competitor_loan_rate == 0.0479
     assert "ANZ" in resolved.rationale
+
+
+def test_resolved_assumption_as_of_reflects_the_snapshot_not_the_leading_bank(make_record):
+    """entries[0] is whichever bank leads on rate, not the snapshot's own as_of."""
+    day_one = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    day_two = day_one + timedelta(days=1)
+    lopsided_snapshot = build_market_snapshot(
+        [
+            make_record(bank="ANZ", rate_pct=4.79, observed_at=day_one),  # leads, but older
+            make_record(bank="BNZ", rate_pct=4.85, observed_at=day_two),  # confirmed later
+        ]
+    )
+
+    resolved = resolve_competitor_rate(
+        CompetitorRateStrategy.MARKET_LEADER, snapshot=lopsided_snapshot
+    )
+
+    assert lopsided_snapshot.as_of == day_two
+    assert resolved.as_of == day_two
 
 
 def test_market_second_lowest_excludes_the_leader(snapshot):

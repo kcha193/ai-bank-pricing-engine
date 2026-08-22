@@ -135,7 +135,11 @@ def resolve_competitor_rate(
         term_months=term_months,
         offset_bps=offset_bps,
         source_banks=tuple(entry.bank for entry in term_market.entries),
-        as_of=term_market.entries[0].observed_at if term_market.entries else snapshot.as_of,
+        # The snapshot's own as_of, not any one bank's observed_at: entries
+        # are ordered by competitiveness, not time, so entries[0] is simply
+        # whichever bank leads on rate -- not the timestamp of the market
+        # view this assumption was actually resolved from.
+        as_of=snapshot.as_of,
         rationale=rationale,
     )
 

@@ -36,6 +36,13 @@ def test_market_intelligence_example_reuses_the_existing_optimiser():
     assert "MANUAL" in script
 
 
+def test_market_intelligence_example_uses_the_configured_pricing_intelligence_settings():
+    """--config's pricing_intelligence block must not be discarded for fresh defaults."""
+    script = Path("examples/run_market_intelligence_scenarios.py").read_text(encoding="utf-8")
+
+    assert "base_config.pricing_intelligence" in script
+
+
 def test_market_intelligence_example_states_its_limitations():
     script = Path("examples/run_market_intelligence_scenarios.py").read_text(encoding="utf-8")
 

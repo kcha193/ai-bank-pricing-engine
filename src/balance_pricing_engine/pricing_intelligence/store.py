@@ -137,6 +137,29 @@ _MATERIAL_FIELDS = (
     "max_balance",
 )
 
+# Excludes row `o` when another key `o3` in the same eligibility group (same
+# bank/term/category/frequency/product_name/balance tier, i.e. the same
+# product under a different eligibility condition -- see
+# CompetitorRateRecord.eligibility_group_key()) first appeared after `o` was
+# last confirmed: that is the signature of an eligibility-edit transition,
+# where change detection deliberately leaves the old key's row untouched
+# (see changes.resolve_pairing()) rather than closing it out. `{extra}` lets
+# a caller reconstructing a historical point in time (get_observations_as_of)
+# additionally bound `o3` to have existed by that point too -- an eligibility
+# edit that happens after the reconstruction point does not apply.
+_SUPERSEDED_BY_LATER_ELIGIBILITY_KEY = (
+    "AND NOT EXISTS ("
+    "  SELECT 1 FROM observations o3 WHERE o3.observation_key <> o.observation_key "
+    "  AND o3.bank = o.bank AND o3.product_type = o.product_type "
+    "  AND o3.rate_category = o.rate_category AND o3.term_months IS o.term_months "
+    "  AND o3.term_label_raw = o.term_label_raw "
+    "  AND o3.interest_payment_frequency = o.interest_payment_frequency "
+    "  AND LOWER(o3.product_name) = LOWER(o.product_name) "
+    "  AND o3.min_balance IS o.min_balance AND o3.max_balance IS o.max_balance "
+    "  AND o3.first_observed_at > o.last_seen_at{extra}"
+    ") "
+)
+
 
 @dataclass(frozen=True)
 class WriteResult:
@@ -437,16 +460,7 @@ class ObservationStore:
             ") AND NOT EXISTS ("
             "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
             "  AND rc.change_type = 'REMOVED_PRODUCT' AND rc.detected_at > o.last_seen_at"
-            ") AND NOT EXISTS ("
-            "  SELECT 1 FROM observations o3 WHERE o3.observation_key <> o.observation_key "
-            "  AND o3.bank = o.bank AND o3.product_type = o.product_type "
-            "  AND o3.rate_category = o.rate_category AND o3.term_months IS o.term_months "
-            "  AND o3.term_label_raw = o.term_label_raw "
-            "  AND o3.interest_payment_frequency = o.interest_payment_frequency "
-            "  AND LOWER(o3.product_name) = LOWER(o.product_name) "
-            "  AND o3.min_balance IS o.min_balance AND o3.max_balance IS o.max_balance "
-            "  AND o3.first_observed_at > o.last_seen_at"
-            ") ORDER BY bank, term_months",
+            ") " + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra="") + "ORDER BY bank, term_months",
             (_product_value(product_type),),
         ).fetchall()
         return [_row_to_record(row) for row in rows]
@@ -537,6 +551,11 @@ class ObservationStore:
         (like :meth:`get_rate_history`), not the row's ``last_seen_at`` --
         which a later, still-unchanged collection can push past ``as_of``
         entirely, putting a future timestamp on a reconstruction of the past.
+
+        A key superseded by an eligibility edit by ``as_of`` is likewise
+        excluded (see :meth:`get_current_observations`), bounded so an edit
+        that happens *after* ``as_of`` does not retroactively exclude the
+        predecessor from a reconstruction of an earlier point in time.
         """
         timestamp = _iso(as_of)
         rows = self._connection.execute(
@@ -549,8 +568,10 @@ class ObservationStore:
             "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
             "  AND rc.change_type = 'REMOVED_PRODUCT' AND rc.detected_at <= ? "
             "  AND rc.detected_at > o.first_observed_at"
-            ") ORDER BY bank, term_months",
-            (_product_value(product_type), timestamp, timestamp, timestamp),
+            ") "
+            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra=" AND o3.first_observed_at <= ?")
+            + "ORDER BY bank, term_months",
+            (_product_value(product_type), timestamp, timestamp, timestamp, timestamp),
         ).fetchall()
         return [_row_to_history_record(row) for row in rows]
 

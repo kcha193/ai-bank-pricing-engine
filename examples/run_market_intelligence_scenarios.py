@@ -50,7 +50,11 @@ def main() -> None:
     args = parser.parse_args()
 
     base_config = load_config(Path(args.config))
-    intelligence_config = PricingIntelligenceConfig()
+    # base_config.pricing_intelligence, not fresh defaults: --config's YAML
+    # may configure a custom database path, bank selection, or freshness
+    # limit, and silently ignoring it in favour of defaults would make this
+    # script read a different store than the one --config actually points at.
+    intelligence_config = base_config.pricing_intelligence or PricingIntelligenceConfig()
     if args.database:
         intelligence_config = intelligence_config.model_copy(
             update={"database_path": args.database}
