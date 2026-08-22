@@ -111,18 +111,37 @@ class CompetitorRateRecord(BaseModel):
         disappearing and another appearing. Deliberately excludes the rate
         itself and every provenance field.
 
-        Includes the product name and the numeric balance band: two
-        simultaneous products can otherwise share bank, category, term,
-        and payment frequency while differing only by name or by a numeric
-        balance tier, which would collide onto the same key and have one
-        silently overwrite the other.
+        Includes the eligibility condition (``lvr_condition``/``max_lvr``/
+        ``min_equity``) as well as :meth:`eligibility_group_key`'s fields:
+        a bank can simultaneously advertise the same named/category/term
+        product at multiple LVR tiers, and those rows would otherwise collide
+        onto one key. A bank re-describing (or tightening/loosening) the
+        eligibility condition on what is otherwise the same, singly-advertised
+        product changes this key too -- change detection pairs that case back
+        to an :class:`.ChangeType` ``ELIGIBILITY_CHANGE`` via a secondary
+        match on :meth:`eligibility_group_key` rather than by including the
+        condition in the primary identity.
+        """
+        return "|".join(
+            [
+                self.eligibility_group_key(),
+                self.lvr_condition or "",
+                _numeric_band(self.max_lvr),
+                _numeric_band(self.min_equity),
+            ]
+        )
 
-        ``lvr_condition``, ``max_lvr``, and ``min_equity`` are deliberately
-        excluded: a bank re-describing (or tightening/loosening) LVR
-        eligibility on an otherwise-unchanged product is the same product
-        with a new condition (an :class:`.ChangeType` ``ELIGIBILITY_CHANGE``),
-        not a new product -- unlike the balance band, which change detection
-        does not track as a mutable attribute.
+    def eligibility_group_key(self) -> str:
+        """Identity ignoring the eligibility condition.
+
+        Used by change detection as a fallback match when
+        :meth:`observation_key` finds no exact pairing: if exactly one
+        previously-known key in the same group is otherwise unclaimed, the
+        two are paired as an eligibility edit on the same product rather than
+        read as one product disappearing and a new one appearing. Also the
+        collision guard for simultaneous products: two products sharing
+        bank/category/term/frequency can otherwise differ only by name or by
+        a numeric balance tier, which would collide onto the same group.
         """
         parts = [
             self.bank,

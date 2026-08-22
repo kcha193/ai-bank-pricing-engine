@@ -430,6 +430,33 @@ class ObservationStore:
         ).fetchall()
         return [_row_to_record(row) for row in rows]
 
+    def get_last_confirmed_observations(
+        self,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+    ) -> list[CompetitorRateRecord]:
+        """Like :meth:`get_current_observations`, but skips a "warning"-tagged
+        (suspicious-but-accepted) row to find the last confirmed state per key.
+
+        Used as the fallback when a market-derived pricing view excludes a
+        suspicious record: dropping it outright would make the bank/term
+        vanish from the view rather than falling back to what was last
+        verified, letting a single parser fault move a MARKET_LEADER/
+        MARKET_MEDIAN assumption just by making the old rate disappear.
+        """
+        rows = self._connection.execute(
+            "SELECT * FROM observations o WHERE product_type = ? "
+            "AND validation_status != 'warning' AND id = ("
+            "  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
+            "  AND o2.validation_status != 'warning' "
+            "  ORDER BY first_observed_at DESC, id DESC LIMIT 1"
+            ") AND NOT EXISTS ("
+            "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
+            "  AND rc.change_type = 'REMOVED_PRODUCT' AND rc.detected_at > o.last_seen_at"
+            ") ORDER BY bank, term_months",
+            (_product_value(product_type),),
+        ).fetchall()
+        return [_row_to_record(row) for row in rows]
+
     def get_rate_history(
         self,
         bank: Optional[str] = None,

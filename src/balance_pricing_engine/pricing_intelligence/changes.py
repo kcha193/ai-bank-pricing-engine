@@ -110,6 +110,15 @@ def detect_changes(
     repriced line reads as a rate movement rather than one product vanishing and
     another appearing. Identical observations produce no events.
 
+    A current record with no exact key match is not immediately treated as
+    new: if exactly one unmatched previous record shares its
+    :meth:`~CompetitorRateRecord.eligibility_group_key` (same product, term,
+    and balance tier; different eligibility condition), the two are paired as
+    an :class:`.ChangeType` ``ELIGIBILITY_CHANGE`` instead of a
+    ``NEW_PRODUCT``/``REMOVED_PRODUCT`` pair. Two or more candidates sharing a
+    group is ambiguous (which one changed?) and falls back to reporting each
+    as new/removed rather than guessing a pairing.
+
     ``banks_collected`` names the banks whose pages were successfully read this
     run. Withdrawal events are only emitted for those banks -- otherwise a bank
     being unreachable would report its entire range as withdrawn, which is a
@@ -128,26 +137,46 @@ def detect_changes(
     current_by_key = {record.observation_key(): record for record in current}
     changes: list[RateChange] = []
 
+    unmatched_previous = {
+        key: record for key, record in previous_by_key.items() if key not in current_by_key
+    }
+    group_candidates: dict[str, list[str]] = {}
+    for key, record in unmatched_previous.items():
+        group_candidates.setdefault(record.eligibility_group_key(), []).append(key)
+
+    matched_previous_keys: set[str] = set()
+
     for key, current_record in current_by_key.items():
         previous_record = previous_by_key.get(key)
         if previous_record is None:
-            changes.append(
-                _build(
-                    current_record,
-                    ChangeType.NEW_PRODUCT,
-                    detected_at,
-                    run_id,
-                    current_rate_pct=current_record.advertised_rate_pct,
-                    detail=f"first observed at {current_record.advertised_rate_pct:.2f}%",
+            candidates = [
+                candidate_key
+                for candidate_key in group_candidates.get(
+                    current_record.eligibility_group_key(), []
                 )
-            )
-            continue
+                if candidate_key not in matched_previous_keys
+            ]
+            if len(candidates) == 1:
+                matched_previous_keys.add(candidates[0])
+                previous_record = previous_by_key[candidates[0]]
+            else:
+                changes.append(
+                    _build(
+                        current_record,
+                        ChangeType.NEW_PRODUCT,
+                        detected_at,
+                        run_id,
+                        current_rate_pct=current_record.advertised_rate_pct,
+                        detail=f"first observed at {current_record.advertised_rate_pct:.2f}%",
+                    )
+                )
+                continue
         changes.extend(
             _compare_records(previous_record, current_record, detected_at, thresholds, run_id)
         )
 
     for key, previous_record in previous_by_key.items():
-        if key in current_by_key:
+        if key in current_by_key or key in matched_previous_keys:
             continue
         if collected is not None and previous_record.bank not in collected:
             # This bank was not successfully collected, so its absence is

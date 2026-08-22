@@ -67,9 +67,35 @@ def _exclude_suspicious(
 
     A suspicious-but-accepted observation is still stored for audit and
     history, but must not feed a market-derived pricing view -- see
-    :meth:`PricingIntelligenceService.collect`.
+    :meth:`PricingIntelligenceService.collect`. Prefer :func:`_resolve_suspicious`
+    where a fallback lookup is available: dropping a record outright makes
+    the bank/term vanish from the view rather than falling back to what was
+    last verified, which can itself move a market-derived assumption.
     """
     return [record for record in records if record.validation_status != "warning"]
+
+
+def _resolve_suspicious(
+    records: Sequence[CompetitorRateRecord],
+    fallback_by_key: dict[str, CompetitorRateRecord],
+) -> list[CompetitorRateRecord]:
+    """Replace a suspicious-tagged record with its last confirmed state.
+
+    A parser fault such as 5.35% becoming 8.49% must not be able to move a
+    MARKET_LEADER/MARKET_MEDIAN assumption simply by making the old,
+    confirmed rate disappear from the view. A key with no confirmed
+    fallback (a suspicious value on its very first-ever observation) is
+    dropped, matching :func:`_exclude_suspicious`.
+    """
+    resolved: list[CompetitorRateRecord] = []
+    for record in records:
+        if record.validation_status != "warning":
+            resolved.append(record)
+            continue
+        fallback = fallback_by_key.get(record.observation_key())
+        if fallback is not None:
+            resolved.append(fallback)
+    return resolved
 
 
 def _exclude_stale(
@@ -298,8 +324,11 @@ class PricingIntelligenceService:
         not a strict "last run" filter: a bank's rate that failed to fetch, or
         a single line another bank had rejected by validation, must not drop
         out of the market view just because it wasn't reconfirmed this exact
-        run -- only a confirmed withdrawal does that. That last-known state is
-        not kept forever, though: one older than
+        run -- only a confirmed withdrawal does that. A key whose latest state
+        is flagged suspicious falls back to its last confirmed (non-warning)
+        state rather than disappearing outright, so a parser fault cannot
+        move MARKET_LEADER/MARKET_MEDIAN simply by making the prior rate
+        vanish from the view. That last-known state is not kept forever, though: one older than
         ``config.max_observation_age_hours`` is dropped, so a bank gone quiet
         for weeks cannot keep driving MARKET_LEADER/MARKET_MEDIAN on a stale
         rate. Only applies to the live view -- an explicit ``as_of_run_id``
@@ -322,6 +351,14 @@ class PricingIntelligenceService:
             )
         else:
             records = self.store.get_current_observations(product_type=product_type)
+            if any(record.validation_status == "warning" for record in records):
+                fallback_by_key = {
+                    record.observation_key(): record
+                    for record in self.store.get_last_confirmed_observations(
+                        product_type=product_type
+                    )
+                }
+                records = _resolve_suspicious(records, fallback_by_key)
             records = _exclude_stale(
                 records,
                 now=now or datetime.now(timezone.utc),

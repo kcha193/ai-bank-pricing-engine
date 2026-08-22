@@ -236,13 +236,49 @@ def test_simultaneous_products_with_different_balance_bands_are_tracked_independ
 
 
 def test_max_lvr_movement_is_an_eligibility_change_not_a_new_product(make_record):
-    """LVR eligibility is mutable on the same product, unlike the identity fields above."""
+    """LVR eligibility edits are paired to the same product via the fallback match."""
     changes = detect_changes(
         [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.79)],
         [make_record(max_lvr=0.75, min_equity=0.25, rate_pct=4.79, observed_at=DAY_TWO)],
     )
 
     assert [change.change_type for change in changes] == [ChangeType.ELIGIBILITY_CHANGE]
+
+
+def test_simultaneous_products_with_different_lvr_tiers_are_tracked_independently(make_record):
+    """Two products advertised at once, differing only by LVR tier, must not collide."""
+    previous = [
+        make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.79),
+        make_record(max_lvr=0.70, min_equity=0.30, rate_pct=4.65),
+    ]
+    current = [
+        make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.59, observed_at=DAY_TWO),
+        make_record(max_lvr=0.70, min_equity=0.30, rate_pct=4.65, observed_at=DAY_TWO),
+    ]
+
+    changes = detect_changes(previous, current)
+
+    assert len(changes) == 1
+    assert changes[0].previous_rate_pct == 4.79
+    assert changes[0].current_rate_pct == 4.59
+
+
+def test_two_simultaneous_eligibility_edits_at_once_fall_back_to_new_and_removed(make_record):
+    """An ambiguous pairing (which tier changed to which?) is not guessed at."""
+    previous = [
+        make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.79),
+        make_record(max_lvr=0.70, min_equity=0.30, rate_pct=4.65),
+    ]
+    current = [
+        make_record(max_lvr=0.75, min_equity=0.25, rate_pct=4.79, observed_at=DAY_TWO),
+        make_record(max_lvr=0.65, min_equity=0.35, rate_pct=4.65, observed_at=DAY_TWO),
+    ]
+
+    changes = detect_changes(previous, current)
+
+    types = {change.change_type for change in changes}
+    assert types == {ChangeType.NEW_PRODUCT, ChangeType.REMOVED_PRODUCT}
+    assert len(changes) == 4
 
 
 def test_lvr_condition_change_is_an_eligibility_change_not_a_new_product(make_record):

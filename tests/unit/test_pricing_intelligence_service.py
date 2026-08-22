@@ -270,8 +270,9 @@ def test_a_broken_parser_is_flagged_suspicious_not_silently_accepted(fixture_fet
     assert state.state is MarketState.LOW, "a parser artefact must not fake market activity"
 
 
-def test_a_suspicious_observation_is_excluded_from_the_market_snapshot(fixture_fetcher):
-    """An unconfirmed parser artefact must not feed market-derived pricing."""
+def test_a_suspicious_observation_falls_back_to_its_last_confirmed_rate(fixture_fetcher):
+    """An unconfirmed parser artefact must not feed market-derived pricing --
+    but the bank/term must fall back to its last confirmed rate, not vanish."""
 
     def break_kiwibank(bank, html):
         if bank == "Kiwibank":
@@ -284,8 +285,7 @@ def test_a_suspicious_observation_is_excluded_from_the_market_snapshot(fixture_f
         service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
         snapshot = service.get_market_snapshot(now=DAY_TWO)
 
-    term_36 = snapshot.term(36)
-    assert term_36 is None or "Kiwibank" not in {entry.bank for entry in term_36.entries}
+    assert snapshot.term(36).rate_for("Kiwibank") == 5.35
 
 
 def test_a_suspicious_observation_is_excluded_from_the_competitor_assumption(fixture_fetcher):
