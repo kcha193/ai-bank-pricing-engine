@@ -444,6 +444,186 @@ def test_check_lift_monotonicity_passes_for_good_model():
     assert result.is_monotone is True
 
 
+class OfferedRateIncreasingModel:
+    """Toy model: acceptance = 0.1 + 5 * offered_rate (clipped)."""
+
+    def predict_proba(self, features):
+        prob = 0.1 + 5.0 * features["offered_rate"].to_numpy()
+        prob = np.clip(prob, 0.01, 0.99)
+        return np.column_stack([1 - prob, prob])
+
+
+def test_compute_rate_uplift_reports_negative_uplift_for_decreasing_model():
+    from balance_pricing_engine.modelling.evaluation import compute_rate_uplift
+
+    dataset = _minimal_dataset()
+    result = compute_rate_uplift(
+        OfferedRateDecreasingModel(),
+        dataset,
+        ["offered_rate", "feat_b"],
+        "offered_rate",
+        baseline_rate=0.075,
+        treatment_rate=0.085,
+    )
+
+    assert set(result) == {"baseline_probability", "treatment_probability", "uplift", "uplift_pct"}
+    assert result["uplift"] == pytest.approx(
+        result["treatment_probability"] - result["baseline_probability"]
+    )
+    assert result["uplift"] < 0
+
+
+def test_compute_rate_uplift_reports_positive_uplift_for_increasing_model():
+    from balance_pricing_engine.modelling.evaluation import compute_rate_uplift
+
+    dataset = _minimal_dataset()
+    result = compute_rate_uplift(
+        OfferedRateIncreasingModel(),
+        dataset,
+        ["offered_rate", "feat_b"],
+        "offered_rate",
+        baseline_rate=0.075,
+        treatment_rate=0.085,
+    )
+    assert result["uplift"] > 0
+
+
+def test_compute_rate_uplift_pct_matches_relative_change():
+    from balance_pricing_engine.modelling.evaluation import compute_rate_uplift
+
+    dataset = _minimal_dataset()
+    result = compute_rate_uplift(
+        OfferedRateDecreasingModel(),
+        dataset,
+        ["offered_rate", "feat_b"],
+        "offered_rate",
+        baseline_rate=0.075,
+        treatment_rate=0.085,
+    )
+    expected_pct = result["uplift"] / result["baseline_probability"] * 100
+    assert result["uplift_pct"] == pytest.approx(expected_pct)
+
+
+class CompetitorGapOnlyModel:
+    """Toy model: responds only to rate_gap_to_competitor, ignores offered_rate itself."""
+
+    def predict_proba(self, features):
+        probability = 0.5 + 5.0 * features["rate_gap_to_competitor"].to_numpy()
+        probability = np.clip(probability, 0.01, 0.99)
+        return np.column_stack([1 - probability, probability])
+
+
+def test_compute_rate_uplift_recomputes_competitor_gap_for_offered_rate_scenarios():
+    """Varying offered_rate must recompute rate_gap_to_competitor for each scenario, or a
+    model that only responds to the gap sees no change and reports zero uplift even though
+    the rate genuinely moved relative to the competitor.
+    """
+    from balance_pricing_engine.modelling.evaluation import compute_rate_uplift
+
+    n = 50
+    competitor_rate = 0.05
+    baseline_rate = 0.06
+    dataset = pd.DataFrame(
+        {
+            "offered_rate": np.full(n, baseline_rate),
+            "competitor_rate": np.full(n, competitor_rate),
+            "rate_gap_to_competitor": np.full(n, baseline_rate - competitor_rate),
+        }
+    )
+
+    result = compute_rate_uplift(
+        CompetitorGapOnlyModel(),
+        dataset,
+        ["offered_rate", "rate_gap_to_competitor"],
+        "offered_rate",
+        baseline_rate=baseline_rate,
+        treatment_rate=0.08,
+    )
+
+    expected_baseline = 0.5 + 5.0 * (baseline_rate - competitor_rate)
+    expected_treatment = 0.5 + 5.0 * (0.08 - competitor_rate)
+    assert result["baseline_probability"] == pytest.approx(expected_baseline)
+    assert result["treatment_probability"] == pytest.approx(expected_treatment)
+    assert result["uplift"] == pytest.approx(expected_treatment - expected_baseline)
+
+
+def test_compute_rate_uplift_recomputes_competitor_gap_for_competitor_rate_scenarios():
+    """Varying competitor_rate must also recompute rate_gap_to_competitor (as
+    offered_rate - value), not just offered_rate scenarios.
+    """
+    from balance_pricing_engine.modelling.evaluation import compute_rate_uplift
+
+    n = 50
+    offered_rate = 0.06
+    baseline_competitor_rate = 0.05
+    dataset = pd.DataFrame(
+        {
+            "offered_rate": np.full(n, offered_rate),
+            "competitor_rate": np.full(n, baseline_competitor_rate),
+            "rate_gap_to_competitor": np.full(n, offered_rate - baseline_competitor_rate),
+        }
+    )
+
+    result = compute_rate_uplift(
+        CompetitorGapOnlyModel(),
+        dataset,
+        ["competitor_rate", "rate_gap_to_competitor"],
+        "competitor_rate",
+        baseline_rate=baseline_competitor_rate,
+        treatment_rate=0.07,
+    )
+
+    expected_baseline = 0.5 + 5.0 * (offered_rate - baseline_competitor_rate)
+    expected_treatment = 0.5 + 5.0 * (offered_rate - 0.07)
+    assert result["baseline_probability"] == pytest.approx(expected_baseline)
+    assert result["treatment_probability"] == pytest.approx(expected_treatment)
+    assert result["uplift"] == pytest.approx(expected_treatment - expected_baseline)
+
+
+def test_compute_rate_uplift_raises_when_feature_not_in_feature_columns():
+    from balance_pricing_engine.modelling.evaluation import compute_rate_uplift
+
+    dataset = _minimal_dataset()
+    with pytest.raises(ValueError, match="not in feature_columns"):
+        compute_rate_uplift(
+            OfferedRateDecreasingModel(),
+            dataset,
+            ["feat_b"],
+            "offered_rate",
+            baseline_rate=0.07,
+            treatment_rate=0.08,
+        )
+
+
+class OfferedRateDecreasingResponseModelWrapper:
+    """Toy stand-in for this package's ResponseModel wrappers (LogisticResponseModel,
+    HistGBMResponseModel, BootstrapEnsembleResponseModel, ...): exposes
+    predict_probability(data, feature_columns), not predict_proba(X). compute_rate_uplift
+    must dispatch to this method rather than assuming a raw sklearn estimator.
+    """
+
+    def predict_probability(self, data, feature_columns):
+        prob = 0.9 - 5.0 * data["offered_rate"].to_numpy()
+        return np.clip(prob, 0.01, 0.99)
+
+
+def test_compute_rate_uplift_supports_response_model_wrappers():
+    from balance_pricing_engine.modelling.evaluation import compute_rate_uplift
+
+    dataset = _minimal_dataset()
+
+    result = compute_rate_uplift(
+        OfferedRateDecreasingResponseModelWrapper(),
+        dataset,
+        ["offered_rate", "feat_b"],
+        "offered_rate",
+        baseline_rate=0.075,
+        treatment_rate=0.085,
+    )
+
+    assert result["uplift"] < 0
+
+
 def test_check_lift_monotonicity_fails_for_random_predictions():
     rng = np.random.default_rng(99)
     observed_rates = rng.uniform(0.1, 0.9, size=10).tolist()

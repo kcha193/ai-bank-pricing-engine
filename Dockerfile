@@ -36,7 +36,12 @@ EXPOSE 8000
 # Container-level health check backed by the app's own /health endpoint.
 # Kubernetes/other orchestrators should still probe /health (liveness) and
 # /ready (readiness) directly rather than relying solely on this.
+# Tries plain HTTP first (default), then HTTPS with cert validation skipped
+# (-k) for the case where PRICING_ENGINE_TLS_CERTFILE/KEYFILE enable direct
+# TLS with a self-signed or internal-CA cert — see docs/deployment.md.
+# Reads PRICING_ENGINE_API_PORT (defaulting to 8000, matching server.py's own default)
+# so a container started with a non-default port isn't probed on the wrong one.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -fsS http://localhost:${PRICING_ENGINE_API_PORT:-8000}/health || curl -fsSk https://localhost:${PRICING_ENGINE_API_PORT:-8000}/health || exit 1
 
-CMD ["uvicorn", "balance_pricing_engine.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "balance_pricing_engine.api.server"]

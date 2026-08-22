@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
@@ -19,6 +20,15 @@ from balance_pricing_engine.modelling.models import (
     fit_response_model,
     predict_response_probability,
 )
+
+LIFT_STABILITY_COLUMNS = [
+    "decile",
+    "mean_lift",
+    "std_lift",
+    "coefficient_of_variation",
+    "min_lift",
+    "max_lift",
+]
 
 
 def train_response_model_report(
@@ -179,4 +189,93 @@ def build_champion_challenger_report(
         "recommendation": recommendation,
         "reason": reason,
         "log_loss_improvement": log_loss_improvement,
+    }
+
+
+def build_lift_stability_report(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    n_deciles: int = 10,
+    n_bootstrap: int = 200,
+    random_state: int = 42,
+    max_cv_threshold: float = 0.5,
+) -> dict[str, Any]:
+    """Bootstrap-resample scored predictions to assess decile lift stability under sampling noise.
+
+    Resamples (y_true, y_pred) pairs with replacement `n_bootstrap` times, recomputing the
+    decile lift table each draw. Reports how often the lift ordering stays monotone and how
+    much each decile's lift varies across draws — not model-refit stability across training
+    splits, which is a different (and much more expensive) question. Draws containing only
+    one target class (likely with low-prevalence outcomes) have undefined lift and are
+    redrawn rather than counted, so `n_bootstrap` always reflects valid draws.
+    """
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    if len(y_true) != len(y_pred):
+        raise ValueError("y_true and y_pred must have the same length.")
+    if len(y_true) == 0:
+        raise ValueError("y_true and y_pred must be non-empty.")
+    if n_bootstrap < 1:
+        raise ValueError("n_bootstrap must be at least 1.")
+    rng = np.random.default_rng(random_state)
+    n = len(y_true)
+
+    lift_draws: list[list[float]] = [[] for _ in range(n_deciles)]
+    monotone_count = 0
+    valid_draws = 0
+    max_attempts = n_bootstrap * 20
+    attempts = 0
+    while valid_draws < n_bootstrap:
+        attempts += 1
+        if attempts > max_attempts:
+            raise ValueError(
+                f"Could not draw {n_bootstrap} bootstrap resamples containing both target "
+                f"classes after {max_attempts} attempts; the outcome is too rare/rare-free "
+                "for lift stability estimation."
+            )
+        idx = rng.integers(0, n, size=n)
+        # A resample with only one target class has an undefined population rate, so
+        # compute_lift_table() returns NaN lift for every decile and would silently
+        # poison the mean/std aggregation below. Skip and redraw instead.
+        if len(np.unique(y_true[idx])) < 2:
+            continue
+        table = compute_lift_table(y_true[idx], y_pred[idx], n_deciles=n_deciles)
+        valid_draws += 1
+        if check_lift_monotonicity(table).is_monotone:
+            monotone_count += 1
+        for row in table.itertuples():
+            lift_draws[row.decile - 1].append(row.lift)
+
+    rows = []
+    for decile, lifts in enumerate(lift_draws, start=1):
+        arr = np.array(lifts)
+        mean_lift = float(np.mean(arr))
+        std_lift = float(np.std(arr))
+        rows.append(
+            {
+                "decile": decile,
+                "mean_lift": mean_lift,
+                "std_lift": std_lift,
+                "coefficient_of_variation": std_lift / mean_lift if mean_lift else float("nan"),
+                "min_lift": float(np.min(arr)),
+                "max_lift": float(np.max(arr)),
+            }
+        )
+    stability_table = pd.DataFrame(rows, columns=LIFT_STABILITY_COLUMNS)
+
+    monotonicity_pass_rate = monotone_count / n_bootstrap
+    max_cv = float(stability_table["coefficient_of_variation"].max())
+    is_stable = monotonicity_pass_rate >= 0.8 and max_cv <= max_cv_threshold
+    reason = (
+        f"lift ordering stayed monotone in {monotonicity_pass_rate:.0%} of {n_bootstrap} "
+        f"bootstrap resamples; max decile coefficient of variation was {max_cv:.3f} "
+        f"(threshold {max_cv_threshold:.2f})"
+    )
+
+    return {
+        "stability_table": stability_table,
+        "monotonicity_pass_rate": monotonicity_pass_rate,
+        "is_stable": is_stable,
+        "reason": reason,
+        "n_bootstrap": n_bootstrap,
     }

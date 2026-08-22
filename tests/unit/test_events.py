@@ -1,6 +1,9 @@
 """Tests for domain events and the event-publisher seam."""
 
 import json
+import sys
+import threading
+import time
 
 import pytest
 
@@ -10,9 +13,11 @@ from balance_pricing_engine.events.models import (
     pricing_decision_produced,
     pricing_scenario_requested,
 )
+import balance_pricing_engine.events.publisher as publisher_module
 from balance_pricing_engine.events.publisher import (
     InMemoryEventPublisher,
     JSONLEventPublisher,
+    KafkaEventPublisher,
     NoOpEventPublisher,
     publish_safely,
 )
@@ -21,6 +26,30 @@ from balance_pricing_engine.events.publisher import (
 class _FailingPublisher:
     def publish(self, event: DomainEvent) -> None:
         raise RuntimeError("simulated publisher outage")
+
+
+class _FakeFuture:
+    def __init__(self, *, raises: Exception | None = None):
+        self._raises = raises
+        self.get_called_with_timeout: float | None = None
+
+    def get(self, timeout=None):
+        self.get_called_with_timeout = timeout
+        if self._raises is not None:
+            raise self._raises
+        return None
+
+
+class _FakeKafkaProducer:
+    def __init__(self, *, raises: Exception | None = None):
+        self.sent: list[tuple[str, str]] = []
+        self._raises = raises
+        self.last_future: _FakeFuture | None = None
+
+    def send(self, topic, value):
+        self.sent.append((topic, value))
+        self.last_future = _FakeFuture(raises=self._raises)
+        return self.last_future
 
 
 def test_domain_event_has_stable_envelope_fields():
@@ -116,9 +145,251 @@ def test_publish_safely_calls_through_on_success():
     assert publisher.events == [event]
 
 
+class _SlowPublisher:
+    """Blocks well past any reasonable deadline, simulating a hung broker connection."""
+
+    def __init__(self, *, block_seconds: float, raises: Exception | None = None):
+        self._block_seconds = block_seconds
+        self._raises = raises
+        self.finished = threading.Event()
+
+    def publish(self, event) -> None:
+        time.sleep(self._block_seconds)
+        self.finished.set()
+        if self._raises is not None:
+            raise self._raises
+
+
+def test_publish_safely_does_not_block_past_the_deadline():
+    publisher = _SlowPublisher(block_seconds=1.0)
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    start = time.monotonic()
+    publish_safely(publisher, event, deadline_seconds=0.05)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 0.5
+    publisher.finished.wait(timeout=2.0)  # let the background publish finish before teardown
+
+
+def test_publish_safely_logs_timeout_without_raising(caplog):
+    publisher = _SlowPublisher(block_seconds=1.0)
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    with caplog.at_level("WARNING"):
+        publish_safely(publisher, event, deadline_seconds=0.05)  # must not raise
+
+    assert any("exceeded" in record.message for record in caplog.records)
+    publisher.finished.wait(timeout=2.0)
+
+
+def test_publish_safely_logs_late_failure_after_timeout(caplog):
+    publisher = _SlowPublisher(block_seconds=0.2, raises=RuntimeError("late broker error"))
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    with caplog.at_level("WARNING"):
+        publish_safely(publisher, event, deadline_seconds=0.05)
+        publisher.finished.wait(timeout=2.0)
+        time.sleep(0.05)  # let the background thread's except block log after it raises
+
+    messages = [record.message for record in caplog.records]
+    assert any("exceeded" in m for m in messages)
+    assert any("Failed to publish event" in m for m in messages)
+
+
+def test_publish_safely_uses_a_fresh_thread_per_call_not_a_shared_pool(caplog):
+    """A bounded shared worker pool would let enough hung publishers permanently pin every
+    worker, adding the full deadline to every later request's publishes indefinitely. A
+    thread per call has no such ceiling: many hung calls in a row must each still return
+    within their own deadline, not queue behind previous ones.
+    """
+    hang = threading.Event()
+
+    class _HangingPublisher:
+        def publish(self, event) -> None:
+            hang.wait()  # blocks until the test releases it, simulating a dead connection
+
+    publisher = _HangingPublisher()
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    try:
+        for _ in range(8):
+            start = time.monotonic()
+            publish_safely(publisher, event, deadline_seconds=0.05)
+            elapsed = time.monotonic() - start
+            assert elapsed < 0.5
+    finally:
+        hang.set()  # release the abandoned threads so they don't leak past the test
+
+
+def test_publish_safely_drops_events_once_the_concurrency_cap_is_reached(monkeypatch, caplog):
+    """An uncapped thread-per-call would let a permanently hung publisher accumulate one
+    abandoned thread per publish call forever, eventually exhausting the process's thread
+    limit and making Thread.start() itself raise. The shared semaphore bounds how many
+    hung calls may be in flight at once: once the cap is reached, further calls must be
+    dropped immediately (not spawn a thread, not wait out the deadline) rather than add to
+    the pile.
+    """
+    monkeypatch.setattr(publisher_module, "_publish_slots", threading.Semaphore(2))
+    hang = threading.Event()
+
+    class _HangingPublisher:
+        def publish(self, event) -> None:
+            hang.wait()
+
+    publisher = _HangingPublisher()
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    try:
+        # Fill both slots with calls that never return within the deadline.
+        publish_safely(publisher, event, deadline_seconds=0.05)
+        publish_safely(publisher, event, deadline_seconds=0.05)
+
+        with caplog.at_level("WARNING"):
+            start = time.monotonic()
+            publish_safely(publisher, event, deadline_seconds=0.05)
+            elapsed = time.monotonic() - start
+
+        assert elapsed < 0.03  # dropped immediately, did not wait out the 0.05s deadline
+        assert any("Dropping event publish" in r.message for r in caplog.records)
+    finally:
+        hang.set()
+
+
+def test_publish_safely_releases_its_slot_and_does_not_raise_if_thread_start_fails(
+    monkeypatch, caplog
+):
+    """If Thread.start() itself raises (e.g. RuntimeError: can't start new thread under
+    OS thread-limit pressure — exactly the scenario the concurrency cap exists to keep
+    this codebase away from, but a process-wide limit could still be hit for other
+    reasons), publish_safely() must neither raise (it must never fail a pricing decision)
+    nor leak the semaphore slot it had already acquired.
+    """
+    monkeypatch.setattr(publisher_module, "_publish_slots", threading.Semaphore(1))
+    monkeypatch.setattr(
+        threading.Thread,
+        "start",
+        lambda self: (_ for _ in ()).throw(RuntimeError("can't start new thread")),
+    )
+    publisher = InMemoryEventPublisher()
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    with caplog.at_level("WARNING"):
+        publish_safely(publisher, event)  # must not raise
+
+    assert any("Failed to start event-publish thread" in r.message for r in caplog.records)
+    # The slot must have been released, not leaked: it can be acquired again immediately.
+    assert publisher_module._publish_slots.acquire(blocking=False)
+
+
+def test_publish_safely_releases_the_semaphore_instance_it_acquired(monkeypatch):
+    """If `_publish_slots` is reassigned while an earlier background publish is still in
+    flight (as happens when tests -- or a module reload -- swap it mid-run), the release
+    must go to the instance actually acquired, not whatever instance the module attribute
+    currently points at. Releasing into the wrong instance over-increments it and defeats
+    its concurrency cap.
+    """
+    release_log: list[str] = []
+
+    class _TrackedSemaphore(threading.Semaphore):
+        def __init__(self, value: int, name: str):
+            super().__init__(value)
+            self._name = name
+
+        def release(self, n: int = 1) -> None:
+            release_log.append(self._name)
+            super().release(n)
+
+    original = _TrackedSemaphore(1, "original")
+    replacement = _TrackedSemaphore(1, "replacement")
+    monkeypatch.setattr(publisher_module, "_publish_slots", original)
+
+    hang = threading.Event()
+
+    class _HangingPublisher:
+        def publish(self, event) -> None:
+            hang.wait()
+
+    publisher = _HangingPublisher()
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    publish_safely(publisher, event, deadline_seconds=0.05)  # acquires original's only slot
+    monkeypatch.setattr(publisher_module, "_publish_slots", replacement)
+
+    hang.set()  # let the background publish return so its `finally` releases a slot
+    deadline = time.monotonic() + 2.0
+    while not release_log and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert release_log == ["original"]
+
+
 @pytest.mark.parametrize("publisher_cls", [NoOpEventPublisher, InMemoryEventPublisher])
 def test_publishers_satisfy_the_protocol_signature(publisher_cls):
     publisher = publisher_cls()
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    result = publisher.publish(event)
+
+    assert result is None
+
+
+def test_kafka_publisher_sends_event_json_to_configured_topic():
+    producer = _FakeKafkaProducer()
+    publisher = KafkaEventPublisher(topic="pricing-events", producer=producer)
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    result = publisher.publish(event)
+
+    assert result is None
+    assert producer.sent == [("pricing-events", event.to_json())]
+
+
+class _FalseyFakeKafkaProducer(_FakeKafkaProducer):
+    """A producer whose truthiness reflects 'no messages sent yet' via __len__ -- must
+    still be used as-is when explicitly injected, not silently replaced by a real
+    KafkaProducer connecting to bootstrap_servers."""
+
+    def __len__(self) -> int:
+        return len(self.sent)
+
+
+def test_kafka_publisher_preserves_an_explicitly_injected_falsey_producer():
+    producer = _FalseyFakeKafkaProducer()
+    publisher = KafkaEventPublisher(topic="pricing-events", producer=producer)
+
+    assert publisher._producer is producer
+
+
+def test_kafka_publisher_blocks_on_send_future_ack():
+    producer = _FakeKafkaProducer()
+    publisher = KafkaEventPublisher(topic="pricing-events", producer=producer)
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    publisher.publish(event)
+
+    assert producer.last_future.get_called_with_timeout is not None
+
+
+def test_kafka_publisher_propagates_send_failures():
+    producer = _FakeKafkaProducer(raises=RuntimeError("broker unavailable"))
+    publisher = KafkaEventPublisher(topic="pricing-events", producer=producer)
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    with pytest.raises(RuntimeError, match="broker unavailable"):
+        publisher.publish(event)
+
+
+def test_kafka_publisher_raises_import_error_when_library_missing(monkeypatch):
+    monkeypatch.setitem(sys.modules, "kafka", None)
+
+    with pytest.raises(ImportError, match="kafka-python"):
+        KafkaEventPublisher(topic="pricing-events")
+
+
+def test_kafka_publisher_satisfies_the_protocol_signature():
+    producer = _FakeKafkaProducer()
+    publisher = KafkaEventPublisher(topic="pricing-events", producer=producer)
     event = pricing_scenario_requested("corr-1", scenario_name="baseline")
 
     result = publisher.publish(event)

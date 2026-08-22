@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import threading
+import time
 from importlib.metadata import PackageNotFoundError
 from types import SimpleNamespace
 
@@ -16,7 +18,7 @@ from balance_pricing_engine.application.pricing_service import PricingService
 from balance_pricing_engine.competitor_rates.apply import apply_competitor_rates_to_config
 from balance_pricing_engine.competitor_rates.store import load_rate_run
 from balance_pricing_engine.config import EngineConfig, load_config
-from balance_pricing_engine.events.models import DomainEvent
+from balance_pricing_engine.events.models import DomainEvent, pricing_scenario_requested
 from balance_pricing_engine.events.publisher import InMemoryEventPublisher
 from balance_pricing_engine.governance.gates import DecisionStatus
 from balance_pricing_engine.modelling.agentic import ModelRegistry
@@ -163,6 +165,81 @@ def test_run_scenario_with_failing_event_publisher_still_returns_decision():
         DecisionStatus.REVIEW_REQUIRED,
         DecisionStatus.BLOCKED,
     )
+
+
+def test_run_scenario_bounds_total_publish_wait_to_one_request_wide_deadline(monkeypatch):
+    """_run_scenario calls publish_safely several times per request (request + two
+    model-resolution + outcome events). Joining a fresh DEFAULT_PUBLISH_DEADLINE_SECONDS
+    on every one of those calls against a hung publisher would let a single broken
+    publisher add several multiples of that deadline to every request; a shared
+    request-wide budget must keep the total added wait near one deadline's worth
+    regardless of how many events the request happens to publish.
+    """
+    monkeypatch.setattr(pricing_service, "DEFAULT_PUBLISH_DEADLINE_SECONDS", 0.2)
+    config = _small_config()
+
+    baseline_start = time.monotonic()
+    PricingService().run_scenario(
+        PricingScenarioRequest(config=config, event_publisher=InMemoryEventPublisher())
+    )
+    baseline_elapsed = time.monotonic() - baseline_start
+
+    hang = threading.Event()
+
+    class _HangingPublisher:
+        def publish(self, event: DomainEvent) -> None:
+            hang.wait()
+
+    hung_start = time.monotonic()
+    try:
+        decision = PricingService().run_scenario(
+            PricingScenarioRequest(config=config, event_publisher=_HangingPublisher())
+        )
+    finally:
+        hang.set()
+    hung_elapsed = time.monotonic() - hung_start
+
+    assert decision.best_loan_rate > 0
+    publish_overhead = hung_elapsed - baseline_elapsed
+    # A per-call deadline would add roughly 4x DEFAULT_PUBLISH_DEADLINE_SECONDS (request +
+    # 2 model-resolution + outcome events); a shared budget adds roughly one deadline's
+    # worth. 3x leaves headroom above the fixed behaviour while still catching a
+    # regression back to per-call waiting.
+    assert publish_overhead < 3 * 0.2
+
+
+def test_publish_budget_does_not_charge_for_time_outside_publish_calls():
+    """The budget must track cumulative time actually spent inside publish() calls, not
+    wall-clock time since it was created -- an earlier version anchored an absolute
+    deadline at request start, so slow unrelated work (feature resolution, grid-search
+    optimisation) between publishes silently consumed the whole budget before the first
+    real publish, forcing every later call to a 0s join even with a healthy publisher.
+    """
+    budget = pricing_service._RequestPublishBudget(total_seconds=0.2)
+    publisher = InMemoryEventPublisher()
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    budget.publish(publisher, event)  # fast/healthy call, consumes ~0s of the budget
+    time.sleep(0.3)  # simulate slow work between publishes (e.g. optimisation)
+
+    assert budget.remaining > 0.15
+
+
+def test_publish_budget_decreases_by_actual_publish_wait_time():
+    budget = pricing_service._RequestPublishBudget(total_seconds=0.2)
+    hang = threading.Event()
+
+    class _HangingPublisher:
+        def publish(self, event: DomainEvent) -> None:
+            hang.wait()
+
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+    try:
+        budget.publish(_HangingPublisher(), event)
+    finally:
+        hang.set()
+
+    assert budget.remaining < 0.05
 
 
 def test_persist_ledger_requires_config_path():

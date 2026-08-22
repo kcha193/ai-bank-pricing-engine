@@ -1,7 +1,10 @@
+import numpy as np
 import pandas as pd
+import pytest
 
 from balance_pricing_engine.modelling.evaluation import LIFT_COLUMNS
 from balance_pricing_engine.modelling.reports import build_champion_challenger_report
+from balance_pricing_engine.modelling.reports import build_lift_stability_report
 from balance_pricing_engine.modelling.reports import train_response_model_report
 
 
@@ -209,3 +212,139 @@ def test_train_response_model_report_includes_lift_table():
     assert "lift_table" in report
     assert isinstance(report["lift_table"], pd.DataFrame)
     assert list(report["lift_table"].columns) == LIFT_COLUMNS
+
+
+def _strong_signal_arrays(n: int = 400, seed: int = 0):
+    rng = np.random.default_rng(seed)
+    y_pred = np.linspace(1.0, 0.0, n)
+    y_true = (np.arange(n) < n // 2).astype(int)
+    permutation = rng.permutation(n)
+    return y_true[permutation], y_pred[permutation]
+
+
+def _random_signal_arrays(n: int = 400, seed: int = 1):
+    rng = np.random.default_rng(seed)
+    y_pred = rng.uniform(0, 1, size=n)
+    y_true = rng.integers(0, 2, size=n)
+    return y_true, y_pred
+
+
+def test_build_lift_stability_report_rejects_non_positive_n_bootstrap():
+    """n_bootstrap=0 used to skip the sampling loop entirely and then raise a confusing
+    'zero-size array to reduction operation minimum' from np.min() on an empty draw list.
+    """
+    y_true, y_pred = _strong_signal_arrays()
+
+    with pytest.raises(ValueError, match="n_bootstrap"):
+        build_lift_stability_report(y_true, y_pred, n_deciles=5, n_bootstrap=0)
+
+
+def test_build_lift_stability_report_structure():
+    y_true, y_pred = _strong_signal_arrays()
+    report = build_lift_stability_report(
+        y_true, y_pred, n_deciles=5, n_bootstrap=50, random_state=42
+    )
+
+    assert list(report["stability_table"].columns) == [
+        "decile",
+        "mean_lift",
+        "std_lift",
+        "coefficient_of_variation",
+        "min_lift",
+        "max_lift",
+    ]
+    assert len(report["stability_table"]) == 5
+    assert report["n_bootstrap"] == 50
+    assert isinstance(report["monotonicity_pass_rate"], float)
+    assert isinstance(report["is_stable"], bool)
+    assert isinstance(report["reason"], str) and report["reason"]
+
+
+def test_build_lift_stability_report_coefficient_of_variation_matches_mean_and_std():
+    y_true, y_pred = _strong_signal_arrays()
+    report = build_lift_stability_report(
+        y_true, y_pred, n_deciles=5, n_bootstrap=50, random_state=42
+    )
+
+    table = report["stability_table"]
+    for _, row in table.iterrows():
+        if row["mean_lift"] != 0:
+            expected_cv = row["std_lift"] / row["mean_lift"]
+            assert row["coefficient_of_variation"] == pytest.approx(expected_cv)
+
+
+def test_build_lift_stability_report_is_stable_matches_its_own_thresholds():
+    y_true, y_pred = _strong_signal_arrays()
+    max_cv_threshold = 0.5
+    report = build_lift_stability_report(
+        y_true,
+        y_pred,
+        n_deciles=5,
+        n_bootstrap=50,
+        random_state=42,
+        max_cv_threshold=max_cv_threshold,
+    )
+
+    expected_is_stable = (
+        report["monotonicity_pass_rate"] >= 0.8
+        and report["stability_table"]["coefficient_of_variation"].max() <= max_cv_threshold
+    )
+    assert report["is_stable"] == expected_is_stable
+
+
+def test_build_lift_stability_report_pass_rate_higher_for_strong_signal_than_random():
+    strong_true, strong_pred = _strong_signal_arrays(n=400, seed=0)
+    random_true, random_pred = _random_signal_arrays(n=400, seed=1)
+
+    strong_report = build_lift_stability_report(
+        strong_true, strong_pred, n_deciles=5, n_bootstrap=100, random_state=42
+    )
+    random_report = build_lift_stability_report(
+        random_true, random_pred, n_deciles=5, n_bootstrap=100, random_state=42
+    )
+
+    assert strong_report["monotonicity_pass_rate"] > random_report["monotonicity_pass_rate"]
+
+
+def test_build_lift_stability_report_rejects_mismatched_lengths():
+    """Deriving n only from y_true would silently discard extra y_pred entries (or raise a
+    confusing IndexError when y_pred is shorter); reject the mismatch up front instead.
+    """
+    y_true, y_pred = _strong_signal_arrays(n=400, seed=0)
+
+    with pytest.raises(ValueError, match="same length"):
+        build_lift_stability_report(y_true, y_pred[:-1], n_deciles=5, n_bootstrap=10)
+
+
+def test_build_lift_stability_report_skips_degenerate_single_class_draws():
+    """With 2 positives among 100 rows, many bootstrap draws lose the positive class
+    entirely, which used to make compute_lift_table() return NaN lift for every decile
+    and poison the mean/std aggregation for the whole report.
+    """
+    rng = np.random.default_rng(3)
+    n = 100
+    y_true = np.zeros(n, dtype=int)
+    y_true[:2] = 1
+    y_true = rng.permutation(y_true)
+    y_pred = rng.uniform(0, 1, size=n)
+
+    report = build_lift_stability_report(
+        y_true, y_pred, n_deciles=5, n_bootstrap=100, random_state=3
+    )
+
+    assert report["n_bootstrap"] == 100
+    table = report["stability_table"]
+    assert not table[["mean_lift", "std_lift", "min_lift", "max_lift"]].isna().any().any()
+
+
+def test_build_lift_stability_report_deterministic_given_random_state():
+    y_true, y_pred = _strong_signal_arrays()
+    report1 = build_lift_stability_report(
+        y_true, y_pred, n_deciles=5, n_bootstrap=50, random_state=7
+    )
+    report2 = build_lift_stability_report(
+        y_true, y_pred, n_deciles=5, n_bootstrap=50, random_state=7
+    )
+
+    pd.testing.assert_frame_equal(report1["stability_table"], report2["stability_table"])
+    assert report1["monotonicity_pass_rate"] == report2["monotonicity_pass_rate"]

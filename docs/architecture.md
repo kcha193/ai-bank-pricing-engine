@@ -89,7 +89,8 @@ New packages supporting this flow:
   `decision_record.json`), and a narrow champion/challenger `evaluate_shadow_challenger()`
   seam. See `docs/adr/0003-governance-centred-decision-record.md`.
 - `src/balance_pricing_engine/events/`: immutable `DomainEvent`s and an `EventPublisher`
-  protocol (`NoOpEventPublisher` / `InMemoryEventPublisher` / `JSONLEventPublisher`). See
+  protocol (`NoOpEventPublisher` / `InMemoryEventPublisher` / `JSONLEventPublisher` /
+  `KafkaEventPublisher`, the last requiring the `[kafka]` extra and a real broker). See
   `docs/adr/0004-in-process-events-before-streaming-platform.md`.
 - `src/balance_pricing_engine/observability/`: structured JSON logging, correlation-ID
   propagation, and `ExecutionMetrics` stage timing — standard library only.

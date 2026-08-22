@@ -42,10 +42,17 @@ and the LLM decision-support layer are all live. 369 tests pass; ruff clean.
 - **Governance:** Explainability controls, strict monitoring, and stronger model risk review.
 - **Integration:** Optional dependency adapters and offline scoring artifacts.
 - **Done:** `HistGBMResponseModel` as first Tier-2 challenger (sklearn, no extra deps),
-  feature importances in model cards, partial dependence + monotonicity checks in `evaluation.py`.
-- **Remaining:** LightGBM/XGBoost adapters (defer until Tier-2 champion approved),
-  uplift/quantile uncertainty models, lift/decile stability report,
-  champion/challenger comparison report (`train_response_models.py` + `reports.py`).
+  feature importances in model cards, partial dependence + monotonicity checks in `evaluation.py`,
+  champion/challenger comparison report (`build_champion_challenger_report` in `reports.py`),
+  lift/decile stability report (`build_lift_stability_report` in `reports.py` — bootstrap-resamples
+  scored predictions to assess decile lift stability under sampling noise), rate uplift estimation
+  (`compute_rate_uplift` in `evaluation.py` — two-point scenario comparison via
+  `compute_partial_dependence`, not a trained causal uplift model; the synthetic generators have
+  no treatment/control structure to train one against), quantile uncertainty via bootstrap ensemble
+  (`BootstrapEnsembleResponseModel` in `agentic.py` — `predict_probability_quantiles` exposes
+  per-row uncertainty bands from replica spread; `predict_probability` returns the ensemble mean
+  so it slots into `train()` candidates like any other `ResponseModel`).
+- **Remaining:** LightGBM/XGBoost adapters (defer until Tier-2 champion approved).
 
 ### Tier 3 — Deep learning / representation ⬜ not started
 
@@ -65,8 +72,10 @@ and the LLM decision-support layer are all live. 369 tests pass; ruff clean.
 - **Done:** `ScenarioNarrativeAgent` (narration + structured fallback + audit log),
   `ConfigAnomalyChecker` (rule-backed, no LLM required), competitor-rate ingestion pipeline
   with CLI (`fetch | validate | apply | report`), `[llm]` optional extra,
-  `NLScenarioInterface` with approval gate + audit log (`llm/scenario_interface.py`, P3-5).
-- **Remaining:** Model validation report drafting (human sign-off).
+  `NLScenarioInterface` with approval gate + audit log (`llm/scenario_interface.py`, P3-5),
+  `ModelValidationReportAgent` (validation-report narration + structured fallback + audit log,
+  `llm/model_validation.py`).
+- **Remaining:** none.
 
 ## LLM use-case assessment
 
@@ -76,7 +85,7 @@ and the LLM decision-support layer are all live. 369 tests pass; ruff clean.
 | Scenario explanation / narration | **Live** | `ScenarioNarrativeAgent`; deterministic fallback |
 | Config anomaly detection | **Live** | `ConfigAnomalyChecker`; pure-rules, no LLM required |
 | Natural language scenario-run interface | **Live** | `NLScenarioInterface`; schema validation + approval gate + audit log |
-| Model validation report drafting | **Safe with controls** | Human sign-off mandatory; not yet implemented |
+| Model validation report drafting | **Live** | `ModelValidationReportAgent`; deterministic fallback; human sign-off still mandatory before approval |
 | Synthetic data support | **Future only** | Bias/control risk |
 | Customer-level pricing explanation | **Not recommended** | Until customer-level decisioning + mature governance |
 

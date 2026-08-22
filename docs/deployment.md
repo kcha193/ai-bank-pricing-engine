@@ -134,19 +134,69 @@ There is no database-backed ledger store in this prototype; the filesystem direc
 The following are explicitly out of scope for this prototype and must be addressed before
 any real production use:
 
-- **Authentication/authorisation.** No auth is implemented on any endpoint. Put the
-  service behind an API gateway, mTLS, or an auth proxy before exposing it beyond a
-  trusted network.
-- **Secrets management.** No secrets are read today; if any are introduced, use a secrets
-  manager (Vault, cloud KMS, etc.), not config files or environment variables checked into
-  source control.
-- **TLS.** `uvicorn` here serves plain HTTP. Terminate TLS at a reverse proxy or load
-  balancer in front of the container.
+- **Authentication/authorisation.** **Recommended:** put the service behind an API gateway,
+  mTLS, or an auth proxy before exposing it beyond a trusted network — that's still the
+  primary control. **Opt-in defense-in-depth** for deployments with no fronting proxy: set
+  `PRICING_ENGINE_API_KEYS` (comma-separated for key rotation) and `POST /run-scenario` /
+  `POST /v1/pricing/scenarios` require a matching `X-API-Key` header (constant-time
+  comparison via `api/auth.py`); `GET /health` and `/ready` stay open, matching standard
+  orchestrator-probe convention. Unset (the default), behaviour is unchanged from before.
+- **Secrets management.** Two secrets are actively read today through
+  `secrets.provider.SecretsProvider` — protocol: `get_secret(name) -> str | None`. Both
+  default to `EnvSecretsProvider`, reading environment variables (still not committed to
+  source control):
+  - `ANTHROPIC_API_KEY` (used by the optional `[llm]` layer) — injected per call via
+    `llm.build_client(secrets_provider=...)`/`llm.is_llm_available(secrets_provider=...)`
+    (both exported from `balance_pricing_engine.llm`), so a future Vault/AWS Secrets
+    Manager/GCP Secret Manager adapter implementing the same protocol can be passed in
+    without changing call sites.
+  - `PRICING_ENGINE_API_KEYS` (the opt-in API-key auth described above) — resolved through
+    the `require_api_key` FastAPI dependency's `_default_secrets_provider`. There's no
+    per-call injection point for this one today; swapping it to a different provider means
+    overriding `api.auth._default_secrets_provider` (the pattern tests already use via
+    `app.dependency_overrides`), not a runtime config flag.
+
+  See `StaticSecretsProvider` for the test/local-dev injection pattern for either secret.
+- **TLS.** The container serves plain HTTP by default. **Recommended:** terminate TLS at a
+  reverse proxy or load balancer in front of the container — that's where cert rotation via
+  ACME/Let's Encrypt and HTTP/2 belong, and it keeps the app process out of the cert-handling
+  business. **Direct TLS** (for deployments with no fronting proxy, e.g. a bare container on an
+  internal network) is supported: set both `PRICING_ENGINE_TLS_CERTFILE` and
+  `PRICING_ENGINE_TLS_KEYFILE` to mounted cert/key paths (`resolve_tls_kwargs` in
+  `api/server.py` raises if only one is set, or if either is set but empty — fail fast on
+  partial or malformed config rather than silently falling back to plain HTTP) and the
+  launcher passes them to uvicorn. To generate a self-signed cert for local testing:
+
+  ```bash
+  openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
+    -keyout server.key -out server.crt -subj "/CN=localhost"
+  docker run --rm -p 8443:8000 \
+    -v "$(pwd)/server.crt:/certs/server.crt:ro" \
+    -v "$(pwd)/server.key:/certs/server.key:ro" \
+    -e PRICING_ENGINE_TLS_CERTFILE=/certs/server.crt \
+    -e PRICING_ENGINE_TLS_KEYFILE=/certs/server.key \
+    ai-bank-pricing-engine
+  curl -k https://localhost:8443/health
+  ```
+
 - **Durable event delivery.** `events/publisher.py` ships `NoOpEventPublisher`,
-  `InMemoryEventPublisher`, and a local `JSONLEventPublisher`. None of these survive a
-  process crash between "event constructed" and "event flushed," and none offer
-  at-least-once delivery guarantees to external consumers. A Kafka/Pub/Sub/Event Hubs
-  adapter implementing the same `EventPublisher` protocol is the documented upgrade path
+  `InMemoryEventPublisher`, `JSONLEventPublisher`, and `KafkaEventPublisher` (requires the
+  `[kafka]` extra — `pip install 'balance_pricing_engine[kafka]'`). `KafkaEventPublisher`
+  blocks on the send future's broker ack and raises on failure or timeout; the first three
+  don't survive a process crash between "event constructed" and "event flushed." In
+  practice this is still best-effort, not durable at-least-once delivery end-to-end: every
+  `PricingService` call routes publishing through `publish_safely()`, which runs the
+  publish on its own daemon thread capped at `deadline_seconds` (default 2s) — so a
+  broker that stops acknowledging sends can't stall the pricing request past that cap —
+  and logs the outcome (including a late failure that finishes after the cap) rather
+  than retrying it. A `MAX_CONCURRENT_PUBLISHES`-sized semaphore (default 16) also caps
+  how many such threads may be in flight at once, so a sustained outage drops further
+  publishes instead of leaking threads without bound. A process crash before the ack
+  leaves no recoverable copy either way. A
+  durable outbox/retry layer would be needed to close that gap. No live Kafka cluster is
+  provisioned by this repo — point `bootstrap_servers`
+  at your own broker. A Pub/Sub/Event Hubs adapter implementing the same `EventPublisher`
+  protocol is the same documented upgrade path for other clouds
   (`docs/adr/0004-in-process-events-before-streaming-platform.md`).
 - **Durable model registry.** `ModelRegistry` is a local JSON file. A multi-instance
   deployment needs a shared, concurrency-safe registry (e.g. MLflow Model Registry or a

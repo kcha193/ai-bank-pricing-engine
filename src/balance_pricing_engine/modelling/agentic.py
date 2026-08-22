@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from inspect import signature
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 import numpy as np
 import pandas as pd
@@ -34,6 +34,7 @@ __all__ = [
     "ElasticityResponseModel",
     "LogisticResponseModel",
     "HistGBMResponseModel",
+    "BootstrapEnsembleResponseModel",
     "LightGBMResponseModel",
     "XGBoostResponseModel",
     "SurvivalResponseModel",
@@ -249,6 +250,114 @@ class HistGBMResponseModel:
         if fit_data.empty or importance_data.empty:
             return train, None
         return fit_data, importance_data
+
+
+class BootstrapEnsembleResponseModel:
+    """Bootstrap ensemble exposing predictive quantile uncertainty on response probability.
+
+    Fits `n_estimators` copies of a base estimator on bootstrap-resampled training rows.
+    `predict_probability` (the ResponseModel protocol method) returns the ensemble mean, so
+    this slots into `train()` candidates unchanged. `predict_probability_quantiles` exposes the
+    spread across replicas — a sampling-noise uncertainty band, not a quantile-loss model
+    (sklearn's classifiers here have no quantile-loss objective for probabilities).
+    """
+
+    name = "BootstrapEnsembleResponseModel"
+
+    def __init__(
+        self,
+        n_estimators: int = 25,
+        random_state: int = 42,
+        base_estimator_factory: Callable[[int], Any] | None = None,
+    ):
+        if n_estimators < 1:
+            raise ValueError(f"n_estimators must be >= 1, got {n_estimators}.")
+        self._n_estimators = n_estimators
+        self._random_state = random_state
+        # `is None`, not `or`: a factory whose __bool__/__len__ makes it falsey (e.g. a
+        # bound-method or partial wrapper reflecting some empty state) must still be used
+        # -- `or` would silently substitute the HistGBM default, training a different
+        # model family than the caller explicitly configured.
+        self._base_estimator_factory = (
+            build_hist_gradient_boosting_model
+            if base_estimator_factory is None
+            else base_estimator_factory
+        )
+        self._models: list[Any] = []
+
+    def fit(self, train: pd.DataFrame, feature_columns: list[str], target_column: str) -> None:
+        rng = np.random.default_rng(self._random_state)
+        n = len(train)
+        targets = train[target_column].to_numpy()
+        max_attempts = 20
+        self._models = []
+        for i in range(self._n_estimators):
+            for attempt in range(max_attempts):
+                idx = rng.integers(0, n, size=n)
+                # A single-class draw makes fit_response_model() raise for classifiers
+                # (e.g. logistic regression) that require both target classes present.
+                if len(np.unique(targets[idx])) >= 2:
+                    break
+            else:
+                raise ValueError(
+                    f"Could not draw a bootstrap resample containing both target classes "
+                    f"for estimator {i} after {max_attempts} attempts; the outcome is too "
+                    "rare for bootstrap ensembling."
+                )
+            resampled = train.iloc[idx]
+            estimator = self._base_estimator_factory(self._random_state + i)
+            fit_response_model(estimator, resampled, feature_columns, target_column)
+            self._models.append(estimator)
+
+    def predict_probability(self, data: pd.DataFrame, feature_columns: list[str]) -> np.ndarray:
+        return self._predict_matrix(data, feature_columns).mean(axis=0)
+
+    def predict_probability_quantiles(
+        self,
+        data: pd.DataFrame,
+        feature_columns: list[str],
+        quantiles: tuple[float, ...] = (0.1, 0.5, 0.9),
+    ) -> pd.DataFrame:
+        matrix = self._predict_matrix(data, feature_columns)
+        labels = [f"q{int(round(q * 100))}" for q in quantiles]
+        if len(set(labels)) != len(labels):
+            # Distinct quantiles that round to the same integer percentage (e.g. 0.101
+            # and 0.104) would otherwise collide in the dict comprehension below, and the
+            # later one would silently overwrite the earlier -- returning fewer
+            # uncertainty bands than requested with no indication anything was dropped.
+            raise ValueError(
+                f"quantiles {quantiles} produce colliding column labels {labels} when "
+                "rounded to the nearest integer percentage; use quantiles that round to "
+                "distinct q<NN> labels."
+            )
+        columns = {
+            label: np.quantile(matrix, q, axis=0) for label, q in zip(labels, quantiles)
+        }
+        return pd.DataFrame(columns, index=data.index)
+
+    def _predict_matrix(self, data: pd.DataFrame, feature_columns: list[str]) -> np.ndarray:
+        if not self._models:
+            raise ValueError("BootstrapEnsembleResponseModel must be fitted before scoring.")
+        return np.vstack(
+            [predict_response_probability(m, data, feature_columns) for m in self._models]
+        )
+
+    @property
+    def fitted_model(self) -> Any:
+        return self
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Drop the base-estimator factory from persisted/pickled state.
+
+        `fitted_model` returns `self`, so this whole wrapper is what gets `joblib.dump`-ed
+        as the scoring artifact. The factory is only needed during `fit()`; if a caller
+        passed a lambda/closure, persisting it makes the artifact unpicklable and
+        `joblib.dump` raises before the model can be registered. Scoring only needs the
+        already-fitted `_models`.
+        """
+        state = self.__dict__.copy()
+        state["_base_estimator_factory"] = None
+        return state
 
 
 class LightGBMResponseModel:

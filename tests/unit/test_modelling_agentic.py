@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from balance_pricing_engine.modelling.agentic import (
+    BootstrapEnsembleResponseModel,
     ElasticityBaselineModel,
     ElasticityResponseModel,
     HistGBMResponseModel,
@@ -41,7 +42,7 @@ from balance_pricing_engine.optimization.response_fn import (
     SyntheticDepositResponseFn,
     SyntheticLoanResponseFn,
 )
-from balance_pricing_engine.modelling.persistence import save_model
+from balance_pricing_engine.modelling.persistence import load_model, save_model
 from balance_pricing_engine.synthetic.customers import generate_deposit_customers, generate_loan_customers
 from balance_pricing_engine.utils.random import make_rng
 
@@ -115,6 +116,255 @@ def test_training_agent_trains_and_recommends(tmp_path):
         "LogisticResponseModel",
     }
     assert result.report_path.endswith(".json")
+
+
+def test_bootstrap_ensemble_response_model_fits_and_predicts():
+    dataset = _loan_dataset()
+    model = BootstrapEnsembleResponseModel(n_estimators=5, random_state=42)
+    train = dataset.iloc[:800]
+    test_data = dataset.iloc[800:]
+
+    model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+    probs = model.predict_probability(test_data, LOAN_FEATURE_COLUMNS)
+
+    assert probs.shape == (len(test_data),)
+    assert np.all(probs >= 0) and np.all(probs <= 1)
+
+
+def test_bootstrap_ensemble_response_model_raises_before_fit():
+    model = BootstrapEnsembleResponseModel(n_estimators=5, random_state=42)
+    df = pd.DataFrame({"offered_rate": [0.08]})
+    with pytest.raises(ValueError, match="fitted"):
+        model.predict_probability(df, ["offered_rate"])
+
+
+def test_bootstrap_ensemble_response_model_name():
+    assert BootstrapEnsembleResponseModel.name == "BootstrapEnsembleResponseModel"
+
+
+@pytest.mark.parametrize("n_estimators", [0, -1])
+def test_bootstrap_ensemble_response_model_rejects_non_positive_n_estimators(n_estimators):
+    """n_estimators <= 0 must fail immediately and actionably at construction, not let
+    fit() silently succeed with an empty model list and defer the failure to the first
+    prediction with a misleading 'must be fitted' error."""
+    with pytest.raises(ValueError, match="n_estimators"):
+        BootstrapEnsembleResponseModel(n_estimators=n_estimators)
+
+
+class _FalseyEstimatorFactory:
+    """A callable factory whose truthiness reflects 'no estimators built yet' via
+    __len__ -- must still be used as-is when explicitly injected, not silently replaced
+    by the HistGBM default (which would train a different model family than the caller
+    configured)."""
+
+    def __init__(self, build_fn):
+        self._build_fn = build_fn
+        self.calls: list[int] = []
+
+    def __len__(self) -> int:
+        return len(self.calls)
+
+    def __call__(self, random_state: int):
+        self.calls.append(random_state)
+        return self._build_fn(random_state)
+
+
+def test_bootstrap_ensemble_response_model_preserves_falsey_estimator_factory():
+    from balance_pricing_engine.modelling.models import build_logistic_regression_model
+
+    factory = _FalseyEstimatorFactory(build_logistic_regression_model)
+
+    model = BootstrapEnsembleResponseModel(
+        n_estimators=2, random_state=42, base_estimator_factory=factory
+    )
+
+    assert model._base_estimator_factory is factory
+
+
+def test_bootstrap_ensemble_response_model_quantiles_are_ordered_and_track_mean():
+    dataset = _loan_dataset()
+    model = BootstrapEnsembleResponseModel(n_estimators=10, random_state=42)
+    train = dataset.iloc[:800]
+    test_data = dataset.iloc[800:850]
+
+    model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+    quantiles = model.predict_probability_quantiles(
+        test_data, LOAN_FEATURE_COLUMNS, quantiles=(0.1, 0.5, 0.9)
+    )
+    mean_probs = model.predict_probability(test_data, LOAN_FEATURE_COLUMNS)
+
+    assert list(quantiles.columns) == ["q10", "q50", "q90"]
+    assert len(quantiles) == len(test_data)
+    assert (quantiles["q10"] <= quantiles["q50"]).all()
+    assert (quantiles["q50"] <= quantiles["q90"]).all()
+    assert np.corrcoef(quantiles["q50"], mean_probs)[0, 1] > 0.5
+    # test_data.iloc[800:850] carries index labels 800-849, not a fresh 0-49 range --
+    # quantiles must keep those labels so joining back to the scored frame aligns rows.
+    assert list(quantiles.index) == list(test_data.index)
+
+
+def test_bootstrap_ensemble_response_model_rejects_colliding_quantile_labels():
+    """Distinct quantiles that round to the same q<NN> label (e.g. 0.101 and 0.104, both
+    'q10') must raise rather than silently overwrite one uncertainty band with the
+    other in the dict comprehension, returning fewer columns than requested."""
+    dataset = _loan_dataset()
+    model = BootstrapEnsembleResponseModel(n_estimators=5, random_state=42)
+    train = dataset.iloc[:800]
+    test_data = dataset.iloc[800:820]
+    model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+
+    with pytest.raises(ValueError, match="colliding"):
+        model.predict_probability_quantiles(
+            test_data, LOAN_FEATURE_COLUMNS, quantiles=(0.101, 0.104)
+        )
+
+
+def test_bootstrap_ensemble_response_model_raises_before_fit_for_quantiles():
+    model = BootstrapEnsembleResponseModel(n_estimators=5, random_state=42)
+    df = pd.DataFrame({"offered_rate": [0.08]})
+    with pytest.raises(ValueError, match="fitted"):
+        model.predict_probability_quantiles(df, ["offered_rate"])
+
+
+def test_bootstrap_ensemble_response_model_deterministic_given_random_state():
+    dataset = _loan_dataset()
+    train = dataset.iloc[:800]
+    test_data = dataset.iloc[800:850]
+
+    model1 = BootstrapEnsembleResponseModel(n_estimators=5, random_state=7)
+    model1.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+    probs1 = model1.predict_probability(test_data, LOAN_FEATURE_COLUMNS)
+
+    model2 = BootstrapEnsembleResponseModel(n_estimators=5, random_state=7)
+    model2.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+    probs2 = model2.predict_probability(test_data, LOAN_FEATURE_COLUMNS)
+
+    np.testing.assert_array_equal(probs1, probs2)
+
+
+def test_bootstrap_ensemble_response_model_fits_with_imbalanced_target():
+    """With 2 positives among 100 rows and logistic-regression base estimators, an
+    unstratified bootstrap draw has a high chance of losing the positive class entirely,
+    which used to make fit_response_model() raise and abort the whole candidate run.
+    """
+    from balance_pricing_engine.modelling.models import build_logistic_regression_model
+
+    rng = np.random.default_rng(11)
+    n = 100
+    accepted = np.zeros(n, dtype=int)
+    accepted[:2] = 1
+    accepted = rng.permutation(accepted)
+    train = pd.DataFrame(
+        {
+            "offered_rate": rng.uniform(0.03, 0.08, size=n),
+            "competitor_rate": np.full(n, 0.05),
+            "rate_gap_to_competitor": rng.uniform(-0.02, 0.02, size=n),
+            "accepted": accepted,
+        }
+    )
+    feature_columns = ["offered_rate", "competitor_rate", "rate_gap_to_competitor"]
+
+    model = BootstrapEnsembleResponseModel(
+        n_estimators=10,
+        random_state=11,
+        base_estimator_factory=build_logistic_regression_model,
+    )
+    model.fit(train, feature_columns, "accepted")
+
+    probs = model.predict_probability(train, feature_columns)
+    assert probs.shape == (n,)
+    assert np.all(probs >= 0) and np.all(probs <= 1)
+
+
+def test_bootstrap_ensemble_response_model_drops_unpicklable_factory_from_state(tmp_path):
+    """`fitted_model` returns `self`, so a lambda/closure factory passed by the caller
+    would otherwise be persisted verbatim and make joblib.dump() raise PicklingError.
+    Round-trips through the project's own save_model/load_model (joblib) helpers, the
+    same boundary _scoring_artifact() is persisted through in production.
+    """
+    from balance_pricing_engine.modelling.models import build_hist_gradient_boosting_model
+
+    dataset = _loan_dataset()
+    train = dataset.iloc[:200]
+
+    model = BootstrapEnsembleResponseModel(
+        n_estimators=3,
+        random_state=5,
+        base_estimator_factory=lambda seed: build_hist_gradient_boosting_model(seed),
+    )
+    model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+
+    artifact_path = tmp_path / "ensemble.joblib"
+    save_model(model, artifact_path)
+    reloaded = load_model(artifact_path)
+
+    assert reloaded._base_estimator_factory is None
+    test_data = dataset.iloc[800:850]
+    probs = reloaded.predict_probability(test_data, LOAN_FEATURE_COLUMNS)
+    assert probs.shape == (len(test_data),)
+
+
+def test_bootstrap_ensemble_response_model_in_training_agent(tmp_path):
+    dataset = _loan_dataset()
+    agent = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=7,
+        ),
+        artifacts_dir=tmp_path,
+    )
+
+    result = agent.train(
+        dataset=dataset,
+        candidates={
+            "bootstrap_ensemble": BootstrapEnsembleResponseModel(n_estimators=5, random_state=7),
+        },
+        registry=agent.registry,
+        run_name="loan",
+    )
+
+    model_names = {c["model_name"] for c in result.report["candidates"]}
+    assert "BootstrapEnsembleResponseModel" in model_names
+
+
+def test_bootstrap_ensemble_response_model_champion_scores_after_persistence(tmp_path):
+    """A promoted BootstrapEnsembleResponseModel champion must survive save/load and score
+    through resolve_response_fn(), not just in-memory. `fitted_model` used to return the raw
+    list of estimators, which has neither `predict_probability` nor `predict_proba`, so the
+    approved champion failed with an AttributeError instead of scoring (or raising
+    GovernanceError) the first time the optimizer called it.
+    """
+    dataset = _loan_dataset()
+    trainer = ModelTrainingAgent(
+        config=TrainingConfig(
+            feature_columns=LOAN_FEATURE_COLUMNS,
+            target_column=LOAN_TARGET_COLUMN,
+            random_seed=42,
+        ),
+        artifacts_dir=tmp_path,
+    )
+    registry = trainer.registry
+    trainer.train(
+        dataset=dataset,
+        candidates={"bootstrap_ensemble": BootstrapEnsembleResponseModel(n_estimators=5, random_state=42)},
+        registry=registry,
+        run_name="loan_bootstrap",
+    )
+    registry.promote_champion("BootstrapEnsembleResponseModel", approver="integration_test")
+
+    scoring_agent = ModelScoringAgent(registry_path=tmp_path / "model_registry.json")
+    fallback = SyntheticLoanResponseFn(elasticity=-85.0, competitor_gap_elasticity=-65.0)
+    loan_fn = scoring_agent.resolve_response_fn(
+        feature_columns=LOAN_FEATURE_COLUMNS, fallback=fallback
+    )
+    assert isinstance(loan_fn, MLResponseFnAdapter)
+
+    customers = generate_loan_customers(50, make_rng(7))
+    probabilities = loan_fn(customers, offered_rate=0.065, competitor_rate=0.062)
+
+    assert probabilities.shape == (len(customers),)
+    assert np.all(probabilities >= 0) and np.all(probabilities <= 1)
 
 
 def test_histgbm_response_model_fits_and_predicts(tmp_path):

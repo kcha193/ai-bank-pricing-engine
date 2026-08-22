@@ -4,6 +4,7 @@ See docs/model_governance.md.
 """
 
 from balance_pricing_engine.modelling.agentic import (
+    BootstrapEnsembleResponseModel,
     ElasticityBaselineModel,
     ElasticityResponseModel,
     HistGBMResponseModel,
@@ -40,6 +41,7 @@ from balance_pricing_engine.synthetic.customers import (
 from balance_pricing_engine.utils.random import make_rng
 
 __all__ = [
+    "BootstrapEnsembleResponseModel",
     "ElasticityBaselineModel",
     "ElasticityResponseModel",
     "HistGBMResponseModel",

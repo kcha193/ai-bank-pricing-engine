@@ -61,6 +61,71 @@ def compute_partial_dependence(
     return pd.DataFrame(rows)
 
 
+def compute_rate_uplift(
+    model: Any,
+    dataset: pd.DataFrame,
+    feature_columns: list[str],
+    rate_feature: str,
+    baseline_rate: float,
+    treatment_rate: float,
+) -> dict[str, float]:
+    """Estimate the uplift in predicted response probability from changing one rate feature.
+
+    Scores an already-fitted model at two rate scenarios (holding all other features at their
+    observed values) and reports the probability delta. This is a two-point scenario
+    comparison, not a trained causal uplift model — the synthetic generators have no
+    treatment/control structure to train one against.
+
+    When `rate_feature` is `offered_rate` or `competitor_rate` and both
+    `rate_gap_to_competitor` and the other side of the gap are available,
+    `rate_gap_to_competitor` (= offered_rate - competitor_rate) is recomputed for each
+    scenario to stay consistent with the changed rate — otherwise the scenario rows would
+    be internally inconsistent and the uplift would silently omit the model's
+    competitor-gap effect, capturing only the own-rate effect.
+    """
+    if rate_feature not in feature_columns:
+        raise ValueError(f"rate_feature '{rate_feature}' is not in feature_columns.")
+    other_gap_side = {"offered_rate": "competitor_rate", "competitor_rate": "offered_rate"}.get(
+        rate_feature
+    )
+    recompute_gap = (
+        other_gap_side is not None
+        and "rate_gap_to_competitor" in feature_columns
+        and other_gap_side in dataset.columns
+    )
+
+    def _scenario_probability(value: float) -> float:
+        scenario = dataset.copy()
+        scenario[rate_feature] = value
+        if recompute_gap:
+            if rate_feature == "offered_rate":
+                scenario["rate_gap_to_competitor"] = value - dataset["competitor_rate"]
+            else:
+                scenario["rate_gap_to_competitor"] = dataset["offered_rate"] - value
+        # Support this package's ResponseModel wrappers (LogisticResponseModel,
+        # HistGBMResponseModel, BootstrapEnsembleResponseModel, ...), which expose
+        # predict_probability(data, feature_columns), not just raw sklearn estimators --
+        # matching the dispatch MLResponseFnAdapter and ModelScoringAgent already use.
+        # predict_response_probability() always calls predict_proba directly, which the
+        # wrappers don't implement.
+        if hasattr(model, "predict_probability"):
+            probability = model.predict_probability(scenario, feature_columns)
+        else:
+            probability = predict_response_probability(model, scenario, feature_columns)
+        return float(np.mean(probability))
+
+    baseline_probability = _scenario_probability(baseline_rate)
+    treatment_probability = _scenario_probability(treatment_rate)
+    uplift = treatment_probability - baseline_probability
+    uplift_pct = (uplift / baseline_probability * 100) if baseline_probability else float("nan")
+    return {
+        "baseline_probability": baseline_probability,
+        "treatment_probability": treatment_probability,
+        "uplift": uplift,
+        "uplift_pct": uplift_pct,
+    }
+
+
 def check_monotonicity(
     pdp_frame: pd.DataFrame,
     pdp_feature: str,

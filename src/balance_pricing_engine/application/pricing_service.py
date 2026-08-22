@@ -53,7 +53,7 @@ from balance_pricing_engine.events.models import (
     pricing_scenario_requested,
     run_ledger_written,
 )
-from balance_pricing_engine.events.publisher import publish_safely
+from balance_pricing_engine.events.publisher import DEFAULT_PUBLISH_DEADLINE_SECONDS, publish_safely
 from balance_pricing_engine.features.contracts import FeatureLineage
 from balance_pricing_engine.features.local_store import LocalFeatureStore
 from balance_pricing_engine.governance.decision_record import (
@@ -118,6 +118,22 @@ class PricingService:
         metrics = ExecutionMetrics(correlation_id=correlation_id, decision_id=decision_id)
         start = time.monotonic()
 
+        # One request-wide publish budget rather than a fresh deadline per call: this
+        # method calls publish_safely() up to six times (request + two model-resolution
+        # + optional ledger-written + up to two outcome events), and each call joining
+        # its own DEFAULT_PUBLISH_DEADLINE_SECONDS against a hung publisher would let a
+        # single broken publisher add several times that to every request. Once the
+        # budget is spent, later calls in the same request pass a 0s deadline: the
+        # publish still fires on its own background thread, this call just stops
+        # waiting on it. The budget tracks cumulative time actually spent inside
+        # publish_safely() calls, not wall-clock time since the request started --
+        # feature resolution and grid-search optimisation happen between the first and
+        # later publishes and can easily exceed the deadline on their own, which would
+        # otherwise force every later call to a 0s join even with a perfectly healthy
+        # publisher, and -- since publish_safely() uses daemon threads -- let a
+        # short-lived caller return before a healthy publish actually finishes.
+        publish_budget = _RequestPublishBudget()
+
         log_event(
             logger,
             "pricing_scenario.started",
@@ -125,7 +141,7 @@ class PricingService:
             decision_id=decision_id,
             scenario_name=request.scenario_name,
         )
-        publish_safely(
+        publish_budget.publish(
             request.event_publisher,
             pricing_scenario_requested(correlation_id, scenario_name=request.scenario_name),
         )
@@ -152,7 +168,9 @@ class PricingService:
             raise
 
         with stage_timer(metrics, "model_resolution"):
-            model_lineage = self._resolve_model_lineage(request, correlation_id, decision_id)
+            model_lineage = self._resolve_model_lineage(
+                request, correlation_id, decision_id, publish_budget
+            )
 
         shadow_evaluations: list[ShadowEvaluationResult] = []
         if request.enable_shadow_challenger and request.registry is not None:
@@ -195,7 +213,7 @@ class PricingService:
                     effective_config_path=effective_config_path,
                 )
                 run_id = _read_run_id(run_dir)
-                publish_safely(
+                publish_budget.publish(
                     request.event_publisher,
                     run_ledger_written(
                         correlation_id,
@@ -231,7 +249,15 @@ class PricingService:
             write_decision_record(run_dir, decision_record)
 
         self._publish_outcome_event(
-            request, correlation_id, decision_id, status, blocking, review, run_id, diagnostics
+            request,
+            correlation_id,
+            decision_id,
+            status,
+            blocking,
+            review,
+            run_id,
+            diagnostics,
+            publish_budget,
         )
         log_event(
             logger,
@@ -297,7 +323,13 @@ class PricingService:
         request: PricingScenarioRequest,
         correlation_id: str,
         decision_id: str,
+        publish_budget: _RequestPublishBudget | None = None,
     ) -> dict[str, ModelLineage]:
+        # `is None`, not `or`: matches the fix applied elsewhere in this PR for the same
+        # discard-a-falsey-injected-object pattern -- _RequestPublishBudget has no
+        # __bool__/__len__ today, but relying on `or` here would silently break if it
+        # ever gained one (e.g. "falsey once the budget is exhausted").
+        budget = _RequestPublishBudget() if publish_budget is None else publish_budget
         if request.config.segmented_pricing is not None:
             # Segmented runs return through _evaluate_adaptive_segmented_rates before
             # run_baseline_diagnostics ever calls ModelScoringAgent.resolve_response_fn
@@ -314,7 +346,7 @@ class PricingService:
                 "deposit": resolve_model_lineage(request.registry, DEPOSIT_FEATURE_COLUMNS, "deposit"),
             }
         for product, lineage in model_lineage.items():
-            publish_safely(
+            budget.publish(
                 request.event_publisher,
                 model_resolved(
                     correlation_id,
@@ -372,9 +404,15 @@ class PricingService:
         review: tuple[str, ...],
         run_id: str | None,
         diagnostics: Any,
+        publish_budget: _RequestPublishBudget | None = None,
     ) -> None:
+        # `is None`, not `or`: matches the fix applied elsewhere in this PR for the same
+        # discard-a-falsey-injected-object pattern -- _RequestPublishBudget has no
+        # __bool__/__len__ today, but relying on `or` here would silently break if it
+        # ever gained one (e.g. "falsey once the budget is exhausted").
+        budget = _RequestPublishBudget() if publish_budget is None else publish_budget
         if status is DecisionStatus.BLOCKED:
-            publish_safely(
+            budget.publish(
                 request.event_publisher,
                 pricing_decision_blocked(
                     correlation_id,
@@ -385,7 +423,7 @@ class PricingService:
                 ),
             )
         elif status is DecisionStatus.REVIEW_REQUIRED:
-            publish_safely(
+            budget.publish(
                 request.event_publisher,
                 governance_review_required(
                     correlation_id,
@@ -395,7 +433,7 @@ class PricingService:
                     run_id=run_id,
                 ),
             )
-        publish_safely(
+        budget.publish(
             request.event_publisher,
             pricing_decision_produced(
                 correlation_id,
@@ -408,6 +446,41 @@ class PricingService:
                 run_id=run_id,
             ),
         )
+
+
+class _RequestPublishBudget:
+    """Bounds the *cumulative time actually spent inside* `publish_safely()` calls across
+    one request to roughly `total_seconds`, rather than wall-clock time since the request
+    (or the budget) was created.
+
+    An earlier version anchored a single absolute deadline at the start of
+    `_run_scenario`, before feature resolution and grid-search optimisation -- both of
+    which can easily take longer than the deadline on their own. That let unrelated
+    compute time silently consume the whole budget before the first real publish even
+    happened, forcing every later `publish_safely()` call to a 0s join regardless of
+    whether the publisher itself was healthy and fast. Since `publish_safely()` fires on
+    a daemon thread, a 0s join lets a short-lived caller return (and the process exit)
+    before a perfectly healthy publish actually finishes -- routinely losing the final
+    events with no broken publisher involved. Tracking only the time each `publish()`
+    call itself takes avoids charging the budget for work that has nothing to do with
+    publishing.
+    """
+
+    def __init__(self, total_seconds: float | None = None) -> None:
+        # Read the module-level default at call time rather than binding it as a
+        # parameter default (which would freeze it at class-definition time and ignore
+        # any later override, e.g. a test monkeypatching DEFAULT_PUBLISH_DEADLINE_SECONDS).
+        self._remaining = DEFAULT_PUBLISH_DEADLINE_SECONDS if total_seconds is None else total_seconds
+
+    @property
+    def remaining(self) -> float:
+        return max(0.0, self._remaining)
+
+    def publish(self, publisher: Any, event: Any) -> None:
+        deadline = self.remaining
+        started = time.monotonic()
+        publish_safely(publisher, event, deadline_seconds=deadline)
+        self._remaining -= time.monotonic() - started
 
 
 def _reference_or_competitor(reference_rate: float | None, competitor_rate: float) -> float:
