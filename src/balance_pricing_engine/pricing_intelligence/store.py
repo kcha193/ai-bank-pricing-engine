@@ -364,6 +364,29 @@ class ObservationStore:
         ).fetchall()
         return [_row_to_record(row) for row in rows]
 
+    def get_current_observations(
+        self,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+    ) -> list[CompetitorRateRecord]:
+        """Return the most recently known state for every observation key.
+
+        Unlike :meth:`get_latest_rates`, this is not scoped to a single
+        collection run: a bank's rows stay here even after a run that failed
+        to collect it, so a later run where that bank returns unchanged reads
+        as "no change" instead of "everything is new". Callers that want
+        "what is on the market right now" should use :meth:`get_latest_rates`;
+        this is for reconstructing the baseline change detection compares
+        against.
+        """
+        rows = self._connection.execute(
+            "SELECT * FROM observations o WHERE product_type = ? AND id = ("
+            "  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
+            "  ORDER BY first_observed_at DESC, id DESC LIMIT 1"
+            ") ORDER BY bank, term_months",
+            (_product_value(product_type),),
+        ).fetchall()
+        return [_row_to_record(row) for row in rows]
+
     def get_rate_history(
         self,
         bank: Optional[str] = None,
@@ -396,6 +419,30 @@ class ObservationStore:
             "ORDER BY first_observed_at ASC, id ASC",
             params,
         ).fetchall()
+        return [_row_to_history_record(row) for row in rows]
+
+    def get_observations_as_of(
+        self,
+        as_of: datetime,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+    ) -> list[CompetitorRateRecord]:
+        """Reconstruct the advertised state of every key as of a given time.
+
+        ``last_seen_run_id`` is unsuitable for this: it is overwritten forward
+        on every unchanged re-observation, so it cannot say what a key looked
+        like at an earlier run once a later run has touched it. This instead
+        picks, per key, the most recent row whose ``first_observed_at`` is at
+        or before ``as_of`` -- the state that was actually current then.
+        """
+        timestamp = _iso(as_of)
+        rows = self._connection.execute(
+            "SELECT * FROM observations o WHERE product_type = ? AND first_observed_at <= ? "
+            "AND id = ("
+            "  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
+            "  AND o2.first_observed_at <= ? ORDER BY first_observed_at DESC, id DESC LIMIT 1"
+            ") ORDER BY bank, term_months",
+            (_product_value(product_type), timestamp, timestamp),
+        ).fetchall()
         return [_row_to_record(row) for row in rows]
 
     def get_previous_run_rates(
@@ -413,13 +460,15 @@ class ObservationStore:
         if row is None:
             return []
         previous = self._connection.execute(
-            "SELECT run_id FROM collection_runs WHERE started_at < ? "
+            "SELECT started_at FROM collection_runs WHERE started_at < ? "
             "ORDER BY started_at DESC, rowid DESC LIMIT 1",
             (row["started_at"],),
         ).fetchone()
         if previous is None:
             return []
-        return self.get_latest_rates(product_type=product_type, run_id=previous["run_id"])
+        return self.get_observations_as_of(
+            as_of=_parse_iso(previous["started_at"]), product_type=product_type
+        )
 
     def get_changes_since(
         self,
@@ -574,3 +623,16 @@ def _row_to_record(row: sqlite3.Row) -> CompetitorRateRecord:
 def record_first_observed_at(row: sqlite3.Row) -> datetime:
     """Expose a row's first-observed timestamp (used by history rendering)."""
     return _parse_iso(row["first_observed_at"])
+
+
+def _row_to_history_record(row: sqlite3.Row) -> CompetitorRateRecord:
+    """Like :func:`_row_to_record`, but dates the state from when it began.
+
+    History must reflect how long a state actually held, not when it was
+    last reconfirmed: an unchanged state's ``last_seen_at`` creeps forward on
+    every identical collection, which would otherwise make the dashboard lose
+    a state's true start date.
+    """
+    return _row_to_record(row).model_copy(
+        update={"captured_at_utc": record_first_observed_at(row)}
+    )

@@ -147,7 +147,11 @@ class PricingIntelligenceService:
             inter_request_delay_seconds=self.config.collection.inter_request_delay_seconds,
         )
 
-        baseline = self.store.get_latest_rates(product_type=ProductType.HOME_LOAN)
+        # The last known state per key, not scoped to the latest completed
+        # run: a bank that failed a prior run would otherwise fall out of the
+        # baseline entirely, making its next (unchanged) collection look like
+        # every advertised line is new.
+        baseline = self.store.get_current_observations(product_type=ProductType.HOME_LOAN)
         validation = validate_observations(
             report.records, thresholds=self.config.validation, previous=baseline
         )
@@ -171,6 +175,10 @@ class PricingIntelligenceService:
             # Scoped to banks that actually responded, so an unreachable bank is
             # never reported as having withdrawn its whole range.
             banks_collected=self.succeeded_bank_names(report),
+            # A record rejected by validation this run is unknown, not
+            # withdrawn -- a single implausible line must not read as a
+            # market event.
+            rejected_keys=(record.observation_key() for record in validation.rejected),
         )
         # A first-ever collection would otherwise report every rate as a new
         # product, which is noise rather than market intelligence.

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from balance_pricing_engine.pricing_intelligence.alerts import (
     Alert,
     CollectingAlertSink,
+    ConsoleAlertSink,
     dispatch_alerts,
     format_alert,
     format_alerts,
@@ -98,6 +99,68 @@ def test_withdrawal_and_new_product_alerts_read_correctly(make_record):
 
     assert "Withdrawn" in format_alert(removal).render()
     assert "New product advertised at 4.89%" in format_alert(addition).render()
+
+
+def test_alert_renders_a_non_rate_move_change_type_and_detail(make_record):
+    change = detect_changes(
+        [make_record(max_lvr=0.80, min_equity=0.20)],
+        [make_record(max_lvr=0.75, min_equity=0.25, observed_at=DAY_TWO)],
+        detected_at=DAY_TWO,
+    )[0]
+
+    rendered = format_alert(change).render()
+
+    assert "Eligibility Change" in rendered
+    assert "max_lvr" in rendered
+
+
+def test_rank_movement_is_omitted_when_the_term_is_missing_from_a_snapshot(make_record):
+    change = build_change(make_record)  # ANZ, 12 months
+    other_term_snapshot = build_market_snapshot([make_record(bank="ANZ", term_months=24)])
+
+    rendered = format_alert(
+        change, snapshot=other_term_snapshot, previous_snapshot=other_term_snapshot
+    ).render()
+
+    assert "Market rank:" not in rendered
+
+
+def test_rank_movement_is_omitted_when_the_bank_is_missing_from_a_snapshot(make_record):
+    change = build_change(make_record)  # bank=ANZ
+    snapshot_without_anz = build_market_snapshot([make_record(bank="BNZ", rate_pct=4.85)])
+
+    rendered = format_alert(
+        change, snapshot=snapshot_without_anz, previous_snapshot=snapshot_without_anz
+    ).render()
+
+    assert "Market rank:" not in rendered
+
+
+def test_rank_movement_reports_unchanged_when_the_rank_is_the_same(make_record):
+    snapshot = build_market_snapshot(
+        [make_record(bank="ANZ", rate_pct=4.79), make_record(bank="BNZ", rate_pct=4.85)]
+    )
+    change = build_change(make_record, current_rate=4.79)
+
+    rendered = format_alert(change, snapshot=snapshot, previous_snapshot=snapshot).render()
+
+    assert "(unchanged)" in rendered
+
+
+def test_market_context_is_omitted_when_the_term_is_missing_from_the_snapshot(make_record):
+    change = build_change(make_record)  # ANZ, 12 months
+    snapshot_at_other_term = build_market_snapshot([make_record(bank="ANZ", term_months=24)])
+
+    rendered = format_alert(change, snapshot=snapshot_at_other_term).render()
+
+    assert "Market median" not in rendered
+
+
+def test_console_alert_sink_prints_the_rendered_alert(make_record, capsys):
+    ConsoleAlertSink().send(format_alert(build_change(make_record)))
+
+    output = capsys.readouterr().out
+    assert "NZ MORTGAGE RATE CHANGE" in output
 
 
 def test_alerts_are_ordered_by_movement_size(make_record):

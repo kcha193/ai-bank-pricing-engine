@@ -12,6 +12,15 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 PARSER_VERSION = "competitor-rates-v1"
 
 
+def _numeric_band(value: Optional[float]) -> str:
+    """Format an optional eligibility number for stable identity comparison.
+
+    Fixed precision avoids a float round-trip (e.g. through storage) turning
+    an unchanged band into a different key.
+    """
+    return "" if value is None else f"{value:.4f}"
+
+
 class ProductType(str, Enum):
     HOME_LOAN = "home_loan"
     TERM_DEPOSIT = "term_deposit"
@@ -101,6 +110,18 @@ class CompetitorRateRecord(BaseModel):
         a rate movement is detected rather than being read as one product
         disappearing and another appearing. Deliberately excludes the rate
         itself and every provenance field.
+
+        Includes the product name and the numeric balance band: two
+        simultaneous products can otherwise share bank, category, term,
+        coarse ``lvr_condition``, and payment frequency while differing only
+        by name or by a numeric balance tier, which would collide onto the
+        same key and have one silently overwrite the other.
+
+        ``max_lvr``/``min_equity`` are deliberately excluded: a bank tightening
+        or loosening its LVR eligibility on an otherwise-unchanged product is
+        the same product with a new condition (an :class:`.ChangeType`
+        ``ELIGIBILITY_CHANGE``), not a new product -- unlike the balance band,
+        which change detection does not track as a mutable attribute.
         """
         parts = [
             self.bank,
@@ -111,6 +132,9 @@ class CompetitorRateRecord(BaseModel):
             else self.term_label_raw.lower(),
             self.lvr_condition or "",
             self.interest_payment_frequency,
+            self.product_name.strip().lower(),
+            _numeric_band(self.min_balance_or_deposit),
+            _numeric_band(self.max_balance_or_deposit),
         ]
         return "|".join(parts)
 

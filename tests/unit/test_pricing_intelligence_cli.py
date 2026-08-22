@@ -1,6 +1,7 @@
 """CLI behaviour, exercised against a temporary store and saved fixtures."""
 
-from datetime import datetime, timezone
+import argparse
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -13,6 +14,13 @@ from balance_pricing_engine.pricing_intelligence.service import PricingIntellige
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 
 DAY_ONE = datetime(2026, 8, 20, tzinfo=timezone.utc)
+DAY_TWO = DAY_ONE + timedelta(days=1)
+
+
+def cut_anz_one_year(bank, html):
+    if bank == "ANZ":
+        return html.replace("<td>1 year</td><td>4.79%", "<td>1 year</td><td>4.59%")
+    return html
 
 
 @pytest.fixture
@@ -27,6 +35,23 @@ def populated_database(tmp_path, fixture_fetcher):
         config=config, store=ObservationStore(path), fetcher=fixture_fetcher()
     ) as service:
         service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+    return str(path)
+
+
+@pytest.fixture
+def repriced_database(tmp_path, fixture_fetcher):
+    """A database with a baseline collection plus a real reprice on top."""
+    path = tmp_path / "observations.db"
+    config = PricingIntelligenceConfig(
+        database_path=str(path),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=cut_anz_one_year)
+        service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
     return str(path)
 
 
@@ -73,6 +98,101 @@ def test_changes_reports_a_quiet_market(populated_database, capsys):
 
     assert exit_code == 0
     assert "No changes detected" in capsys.readouterr().out
+
+
+def test_changes_command_renders_detected_events(repriced_database, capsys):
+    exit_code = run(["--database", repriced_database, "changes", "--days", "7"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "MARKET CHANGES" in output
+    assert "ANZ" in output
+
+
+def test_changes_command_can_render_as_alerts(repriced_database, capsys):
+    exit_code = run(["--database", repriced_database, "changes", "--days", "7", "--alerts"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "NZ MORTGAGE RATE CHANGE" in output
+
+
+def test_collect_handler_reports_the_collection_summary(tmp_path, fixture_fetcher, capsys):
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "observations.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        args = argparse.Namespace(no_persist=False, no_snapshot=True, alerts=False)
+        exit_code = cli._collect(service, args)
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "ANZ" in output
+
+
+def test_collect_handler_reports_changes_and_dispatches_alerts(
+    tmp_path, fixture_fetcher, capsys
+):
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "observations.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=cut_anz_one_year)
+        args = argparse.Namespace(no_persist=False, no_snapshot=True, alerts=True)
+        exit_code = cli._collect(service, args)
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Detected changes:" in output
+    assert "NZ MORTGAGE RATE CHANGE" in output
+
+
+def test_collect_handler_reports_validation_issues(tmp_path, fixture_fetcher, capsys):
+    def corrupt_kiwibank_three_year(bank, html):
+        if bank == "Kiwibank":
+            return html.replace("<td>3 years</td><td>5.35%", "<td>3 years</td><td>55.35%")
+        return html
+
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "observations.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=corrupt_kiwibank_three_year)
+        args = argparse.Namespace(no_persist=False, no_snapshot=True, alerts=False)
+        exit_code = cli._collect(service, args)
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Validation issues:" in output
+    assert "rate_out_of_range" in output
+
+
+def test_collect_handler_fails_when_every_bank_fails(tmp_path, fixture_fetcher, capsys):
+    banks = ["ANZ", "ASB", "BNZ", "Westpac", "Kiwibank"]
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "observations.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    with PricingIntelligenceService(
+        config=config,
+        store=ObservationStore(config.database_path),
+        fetcher=fixture_fetcher(failing_banks=banks),
+    ) as service:
+        args = argparse.Namespace(no_persist=False, no_snapshot=True, alerts=False)
+        exit_code = cli._collect(service, args)
+
+    assert exit_code == 1
 
 
 def test_history_lists_observed_states(populated_database, capsys):

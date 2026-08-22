@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from balance_pricing_engine.pricing_intelligence.changes import detect_changes
+from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 
 DAY_ONE = datetime(2026, 8, 20, tzinfo=timezone.utc)
@@ -68,12 +69,63 @@ def test_a_changed_rate_creates_a_new_state(store, make_record):
     assert [record.advertised_rate_pct for record in history] == [4.99, 4.79]
 
 
+def test_write_result_total_sums_inserted_and_unchanged(store, make_record):
+    result = store.record_observations(
+        [make_record(bank="ANZ"), make_record(bank="BNZ", rate_pct=4.85)], observed_at=DAY_ONE
+    )
+
+    assert result.total == result.inserted + result.unchanged == 2
+
+
+def test_a_numeric_field_becoming_null_is_a_material_change(store, make_record):
+    """A stored value disappearing (or appearing) is a change, not noise."""
+    store.record_observations(
+        [make_record(max_lvr=0.80, min_equity=0.20)], observed_at=DAY_ONE
+    )
+    result = store.record_observations(
+        [make_record(max_lvr=None, min_equity=None)], observed_at=DAY_TWO
+    )
+
+    assert result.inserted == 1
+    assert result.unchanged == 0
+
+
+def test_a_changed_non_numeric_field_creates_a_new_state(store, make_record):
+    store.record_observations([make_record(cashback_text=None)], observed_at=DAY_ONE)
+    result = store.record_observations(
+        [make_record(cashback_text="$3,000 cashback")], observed_at=DAY_TWO
+    )
+
+    assert result.inserted == 1
+    assert result.unchanged == 0
+
+
+def test_a_naive_observed_at_is_treated_as_utc(store, make_record):
+    naive = datetime(2026, 8, 20, 12, 0, 0)
+    store.record_observations([make_record()], observed_at=naive)
+
+    restored = store.get_latest_rates()[0]
+    assert restored.captured_at_utc == naive.replace(tzinfo=timezone.utc)
+
+
 def test_history_is_returned_oldest_first(store, make_record):
     for day, rate in ((DAY_ONE, 4.99), (DAY_TWO, 4.89), (DAY_THREE, 4.79)):
         store.record_observations([make_record(rate_pct=rate)], observed_at=day)
 
     history = store.get_rate_history(bank="ANZ", term_months=12)
     assert [record.advertised_rate_pct for record in history] == [4.99, 4.89, 4.79]
+
+
+def test_history_dates_an_unchanged_state_from_its_first_observation(store, make_record):
+    """A state's captured_at_utc must not creep forward on every re-observation."""
+    store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)
+    store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_TWO)  # unchanged
+    store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_THREE)  # unchanged
+
+    history = store.get_rate_history(bank="ANZ", term_months=12)
+
+    assert len(history) == 1
+    assert history[0].captured_at_utc == DAY_ONE
 
 
 def test_history_can_be_filtered_by_bank_and_term(store, make_record):
@@ -91,6 +143,20 @@ def test_history_can_be_filtered_by_bank_and_term(store, make_record):
     assert len(store.get_rate_history(bank="ANZ", term_months=12)) == 1
 
 
+def test_history_can_be_filtered_by_since_and_until(store, make_record):
+    for day, rate in ((DAY_ONE, 4.99), (DAY_TWO, 4.89), (DAY_THREE, 4.79)):
+        store.record_observations([make_record(rate_pct=rate)], observed_at=day)
+
+    assert [r.advertised_rate_pct for r in store.get_rate_history(since=DAY_TWO)] == [
+        4.89,
+        4.79,
+    ]
+    assert [r.advertised_rate_pct for r in store.get_rate_history(until=DAY_TWO)] == [
+        4.99,
+        4.89,
+    ]
+
+
 def test_latest_rates_exclude_a_withdrawn_product(store, make_record):
     store.record_observations(
         [make_record(bank="ANZ"), make_record(bank="ASB", rate_pct=5.05)], observed_at=DAY_ONE
@@ -99,6 +165,18 @@ def test_latest_rates_exclude_a_withdrawn_product(store, make_record):
 
     assert {record.bank for record in store.get_latest_rates()} == {"ANZ"}
     assert len(store.get_rate_history()) == 2, "history still holds the withdrawn product"
+
+
+def test_current_observations_survive_a_run_that_omitted_the_bank(store, make_record):
+    """Unlike get_latest_rates, a bank missing from the latest run is not lost."""
+    store.record_observations(
+        [make_record(bank="ANZ"), make_record(bank="Westpac", rate_pct=4.85)], observed_at=DAY_ONE
+    )
+    # A run that only collected ANZ (Westpac was unreachable).
+    store.record_observations([make_record(bank="ANZ")], observed_at=DAY_TWO)
+
+    assert {record.bank for record in store.get_latest_rates()} == {"ANZ"}
+    assert {record.bank for record in store.get_current_observations()} == {"ANZ", "Westpac"}
 
 
 def test_latest_rates_filter_by_bank_and_term(store, make_record):
@@ -115,6 +193,20 @@ def test_latest_rates_filter_by_bank_and_term(store, make_record):
     assert len(store.get_latest_rates(term_months=12)) == 2
 
 
+def test_latest_rates_filter_by_rate_category(store, make_record):
+    store.record_observations(
+        [
+            make_record(rate_category="special", rate_pct=4.79),
+            make_record(rate_category="standard", rate_pct=5.99),
+        ],
+        observed_at=DAY_ONE,
+    )
+
+    assert [r.rate_category for r in store.get_latest_rates(rate_category="special")] == [
+        "special"
+    ]
+
+
 def test_previous_run_rates_are_retrievable(store, make_record):
     store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)
     store.record_observations([make_record(rate_pct=4.79)], observed_at=DAY_TWO)
@@ -127,6 +219,61 @@ def test_previous_run_is_empty_on_a_first_collection(store, make_record):
     store.record_observations([make_record()], observed_at=DAY_ONE)
 
     assert store.get_previous_run_rates() == []
+
+
+def test_previous_run_is_empty_on_an_entirely_empty_store(store):
+    assert store.get_previous_run_rates() == []
+
+
+def test_previous_run_is_empty_for_an_unknown_run_id(store, make_record):
+    store.record_observations([make_record()], observed_at=DAY_ONE)
+
+    assert store.get_previous_run_rates(before_run_id="does-not-exist") == []
+
+
+def test_previous_run_rates_survive_unchanged_intermediate_collections(store, make_record):
+    """An unchanged re-observation must not erase the previous run's membership."""
+    store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)
+    store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_TWO)  # unchanged
+    store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_THREE)  # unchanged
+
+    previous = store.get_previous_run_rates()
+
+    assert [record.advertised_rate_pct for record in previous] == [4.99]
+
+
+def test_previous_run_rates_include_unchanged_products_after_a_partial_reprice(store, make_record):
+    """A reprice on one product must not drop the unchanged ones from the prior view."""
+    store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.99), make_record(bank="BNZ", rate_pct=5.05)],
+        observed_at=DAY_ONE,
+    )
+    store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.99), make_record(bank="BNZ", rate_pct=5.05)],
+        observed_at=DAY_TWO,
+    )  # both unchanged
+    store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.79), make_record(bank="BNZ", rate_pct=5.05)],
+        observed_at=DAY_THREE,
+    )  # only ANZ repriced
+
+    previous = store.get_previous_run_rates()
+
+    assert {record.bank: record.advertised_rate_pct for record in previous} == {
+        "ANZ": 4.99,
+        "BNZ": 5.05,
+    }
+
+
+def test_observations_as_of_reconstructs_a_point_in_time_state(store, make_record):
+    store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)
+    store.record_observations([make_record(rate_pct=4.79)], observed_at=DAY_TWO)
+
+    as_of_day_one = store.get_observations_as_of(as_of=DAY_ONE)
+    as_of_day_two = store.get_observations_as_of(as_of=DAY_TWO)
+
+    assert [record.advertised_rate_pct for record in as_of_day_one] == [4.99]
+    assert [record.advertised_rate_pct for record in as_of_day_two] == [4.79]
 
 
 def test_changes_are_persisted_and_queried_by_window(store, make_record):
@@ -173,6 +320,19 @@ def test_changes_filter_by_bank_and_term(store, make_record):
     assert len(store.get_changes_since(days=7, bank="ANZ", now=DAY_TWO)) == 1
     assert len(store.get_changes_since(days=7, term_months=12, now=DAY_TWO)) == 2
     assert len(store.get_changes_since(days=7, term_months=60, now=DAY_TWO)) == 0
+
+
+def test_changes_since_can_exclude_suspicious_events(store, make_record):
+    changes = detect_changes(
+        [make_record(rate_pct=4.89)],
+        [make_record(rate_pct=8.49, observed_at=DAY_TWO)],
+        detected_at=DAY_TWO,
+        thresholds=ValidationThresholds(suspicious_change_bps=75),
+    )
+    store.record_changes(changes)
+
+    assert len(store.get_changes_since(days=7, now=DAY_TWO)) == 1
+    assert store.get_changes_since(days=7, now=DAY_TWO, include_suspicious=False) == []
 
 
 def test_banks_and_terms_are_discoverable(store, make_record):

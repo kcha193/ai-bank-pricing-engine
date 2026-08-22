@@ -15,6 +15,7 @@ from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 
 DAY_ONE = datetime(2026, 8, 20, tzinfo=timezone.utc)
 DAY_TWO = DAY_ONE + timedelta(days=1)
+DAY_THREE = DAY_ONE + timedelta(days=2)
 
 
 def build_service(fetcher, **config_overrides):
@@ -104,6 +105,21 @@ def test_a_bank_going_offline_is_not_reported_as_a_withdrawal(fixture_fetcher):
     assert withdrawals == []
 
 
+def test_a_bank_recovering_from_a_transient_failure_is_not_reported_as_new(fixture_fetcher):
+    """A bank that missed one run and returns unchanged must not look brand new."""
+    with build_service(fixture_fetcher()) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(failing_banks=["Westpac"])
+        service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+        service._fetcher = fixture_fetcher()
+        outcome = service.collect(captured_at_utc=DAY_THREE, persist_snapshot=False)
+
+    new_products = [
+        change for change in outcome.changes if change.change_type is ChangeType.NEW_PRODUCT
+    ]
+    assert new_products == []
+
+
 def test_a_genuine_withdrawal_is_still_reported(fixture_fetcher):
     def withdraw_asb_five_year(bank, html):
         if bank == "ASB":
@@ -123,6 +139,26 @@ def test_a_genuine_withdrawal_is_still_reported(fixture_fetcher):
     assert len(withdrawals) == 1
     assert withdrawals[0].bank == "ASB"
     assert withdrawals[0].term_months == 60
+
+
+def test_a_validation_rejected_record_is_not_reported_as_a_withdrawal(fixture_fetcher):
+    """A single implausible rate must not read as the bank withdrawing that line."""
+
+    def corrupt_kiwibank_three_year(bank, html):
+        if bank == "Kiwibank":
+            return html.replace("<td>3 years</td><td>5.35%", "<td>3 years</td><td>55.35%")
+        return html
+
+    with build_service(fixture_fetcher()) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=corrupt_kiwibank_three_year)
+        outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    assert outcome.validation.rejected, "sanity check: the record really was rejected"
+    withdrawals = [
+        change for change in outcome.changes if change.change_type is ChangeType.REMOVED_PRODUCT
+    ]
+    assert withdrawals == []
 
 
 def test_a_broken_parser_is_flagged_suspicious_not_silently_accepted(fixture_fetcher):

@@ -96,6 +96,7 @@ def detect_changes(
     thresholds: Optional[ValidationThresholds] = None,
     run_id: Optional[str] = None,
     banks_collected: Optional[Iterable[str]] = None,
+    rejected_keys: Optional[Iterable[str]] = None,
 ) -> list[RateChange]:
     """Compare two sets of observations and return the material changes.
 
@@ -108,9 +109,15 @@ def detect_changes(
     being unreachable would report its entire range as withdrawn, which is a
     collection failure masquerading as a market event. Leave it ``None`` only
     when every bank in ``previous`` was definitely collected.
+
+    ``rejected_keys`` names observation keys that were parsed this run but
+    rejected by validation (e.g. an implausible rate). A bank passing overall
+    still has that one key missing from ``current``, but the record is unknown
+    -- not withdrawn -- so it must not be reported as a removal either.
     """
     thresholds = thresholds or ValidationThresholds()
     collected = set(banks_collected) if banks_collected is not None else None
+    rejected = set(rejected_keys) if rejected_keys is not None else set()
     previous_by_key = {record.observation_key(): record for record in previous}
     current_by_key = {record.observation_key(): record for record in current}
     changes: list[RateChange] = []
@@ -139,6 +146,11 @@ def detect_changes(
         if collected is not None and previous_record.bank not in collected:
             # This bank was not successfully collected, so its absence is
             # unknown, not a withdrawal.
+            continue
+        if key in rejected:
+            # This key was parsed but rejected by validation this run, so its
+            # absence from `current` is a data-quality problem, not a
+            # withdrawal.
             continue
         changes.append(
             _build(

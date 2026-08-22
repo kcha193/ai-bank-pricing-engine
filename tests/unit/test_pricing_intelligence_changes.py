@@ -97,6 +97,32 @@ def test_removal_is_still_reported_for_a_bank_that_was_collected(make_record):
     assert changes[0].term_months == 60
 
 
+def test_removal_is_suppressed_for_a_key_rejected_by_validation_this_run(make_record):
+    """A record rejected as implausible is unknown, not withdrawn."""
+    previous_record = make_record(bank="ANZ")
+    changes = detect_changes(
+        previous=[previous_record],
+        current=[],
+        banks_collected=["ANZ"],
+        rejected_keys=[previous_record.observation_key()],
+    )
+
+    assert changes == []
+
+
+def test_removal_is_still_reported_for_a_key_not_rejected_this_run(make_record):
+    previous_record = make_record(bank="ANZ")
+    changes = detect_changes(
+        previous=[previous_record],
+        current=[],
+        banks_collected=["ANZ"],
+        rejected_keys=["some-other-key"],
+    )
+
+    assert len(changes) == 1
+    assert changes[0].change_type is ChangeType.REMOVED_PRODUCT
+
+
 def test_oversized_movement_is_flagged_suspicious(make_record):
     changes = detect_changes(
         [make_record(rate_pct=4.89)],
@@ -161,12 +187,119 @@ def test_a_different_term_is_a_different_product(make_record):
     assert types == {ChangeType.NEW_PRODUCT, ChangeType.REMOVED_PRODUCT}
 
 
+def test_simultaneous_products_with_different_names_are_tracked_independently(make_record):
+    """Two products sharing every other field must not collide onto one key."""
+    previous = [
+        make_record(product_name="Premier", rate_pct=4.79),
+        make_record(product_name="Orbit", rate_pct=4.89),
+    ]
+    current = [
+        make_record(product_name="Premier", rate_pct=4.59, observed_at=DAY_TWO),
+        make_record(product_name="Orbit", rate_pct=4.89, observed_at=DAY_TWO),
+    ]
+
+    changes = detect_changes(previous, current)
+
+    assert len(changes) == 1
+    assert changes[0].change_type is ChangeType.RATE_DECREASE
+    assert changes[0].product_name == "Premier"
+
+
+def test_simultaneous_products_with_different_balance_bands_are_tracked_independently(
+    make_record,
+):
+    """Same product name, same coarse fields, different numeric balance tier."""
+    previous = [
+        make_record(min_balance_or_deposit=1_000, max_balance_or_deposit=50_000, rate_pct=4.79),
+        make_record(min_balance_or_deposit=50_000, max_balance_or_deposit=None, rate_pct=4.65),
+    ]
+    current = [
+        make_record(
+            min_balance_or_deposit=1_000,
+            max_balance_or_deposit=50_000,
+            rate_pct=4.59,
+            observed_at=DAY_TWO,
+        ),
+        make_record(
+            min_balance_or_deposit=50_000,
+            max_balance_or_deposit=None,
+            rate_pct=4.65,
+            observed_at=DAY_TWO,
+        ),
+    ]
+
+    changes = detect_changes(previous, current)
+
+    assert len(changes) == 1
+    assert changes[0].previous_rate_pct == 4.79
+    assert changes[0].current_rate_pct == 4.59
+
+
+def test_max_lvr_movement_is_an_eligibility_change_not_a_new_product(make_record):
+    """LVR eligibility is mutable on the same product, unlike the identity fields above."""
+    changes = detect_changes(
+        [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.79)],
+        [make_record(max_lvr=0.75, min_equity=0.25, rate_pct=4.79, observed_at=DAY_TWO)],
+    )
+
+    assert [change.change_type for change in changes] == [ChangeType.ELIGIBILITY_CHANGE]
+
+
 def test_describe_renders_a_readable_summary(make_record):
     change = detect_changes(
         [make_record(rate_pct=4.99)], [make_record(rate_pct=4.79, observed_at=DAY_TWO)]
     )[0]
 
     assert change.describe() == "ANZ 12m special: 4.99% -> 4.79% (-20 bps)"
+
+
+def test_change_type_stringifies_to_its_value():
+    assert str(ChangeType.RATE_INCREASE) == "RATE_INCREASE"
+
+
+def test_describe_renders_new_and_removed_product_summaries(make_record):
+    new_change = detect_changes([], [make_record(rate_pct=4.79)])[0]
+    assert new_change.describe() == "ANZ 12m special: new at 4.79%"
+
+    removed_change = detect_changes([make_record(rate_pct=4.79)], [])[0]
+    assert removed_change.describe() == "ANZ 12m special: withdrawn (was 4.79%)"
+
+
+def test_describe_falls_back_to_the_change_type_for_non_rate_events(make_record):
+    change = detect_changes(
+        [make_record(cashback_text=None)],
+        [make_record(cashback_text="$3,000 cashback", observed_at=DAY_TWO)],
+    )[0]
+
+    assert change.describe() == "ANZ 12m special: promotion_change"
+
+
+def test_load_changes_tolerates_a_missing_previous_observed_at(make_record):
+    change = detect_changes(
+        [make_record(rate_pct=4.99)], [make_record(rate_pct=4.79, observed_at=DAY_TWO)]
+    )[0]
+    row = {
+        "observation_key": change.observation_key,
+        "bank": change.bank,
+        "product_type": "home_loan",
+        "product_name": change.product_name,
+        "rate_category": change.rate_category,
+        "term_months": change.term_months,
+        "change_type": change.change_type.value,
+        "detected_at": change.detected_at.isoformat(),
+        "previous_rate_pct": change.previous_rate_pct,
+        "current_rate_pct": change.current_rate_pct,
+        "change_bps": change.change_bps,
+        "previous_observed_at": None,
+        "suspicious": 0,
+        "detail": None,
+        "source_url": change.source_url,
+        "run_id": None,
+    }
+
+    restored = load_changes([row])[0]
+    assert restored.previous_observed_at is None
+    assert restored.run_id is None
 
 
 def test_changes_round_trip_through_the_stored_row_shape(make_record):
