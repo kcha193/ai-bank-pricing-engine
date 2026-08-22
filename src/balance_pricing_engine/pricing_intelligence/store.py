@@ -417,6 +417,18 @@ class ObservationStore:
         would emit -- and this store would persist -- the same withdrawal
         again on every run. A key merely absent because its bank failed to
         collect has no such event recorded and stays in the baseline.
+
+        A key superseded by an eligibility edit is likewise excluded: when
+        change detection pairs a current record to a previous one via
+        ``eligibility_group_key`` (:func:`~.changes.resolve_pairing`), the
+        previous key's row is never touched again -- its ``first_observed_at``
+        stays frozen while the new key's row keeps advancing. A row sharing
+        every eligibility-group field with a same-product row that first
+        appeared after this one was last confirmed is that superseded state.
+        Two rows that continue being reconfirmed independently (genuinely
+        simultaneous LVR tiers, not a transition) are unaffected: the newer
+        row's first appearance never lands after the older row's *last*
+        confirmation in that case.
         """
         rows = self._connection.execute(
             "SELECT * FROM observations o WHERE product_type = ? AND id = ("
@@ -425,6 +437,15 @@ class ObservationStore:
             ") AND NOT EXISTS ("
             "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
             "  AND rc.change_type = 'REMOVED_PRODUCT' AND rc.detected_at > o.last_seen_at"
+            ") AND NOT EXISTS ("
+            "  SELECT 1 FROM observations o3 WHERE o3.observation_key <> o.observation_key "
+            "  AND o3.bank = o.bank AND o3.product_type = o.product_type "
+            "  AND o3.rate_category = o.rate_category AND o3.term_months IS o.term_months "
+            "  AND o3.term_label_raw = o.term_label_raw "
+            "  AND o3.interest_payment_frequency = o.interest_payment_frequency "
+            "  AND LOWER(o3.product_name) = LOWER(o.product_name) "
+            "  AND o3.min_balance IS o.min_balance AND o3.max_balance IS o.max_balance "
+            "  AND o3.first_observed_at > o.last_seen_at"
             ") ORDER BY bank, term_months",
             (_product_value(product_type),),
         ).fetchall()

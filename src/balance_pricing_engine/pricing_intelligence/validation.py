@@ -15,6 +15,7 @@ from typing import Iterable, Optional, Sequence
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
+from balance_pricing_engine.pricing_intelligence.changes import resolve_pairing
 from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
 
 
@@ -75,18 +76,26 @@ def validate_observations(
     record is kept (a genuine large reprice must not be discarded) but flagged
     so downstream change events carry the flag and an operator can verify it
     against the source page.
+
+    The movement check compares each record against its predecessor via
+    :func:`~balance_pricing_engine.pricing_intelligence.changes.resolve_pairing`
+    (an exact observation key, falling back to an unambiguous eligibility-group
+    match), not a plain key lookup: a record whose eligibility condition and
+    rate both moved in the same collection would otherwise change its exact
+    key and skip the movement check entirely, letting an implausible rate
+    (e.g. 5.00% misread as 1.50%) through unflagged and into a market-derived
+    pricing assumption before ``detect_changes()`` ever sees it.
     """
     thresholds = thresholds or ValidationThresholds()
-    previous_by_key = {
-        record.observation_key(): record for record in (previous or [])
-    }
+    records = list(records)
+    pairs = resolve_pairing(previous or [], records)
     outcome = ValidationOutcome()
 
     for record in records:
         key = record.observation_key()
         issues = _validate_record(record, thresholds, key)
 
-        movement_issue = _validate_movement(record, previous_by_key.get(key), thresholds, key)
+        movement_issue = _validate_movement(record, pairs.get(key), thresholds, key)
         if movement_issue is not None:
             issues.append(movement_issue)
 

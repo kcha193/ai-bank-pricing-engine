@@ -95,6 +95,62 @@ _ELIGIBILITY_FIELDS = (
 _PROMOTION_FIELDS = ("cashback_text", "promotion_text")
 
 
+def resolve_pairing(
+    previous: Iterable[CompetitorRateRecord],
+    current: Iterable[CompetitorRateRecord],
+) -> dict[str, CompetitorRateRecord]:
+    """Map each current record's own key to its best-matching previous record.
+
+    Prefers an exact :meth:`CompetitorRateRecord.observation_key` match; falls
+    back to the previous record sharing the current record's
+    :meth:`~CompetitorRateRecord.eligibility_group_key` (same product, term,
+    and balance tier; different eligibility condition) when no exact match
+    exists and exactly one such unclaimed candidate remains -- the same
+    product under an edited eligibility condition, not a new one. Two or more
+    candidates sharing a group is ambiguous (which one changed?) and is left
+    unpaired.
+
+    Shared by :func:`detect_changes` (so an eligibility edit reads as one
+    ``ELIGIBILITY_CHANGE`` rather than a ``NEW_PRODUCT``/``REMOVED_PRODUCT``
+    pair) and by ``validation.validate_observations`` (so a suspicious rate
+    movement is still caught when it coincides with an eligibility edit,
+    which alone would change the exact key validation compares against).
+
+    The returned mapping is keyed by the *current* record's own
+    ``observation_key()`` -- not the previous record's -- so callers can look
+    up a current record's predecessor directly, whichever key it was matched
+    under.
+    """
+    previous_by_key = {record.observation_key(): record for record in previous}
+    current_list = list(current)
+    current_keys = {record.observation_key() for record in current_list}
+
+    unmatched_previous = {
+        key: record for key, record in previous_by_key.items() if key not in current_keys
+    }
+    group_candidates: dict[str, list[str]] = {}
+    for key, record in unmatched_previous.items():
+        group_candidates.setdefault(record.eligibility_group_key(), []).append(key)
+
+    pairs: dict[str, CompetitorRateRecord] = {}
+    matched_previous_keys: set[str] = set()
+    for record in current_list:
+        key = record.observation_key()
+        exact = previous_by_key.get(key)
+        if exact is not None:
+            pairs[key] = exact
+            continue
+        candidates = [
+            candidate_key
+            for candidate_key in group_candidates.get(record.eligibility_group_key(), [])
+            if candidate_key not in matched_previous_keys
+        ]
+        if len(candidates) == 1:
+            matched_previous_keys.add(candidates[0])
+            pairs[key] = previous_by_key[candidates[0]]
+    return pairs
+
+
 def detect_changes(
     previous: Iterable[CompetitorRateRecord],
     current: Iterable[CompetitorRateRecord],
@@ -106,18 +162,12 @@ def detect_changes(
 ) -> list[RateChange]:
     """Compare two sets of observations and return the material changes.
 
-    Records are matched on :meth:`CompetitorRateRecord.observation_key`, so a
-    repriced line reads as a rate movement rather than one product vanishing and
-    another appearing. Identical observations produce no events.
-
-    A current record with no exact key match is not immediately treated as
-    new: if exactly one unmatched previous record shares its
-    :meth:`~CompetitorRateRecord.eligibility_group_key` (same product, term,
-    and balance tier; different eligibility condition), the two are paired as
-    an :class:`.ChangeType` ``ELIGIBILITY_CHANGE`` instead of a
-    ``NEW_PRODUCT``/``REMOVED_PRODUCT`` pair. Two or more candidates sharing a
-    group is ambiguous (which one changed?) and falls back to reporting each
-    as new/removed rather than guessing a pairing.
+    Records are matched via :func:`resolve_pairing` (exact
+    :meth:`CompetitorRateRecord.observation_key`, falling back to an
+    unambiguous :meth:`~CompetitorRateRecord.eligibility_group_key` match), so
+    a repriced line -- or a product whose eligibility condition alone changed
+    -- reads as a movement rather than one product vanishing and another
+    appearing. Identical observations produce no events.
 
     ``banks_collected`` names the banks whose pages were successfully read this
     run. Withdrawal events are only emitted for those banks -- otherwise a bank
@@ -135,42 +185,28 @@ def detect_changes(
     rejected = set(rejected_keys) if rejected_keys is not None else set()
     previous_by_key = {record.observation_key(): record for record in previous}
     current_by_key = {record.observation_key(): record for record in current}
+    pairs = resolve_pairing(previous_by_key.values(), current_by_key.values())
+    matched_previous_keys = {
+        previous_record.observation_key()
+        for key, previous_record in pairs.items()
+        if previous_record.observation_key() != key
+    }
     changes: list[RateChange] = []
 
-    unmatched_previous = {
-        key: record for key, record in previous_by_key.items() if key not in current_by_key
-    }
-    group_candidates: dict[str, list[str]] = {}
-    for key, record in unmatched_previous.items():
-        group_candidates.setdefault(record.eligibility_group_key(), []).append(key)
-
-    matched_previous_keys: set[str] = set()
-
     for key, current_record in current_by_key.items():
-        previous_record = previous_by_key.get(key)
+        previous_record = pairs.get(key)
         if previous_record is None:
-            candidates = [
-                candidate_key
-                for candidate_key in group_candidates.get(
-                    current_record.eligibility_group_key(), []
+            changes.append(
+                _build(
+                    current_record,
+                    ChangeType.NEW_PRODUCT,
+                    detected_at,
+                    run_id,
+                    current_rate_pct=current_record.advertised_rate_pct,
+                    detail=f"first observed at {current_record.advertised_rate_pct:.2f}%",
                 )
-                if candidate_key not in matched_previous_keys
-            ]
-            if len(candidates) == 1:
-                matched_previous_keys.add(candidates[0])
-                previous_record = previous_by_key[candidates[0]]
-            else:
-                changes.append(
-                    _build(
-                        current_record,
-                        ChangeType.NEW_PRODUCT,
-                        detected_at,
-                        run_id,
-                        current_rate_pct=current_record.advertised_rate_pct,
-                        detail=f"first observed at {current_record.advertised_rate_pct:.2f}%",
-                    )
-                )
-                continue
+            )
+            continue
         changes.extend(
             _compare_records(previous_record, current_record, detected_at, thresholds, run_id)
         )

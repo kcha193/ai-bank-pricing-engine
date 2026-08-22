@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from balance_pricing_engine.pricing_intelligence.changes import detect_changes
+from balance_pricing_engine.pricing_intelligence.changes import ChangeType, detect_changes
 from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 
@@ -321,6 +321,71 @@ def test_current_observations_exclude_a_confirmed_withdrawal(store, make_record)
     _withdraw_bnz_on_day_two(store, make_record)
 
     assert {record.bank for record in store.get_current_observations()} == {"ANZ"}
+
+
+def test_current_observations_exclude_a_superseded_eligibility_state(store, make_record):
+    """An old eligibility state must not sit alongside its replacement forever."""
+    store.record_observations(
+        [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.79)], observed_at=DAY_ONE
+    )
+    store.record_observations(
+        [make_record(max_lvr=0.75, min_equity=0.25, rate_pct=4.99)], observed_at=DAY_TWO
+    )
+
+    current = store.get_current_observations()
+
+    assert len(current) == 1
+    assert current[0].advertised_rate_pct == 4.99
+    assert current[0].max_lvr == 0.75
+
+
+def test_current_observations_keep_genuinely_simultaneous_lvr_tiers(store, make_record):
+    """Two tiers that both keep being reconfirmed are not a transition."""
+    both_tiers = [
+        make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.79),
+        make_record(max_lvr=0.70, min_equity=0.30, rate_pct=4.65),
+    ]
+    store.record_observations(both_tiers, observed_at=DAY_ONE)
+    store.record_observations(both_tiers, observed_at=DAY_TWO)  # both reconfirmed unchanged
+
+    current = store.get_current_observations()
+
+    assert len(current) == 2
+    assert {record.max_lvr for record in current} == {0.80, 0.70}
+
+
+def test_no_delayed_withdrawal_follows_an_eligibility_transition(store, make_record):
+    """The old key must not resurface as a REMOVED_PRODUCT one collection later."""
+    store.record_observations(
+        [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.79)], observed_at=DAY_ONE
+    )
+
+    baseline_at_run_two = store.get_current_observations()
+    transitioned = [
+        make_record(max_lvr=0.75, min_equity=0.25, rate_pct=4.79, observed_at=DAY_TWO)
+    ]
+    store.record_observations(transitioned, observed_at=DAY_TWO)
+    changes_at_run_two = detect_changes(
+        previous=baseline_at_run_two,
+        current=transitioned,
+        detected_at=DAY_TWO,
+        banks_collected=["ANZ"],
+    )
+    store.record_changes(changes_at_run_two)
+    assert [c.change_type for c in changes_at_run_two] == [ChangeType.ELIGIBILITY_CHANGE]
+
+    baseline_at_run_three = store.get_current_observations()
+    reconfirmed = [
+        make_record(max_lvr=0.75, min_equity=0.25, rate_pct=4.79, observed_at=DAY_THREE)
+    ]
+    changes_at_run_three = detect_changes(
+        previous=baseline_at_run_three,
+        current=reconfirmed,
+        detected_at=DAY_THREE,
+        banks_collected=["ANZ"],
+    )
+
+    assert changes_at_run_three == []
 
 
 def test_observations_as_of_does_not_resurrect_a_withdrawn_product(store, make_record):

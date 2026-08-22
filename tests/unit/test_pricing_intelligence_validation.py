@@ -73,6 +73,19 @@ def test_a_suspicious_jump_is_flagged_but_kept(make_record):
     assert outcome.suspicious_keys
 
 
+def test_a_suspicious_movement_is_caught_across_an_eligibility_edit(make_record):
+    """An eligibility edit changes the exact key; the movement check must not skip it."""
+    previous = [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=5.00)]
+    outcome = validate_observations(
+        [make_record(max_lvr=0.75, min_equity=0.25, rate_pct=1.50)],
+        thresholds=ValidationThresholds(suspicious_change_bps=75),
+        previous=previous,
+    )
+
+    assert len(outcome.accepted) == 1
+    assert outcome.suspicious_keys, "the movement must be caught via the eligibility fallback"
+
+
 def test_a_normal_movement_is_not_flagged(make_record):
     outcome = validate_observations(
         [make_record(rate_pct=4.79)],
