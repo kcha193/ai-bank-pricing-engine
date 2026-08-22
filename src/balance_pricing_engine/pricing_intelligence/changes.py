@@ -85,7 +85,13 @@ class RateChange:
 
 
 # Fields compared for a non-price eligibility change.
-_ELIGIBILITY_FIELDS = ("max_lvr", "min_equity", "new_business_only", "package_requirement")
+_ELIGIBILITY_FIELDS = (
+    "lvr_condition",
+    "max_lvr",
+    "min_equity",
+    "new_business_only",
+    "package_requirement",
+)
 _PROMOTION_FIELDS = ("cashback_text", "promotion_text")
 
 

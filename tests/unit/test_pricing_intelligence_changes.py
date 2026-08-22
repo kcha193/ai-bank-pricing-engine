@@ -245,6 +245,17 @@ def test_max_lvr_movement_is_an_eligibility_change_not_a_new_product(make_record
     assert [change.change_type for change in changes] == [ChangeType.ELIGIBILITY_CHANGE]
 
 
+def test_lvr_condition_change_is_an_eligibility_change_not_a_new_product(make_record):
+    """A re-described eligibility condition is the same product, not a new one."""
+    changes = detect_changes(
+        [make_record(lvr_condition="standard")],
+        [make_record(lvr_condition="min_20_percent_equity", observed_at=DAY_TWO)],
+    )
+
+    assert [change.change_type for change in changes] == [ChangeType.ELIGIBILITY_CHANGE]
+    assert "lvr_condition" in changes[0].detail
+
+
 def test_describe_renders_a_readable_summary(make_record):
     change = detect_changes(
         [make_record(rate_pct=4.99)], [make_record(rate_pct=4.79, observed_at=DAY_TWO)]

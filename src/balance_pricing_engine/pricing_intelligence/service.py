@@ -240,27 +240,35 @@ class PricingIntelligenceService:
     ) -> MarketSnapshot:
         """Return the currently-advertised market across tracked terms.
 
+        Uses the last known state per key (via ``get_current_observations()``),
+        not a strict "last run" filter: a bank's rate that failed to fetch, or
+        a single line another bank had rejected by validation, must not drop
+        out of the market view just because it wasn't reconfirmed this exact
+        run -- only a confirmed withdrawal does that.
+
         ``as_of_run_id`` reconstructs an older run's state via
         ``get_observations_as_of()``: ``last_seen_run_id`` (what
         ``get_latest_rates()`` filters on) is overwritten forward on every
         unchanged re-observation, so it cannot answer for a run that isn't
         the latest one.
         """
+        as_of: Optional[datetime] = None
         if as_of_run_id is not None:
-            started_at = self.store.get_run_started_at(as_of_run_id)
+            as_of = self.store.get_run_started_at(as_of_run_id)
             records = (
-                self.store.get_observations_as_of(as_of=started_at, product_type=product_type)
-                if started_at is not None
+                self.store.get_observations_as_of(as_of=as_of, product_type=product_type)
+                if as_of is not None
                 else []
             )
         else:
-            records = self.store.get_latest_rates(product_type=product_type)
+            records = self.store.get_current_observations(product_type=product_type)
         return build_market_snapshot(
             _exclude_suspicious(records),
             product_type=product_type,
             rate_category=rate_category,
             terms_months=self.config.tracked_terms_months,
             banks=self.config.selected_banks,
+            as_of=as_of,
         )
 
     def get_previous_market_snapshot(
@@ -269,7 +277,10 @@ class PricingIntelligenceService:
         rate_category: Optional[str] = "special",
     ) -> Optional[MarketSnapshot]:
         """Return the snapshot from the run before the latest, if there is one."""
-        records = self.store.get_previous_run_rates(product_type=product_type)
+        as_of = self.store.get_previous_run_started_at()
+        if as_of is None:
+            return None
+        records = self.store.get_observations_as_of(as_of=as_of, product_type=product_type)
         if not records:
             return None
         return build_market_snapshot(
@@ -278,6 +289,7 @@ class PricingIntelligenceService:
             rate_category=rate_category,
             terms_months=self.config.tracked_terms_months,
             banks=self.config.selected_banks,
+            as_of=as_of,
         )
 
     def get_changes(

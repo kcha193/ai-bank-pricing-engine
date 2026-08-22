@@ -126,6 +126,7 @@ _MATERIAL_FIELDS = (
     "rate_pct",
     "product_name",
     "eligibility_text",
+    "lvr_condition",
     "max_lvr",
     "min_equity",
     "new_business_only",
@@ -483,6 +484,11 @@ class ObservationStore:
         key is excluded when a ``REMOVED_PRODUCT`` event for it landed between
         the selected row's start and ``as_of``. A withdrawal recorded before
         that row started does not apply -- the product was re-added since.
+
+        Each returned record is dated from its state's ``first_observed_at``
+        (like :meth:`get_rate_history`), not the row's ``last_seen_at`` --
+        which a later, still-unchanged collection can push past ``as_of``
+        entirely, putting a future timestamp on a reconstruction of the past.
         """
         timestamp = _iso(as_of)
         rows = self._connection.execute(
@@ -498,7 +504,27 @@ class ObservationStore:
             ") ORDER BY bank, term_months",
             (_product_value(product_type), timestamp, timestamp, timestamp),
         ).fetchall()
-        return [_row_to_record(row) for row in rows]
+        return [_row_to_history_record(row) for row in rows]
+
+    def get_previous_run_started_at(self, before_run_id: Optional[str] = None) -> Optional[datetime]:
+        """Resolve the start time of the run before ``before_run_id`` (default: the latest run).
+
+        Exposed separately from :meth:`get_previous_run_rates` so a caller can
+        also pass this timestamp on as the snapshot's ``as_of``, rather than
+        letting it be inferred from the reconstructed records themselves.
+        """
+        before_run_id = before_run_id or self.latest_run_id()
+        if before_run_id is None:
+            return None
+        started_at = self.get_run_started_at(before_run_id)
+        if started_at is None:
+            return None
+        previous = self._connection.execute(
+            "SELECT started_at FROM collection_runs WHERE started_at < ? "
+            "ORDER BY started_at DESC, rowid DESC LIMIT 1",
+            (_iso(started_at),),
+        ).fetchone()
+        return _parse_iso(previous["started_at"]) if previous is not None else None
 
     def get_previous_run_rates(
         self,
@@ -506,22 +532,10 @@ class ObservationStore:
         before_run_id: Optional[str] = None,
     ) -> list[CompetitorRateRecord]:
         """Return the advertised rates from the run before ``before_run_id``."""
-        before_run_id = before_run_id or self.latest_run_id()
-        if before_run_id is None:
+        as_of = self.get_previous_run_started_at(before_run_id)
+        if as_of is None:
             return []
-        started_at = self.get_run_started_at(before_run_id)
-        if started_at is None:
-            return []
-        previous = self._connection.execute(
-            "SELECT started_at FROM collection_runs WHERE started_at < ? "
-            "ORDER BY started_at DESC, rowid DESC LIMIT 1",
-            (_iso(started_at),),
-        ).fetchone()
-        if previous is None:
-            return []
-        return self.get_observations_as_of(
-            as_of=_parse_iso(previous["started_at"]), product_type=product_type
-        )
+        return self.get_observations_as_of(as_of=as_of, product_type=product_type)
 
     def get_changes_since(
         self,

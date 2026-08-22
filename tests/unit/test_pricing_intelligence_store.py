@@ -100,6 +100,18 @@ def test_a_changed_non_numeric_field_creates_a_new_state(store, make_record):
     assert result.unchanged == 0
 
 
+def test_a_changed_lvr_condition_creates_a_new_state(store, make_record):
+    """lvr_condition must persist a fresh value, not stay stale under 'unchanged'."""
+    store.record_observations([make_record(lvr_condition="standard")], observed_at=DAY_ONE)
+    result = store.record_observations(
+        [make_record(lvr_condition="min_20_percent_equity")], observed_at=DAY_TWO
+    )
+
+    assert result.inserted == 1
+    assert result.unchanged == 0
+    assert store.get_latest_rates()[0].lvr_condition == "min_20_percent_equity"
+
+
 def test_a_naive_observed_at_is_treated_as_utc(store, make_record):
     naive = datetime(2026, 8, 20, 12, 0, 0)
     store.record_observations([make_record()], observed_at=naive)
@@ -274,6 +286,16 @@ def test_observations_as_of_reconstructs_a_point_in_time_state(store, make_recor
 
     assert [record.advertised_rate_pct for record in as_of_day_one] == [4.99]
     assert [record.advertised_rate_pct for record in as_of_day_two] == [4.79]
+
+
+def test_observations_as_of_dates_records_from_their_first_observation(store, make_record):
+    """A later reconfirmation must not put a future timestamp on a past reconstruction."""
+    store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)
+    store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_TWO)  # unchanged
+
+    reconstructed = store.get_observations_as_of(as_of=DAY_ONE)
+
+    assert reconstructed[0].captured_at_utc == DAY_ONE
 
 
 def _withdraw_bnz_on_day_two(store, make_record):

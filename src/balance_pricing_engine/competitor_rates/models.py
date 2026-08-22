@@ -113,15 +113,16 @@ class CompetitorRateRecord(BaseModel):
 
         Includes the product name and the numeric balance band: two
         simultaneous products can otherwise share bank, category, term,
-        coarse ``lvr_condition``, and payment frequency while differing only
-        by name or by a numeric balance tier, which would collide onto the
-        same key and have one silently overwrite the other.
+        and payment frequency while differing only by name or by a numeric
+        balance tier, which would collide onto the same key and have one
+        silently overwrite the other.
 
-        ``max_lvr``/``min_equity`` are deliberately excluded: a bank tightening
-        or loosening its LVR eligibility on an otherwise-unchanged product is
-        the same product with a new condition (an :class:`.ChangeType`
-        ``ELIGIBILITY_CHANGE``), not a new product -- unlike the balance band,
-        which change detection does not track as a mutable attribute.
+        ``lvr_condition``, ``max_lvr``, and ``min_equity`` are deliberately
+        excluded: a bank re-describing (or tightening/loosening) LVR
+        eligibility on an otherwise-unchanged product is the same product
+        with a new condition (an :class:`.ChangeType` ``ELIGIBILITY_CHANGE``),
+        not a new product -- unlike the balance band, which change detection
+        does not track as a mutable attribute.
         """
         parts = [
             self.bank,
@@ -130,7 +131,6 @@ class CompetitorRateRecord(BaseModel):
             str(self.term_months_normalised)
             if self.term_months_normalised is not None
             else self.term_label_raw.lower(),
-            self.lvr_condition or "",
             self.interest_payment_frequency,
             self.product_name.strip().lower(),
             _numeric_band(self.min_balance_or_deposit),

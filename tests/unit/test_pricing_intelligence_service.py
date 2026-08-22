@@ -183,6 +183,23 @@ def test_a_validation_rejected_record_is_not_reported_as_a_withdrawal(fixture_fe
     assert withdrawals == []
 
 
+def test_a_validation_rejected_line_keeps_its_last_known_rate_in_the_snapshot(fixture_fetcher):
+    """A rejected line must not silently disappear from market-derived pricing either."""
+
+    def corrupt_kiwibank_three_year(bank, html):
+        if bank == "Kiwibank":
+            return html.replace("<td>3 years</td><td>5.35%", "<td>3 years</td><td>55.35%")
+        return html
+
+    with build_service(fixture_fetcher()) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=corrupt_kiwibank_three_year)
+        service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+        snapshot = service.get_market_snapshot()
+
+    assert snapshot.term(36).rate_for("Kiwibank") == 5.35
+
+
 def test_a_broken_parser_is_flagged_suspicious_not_silently_accepted(fixture_fetcher):
     def break_kiwibank(bank, html):
         if bank == "Kiwibank":
