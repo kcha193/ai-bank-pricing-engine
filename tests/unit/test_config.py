@@ -49,6 +49,26 @@ def test_engine_config_warns_for_narrow_spread_policy_bands():
         )
 
 
+def test_engine_config_accepts_a_pricing_intelligence_block():
+    raw = _base_config()
+    raw["pricing_intelligence"] = {
+        "selected_banks": ["ANZ", "ASB"],
+        "max_observation_age_hours": 48,
+    }
+
+    config = EngineConfig.model_validate(raw)
+
+    assert config.pricing_intelligence is not None
+    assert config.pricing_intelligence.selected_banks == ["ANZ", "ASB"]
+    assert config.pricing_intelligence.max_observation_age_hours == 48
+
+
+def test_engine_config_pricing_intelligence_defaults_to_none():
+    config = EngineConfig.model_validate(_base_config())
+
+    assert config.pricing_intelligence is None
+
+
 def _base_config(**overrides):
     config = {
         "random_seed": 42,

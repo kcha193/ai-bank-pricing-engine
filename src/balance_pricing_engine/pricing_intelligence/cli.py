@@ -18,6 +18,7 @@ import argparse
 import logging
 from typing import Optional
 
+from balance_pricing_engine.config import load_config
 from balance_pricing_engine.pricing_intelligence.alerts import (
     ConsoleAlertSink,
     dispatch_alerts,
@@ -38,6 +39,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
 
     config = PricingIntelligenceConfig()
+    if args.config:
+        # configs/base.yaml's pricing_intelligence block would otherwise be
+        # silently ignored -- this CLI previously always ran on defaults
+        # regardless of what was configured there.
+        engine_config = load_config(args.config)
+        if engine_config.pricing_intelligence is not None:
+            config = engine_config.pricing_intelligence
     if args.database:
         config = config.model_copy(update={"database_path": args.database})
 
@@ -70,6 +78,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pricing-intelligence",
         description="Monitor and interpret publicly advertised NZ retail bank pricing",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help=(
+            "Path to an EngineConfig YAML (e.g. configs/base.yaml) to load "
+            "pricing_intelligence settings from; --database still overrides "
+            "just the database path"
+        ),
     )
     parser.add_argument("--database", default=None, help="Path to the observation store")
     parser.add_argument("--verbose", action="store_true", help="Verbose logging")
@@ -155,11 +172,21 @@ def _collect(service: PricingIntelligenceService, args: argparse.Namespace) -> i
 
     if args.alerts and outcome.changes:
         print()
+        if args.no_persist:
+            # A dry run never writes the accepted observations, so the live
+            # snapshot still describes the unchanged current state, not what
+            # these prospective changes propose. Showing it as market
+            # context (median, rank movement) would misrepresent the
+            # preview; omit it rather than compare against stale data.
+            snapshot, previous_snapshot = None, None
+        else:
+            snapshot = service.get_market_snapshot()
+            previous_snapshot = service.get_previous_market_snapshot()
         dispatch_alerts(
             format_alerts(
                 [change for change in outcome.changes if change.is_rate_move],
-                service.get_market_snapshot(),
-                service.get_previous_market_snapshot(),
+                snapshot,
+                previous_snapshot,
             ),
             ConsoleAlertSink(),
         )

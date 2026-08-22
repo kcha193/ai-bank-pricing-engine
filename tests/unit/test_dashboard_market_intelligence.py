@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import yaml
 
 from balance_pricing_engine.pricing_intelligence.config import (
     CollectionConfig,
@@ -132,8 +134,20 @@ def render_dashboard(monkeypatch, database_path):
 
     monkeypatch.setattr(PricingIntelligenceConfig, "__init__", patched_init)
     sys.modules.pop("balance_pricing_engine.dashboard.app", None)
+
+    # A plain importlib.import_module() would raise DashboardStop from inside
+    # the module body and, per CPython's import machinery, remove the
+    # partially-initialised module from sys.modules on that failure -- losing
+    # access to module-level helpers (e.g. _resolve_intelligence_config) that
+    # were already defined before the point of failure. Executing manually
+    # keeps the module object (and everything defined up to the exception)
+    # reachable via fake.module regardless.
+    spec = importlib.util.find_spec("balance_pricing_engine.dashboard.app")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["balance_pricing_engine.dashboard.app"] = module
     with pytest.raises(DashboardStop):
-        importlib.import_module("balance_pricing_engine.dashboard.app")
+        spec.loader.exec_module(module)
+    fake.module = module
     return fake
 
 
@@ -181,3 +195,59 @@ def test_section_guides_the_user_when_no_data_exists(monkeypatch, tmp_path):
 
     assert "No market data collected yet" in messages
     assert "pricing_intelligence collect" in messages
+
+
+def _minimal_engine_yaml(**pricing_intelligence_overrides):
+    return yaml.dump(
+        {
+            "random_seed": 1,
+            "simulation": {"n_loan_customers": 100, "n_deposit_customers": 100},
+            "market": {
+                "cash_rate": 0.04,
+                "wholesale_funding_spread": 0.01,
+                "competitor_loan_rate": 0.06,
+                "competitor_deposit_rate": 0.04,
+                "home_loan_reference_rate": 0.0525,
+                "term_deposit_reference_rate": 0.0400,
+            },
+            "pricing_strategy": {
+                "home_loan_spread_bps": {"min": -50, "max": 50, "step": 5},
+                "term_deposit_spread_bps": {"min": -40, "max": 40, "step": 5},
+            },
+            "balance_sheet": {
+                "required_deposit_funding_ratio": 0.65,
+                "funding_shortfall_penalty_rate": 0.02,
+            },
+            "response": {
+                "loan_rate_elasticity": -85.0,
+                "loan_competitor_gap_elasticity": -65.0,
+                "deposit_rate_elasticity": 95.0,
+                "deposit_competitor_gap_elasticity": 75.0,
+            },
+            "pricing_intelligence": pricing_intelligence_overrides,
+        }
+    )
+
+
+def test_resolve_intelligence_config_pulls_settings_from_the_sidebar_yaml(
+    monkeypatch, tmp_path
+):
+    """The sidebar's pricing_intelligence block must not be silently ignored."""
+    fake = render_dashboard(monkeypatch, str(tmp_path / "missing.db"))
+
+    resolved = fake.module._resolve_intelligence_config(
+        _minimal_engine_yaml(selected_banks=["ANZ", "ASB"])
+    )
+
+    assert resolved.selected_banks == ["ANZ", "ASB"]
+
+
+def test_resolve_intelligence_config_falls_back_to_defaults_on_invalid_yaml(
+    monkeypatch, tmp_path
+):
+    """The panel renders before the scenario gate, so the YAML may be mid-edit."""
+    fake = render_dashboard(monkeypatch, str(tmp_path / "missing.db"))
+
+    resolved = fake.module._resolve_intelligence_config("not: valid: engine: config: [")
+
+    assert resolved == PricingIntelligenceConfig()

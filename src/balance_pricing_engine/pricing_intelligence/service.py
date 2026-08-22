@@ -299,8 +299,17 @@ class PricingIntelligenceService:
             ),
             # A record rejected by validation this run is unknown, not
             # withdrawn -- a single implausible line must not read as a
-            # market event.
-            rejected_keys=(record.observation_key() for record in validation.rejected),
+            # market event. Suppressed by the *previous* record's key, not
+            # the rejected record's own key: a rejected line that also
+            # changed a key-forming eligibility field (e.g. a parser fault
+            # that garbles the rate and misreads max_lvr together) would
+            # otherwise have a key that never matches its last confirmed
+            # predecessor, so the predecessor's key is only found via the
+            # same eligibility-group fallback used elsewhere.
+            rejected_keys=(
+                previous_record.observation_key()
+                for previous_record in resolve_pairing(baseline, validation.rejected).values()
+            ),
         )
         # A first-ever collection would otherwise report every rate as a new
         # product, which is noise rather than market intelligence.

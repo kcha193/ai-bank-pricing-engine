@@ -53,6 +53,22 @@ with st.sidebar:
     run_button = st.button("Run scenario", type="primary")
 
 
+def _resolve_intelligence_config(config_yaml_str: str) -> PricingIntelligenceConfig:
+    """Pull pricing_intelligence settings from the sidebar's EngineConfig YAML.
+
+    Falls back to defaults on any parse/validation failure: this panel
+    renders before the scenario gate, so the YAML may be mid-edit or
+    otherwise invalid, and a config author's bank selection/freshness/
+    validation settings should still take effect when it is valid rather
+    than being silently ignored in favour of defaults.
+    """
+    try:
+        engine_config = EngineConfig(**yaml.safe_load(config_yaml_str))
+    except Exception:  # noqa: BLE001 - falls back to defaults on any bad YAML
+        return PricingIntelligenceConfig()
+    return engine_config.pricing_intelligence or PricingIntelligenceConfig()
+
+
 def _render_market_intelligence() -> None:
     """Render the NZ market-intelligence section.
 
@@ -62,7 +78,7 @@ def _render_market_intelligence() -> None:
     """
     st.header("NZ market intelligence")
 
-    intelligence_config = PricingIntelligenceConfig()
+    intelligence_config = _resolve_intelligence_config(config_yaml)
     database_path = Path(intelligence_config.database_path)
     if not database_path.exists():
         st.info(

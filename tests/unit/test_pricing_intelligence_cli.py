@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import yaml
 
 from balance_pricing_engine.pricing_intelligence import cli
 from balance_pricing_engine.pricing_intelligence.config import (
@@ -58,6 +59,62 @@ def repriced_database(tmp_path, fixture_fetcher):
 
 def run(argv):
     return cli.main(argv)
+
+
+def _minimal_engine_config(**pricing_intelligence_overrides):
+    return {
+        "random_seed": 1,
+        "simulation": {"n_loan_customers": 100, "n_deposit_customers": 100},
+        "market": {
+            "cash_rate": 0.04,
+            "wholesale_funding_spread": 0.01,
+            "competitor_loan_rate": 0.06,
+            "competitor_deposit_rate": 0.04,
+            "home_loan_reference_rate": 0.0525,
+            "term_deposit_reference_rate": 0.0400,
+        },
+        "pricing_strategy": {
+            "home_loan_spread_bps": {"min": -50, "max": 50, "step": 5},
+            "term_deposit_spread_bps": {"min": -40, "max": 40, "step": 5},
+        },
+        "balance_sheet": {
+            "required_deposit_funding_ratio": 0.65,
+            "funding_shortfall_penalty_rate": 0.02,
+        },
+        "response": {
+            "loan_rate_elasticity": -85.0,
+            "loan_competitor_gap_elasticity": -65.0,
+            "deposit_rate_elasticity": 95.0,
+            "deposit_competitor_gap_elasticity": 75.0,
+        },
+        "pricing_intelligence": pricing_intelligence_overrides,
+    }
+
+
+def test_config_flag_loads_pricing_intelligence_settings_from_engine_config(
+    tmp_path, fixture_fetcher, capsys
+):
+    """configs/base.yaml's pricing_intelligence block must actually take effect."""
+    custom_db = tmp_path / "from_config.db"
+    pi_config = PricingIntelligenceConfig(
+        database_path=str(custom_db),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    with PricingIntelligenceService(
+        config=pi_config, store=ObservationStore(custom_db), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    engine_config_path = tmp_path / "engine.yaml"
+    engine_config_path.write_text(
+        yaml.dump(_minimal_engine_config(database_path=str(custom_db)))
+    )
+
+    exit_code = run(["--config", str(engine_config_path), "snapshot"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "NZ MORTGAGE MARKET" in output
 
 
 def test_snapshot_renders_the_market_grid(populated_database, capsys):

@@ -6,6 +6,7 @@ from balance_pricing_engine.pricing_intelligence.changes import (
     ChangeType,
     detect_changes,
     load_changes,
+    resolve_pairing,
 )
 from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
 
@@ -105,6 +106,31 @@ def test_removal_is_suppressed_for_a_key_rejected_by_validation_this_run(make_re
         current=[],
         banks_collected=["ANZ"],
         rejected_keys=[previous_record.observation_key()],
+    )
+
+    assert changes == []
+
+
+def test_removal_is_suppressed_for_a_rejected_record_with_a_shifted_eligibility_key(
+    make_record,
+):
+    """A rejected line that also shifted an eligibility field must still
+    suppress its true (previous) key, not its own (different) one."""
+    baseline = [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.79)]
+    # The rejected record's own key differs from the baseline's: the
+    # eligibility field moved alongside the implausible rate.
+    rejected = [make_record(max_lvr=0.75, min_equity=0.25, rate_pct=99.0, observed_at=DAY_TWO)]
+    rejected_keys = {
+        previous_record.observation_key()
+        for previous_record in resolve_pairing(baseline, rejected).values()
+    }
+
+    changes = detect_changes(
+        previous=baseline,
+        current=[],
+        detected_at=DAY_TWO,
+        banks_collected=["ANZ"],
+        rejected_keys=rejected_keys,
     )
 
     assert changes == []
