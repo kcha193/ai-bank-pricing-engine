@@ -325,7 +325,11 @@ class PricingService:
         decision_id: str,
         publish_budget: _RequestPublishBudget | None = None,
     ) -> dict[str, ModelLineage]:
-        budget = publish_budget or _RequestPublishBudget()
+        # `is None`, not `or`: matches the fix applied elsewhere in this PR for the same
+        # discard-a-falsey-injected-object pattern -- _RequestPublishBudget has no
+        # __bool__/__len__ today, but relying on `or` here would silently break if it
+        # ever gained one (e.g. "falsey once the budget is exhausted").
+        budget = _RequestPublishBudget() if publish_budget is None else publish_budget
         if request.config.segmented_pricing is not None:
             # Segmented runs return through _evaluate_adaptive_segmented_rates before
             # run_baseline_diagnostics ever calls ModelScoringAgent.resolve_response_fn
@@ -402,7 +406,11 @@ class PricingService:
         diagnostics: Any,
         publish_budget: _RequestPublishBudget | None = None,
     ) -> None:
-        budget = publish_budget or _RequestPublishBudget()
+        # `is None`, not `or`: matches the fix applied elsewhere in this PR for the same
+        # discard-a-falsey-injected-object pattern -- _RequestPublishBudget has no
+        # __bool__/__len__ today, but relying on `or` here would silently break if it
+        # ever gained one (e.g. "falsey once the budget is exhausted").
+        budget = _RequestPublishBudget() if publish_budget is None else publish_budget
         if status is DecisionStatus.BLOCKED:
             budget.publish(
                 request.event_publisher,
