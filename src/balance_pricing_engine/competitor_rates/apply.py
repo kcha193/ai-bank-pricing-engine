@@ -46,20 +46,27 @@ def apply_competitor_rates_to_config(config):
     return _revalidate(updated_config)
 
 
-def _revalidate(config):
+def revalidate_config(config, context: str = "competitor-rate overlay"):
     """Re-run EngineConfig's ``model_validator``s that ``model_copy(update=...)`` skips.
 
-    The overlay above can push a previously-valid config outside its constraints
+    An overlay can push a previously-valid config outside its constraints
     (e.g. a competitor reference rate that drives the spread floor negative). Without
     this, that only surfaces later as an opaque ``ValueError`` deep in the grid
     builder, mapped to a generic 500 instead of a competitor-rate-specific 422.
+
+    Shared with the pricing-intelligence market-strategy overlay, which has the
+    same failure mode; ``context`` names the overlay in the raised error.
     """
     try:
         return type(config).model_validate(config.model_dump())
     except ValidationError as exc:
         raise CompetitorRateResolutionError(
-            f"competitor-rate overlay produced an invalid configuration: {exc}"
+            f"{context} produced an invalid configuration: {exc}"
         ) from exc
+
+
+#: Backwards-compatible private alias retained for existing call sites.
+_revalidate = revalidate_config
 
 
 def load_and_resolve_competitor_rates(

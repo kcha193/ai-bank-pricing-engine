@@ -1,0 +1,204 @@
+"""Market-derived competitor assumptions for the pricing engine.
+
+This is the *only* seam between pricing intelligence and pricing optimisation.
+The optimiser keeps asking the same question it always asked -- "what is the
+competitor rate?" -- and this module decides how that number is sourced. No
+strategy logic leaks into the grid search, the profit model, or the scenario
+runner.
+
+``MANUAL`` is the default and leaves configuration untouched, so every existing
+scenario, config file, and test keeps its current behaviour.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from enum import Enum
+from typing import Optional
+
+from balance_pricing_engine.competitor_rates.apply import (
+    CompetitorRateResolutionError,
+    revalidate_config,
+)
+from balance_pricing_engine.pricing_intelligence.bps import bps_to_percent
+from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot, TermMarket
+
+
+class MarketStrategyError(CompetitorRateResolutionError):
+    """A market-derived competitor assumption could not be resolved.
+
+    Subclasses the existing competitor-rate error so delivery layers that
+    already map that failure to a 422 keep working unchanged.
+    """
+
+
+class CompetitorRateStrategy(str, Enum):
+    """How the optimiser's competitor rate assumption is sourced."""
+
+    #: Use the rate already in the config. Legacy behaviour, and the default.
+    MANUAL = "MANUAL"
+    #: The median advertised rate across tracked banks at the chosen term.
+    MARKET_MEDIAN = "MARKET_MEDIAN"
+    #: The most competitive advertised rate (lowest for loans).
+    MARKET_LEADER = "MARKET_LEADER"
+    #: The best rate excluding banks tied at rank 1 -- a more robust target than
+    #: the leader when one bank is running a short-lived promotion.
+    MARKET_SECOND_LOWEST = "MARKET_SECOND_LOWEST"
+    #: The arithmetic mean across tracked banks.
+    MARKET_MEAN = "MARKET_MEAN"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class ResolvedCompetitorAssumption:
+    """A competitor rate assumption plus the evidence behind it."""
+
+    strategy: CompetitorRateStrategy
+    #: Decimal rate ready for ``MarketConfig`` (0.0479 for 4.79%).
+    competitor_loan_rate: float
+    #: The same figure in advertised percent, for reporting.
+    rate_pct: float
+    term_months: Optional[int]
+    offset_bps: float
+    source_banks: tuple[str, ...]
+    as_of: Optional[datetime]
+    rationale: str
+
+    def summary(self) -> str:
+        return (
+            f"{self.strategy.value} @ {self.term_months}m -> {self.rate_pct:.2f}% "
+            f"({self.rationale})"
+        )
+
+
+def resolve_competitor_rate(
+    strategy: CompetitorRateStrategy | str = CompetitorRateStrategy.MANUAL,
+    snapshot: Optional[MarketSnapshot] = None,
+    term_months: int = 12,
+    manual_rate: Optional[float] = None,
+    offset_bps: float = 0.0,
+) -> ResolvedCompetitorAssumption:
+    """Resolve the competitor rate assumption for one term.
+
+    ``offset_bps`` shifts the resolved market rate, which is what expresses a
+    scenario such as "market leader minus 5 bps" without inventing a strategy
+    for every possible offset.
+
+    ``manual_rate`` is a decimal rate (0.0509), matching ``MarketConfig``;
+    market-derived rates are read in advertised percent and converted here, so
+    the percent/decimal boundary lives in exactly one place.
+    """
+    strategy = CompetitorRateStrategy(strategy)
+
+    if strategy is CompetitorRateStrategy.MANUAL:
+        if manual_rate is None:
+            raise MarketStrategyError("MANUAL competitor-rate strategy requires manual_rate")
+        return ResolvedCompetitorAssumption(
+            strategy=strategy,
+            competitor_loan_rate=manual_rate,
+            rate_pct=manual_rate * 100,
+            term_months=term_months,
+            offset_bps=0.0,
+            source_banks=(),
+            as_of=None,
+            rationale="manual scenario assumption; market intelligence not consulted",
+        )
+
+    if snapshot is None:
+        raise MarketStrategyError(f"{strategy.value} requires a market snapshot")
+    term_market = snapshot.term(term_months)
+    if term_market is None or not term_market.entries:
+        raise MarketStrategyError(
+            f"{strategy.value} requires advertised rates at {term_months} months; "
+            f"snapshot covers {list(snapshot.term_months)}"
+        )
+
+    base_pct, rationale = _resolve_market_rate(strategy, term_market)
+    rate_pct = base_pct + bps_to_percent(offset_bps)
+    if rate_pct <= 0:
+        raise MarketStrategyError(
+            f"{strategy.value} with an offset of {offset_bps:+.0f} bps produces a "
+            f"non-positive competitor rate ({rate_pct:.3f}%)"
+        )
+    if offset_bps:
+        rationale = f"{rationale}, offset {offset_bps:+.0f} bps"
+
+    return ResolvedCompetitorAssumption(
+        strategy=strategy,
+        # Rounded so a config snapshot reads 0.0485 rather than
+        # 0.048499999999999995; 8dp is far finer than any advertised rate.
+        competitor_loan_rate=round(rate_pct / 100, 8),
+        rate_pct=rate_pct,
+        term_months=term_months,
+        offset_bps=offset_bps,
+        source_banks=tuple(entry.bank for entry in term_market.entries),
+        as_of=term_market.entries[0].observed_at if term_market.entries else snapshot.as_of,
+        rationale=rationale,
+    )
+
+
+def _resolve_market_rate(
+    strategy: CompetitorRateStrategy, term_market: TermMarket
+) -> tuple[float, str]:
+    banks = term_market.bank_count
+    if strategy is CompetitorRateStrategy.MARKET_MEDIAN:
+        return term_market.median_rate, f"median advertised rate across {banks} banks"
+    if strategy is CompetitorRateStrategy.MARKET_MEAN:
+        return term_market.mean_rate, f"mean advertised rate across {banks} banks"
+    if strategy is CompetitorRateStrategy.MARKET_LEADER:
+        leaders = ", ".join(term_market.market_leaders)
+        return term_market.best_rate, f"market-leading advertised rate ({leaders})"
+    if strategy is CompetitorRateStrategy.MARKET_SECOND_LOWEST:
+        second = term_market.second_best_rate
+        if second is None:
+            raise MarketStrategyError(
+                "MARKET_SECOND_LOWEST requires at least one bank outside the leading "
+                f"rate; all {banks} tracked banks are tied at {term_market.best_rate:.2f}%"
+            )
+        return second, f"best advertised rate excluding the {len(term_market.market_leaders)} leader(s)"
+    raise MarketStrategyError(f"unsupported competitor-rate strategy: {strategy}")
+
+
+def apply_market_strategy_to_config(
+    config,
+    strategy: CompetitorRateStrategy | str = CompetitorRateStrategy.MANUAL,
+    snapshot: Optional[MarketSnapshot] = None,
+    term_months: int = 12,
+    offset_bps: float = 0.0,
+    set_reference_rate: bool = True,
+):
+    """Return ``config`` with its loan-side competitor assumption resolved.
+
+    Under ``MANUAL`` the config is returned unchanged -- byte-for-byte the
+    existing behaviour, so manual scenarios are unaffected by this layer.
+
+    Only the loan side is overlaid. Term-deposit intelligence is phase 2, so
+    ``market.competitor_deposit_rate`` keeps whatever the config already holds.
+
+    When ``set_reference_rate`` is true the market-relative spread anchor
+    (``home_loan_reference_rate``) is moved with the competitor rate, so
+    ``pricing_strategy.home_loan_spread_bps`` reads as spread-to-market. This
+    mirrors :func:`competitor_rates.apply.apply_competitor_rates_to_config`.
+    Set it false to keep spreads anchored to an independent benchmark.
+    """
+    resolved = resolve_competitor_rate(
+        strategy=strategy,
+        snapshot=snapshot,
+        term_months=term_months,
+        manual_rate=config.market.competitor_loan_rate,
+        offset_bps=offset_bps,
+    )
+    if resolved.strategy is CompetitorRateStrategy.MANUAL:
+        return config
+
+    updates = {"competitor_loan_rate": resolved.competitor_loan_rate}
+    if set_reference_rate and config.market.home_loan_reference_rate is not None:
+        updates["home_loan_reference_rate"] = resolved.competitor_loan_rate
+
+    updated_config = config.model_copy(
+        update={"market": config.market.model_copy(update=updates)}
+    )
+    return revalidate_config(updated_config, context="market-intelligence overlay")
