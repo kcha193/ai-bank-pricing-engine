@@ -125,12 +125,19 @@ def compute_market_activity(
     lookback_days: int = 7,
     now: Optional[datetime] = None,
     directional_dominance_ratio: float = 0.7,
+    include_suspicious: bool = False,
 ) -> MarketActivity:
     """Summarise rate movements inside a lookback window.
 
     Only rate movements count towards activity: a new or withdrawn product is a
     material market event but is not a repricing, and mixing them would distort
     the mean movement.
+
+    Changes flagged suspicious are excluded by default. A suspicious movement is
+    more often a parser fault than a reprice, and a single bogus 300 bps jump
+    would otherwise dominate the mean and push the market state to ELEVATED --
+    a broken parser must not be able to fake a repricing round. Pass
+    ``include_suspicious=True`` to see raw activity including unverified moves.
     """
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(days=lookback_days)
@@ -140,6 +147,7 @@ def compute_market_activity(
         if change.is_rate_move
         and change.change_bps is not None
         and change.detected_at >= cutoff
+        and (include_suspicious or not change.suspicious)
     ]
 
     if not moves:

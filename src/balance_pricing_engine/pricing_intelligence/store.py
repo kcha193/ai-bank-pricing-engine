@@ -33,6 +33,7 @@ from typing import Iterable, Iterator, Optional, Sequence
 import uuid
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
+from balance_pricing_engine.pricing_intelligence.changes import ChangeType
 
 logger = logging.getLogger(__name__)
 
@@ -302,11 +303,11 @@ class ObservationStore:
                     (
                         change.observation_key,
                         change.bank,
-                        str(change.product_type),
+                        ProductType(change.product_type).value,
                         change.product_name,
                         change.rate_category,
                         change.term_months,
-                        str(change.change_type),
+                        ChangeType(change.change_type).value,
                         change.previous_rate_pct,
                         change.current_rate_pct,
                         change.change_bps,

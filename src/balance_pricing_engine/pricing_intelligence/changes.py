@@ -95,14 +95,22 @@ def detect_changes(
     detected_at: Optional[datetime] = None,
     thresholds: Optional[ValidationThresholds] = None,
     run_id: Optional[str] = None,
+    banks_collected: Optional[Iterable[str]] = None,
 ) -> list[RateChange]:
     """Compare two sets of observations and return the material changes.
 
     Records are matched on :meth:`CompetitorRateRecord.observation_key`, so a
     repriced line reads as a rate movement rather than one product vanishing and
     another appearing. Identical observations produce no events.
+
+    ``banks_collected`` names the banks whose pages were successfully read this
+    run. Withdrawal events are only emitted for those banks -- otherwise a bank
+    being unreachable would report its entire range as withdrawn, which is a
+    collection failure masquerading as a market event. Leave it ``None`` only
+    when every bank in ``previous`` was definitely collected.
     """
     thresholds = thresholds or ValidationThresholds()
+    collected = set(banks_collected) if banks_collected is not None else None
     previous_by_key = {record.observation_key(): record for record in previous}
     current_by_key = {record.observation_key(): record for record in current}
     changes: list[RateChange] = []
@@ -127,6 +135,10 @@ def detect_changes(
 
     for key, previous_record in previous_by_key.items():
         if key in current_by_key:
+            continue
+        if collected is not None and previous_record.bank not in collected:
+            # This bank was not successfully collected, so its absence is
+            # unknown, not a withdrawal.
             continue
         changes.append(
             _build(
