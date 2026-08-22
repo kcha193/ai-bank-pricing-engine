@@ -1,12 +1,16 @@
 # Agentic Modelling Roadmap (Governed)
 
-## Current state (as of 2026-05-23)
+## Current state (as of 2026-08-20)
 
 The engine is portfolio-level, synthetic-data driven, and uses transparent deterministic response
 mechanics with known elasticities. All Tier 0–2 and Tier 4 "safe now" items are implemented.
 The pluggable response interface wires approved ML models into the optimizer with governed fallback.
 A full run-ledger, competitor-rate ingestion pipeline, segmented pricing, multi-period scenarios,
-and the LLM decision-support layer are all live. 369 tests pass; ruff clean.
+and the LLM decision-support layer are all live. The remaining agentic-modelling roadmap backlog
+and the four previously documented-but-unimplemented production boundaries (secrets provider,
+opt-in API-key auth, direct-TLS server launcher, Kafka event publisher) closed in one session —
+see [What has been built](#what-has-been-built-infrastructure-beyond-tiers) below and
+[docs/deployment.md](deployment.md) for the production-boundary detail. 691 tests pass; ruff clean.
 
 ## Tiered evolution path
 
@@ -52,7 +56,8 @@ and the LLM decision-support layer are all live. 369 tests pass; ruff clean.
   (`BootstrapEnsembleResponseModel` in `agentic.py` — `predict_probability_quantiles` exposes
   per-row uncertainty bands from replica spread; `predict_probability` returns the ensemble mean
   so it slots into `train()` candidates like any other `ResponseModel`).
-- **Remaining:** LightGBM/XGBoost adapters (defer until Tier-2 champion approved).
+- **Remaining:** none — `LightGBMResponseModel` + `XGBoostResponseModel` shipped behind the
+  `[ml]` extra (P3-3).
 
 ### Tier 3 — Deep learning / representation ⬜ not started
 
@@ -102,6 +107,16 @@ and the LLM decision-support layer are all live. 369 tests pass; ruff clean.
 - **Pluggable response interface** (`optimization/response_fn.py`): `ResponseFn` Protocol,
   `SyntheticLoanResponseFn` / `SyntheticDepositResponseFn` adapters,
   `MLResponseFnAdapter`, `GovernanceError` / `require_approved`.
+- **Production boundaries** (2026-08-20, PR #44): four previously documented-but-unimplemented
+  seams made real, each testable without live external infra —
+  `secrets.SecretsProvider` (`EnvSecretsProvider` / `StaticSecretsProvider`, the swap point for a
+  future Vault/AWS/GCP secrets manager; wired into `llm._client` for `ANTHROPIC_API_KEY`),
+  opt-in `X-API-Key` auth (`api/auth.py`, gated on `PRICING_ENGINE_API_KEYS`, applied to the two
+  compute-triggering routes only — `/health` and `/ready` stay open), a direct-TLS `api/server.py`
+  launcher resolving optional TLS kwargs from env vars, and `KafkaEventPublisher`
+  (`events/publisher.py`, requires the new `[kafka]` extra; blocks on the send future's broker ack
+  for at-least-once delivery — no live broker provisioned yet). See
+  [docs/deployment.md](deployment.md) for operational detail.
 
 ## Agentic workflow pattern
 
@@ -117,6 +132,10 @@ and the LLM decision-support layer are all live. 369 tests pass; ruff clean.
 ## Open items by priority
 
 > **All P2 and P3 items are complete as of 2026-06-01.** See individual plan files in `docs/superpowers/plans/` for implementation details and PR references.
+>
+> **The remaining Tier 2/Tier 4 roadmap items and the production-boundary work above closed
+> 2026-08-20 (PR #44).** No items remain queued in this document. Tier 3 stays gated behind real
+> longitudinal panel data, which this synthetic-data-only project does not have.
 
 ### P2 — ✅ all complete (PR #36)
 
