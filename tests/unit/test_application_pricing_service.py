@@ -18,7 +18,7 @@ from balance_pricing_engine.application.pricing_service import PricingService
 from balance_pricing_engine.competitor_rates.apply import apply_competitor_rates_to_config
 from balance_pricing_engine.competitor_rates.store import load_rate_run
 from balance_pricing_engine.config import EngineConfig, load_config
-from balance_pricing_engine.events.models import DomainEvent
+from balance_pricing_engine.events.models import DomainEvent, pricing_scenario_requested
 from balance_pricing_engine.events.publisher import InMemoryEventPublisher
 from balance_pricing_engine.governance.gates import DecisionStatus
 from balance_pricing_engine.modelling.agentic import ModelRegistry
@@ -206,6 +206,40 @@ def test_run_scenario_bounds_total_publish_wait_to_one_request_wide_deadline(mon
     # worth. 3x leaves headroom above the fixed behaviour while still catching a
     # regression back to per-call waiting.
     assert publish_overhead < 3 * 0.2
+
+
+def test_publish_budget_does_not_charge_for_time_outside_publish_calls():
+    """The budget must track cumulative time actually spent inside publish() calls, not
+    wall-clock time since it was created -- an earlier version anchored an absolute
+    deadline at request start, so slow unrelated work (feature resolution, grid-search
+    optimisation) between publishes silently consumed the whole budget before the first
+    real publish, forcing every later call to a 0s join even with a healthy publisher.
+    """
+    budget = pricing_service._RequestPublishBudget(total_seconds=0.2)
+    publisher = InMemoryEventPublisher()
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+
+    budget.publish(publisher, event)  # fast/healthy call, consumes ~0s of the budget
+    time.sleep(0.3)  # simulate slow work between publishes (e.g. optimisation)
+
+    assert budget.remaining > 0.15
+
+
+def test_publish_budget_decreases_by_actual_publish_wait_time():
+    budget = pricing_service._RequestPublishBudget(total_seconds=0.2)
+    hang = threading.Event()
+
+    class _HangingPublisher:
+        def publish(self, event: DomainEvent) -> None:
+            hang.wait()
+
+    event = pricing_scenario_requested("corr-1", scenario_name="baseline")
+    try:
+        budget.publish(_HangingPublisher(), event)
+    finally:
+        hang.set()
+
+    assert budget.remaining < 0.05
 
 
 def test_persist_ledger_requires_config_path():
