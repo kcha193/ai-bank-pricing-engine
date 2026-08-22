@@ -173,6 +173,22 @@ def test_bootstrap_ensemble_response_model_quantiles_are_ordered_and_track_mean(
     assert list(quantiles.index) == list(test_data.index)
 
 
+def test_bootstrap_ensemble_response_model_rejects_colliding_quantile_labels():
+    """Distinct quantiles that round to the same q<NN> label (e.g. 0.101 and 0.104, both
+    'q10') must raise rather than silently overwrite one uncertainty band with the
+    other in the dict comprehension, returning fewer columns than requested."""
+    dataset = _loan_dataset()
+    model = BootstrapEnsembleResponseModel(n_estimators=5, random_state=42)
+    train = dataset.iloc[:800]
+    test_data = dataset.iloc[800:820]
+    model.fit(train, LOAN_FEATURE_COLUMNS, LOAN_TARGET_COLUMN)
+
+    with pytest.raises(ValueError, match="colliding"):
+        model.predict_probability_quantiles(
+            test_data, LOAN_FEATURE_COLUMNS, quantiles=(0.101, 0.104)
+        )
+
+
 def test_bootstrap_ensemble_response_model_raises_before_fit_for_quantiles():
     model = BootstrapEnsembleResponseModel(n_estimators=5, random_state=42)
     df = pd.DataFrame({"offered_rate": [0.08]})

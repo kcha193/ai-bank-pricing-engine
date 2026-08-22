@@ -311,8 +311,19 @@ class BootstrapEnsembleResponseModel:
         quantiles: tuple[float, ...] = (0.1, 0.5, 0.9),
     ) -> pd.DataFrame:
         matrix = self._predict_matrix(data, feature_columns)
+        labels = [f"q{int(round(q * 100))}" for q in quantiles]
+        if len(set(labels)) != len(labels):
+            # Distinct quantiles that round to the same integer percentage (e.g. 0.101
+            # and 0.104) would otherwise collide in the dict comprehension below, and the
+            # later one would silently overwrite the earlier -- returning fewer
+            # uncertainty bands than requested with no indication anything was dropped.
+            raise ValueError(
+                f"quantiles {quantiles} produce colliding column labels {labels} when "
+                "rounded to the nearest integer percentage; use quantiles that round to "
+                "distinct q<NN> labels."
+            )
         columns = {
-            f"q{int(round(q * 100))}": np.quantile(matrix, q, axis=0) for q in quantiles
+            label: np.quantile(matrix, q, axis=0) for label, q in zip(labels, quantiles)
         }
         return pd.DataFrame(columns, index=data.index)
 
