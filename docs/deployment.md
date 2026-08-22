@@ -146,9 +146,10 @@ any real production use:
   default to `EnvSecretsProvider`, reading environment variables (still not committed to
   source control):
   - `ANTHROPIC_API_KEY` (used by the optional `[llm]` layer) — injected per call via
-    `llm.build_client(secrets_provider=...)`/`is_llm_available(secrets_provider=...)`, so a
-    future Vault/AWS Secrets Manager/GCP Secret Manager adapter implementing the same
-    protocol can be passed in without changing call sites.
+    `llm.build_client(secrets_provider=...)`/`llm.is_llm_available(secrets_provider=...)`
+    (both exported from `balance_pricing_engine.llm`), so a future Vault/AWS Secrets
+    Manager/GCP Secret Manager adapter implementing the same protocol can be passed in
+    without changing call sites.
   - `PRICING_ENGINE_API_KEYS` (the opt-in API-key auth described above) — resolved through
     the `require_api_key` FastAPI dependency's `_default_secrets_provider`. There's no
     per-call injection point for this one today; swapping it to a different provider means

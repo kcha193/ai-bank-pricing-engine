@@ -22,6 +22,17 @@ def test_is_sdk_installed_returns_bool():
     assert isinstance(is_sdk_installed(), bool)
 
 
+def test_build_client_and_is_llm_available_are_exported_from_the_llm_package():
+    """docs/deployment.md documents the secrets-provider injection example as
+    llm.build_client(...)/llm.is_llm_available(...) -- both must actually be reachable
+    from the package, not just from the private _client submodule, or that documented
+    example raises AttributeError for anyone following it."""
+    import balance_pricing_engine.llm as llm
+
+    assert llm.build_client is build_client
+    assert llm.is_llm_available is is_llm_available
+
+
 def test_is_llm_available_false_without_api_key(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
