@@ -45,6 +45,18 @@ class CompetitorRateRecord(BaseModel):
     max_balance_or_deposit: Optional[float] = Field(default=None, ge=0)
     lvr_condition: Optional[str] = None
     special_conditions: Optional[str] = None
+    # --- Optional mortgage promotion/eligibility detail -------------------------
+    # All nullable: a bank page that does not publish a field leaves it None
+    # rather than having a value invented for it. `rate_category` already
+    # separates standard from special advertised lines (one record per
+    # advertised rate), so there is deliberately no standard_rate/special_rate
+    # pair on a single record.
+    max_lvr: Optional[float] = Field(default=None, gt=0, le=1)
+    min_equity: Optional[float] = Field(default=None, ge=0, lt=1)
+    new_business_only: Optional[bool] = None
+    cashback_text: Optional[str] = None
+    promotion_text: Optional[str] = None
+    package_requirement: Optional[str] = None
     source_url: str
     source_bank_page_title: Optional[str] = None
     captured_at_utc: datetime
@@ -81,10 +93,37 @@ class CompetitorRateRecord(BaseModel):
             raise ValueError("raw_html_sha256 must be a SHA-256 hex digest")
         return value.lower()
 
+    def observation_key(self) -> str:
+        """Stable identity for this advertised rate line across collection runs.
+
+        Change detection compares like with like: two observations share a key
+        when they describe the same bank/product/term/condition combination, so
+        a rate movement is detected rather than being read as one product
+        disappearing and another appearing. Deliberately excludes the rate
+        itself and every provenance field.
+        """
+        parts = [
+            self.bank,
+            str(self.product_type),
+            self.rate_category,
+            str(self.term_months_normalised)
+            if self.term_months_normalised is not None
+            else self.term_label_raw.lower(),
+            self.lvr_condition or "",
+            self.interest_payment_frequency,
+        ]
+        return "|".join(parts)
+
     @model_validator(mode="after")
     def validate_identity_and_range(self) -> "CompetitorRateRecord":
         if not self.term_label_raw and not self.product_name:
             raise ValueError("term_label_raw or product_name is required")
+        if (
+            self.max_lvr is not None
+            and self.min_equity is not None
+            and abs((self.max_lvr + self.min_equity) - 1.0) > 1e-9
+        ):
+            raise ValueError("max_lvr and min_equity must sum to 1.0 when both are provided")
         if (
             self.max_balance_or_deposit is not None
             and self.min_balance_or_deposit is not None

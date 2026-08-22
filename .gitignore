@@ -17,3 +17,7 @@ graphify-out/GRAPH_TREE.html
 graphify-out/
 .claude/
 .codebase-memory/
+data/processed/pricing_intelligence/
+*.db
+*.sqlite
+*.sqlite3

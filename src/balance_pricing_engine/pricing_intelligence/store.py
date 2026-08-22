@@ -1,0 +1,575 @@
+"""Historical observation store for public NZ bank pricing.
+
+Storage choice: **SQLite**, from the standard library. The repository had no
+existing persistence layer, and SQLite adds no dependency, needs no server, and
+handles the query shapes this layer needs (latest-per-key, per-key history,
+changes in a date window) at the scale of five banks x seven terms x daily
+collection. DuckDB would be the better pick only if this grew into large
+analytical scans; it would add a dependency for no present benefit.
+
+Business logic never sees SQL: this module maps rows to and from
+:class:`CompetitorRateRecord` -- the same canonical model the collectors emit --
+and everything downstream (change detection, snapshots, positioning) works on
+those objects.
+
+**Slowly-changing storage.** A daily collection where nothing moved must not
+create meaningless history. Each row represents one *distinct advertised state*
+of a rate line: an unchanged re-observation bumps ``last_seen_at`` and
+``observation_count`` on the existing row instead of inserting a duplicate, and
+a material change inserts a new row. History therefore reads as the sequence of
+states a rate actually took.
+"""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+import json
+import logging
+from pathlib import Path
+import sqlite3
+from typing import Iterable, Iterator, Optional, Sequence
+import uuid
+
+from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
+
+logger = logging.getLogger(__name__)
+
+SCHEMA_VERSION = 1
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS collection_runs (
+    run_id              TEXT PRIMARY KEY,
+    started_at          TEXT NOT NULL,
+    banks               TEXT NOT NULL,
+    record_count        INTEGER NOT NULL DEFAULT 0,
+    inserted_count      INTEGER NOT NULL DEFAULT 0,
+    unchanged_count     INTEGER NOT NULL DEFAULT 0,
+    report_json         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS observations (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    observation_key     TEXT NOT NULL,
+    bank                TEXT NOT NULL,
+    product_type        TEXT NOT NULL,
+    product_name        TEXT NOT NULL,
+    rate_category       TEXT NOT NULL,
+    term_months         INTEGER,
+    term_label_raw      TEXT NOT NULL,
+    term_days_raw       INTEGER,
+    rate_pct            REAL NOT NULL,
+    interest_payment_frequency TEXT NOT NULL DEFAULT 'unknown',
+    min_balance         REAL,
+    max_balance         REAL,
+    lvr_condition       TEXT,
+    max_lvr             REAL,
+    min_equity          REAL,
+    new_business_only   INTEGER,
+    cashback_text       TEXT,
+    promotion_text      TEXT,
+    package_requirement TEXT,
+    eligibility_text    TEXT,
+    source_url          TEXT NOT NULL,
+    source_page_title   TEXT,
+    source_text         TEXT NOT NULL,
+    effective_date_text TEXT,
+    content_hash        TEXT NOT NULL,
+    parser_version      TEXT NOT NULL,
+    validation_status   TEXT NOT NULL DEFAULT 'unvalidated',
+    validation_warnings TEXT NOT NULL DEFAULT '[]',
+    first_observed_at   TEXT NOT NULL,
+    last_seen_at        TEXT NOT NULL,
+    last_seen_run_id    TEXT NOT NULL,
+    observation_count   INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_observations_key
+    ON observations (observation_key, first_observed_at);
+CREATE INDEX IF NOT EXISTS idx_observations_bank_term
+    ON observations (bank, product_type, term_months);
+CREATE INDEX IF NOT EXISTS idx_observations_last_seen
+    ON observations (last_seen_run_id);
+
+CREATE TABLE IF NOT EXISTS rate_changes (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    observation_key     TEXT NOT NULL,
+    bank                TEXT NOT NULL,
+    product_type        TEXT NOT NULL,
+    product_name        TEXT NOT NULL,
+    rate_category       TEXT NOT NULL,
+    term_months         INTEGER,
+    change_type         TEXT NOT NULL,
+    previous_rate_pct   REAL,
+    current_rate_pct    REAL,
+    change_bps          REAL,
+    previous_observed_at TEXT,
+    detected_at         TEXT NOT NULL,
+    run_id              TEXT NOT NULL,
+    suspicious          INTEGER NOT NULL DEFAULT 0,
+    detail              TEXT,
+    source_url          TEXT,
+    UNIQUE (observation_key, change_type, detected_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_changes_detected_at ON rate_changes (detected_at);
+"""
+
+# Fields whose movement makes an observation a genuinely new advertised state.
+# Provenance fields (hashes, page titles, raw text) are deliberately excluded:
+# a bank reformatting its page must not read as a pricing change.
+_MATERIAL_FIELDS = (
+    "rate_pct",
+    "product_name",
+    "eligibility_text",
+    "max_lvr",
+    "min_equity",
+    "new_business_only",
+    "cashback_text",
+    "promotion_text",
+    "package_requirement",
+    "min_balance",
+    "max_balance",
+)
+
+
+@dataclass(frozen=True)
+class WriteResult:
+    """Outcome of persisting one collection run."""
+
+    run_id: str
+    inserted: int
+    unchanged: int
+
+    @property
+    def total(self) -> int:
+        return self.inserted + self.unchanged
+
+
+def _iso(value: datetime) -> str:
+    """Serialise a timestamp as an unambiguous UTC ISO-8601 string."""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def _parse_iso(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+class ObservationStore:
+    """Repository over historical rate observations and detected changes."""
+
+    def __init__(self, database_path: str | Path = ":memory:") -> None:
+        self.database_path = str(database_path)
+        if self.database_path != ":memory:":
+            Path(self.database_path).parent.mkdir(parents=True, exist_ok=True)
+        # A single shared connection keeps an in-memory store usable across
+        # calls, which is what the tests and the CLI both want.
+        self._connection = sqlite3.connect(self.database_path)
+        self._connection.row_factory = sqlite3.Row
+        self._connection.execute("PRAGMA foreign_keys = ON")
+        self._create_schema()
+
+    # ------------------------------------------------------------- lifecycle
+
+    def close(self) -> None:
+        self._connection.close()
+
+    def __enter__(self) -> "ObservationStore":
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    @contextmanager
+    def _transaction(self) -> Iterator[sqlite3.Connection]:
+        with self._connection:
+            yield self._connection
+
+    def _create_schema(self) -> None:
+        with self._transaction() as connection:
+            connection.executescript(_SCHEMA)
+            row = connection.execute("SELECT version FROM schema_version").fetchone()
+            if row is None:
+                connection.execute(
+                    "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
+                )
+
+    # ----------------------------------------------------------------- writes
+
+    def record_observations(
+        self,
+        records: Iterable[CompetitorRateRecord],
+        run_id: Optional[str] = None,
+        observed_at: Optional[datetime] = None,
+        report_json: Optional[str] = None,
+    ) -> WriteResult:
+        """Persist one collection run, collapsing unchanged re-observations.
+
+        Returns counts of newly-inserted advertised states versus unchanged
+        re-observations, so a caller can tell a quiet day from a repricing day
+        without querying further.
+        """
+        records = list(records)
+        observed_at = observed_at or datetime.now(timezone.utc)
+        run_id = run_id or str(uuid.uuid4())
+        timestamp = _iso(observed_at)
+
+        inserted = 0
+        unchanged = 0
+        banks = sorted({record.bank for record in records})
+
+        with self._transaction() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO collection_runs "
+                "(run_id, started_at, banks, record_count, inserted_count, unchanged_count, "
+                "report_json) VALUES (?, ?, ?, ?, 0, 0, ?)",
+                (run_id, timestamp, json.dumps(banks), len(records), report_json),
+            )
+            for record in records:
+                if self._upsert_observation(connection, record, timestamp, run_id):
+                    inserted += 1
+                else:
+                    unchanged += 1
+            connection.execute(
+                "UPDATE collection_runs SET inserted_count = ?, unchanged_count = ? "
+                "WHERE run_id = ?",
+                (inserted, unchanged, run_id),
+            )
+
+        logger.info(
+            "recorded run %s: %s records (%s new states, %s unchanged)",
+            run_id,
+            len(records),
+            inserted,
+            unchanged,
+        )
+        return WriteResult(run_id=run_id, inserted=inserted, unchanged=unchanged)
+
+    def _upsert_observation(
+        self,
+        connection: sqlite3.Connection,
+        record: CompetitorRateRecord,
+        timestamp: str,
+        run_id: str,
+    ) -> bool:
+        """Insert a new advertised state, or touch the current one. True if inserted."""
+        payload = _record_to_row(record, timestamp, run_id)
+        current = connection.execute(
+            "SELECT * FROM observations WHERE observation_key = ? "
+            "ORDER BY first_observed_at DESC, id DESC LIMIT 1",
+            (payload["observation_key"],),
+        ).fetchone()
+
+        if current is not None and _is_unchanged(current, payload):
+            connection.execute(
+                "UPDATE observations SET last_seen_at = ?, last_seen_run_id = ?, "
+                "observation_count = observation_count + 1 WHERE id = ?",
+                (timestamp, run_id, current["id"]),
+            )
+            return False
+
+        columns = ", ".join(payload)
+        placeholders = ", ".join(["?"] * len(payload))
+        connection.execute(
+            f"INSERT INTO observations ({columns}) VALUES ({placeholders})",
+            tuple(payload.values()),
+        )
+        return True
+
+    def record_changes(self, changes: Sequence["object"]) -> int:
+        """Persist detected change events, ignoring ones already stored.
+
+        Accepts ``RateChange`` objects (typed in ``changes.py``; kept structural
+        here to avoid a circular import).
+        """
+        written = 0
+        with self._transaction() as connection:
+            for change in changes:
+                cursor = connection.execute(
+                    "INSERT OR IGNORE INTO rate_changes ("
+                    "observation_key, bank, product_type, product_name, rate_category, "
+                    "term_months, change_type, previous_rate_pct, current_rate_pct, change_bps, "
+                    "previous_observed_at, detected_at, run_id, suspicious, detail, source_url"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        change.observation_key,
+                        change.bank,
+                        str(change.product_type),
+                        change.product_name,
+                        change.rate_category,
+                        change.term_months,
+                        str(change.change_type),
+                        change.previous_rate_pct,
+                        change.current_rate_pct,
+                        change.change_bps,
+                        _iso(change.previous_observed_at) if change.previous_observed_at else None,
+                        _iso(change.detected_at),
+                        change.run_id or "",
+                        int(change.suspicious),
+                        change.detail,
+                        change.source_url,
+                    ),
+                )
+                written += cursor.rowcount or 0
+        return written
+
+    # ----------------------------------------------------------------- reads
+
+    def latest_run_id(self) -> Optional[str]:
+        row = self._connection.execute(
+            "SELECT run_id FROM collection_runs ORDER BY started_at DESC, rowid DESC LIMIT 1"
+        ).fetchone()
+        return row["run_id"] if row else None
+
+    def get_latest_rates(
+        self,
+        bank: Optional[str] = None,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        term_months: Optional[int] = None,
+        rate_category: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> list[CompetitorRateRecord]:
+        """Return the currently-advertised rates as of the latest collection run.
+
+        Scoped to the latest run rather than to "most recent row per key", so a
+        product a bank has withdrawn stops appearing.
+        """
+        run_id = run_id or self.latest_run_id()
+        if run_id is None:
+            return []
+        clauses = ["last_seen_run_id = ?", "product_type = ?"]
+        params: list[object] = [run_id, _product_value(product_type)]
+        if bank is not None:
+            clauses.append("bank = ?")
+            params.append(bank)
+        if term_months is not None:
+            clauses.append("term_months = ?")
+            params.append(term_months)
+        if rate_category is not None:
+            clauses.append("rate_category = ?")
+            params.append(rate_category)
+        rows = self._connection.execute(
+            f"SELECT * FROM observations WHERE {' AND '.join(clauses)} "
+            "ORDER BY bank, term_months",
+            params,
+        ).fetchall()
+        return [_row_to_record(row) for row in rows]
+
+    def get_rate_history(
+        self,
+        bank: Optional[str] = None,
+        term_months: Optional[int] = None,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        rate_category: Optional[str] = None,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+    ) -> list[CompetitorRateRecord]:
+        """Return every distinct advertised state matching the filters, oldest first."""
+        clauses = ["product_type = ?"]
+        params: list[object] = [_product_value(product_type)]
+        if bank is not None:
+            clauses.append("bank = ?")
+            params.append(bank)
+        if term_months is not None:
+            clauses.append("term_months = ?")
+            params.append(term_months)
+        if rate_category is not None:
+            clauses.append("rate_category = ?")
+            params.append(rate_category)
+        if since is not None:
+            clauses.append("last_seen_at >= ?")
+            params.append(_iso(since))
+        if until is not None:
+            clauses.append("first_observed_at <= ?")
+            params.append(_iso(until))
+        rows = self._connection.execute(
+            f"SELECT * FROM observations WHERE {' AND '.join(clauses)} "
+            "ORDER BY first_observed_at ASC, id ASC",
+            params,
+        ).fetchall()
+        return [_row_to_record(row) for row in rows]
+
+    def get_previous_run_rates(
+        self,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        before_run_id: Optional[str] = None,
+    ) -> list[CompetitorRateRecord]:
+        """Return the advertised rates from the run before ``before_run_id``."""
+        before_run_id = before_run_id or self.latest_run_id()
+        if before_run_id is None:
+            return []
+        row = self._connection.execute(
+            "SELECT started_at FROM collection_runs WHERE run_id = ?", (before_run_id,)
+        ).fetchone()
+        if row is None:
+            return []
+        previous = self._connection.execute(
+            "SELECT run_id FROM collection_runs WHERE started_at < ? "
+            "ORDER BY started_at DESC, rowid DESC LIMIT 1",
+            (row["started_at"],),
+        ).fetchone()
+        if previous is None:
+            return []
+        return self.get_latest_rates(product_type=product_type, run_id=previous["run_id"])
+
+    def get_changes_since(
+        self,
+        since: Optional[datetime] = None,
+        days: Optional[int] = None,
+        bank: Optional[str] = None,
+        term_months: Optional[int] = None,
+        include_suspicious: bool = True,
+        now: Optional[datetime] = None,
+    ) -> list[dict]:
+        """Return stored change events in a window, newest first.
+
+        Returns plain dicts; ``changes.load_changes`` rehydrates them into
+        ``RateChange`` objects for callers that want the typed form.
+        """
+        now = now or datetime.now(timezone.utc)
+        if since is None and days is not None:
+            since = now - timedelta(days=days)
+        clauses: list[str] = []
+        params: list[object] = []
+        if since is not None:
+            clauses.append("detected_at >= ?")
+            params.append(_iso(since))
+        if bank is not None:
+            clauses.append("bank = ?")
+            params.append(bank)
+        if term_months is not None:
+            clauses.append("term_months = ?")
+            params.append(term_months)
+        if not include_suspicious:
+            clauses.append("suspicious = 0")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._connection.execute(
+            f"SELECT * FROM rate_changes {where} ORDER BY detected_at DESC, id DESC", params
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_banks(self, product_type: ProductType | str = ProductType.HOME_LOAN) -> list[str]:
+        rows = self._connection.execute(
+            "SELECT DISTINCT bank FROM observations WHERE product_type = ? ORDER BY bank",
+            (_product_value(product_type),),
+        ).fetchall()
+        return [row["bank"] for row in rows]
+
+    def get_terms(self, product_type: ProductType | str = ProductType.HOME_LOAN) -> list[int]:
+        rows = self._connection.execute(
+            "SELECT DISTINCT term_months FROM observations "
+            "WHERE product_type = ? AND term_months IS NOT NULL ORDER BY term_months",
+            (_product_value(product_type),),
+        ).fetchall()
+        return [row["term_months"] for row in rows]
+
+
+def _product_value(product_type: ProductType | str) -> str:
+    return ProductType(product_type).value
+
+
+def _is_unchanged(current: sqlite3.Row, payload: dict) -> bool:
+    """True when the new observation matches the stored state on material fields."""
+    for field_name in _MATERIAL_FIELDS:
+        stored = current[field_name]
+        incoming = payload[field_name]
+        if isinstance(stored, float) or isinstance(incoming, float):
+            if stored is None or incoming is None:
+                if stored is not incoming:
+                    return False
+                continue
+            # Advertised rates are quoted to 3dp of a percent; compare at that
+            # precision so a float round-trip through SQLite is not a "change".
+            if abs(float(stored) - float(incoming)) > 5e-7:
+                return False
+            continue
+        if stored != incoming:
+            return False
+    return True
+
+
+def _record_to_row(record: CompetitorRateRecord, timestamp: str, run_id: str) -> dict:
+    return {
+        "observation_key": record.observation_key(),
+        "bank": record.bank,
+        "product_type": _product_value(record.product_type),
+        "product_name": record.product_name,
+        "rate_category": record.rate_category,
+        "term_months": record.term_months_normalised,
+        "term_label_raw": record.term_label_raw,
+        "term_days_raw": record.term_days_raw,
+        "rate_pct": record.advertised_rate_pct,
+        "interest_payment_frequency": record.interest_payment_frequency,
+        "min_balance": record.min_balance_or_deposit,
+        "max_balance": record.max_balance_or_deposit,
+        "lvr_condition": record.lvr_condition,
+        "max_lvr": record.max_lvr,
+        "min_equity": record.min_equity,
+        "new_business_only": (
+            None if record.new_business_only is None else int(record.new_business_only)
+        ),
+        "cashback_text": record.cashback_text,
+        "promotion_text": record.promotion_text,
+        "package_requirement": record.package_requirement,
+        "eligibility_text": record.special_conditions,
+        "source_url": record.source_url,
+        "source_page_title": record.source_bank_page_title,
+        "source_text": record.raw_text_context,
+        "effective_date_text": record.effective_date_text,
+        "content_hash": record.raw_html_sha256,
+        "parser_version": record.parser_version,
+        "validation_status": record.validation_status,
+        "validation_warnings": json.dumps(record.validation_warnings),
+        "first_observed_at": timestamp,
+        "last_seen_at": timestamp,
+        "last_seen_run_id": run_id,
+        "observation_count": 1,
+    }
+
+
+def _row_to_record(row: sqlite3.Row) -> CompetitorRateRecord:
+    return CompetitorRateRecord(
+        bank=row["bank"],
+        product_type=ProductType(row["product_type"]),
+        product_name=row["product_name"],
+        rate_category=row["rate_category"],
+        term_label_raw=row["term_label_raw"],
+        term_months_normalised=row["term_months"],
+        term_days_raw=row["term_days_raw"],
+        advertised_rate_pct=row["rate_pct"],
+        interest_payment_frequency=row["interest_payment_frequency"],
+        min_balance_or_deposit=row["min_balance"],
+        max_balance_or_deposit=row["max_balance"],
+        lvr_condition=row["lvr_condition"],
+        max_lvr=row["max_lvr"],
+        min_equity=row["min_equity"],
+        new_business_only=(
+            None if row["new_business_only"] is None else bool(row["new_business_only"])
+        ),
+        cashback_text=row["cashback_text"],
+        promotion_text=row["promotion_text"],
+        package_requirement=row["package_requirement"],
+        special_conditions=row["eligibility_text"],
+        source_url=row["source_url"],
+        source_bank_page_title=row["source_page_title"],
+        captured_at_utc=_parse_iso(row["last_seen_at"]),
+        effective_date_text=row["effective_date_text"],
+        raw_text_context=row["source_text"],
+        raw_html_sha256=row["content_hash"],
+        parser_version=row["parser_version"],
+        validation_status=row["validation_status"],
+        validation_warnings=json.loads(row["validation_warnings"]),
+    )
+
+
+def record_first_observed_at(row: sqlite3.Row) -> datetime:
+    """Expose a row's first-observed timestamp (used by history rendering)."""
+    return _parse_iso(row["first_observed_at"])
