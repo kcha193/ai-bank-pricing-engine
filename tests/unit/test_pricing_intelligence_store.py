@@ -314,6 +314,37 @@ def test_previous_run_rates_do_not_resurrect_a_product_withdrawn_in_that_run(sto
     assert {record.bank for record in previous} == {"ANZ"}
 
 
+def test_a_product_returning_after_a_withdrawal_starts_a_fresh_state(store, make_record):
+    """A re-add is not a continuation: it must not inherit the pre-gap first_observed_at."""
+    _withdraw_bnz_on_day_two(store, make_record)
+    # BNZ reappears on day three with the exact same rate as before the gap.
+    store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.79), make_record(bank="BNZ", rate_pct=4.85)],
+        observed_at=DAY_THREE,
+    )
+
+    reconstructed = store.get_observations_as_of(as_of=DAY_THREE)
+    assert {record.bank for record in reconstructed} == {"ANZ", "BNZ"}
+
+    history = store.get_rate_history(bank="BNZ")
+    assert len(history) == 2, "the withdrawal and the return must be distinct states"
+
+
+def test_a_stale_suspicious_tag_clears_once_reconfirmed(store, make_record):
+    """A large move that repeats unchanged is no longer suspicious."""
+    store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)
+    suspicious = make_record(rate_pct=8.49, observed_at=DAY_TWO, validation_status="warning")
+    store.record_observations([suspicious], observed_at=DAY_TWO)
+    assert store.get_latest_rates()[0].validation_status == "warning"
+
+    # The same value reappears on day three, validated fresh against itself
+    # (no movement), so it is no longer flagged.
+    confirmed = make_record(rate_pct=8.49, observed_at=DAY_THREE)
+    store.record_observations([confirmed], observed_at=DAY_THREE)
+
+    assert store.get_latest_rates()[0].validation_status != "warning"
+
+
 def test_changes_are_persisted_and_queried_by_window(store, make_record):
     store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)
     changes = detect_changes(

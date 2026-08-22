@@ -269,11 +269,33 @@ class ObservationStore:
             (payload["observation_key"],),
         ).fetchone()
 
-        if current is not None and _is_unchanged(current, payload):
+        # A key withdrawn (a REMOVED_PRODUCT event recorded) since we last saw
+        # this row is reappearing now, not continuing uninterrupted: force a
+        # new state even if the content is identical, so first_observed_at
+        # marks the return rather than get_observations_as_of() reading this
+        # gap as unbroken presence.
+        returned_after_a_withdrawal = current is not None and connection.execute(
+            "SELECT 1 FROM rate_changes WHERE observation_key = ? "
+            "AND change_type = 'REMOVED_PRODUCT' AND detected_at > ? LIMIT 1",
+            (payload["observation_key"], current["last_seen_at"]),
+        ).fetchone() is not None
+
+        if (
+            current is not None
+            and not returned_after_a_withdrawal
+            and _is_unchanged(current, payload)
+        ):
             connection.execute(
                 "UPDATE observations SET last_seen_at = ?, last_seen_run_id = ?, "
-                "observation_count = observation_count + 1 WHERE id = ?",
-                (timestamp, run_id, current["id"]),
+                "observation_count = observation_count + 1, validation_status = ?, "
+                "validation_warnings = ? WHERE id = ?",
+                (
+                    timestamp,
+                    run_id,
+                    payload["validation_status"],
+                    payload["validation_warnings"],
+                    current["id"],
+                ),
             )
             return False
 

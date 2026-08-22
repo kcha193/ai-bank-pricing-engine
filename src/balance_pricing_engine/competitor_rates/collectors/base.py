@@ -424,7 +424,11 @@ class BankPricingCollector(abc.ABC):
     ) -> str:
         directory = self.raw_root / captured_at_utc.strftime("%Y-%m-%d")
         directory.mkdir(parents=True, exist_ok=True)
-        path = directory / f"{self.bank.lower()}_{product_type.value}.html"
+        # Includes time-of-day, not just the date: a second collection later
+        # the same UTC day must not silently overwrite the earlier run's raw
+        # evidence, which is what an intraday change would need to audit.
+        run_stamp = captured_at_utc.strftime("%H%M%S%f")
+        path = directory / f"{self.bank.lower()}_{product_type.value}_{run_stamp}.html"
         path.write_text(html, encoding="utf-8")
         return str(path)
 

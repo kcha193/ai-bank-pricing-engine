@@ -1,6 +1,7 @@
 """Collector tests run entirely against saved fixtures -- never a live bank site."""
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -183,7 +184,23 @@ def test_snapshot_persistence_writes_raw_html(fixture_fetcher, tmp_path):
     result = collector.collect_mortgage_rates(captured_at_utc=OBSERVED_AT)
 
     assert result.snapshot_path is not None
-    assert "Fixed Special" in (tmp_path / "2026-08-20" / "anz_home_loan.html").read_text()
+    saved = Path(result.snapshot_path)
+    assert saved.parent == tmp_path / "2026-08-20"
+    assert "Fixed Special" in saved.read_text()
+
+
+def test_snapshot_persistence_does_not_collide_within_the_same_day(fixture_fetcher, tmp_path):
+    """A second same-day collection must not overwrite the first run's raw evidence."""
+    collector = ANZCollector(fetcher=fixture_fetcher(), raw_root=tmp_path)
+    morning = OBSERVED_AT.replace(hour=8)
+    afternoon = OBSERVED_AT.replace(hour=16)
+
+    first = collector.collect_mortgage_rates(captured_at_utc=morning)
+    second = collector.collect_mortgage_rates(captured_at_utc=afternoon)
+
+    assert first.snapshot_path != second.snapshot_path
+    assert Path(first.snapshot_path).exists()
+    assert Path(second.snapshot_path).exists()
 
 
 def test_build_collectors_rejects_an_unknown_bank():
