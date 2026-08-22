@@ -345,6 +345,22 @@ def test_kafka_publisher_sends_event_json_to_configured_topic():
     assert producer.sent == [("pricing-events", event.to_json())]
 
 
+class _FalseyFakeKafkaProducer(_FakeKafkaProducer):
+    """A producer whose truthiness reflects 'no messages sent yet' via __len__ -- must
+    still be used as-is when explicitly injected, not silently replaced by a real
+    KafkaProducer connecting to bootstrap_servers."""
+
+    def __len__(self) -> int:
+        return len(self.sent)
+
+
+def test_kafka_publisher_preserves_an_explicitly_injected_falsey_producer():
+    producer = _FalseyFakeKafkaProducer()
+    publisher = KafkaEventPublisher(topic="pricing-events", producer=producer)
+
+    assert publisher._producer is producer
+
+
 def test_kafka_publisher_blocks_on_send_future_ack():
     producer = _FakeKafkaProducer()
     publisher = KafkaEventPublisher(topic="pricing-events", producer=producer)

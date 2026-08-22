@@ -88,7 +88,13 @@ class KafkaEventPublisher:
     ) -> None:
         self.topic = topic
         self._ack_timeout_seconds = ack_timeout_seconds
-        self._producer = producer or self._build_producer(bootstrap_servers, **producer_kwargs)
+        # `is not None`, not `or`: an injected test/adapter producer whose __bool__/__len__
+        # makes it falsey (e.g. reflecting "no messages buffered yet") must still be used --
+        # `or` would silently discard it and connect a real KafkaProducer to
+        # bootstrap_servers instead.
+        self._producer = (
+            producer if producer is not None else self._build_producer(bootstrap_servers, **producer_kwargs)
+        )
 
     @staticmethod
     def _build_producer(bootstrap_servers: str | list[str], **producer_kwargs: Any) -> Any:
