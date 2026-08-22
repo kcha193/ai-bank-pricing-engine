@@ -7,6 +7,17 @@ from balance_pricing_engine.llm._client import build_client, is_llm_available, i
 from balance_pricing_engine.secrets.provider import StaticSecretsProvider
 
 
+class _FalseyStaticSecretsProvider(StaticSecretsProvider):
+    """A provider whose truthiness reflects 'currently holds no secrets' via __len__ --
+    distinct from being None. Plain StaticSecretsProvider has no __bool__/__len__ and is
+    always truthy, so it can't exercise the `secrets_provider or EnvSecretsProvider()`
+    bug: an `or` check discards *this* provider even when explicitly injected, silently
+    substituting EnvSecretsProvider instead."""
+
+    def __len__(self) -> int:
+        return len(self._secrets)
+
+
 def test_is_sdk_installed_returns_bool():
     assert isinstance(is_sdk_installed(), bool)
 
@@ -89,6 +100,30 @@ def test_build_client_does_not_leak_ambient_env_key_around_an_injected_provider(
     provider = StaticSecretsProvider({})
 
     assert is_llm_available(secrets_provider=provider) is False
+    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+        build_client(secrets_provider=provider)
+    assert "api_key" not in captured
+
+
+def test_is_llm_available_false_for_falsey_but_explicitly_injected_provider(monkeypatch):
+    monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(Anthropic=lambda: object()))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ambient-env-key")
+    provider = _FalseyStaticSecretsProvider({})
+
+    assert is_llm_available(secrets_provider=provider) is False
+
+
+def test_build_client_does_not_leak_ambient_key_for_falsey_provider(monkeypatch):
+    captured = {}
+
+    class FakeAnthropic:
+        def __init__(self, api_key=None):
+            captured["api_key"] = api_key
+
+    monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(Anthropic=FakeAnthropic))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ambient-env-key")
+    provider = _FalseyStaticSecretsProvider({})
+
     with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
         build_client(secrets_provider=provider)
     assert "api_key" not in captured

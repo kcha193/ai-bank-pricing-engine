@@ -36,7 +36,12 @@ def build_client(
         ) from exc
     if api_key:
         return anthropic.Anthropic(api_key=api_key)
-    resolved_key = (secrets_provider or EnvSecretsProvider()).get_secret(_API_KEY_NAME)
+    # `is None`, not `or`: a falsey-but-real provider (e.g. one whose __bool__/__len__
+    # reflects "currently holds no secrets") must still be used and still be authoritative
+    # -- `or` would silently discard it in favour of EnvSecretsProvider, letting the
+    # ambient environment leak through exactly the case the raise below exists to prevent.
+    provider = EnvSecretsProvider() if secrets_provider is None else secrets_provider
+    resolved_key = provider.get_secret(_API_KEY_NAME)
     if resolved_key:
         return anthropic.Anthropic(api_key=resolved_key)
     if secrets_provider is not None:
@@ -62,7 +67,8 @@ def is_llm_available(secrets_provider: SecretsProvider | None = None) -> bool:
     try:
         import anthropic  # noqa: F401
 
-        resolved_key = (secrets_provider or EnvSecretsProvider()).get_secret(_API_KEY_NAME)
+        provider = EnvSecretsProvider() if secrets_provider is None else secrets_provider
+        resolved_key = provider.get_secret(_API_KEY_NAME)
         return bool(resolved_key)
     except ImportError:
         return False
