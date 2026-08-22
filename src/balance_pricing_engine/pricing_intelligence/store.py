@@ -433,6 +433,14 @@ class ObservationStore:
         like at an earlier run once a later run has touched it. This instead
         picks, per key, the most recent row whose ``first_observed_at`` is at
         or before ``as_of`` -- the state that was actually current then.
+
+        A key withdrawn before ``as_of`` and never re-added must not be
+        resurrected just because its last row predates the cutoff. The
+        ``rate_changes`` audit log (written whenever a collection detects and
+        records changes) is the source of truth for when a key was pulled: a
+        key is excluded when a ``REMOVED_PRODUCT`` event for it landed between
+        the selected row's start and ``as_of``. A withdrawal recorded before
+        that row started does not apply -- the product was re-added since.
         """
         timestamp = _iso(as_of)
         rows = self._connection.execute(
@@ -440,8 +448,13 @@ class ObservationStore:
             "AND id = ("
             "  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
             "  AND o2.first_observed_at <= ? ORDER BY first_observed_at DESC, id DESC LIMIT 1"
+            ") "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
+            "  AND rc.change_type = 'REMOVED_PRODUCT' AND rc.detected_at <= ? "
+            "  AND rc.detected_at > o.first_observed_at"
             ") ORDER BY bank, term_months",
-            (_product_value(product_type), timestamp, timestamp),
+            (_product_value(product_type), timestamp, timestamp, timestamp),
         ).fetchall()
         return [_row_to_record(row) for row in rows]
 

@@ -60,6 +60,18 @@ from balance_pricing_engine.pricing_intelligence.validation import (
 logger = logging.getLogger(__name__)
 
 
+def _exclude_suspicious(
+    records: Sequence[CompetitorRateRecord],
+) -> list[CompetitorRateRecord]:
+    """Drop records flagged suspicious pending human confirmation.
+
+    A suspicious-but-accepted observation is still stored for audit and
+    history, but must not feed a market-derived pricing view -- see
+    :meth:`PricingIntelligenceService.collect`.
+    """
+    return [record for record in records if record.validation_status != "warning"]
+
+
 @dataclass(frozen=True)
 class CollectionOutcome:
     """Everything one collection run produced."""
@@ -163,12 +175,23 @@ class PricingIntelligenceService:
                 report=report, validation=validation, write_result=None, changes=()
             )
 
-        write_result = self.store.record_observations(
-            validation.accepted, observed_at=captured_at_utc
-        )
+        # A suspicious-but-accepted record (a plausible yet unusually large
+        # move) is stored for audit and history, but tagged so market-derived
+        # pricing views can exclude it until a human confirms it against the
+        # source page -- a parser fault must not feed an unverified rate
+        # straight into the optimiser.
+        suspicious_keys = validation.suspicious_keys
+        accepted = [
+            record.model_copy(update={"validation_status": "warning"})
+            if record.observation_key() in suspicious_keys
+            else record
+            for record in validation.accepted
+        ]
+
+        write_result = self.store.record_observations(accepted, observed_at=captured_at_utc)
         changes = detect_changes(
             previous=baseline,
-            current=validation.accepted,
+            current=accepted,
             detected_at=captured_at_utc,
             thresholds=self.config.validation,
             run_id=write_result.run_id,
@@ -213,7 +236,7 @@ class PricingIntelligenceService:
             product_type=product_type, run_id=as_of_run_id
         )
         return build_market_snapshot(
-            records,
+            _exclude_suspicious(records),
             product_type=product_type,
             rate_category=rate_category,
             terms_months=self.config.tracked_terms_months,
@@ -230,7 +253,7 @@ class PricingIntelligenceService:
         if not records:
             return None
         return build_market_snapshot(
-            records,
+            _exclude_suspicious(records),
             product_type=product_type,
             rate_category=rate_category,
             terms_months=self.config.tracked_terms_months,

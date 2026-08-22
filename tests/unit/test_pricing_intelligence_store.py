@@ -276,6 +276,44 @@ def test_observations_as_of_reconstructs_a_point_in_time_state(store, make_recor
     assert [record.advertised_rate_pct for record in as_of_day_two] == [4.79]
 
 
+def _withdraw_bnz_on_day_two(store, make_record):
+    """Shared setup: ANZ+BNZ on day one, BNZ withdrawn (and recorded) on day two."""
+    store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.79), make_record(bank="BNZ", rate_pct=4.85)],
+        observed_at=DAY_ONE,
+    )
+    baseline = store.get_current_observations()
+    current = [make_record(bank="ANZ", rate_pct=4.79, observed_at=DAY_TWO)]
+    store.record_observations(current, observed_at=DAY_TWO)
+    changes = detect_changes(
+        previous=baseline,
+        current=current,
+        detected_at=DAY_TWO,
+        banks_collected=["ANZ", "BNZ"],
+    )
+    store.record_changes(changes)
+
+
+def test_observations_as_of_does_not_resurrect_a_withdrawn_product(store, make_record):
+    """A product withdrawn before the cutoff must not be reconstructed as present."""
+    _withdraw_bnz_on_day_two(store, make_record)
+
+    reconstructed = store.get_observations_as_of(as_of=DAY_TWO)
+
+    assert {record.bank for record in reconstructed} == {"ANZ"}
+
+
+def test_previous_run_rates_do_not_resurrect_a_product_withdrawn_in_that_run(store, make_record):
+    """The regression this guards: reconstruction must respect recorded withdrawals."""
+    _withdraw_bnz_on_day_two(store, make_record)
+    # A further, unrelated collection -- the withdrawal is now two runs back.
+    store.record_observations([make_record(bank="ANZ", rate_pct=4.79)], observed_at=DAY_THREE)
+
+    previous = store.get_previous_run_rates()
+
+    assert {record.bank for record in previous} == {"ANZ"}
+
+
 def test_changes_are_persisted_and_queried_by_window(store, make_record):
     store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)
     changes = detect_changes(

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from statistics import fmean
+from statistics import fmean, median
 from typing import Optional, Sequence
 
 from balance_pricing_engine.competitor_rates.models import ProductType
@@ -75,6 +75,11 @@ def compute_competitive_position(
     competitor_rates = [entry.rate_pct for entry in competitors]
     best = min(competitor_rates) if lower_is_better else max(competitor_rates)
     worst = max(competitor_rates) if lower_is_better else min(competitor_rates)
+    # Computed from the competitor set, not term_market.median_rate/mean_rate:
+    # those describe every entry including our own, which would let the rate
+    # being positioned shift the very benchmark it's compared against.
+    competitor_median = round(median(competitor_rates), 6)
+    competitor_mean = round(fmean(competitor_rates), 6)
 
     below = sum(1 for rate in competitor_rates if rate_change_bps(our_rate, rate) < 0)
     above = sum(1 for rate in competitor_rates if rate_change_bps(our_rate, rate) > 0)
@@ -88,11 +93,11 @@ def compute_competitive_position(
         term_months=term_market.term_months,
         our_rate=our_rate,
         market_best=best,
-        market_median=term_market.median_rate,
-        market_mean=term_market.mean_rate,
+        market_median=competitor_median,
+        market_mean=competitor_mean,
         market_worst=worst,
         our_rate_minus_best_bps=rate_change_bps(best, our_rate),
-        our_rate_minus_median_bps=rate_change_bps(term_market.median_rate, our_rate),
+        our_rate_minus_median_bps=rate_change_bps(competitor_median, our_rate),
         market_rank=more_competitive + 1,
         competitors_below_us=below,
         competitors_above_us=above,

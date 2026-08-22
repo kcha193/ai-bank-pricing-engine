@@ -164,8 +164,12 @@ def _collect(service: PricingIntelligenceService, args: argparse.Namespace) -> i
             ConsoleAlertSink(),
         )
 
-    # A run where every bank failed is a failure; partial success is not.
-    return 0 if outcome.report.any_success else 1
+    # A run where every bank failed to fetch is a failure, and so is one where
+    # pages parsed but validation rejected every record -- either way nothing
+    # usable was stored, and a scheduler must not treat that as success.
+    if not outcome.report.any_success or outcome.rate_count == 0:
+        return 1
+    return 0
 
 
 def _snapshot(service: PricingIntelligenceService, args: argparse.Namespace) -> int:

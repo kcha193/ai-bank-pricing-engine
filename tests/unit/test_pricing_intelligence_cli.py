@@ -1,6 +1,7 @@
 """CLI behaviour, exercised against a temporary store and saved fixtures."""
 
 import argparse
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -188,6 +189,31 @@ def test_collect_handler_fails_when_every_bank_fails(tmp_path, fixture_fetcher, 
         config=config,
         store=ObservationStore(config.database_path),
         fetcher=fixture_fetcher(failing_banks=banks),
+    ) as service:
+        args = argparse.Namespace(no_persist=False, no_snapshot=True, alerts=False)
+        exit_code = cli._collect(service, args)
+
+    assert exit_code == 1
+
+
+def test_collect_handler_fails_when_validation_rejects_every_record(
+    tmp_path, fixture_fetcher, capsys
+):
+    """Pages parsing successfully is not success if nothing survives validation."""
+
+    def corrupt_every_rate(bank, html):
+        return re.sub(r"\d\.\d\d%", "99.99%", html)
+
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "observations.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    with PricingIntelligenceService(
+        config=config,
+        store=ObservationStore(config.database_path),
+        fetcher=fixture_fetcher(
+            failing_banks=["ASB", "BNZ", "Westpac", "Kiwibank"], mutate=corrupt_every_rate
+        ),
     ) as service:
         args = argparse.Namespace(no_persist=False, no_snapshot=True, alerts=False)
         exit_code = cli._collect(service, args)

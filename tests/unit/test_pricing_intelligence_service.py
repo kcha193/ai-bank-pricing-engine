@@ -179,6 +179,39 @@ def test_a_broken_parser_is_flagged_suspicious_not_silently_accepted(fixture_fet
     assert state.state is MarketState.LOW, "a parser artefact must not fake market activity"
 
 
+def test_a_suspicious_observation_is_excluded_from_the_market_snapshot(fixture_fetcher):
+    """An unconfirmed parser artefact must not feed market-derived pricing."""
+
+    def break_kiwibank(bank, html):
+        if bank == "Kiwibank":
+            return html.replace("<td>3 years</td><td>5.35%", "<td>3 years</td><td>8.49%")
+        return html
+
+    with build_service(fixture_fetcher()) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=break_kiwibank)
+        service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+        snapshot = service.get_market_snapshot()
+
+    term_36 = snapshot.term(36)
+    assert term_36 is None or "Kiwibank" not in {entry.bank for entry in term_36.entries}
+
+
+def test_a_suspicious_observation_is_excluded_from_the_competitor_assumption(fixture_fetcher):
+    def break_kiwibank(bank, html):
+        if bank == "Kiwibank":
+            return html.replace("<td>3 years</td><td>5.35%", "<td>3 years</td><td>8.49%")
+        return html
+
+    with build_service(fixture_fetcher()) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=break_kiwibank)
+        service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+        assumption = service.resolve_competitor_assumption("MARKET_LEADER", term_months=36)
+
+    assert assumption.rate_pct != 8.49
+
+
 def test_the_market_snapshot_covers_every_bank(service):
     service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
     snapshot = service.get_market_snapshot()
