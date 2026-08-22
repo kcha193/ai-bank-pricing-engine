@@ -274,7 +274,15 @@ class BootstrapEnsembleResponseModel:
             raise ValueError(f"n_estimators must be >= 1, got {n_estimators}.")
         self._n_estimators = n_estimators
         self._random_state = random_state
-        self._base_estimator_factory = base_estimator_factory or build_hist_gradient_boosting_model
+        # `is None`, not `or`: a factory whose __bool__/__len__ makes it falsey (e.g. a
+        # bound-method or partial wrapper reflecting some empty state) must still be used
+        # -- `or` would silently substitute the HistGBM default, training a different
+        # model family than the caller explicitly configured.
+        self._base_estimator_factory = (
+            build_hist_gradient_boosting_model
+            if base_estimator_factory is None
+            else base_estimator_factory
+        )
         self._models: list[Any] = []
 
     def fit(self, train: pd.DataFrame, feature_columns: list[str], target_column: str) -> None:

@@ -151,6 +151,36 @@ def test_bootstrap_ensemble_response_model_rejects_non_positive_n_estimators(n_e
         BootstrapEnsembleResponseModel(n_estimators=n_estimators)
 
 
+class _FalseyEstimatorFactory:
+    """A callable factory whose truthiness reflects 'no estimators built yet' via
+    __len__ -- must still be used as-is when explicitly injected, not silently replaced
+    by the HistGBM default (which would train a different model family than the caller
+    configured)."""
+
+    def __init__(self, build_fn):
+        self._build_fn = build_fn
+        self.calls: list[int] = []
+
+    def __len__(self) -> int:
+        return len(self.calls)
+
+    def __call__(self, random_state: int):
+        self.calls.append(random_state)
+        return self._build_fn(random_state)
+
+
+def test_bootstrap_ensemble_response_model_preserves_falsey_estimator_factory():
+    from balance_pricing_engine.modelling.models import build_logistic_regression_model
+
+    factory = _FalseyEstimatorFactory(build_logistic_regression_model)
+
+    model = BootstrapEnsembleResponseModel(
+        n_estimators=2, random_state=42, base_estimator_factory=factory
+    )
+
+    assert model._base_estimator_factory is factory
+
+
 def test_bootstrap_ensemble_response_model_quantiles_are_ordered_and_track_mean():
     dataset = _loan_dataset()
     model = BootstrapEnsembleResponseModel(n_estimators=10, random_state=42)
