@@ -189,6 +189,55 @@ def test_section_charts_rate_history(monkeypatch, populated_store):
     assert "ANZ" in fake.charts[0].columns
 
 
+def test_history_chart_is_not_blanked_by_a_different_products_withdrawal(
+    monkeypatch, tmp_path, make_record
+):
+    """A bank withdrawing its "standard" product must not blank the "special"
+    line's still-valid chart history: the dashboard charts rate_category=
+    "special" only, so the withdrawal markers passed to build_history_series
+    must be scoped the same way, not just to bank+term."""
+    from balance_pricing_engine.competitor_rates.models import ProductType
+    from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange
+
+    later_day = DAY_ONE + timedelta(days=2)
+    path = tmp_path / "observations.db"
+    config = PricingIntelligenceConfig(database_path=str(path))
+    with PricingIntelligenceService(config=config, store=ObservationStore(path)) as service:
+        service.store.record_observations(
+            [
+                make_record(bank="ANZ", rate_category="special", rate_pct=4.79),
+                make_record(bank="BNZ", rate_category="special", rate_pct=4.85),
+            ],
+            observed_at=DAY_ONE,
+        )
+        # A later BNZ reprice introduces a chart date after ANZ's (unrelated)
+        # standard-product withdrawal, so the bug's ffill-through-withdrawal
+        # would otherwise blank ANZ's still-current special rate here too.
+        service.store.record_observations(
+            [make_record(bank="BNZ", rate_category="special", rate_pct=4.75)],
+            observed_at=later_day,
+        )
+        service.store.record_changes(
+            [
+                RateChange(
+                    observation_key="ANZ|home_loan|standard|12|unknown|fixed standard",
+                    bank="ANZ",
+                    product_type=ProductType.HOME_LOAN,
+                    product_name="Fixed Standard",
+                    rate_category="standard",
+                    term_months=12,
+                    change_type=ChangeType.REMOVED_PRODUCT,
+                    detected_at=DAY_TWO,
+                )
+            ]
+        )
+
+    fake = render_dashboard(monkeypatch, str(path))
+
+    chart = fake.charts[0]
+    assert chart.loc[later_day.date(), "ANZ"] == 4.79
+
+
 def test_section_guides_the_user_when_no_data_exists(monkeypatch, tmp_path):
     fake = render_dashboard(monkeypatch, str(tmp_path / "missing.db"))
     messages = " ".join(fake.texts("info"))

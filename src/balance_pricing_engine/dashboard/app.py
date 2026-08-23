@@ -131,12 +131,20 @@ def _render_market_intelligence() -> None:
             st.dataframe(changes_frame, width="stretch")
 
         st.subheader("Rate history")
+        history_rate_category = "special"
         history = service.get_rate_history(
-            term_months=selected_term, rate_category="special"
+            term_months=selected_term, rate_category=history_rate_category
         )
         withdrawn_dates: dict[str, list] = {}
         for change in service.get_changes(days=None, term_months=selected_term):
-            if change.change_type is ChangeType.REMOVED_PRODUCT:
+            # Scoped to the same rate_category as `history`: a bank can carry
+            # several simultaneous products at one term (e.g. a "standard" line
+            # alongside its "special"), and a withdrawal of one must not blank
+            # the other's still-valid chart history.
+            if (
+                change.change_type is ChangeType.REMOVED_PRODUCT
+                and change.rate_category == history_rate_category
+            ):
                 withdrawn_dates.setdefault(change.bank, []).append(change.detected_at.date())
         history_series = build_history_series(
             history, term_months=selected_term, withdrawn_dates=withdrawn_dates

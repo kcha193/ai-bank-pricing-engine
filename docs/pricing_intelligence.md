@@ -294,8 +294,11 @@ rates. Usually the bank restructured its markup.
 
 1. Reproduce and capture the page:
    ```bash
-   python3 -m balance_pricing_engine.pricing_intelligence collect --verbose
+   python3 -m balance_pricing_engine.pricing_intelligence --verbose collect
    ```
+   (`--verbose` is a parent-parser option and must come before the `collect`
+   subcommand, not after -- `collect --verbose` fails with
+   `unrecognized arguments: --verbose`.)
    Snapshots land in `data/raw/competitor_rates/<date>/<bank>_home_loan.html`.
 2. Check whether the rates are in the static HTML at all. If the file contains
    the page furniture but no rate numbers, the table is client-rendered and
