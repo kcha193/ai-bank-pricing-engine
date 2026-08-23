@@ -444,6 +444,39 @@ def test_confirmed_observations_as_of_falls_back_across_an_eligibility_change(
     assert confirmed[0].advertised_rate_pct == 4.79
 
 
+def test_a_reworded_term_label_does_not_prevent_eligibility_supersession(store, make_record):
+    """'1 year' -> '12 months' (same normalised term) must still retire the old row."""
+    store.record_observations(
+        [
+            make_record(
+                term_months=12,
+                term_label_raw="1 year",
+                max_lvr=0.80,
+                min_equity=0.20,
+                rate_pct=4.79,
+            )
+        ],
+        observed_at=DAY_ONE,
+    )
+    store.record_observations(
+        [
+            make_record(
+                term_months=12,
+                term_label_raw="12 months",
+                max_lvr=0.75,
+                min_equity=0.25,
+                rate_pct=4.99,
+            )
+        ],
+        observed_at=DAY_TWO,
+    )
+
+    current = store.get_current_observations()
+
+    assert len(current) == 1
+    assert current[0].max_lvr == 0.75
+
+
 def test_a_reverted_eligibility_condition_starts_a_fresh_state(store, make_record):
     """80% LVR -> 75% -> back to 80% must not merge into the original stale row."""
     store.record_observations(

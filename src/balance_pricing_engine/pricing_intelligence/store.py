@@ -137,6 +137,20 @@ _MATERIAL_FIELDS = (
     "max_balance",
 )
 
+# Term identity matching CompetitorRateRecord.eligibility_group_key(): when
+# term_months_normalised is available on *both* sides, that numeric value is
+# the whole comparison and the raw label is irrelevant (a bank rewording "1
+# year" to "12 months" is still the same term); only falls back to comparing
+# the raw label when normalisation is missing on both sides.
+_SAME_TERM_IDENTITY = (
+    "("
+    "  (o3.term_months IS NOT NULL AND o.term_months IS NOT NULL "
+    "   AND o3.term_months = o.term_months)"
+    "  OR (o3.term_months IS NULL AND o.term_months IS NULL "
+    "      AND LOWER(o3.term_label_raw) = LOWER(o.term_label_raw))"
+    ")"
+)
+
 # Excludes row `o` when another key `o3` in the same eligibility group (same
 # bank/term/category/frequency/product_name/balance tier, i.e. the same
 # product under a different eligibility condition -- see
@@ -151,8 +165,7 @@ _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY = (
     "AND NOT EXISTS ("
     "  SELECT 1 FROM observations o3 WHERE o3.observation_key <> o.observation_key "
     "  AND o3.bank = o.bank AND o3.product_type = o.product_type "
-    "  AND o3.rate_category = o.rate_category AND o3.term_months IS o.term_months "
-    "  AND o3.term_label_raw = o.term_label_raw "
+    "  AND o3.rate_category = o.rate_category AND " + _SAME_TERM_IDENTITY + " "
     "  AND o3.interest_payment_frequency = o.interest_payment_frequency "
     "  AND LOWER(o3.product_name) = LOWER(o.product_name) "
     "  AND o3.min_balance IS o.min_balance AND o3.max_balance IS o.max_balance "
@@ -315,10 +328,19 @@ class ObservationStore:
         # stale row would let its first_observed_at retroactively cover the
         # gap, corrupting both the live view and any as-of reconstruction of
         # the intervening period.
+        # Term identity matches CompetitorRateRecord.eligibility_group_key():
+        # when term_months is available on both sides that numeric value is
+        # the whole comparison (a bank rewording "1 year" to "12 months" is
+        # still the same term), regardless of the raw label -- a plain
+        # term_label_raw equality check here would miss a transition that
+        # eligibility_group_key() already pairs, leaving both rows current.
         returned_after_an_eligibility_transition = current is not None and connection.execute(
             "SELECT 1 FROM observations WHERE observation_key <> ? "
             "AND bank = ? AND product_type = ? AND rate_category = ? "
-            "AND term_months IS ? AND term_label_raw = ? "
+            "AND ("
+            "  (term_months IS NOT NULL AND ? IS NOT NULL AND term_months = ?)"
+            "  OR (term_months IS NULL AND ? IS NULL AND LOWER(term_label_raw) = LOWER(?))"
+            ") "
             "AND interest_payment_frequency = ? AND LOWER(product_name) = LOWER(?) "
             "AND min_balance IS ? AND max_balance IS ? AND first_observed_at > ? LIMIT 1",
             (
@@ -326,6 +348,8 @@ class ObservationStore:
                 payload["bank"],
                 payload["product_type"],
                 payload["rate_category"],
+                payload["term_months"],
+                payload["term_months"],
                 payload["term_months"],
                 payload["term_label_raw"],
                 payload["interest_payment_frequency"],

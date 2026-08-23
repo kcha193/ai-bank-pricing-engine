@@ -122,13 +122,45 @@ class CollectionReport:
         return "\n".join(lines)
 
 
+def _fetch_with_retries(config: CollectionConfig, url: str, attempt: Callable[[], bytes]) -> bytes:
+    """Retry a single fetch attempt with the configured backoff.
+
+    Shared by the default HTTP fetcher and the browser-rendering fetcher, so
+    a transient browser launch/navigation/timeout failure gets the same
+    ``max_retries``/``retry_backoff_seconds`` resilience as a transient HTTP
+    failure -- live collection currently requires the browser path, so
+    without this operators had no way to get the configured retry behaviour
+    where it actually runs.
+    """
+    last_error: Optional[Exception] = None
+    for attempt_index in range(config.max_retries + 1):
+        try:
+            return attempt()
+        except Exception as exc:  # noqa: BLE001 - re-raised as FetchError below
+            last_error = exc
+            if attempt_index < config.max_retries:
+                backoff = config.retry_backoff_seconds * (2**attempt_index)
+                logger.warning(
+                    "fetch failed (attempt %s/%s) for %s: %s; retrying in %.1fs",
+                    attempt_index + 1,
+                    config.max_retries + 1,
+                    url,
+                    exc,
+                    backoff,
+                )
+                time.sleep(backoff)
+    raise FetchError(f"could not fetch {url}: {last_error}") from last_error
+
+
 def build_browser_fetcher(config: CollectionConfig) -> Fetcher:
     """Return a fetcher that renders the page in a headless browser first.
 
     Every tracked bank now builds its rate table client-side, so the static HTML
     contains the page furniture but not the rates. This path is opt-in and needs
     the optional ``playwright`` dependency; without it the caller gets a clear
-    :class:`FetchError` rather than a silent empty parse.
+    :class:`FetchError` rather than a silent empty parse. A missing dependency
+    is not retried (retrying will not install it); a transient launch,
+    navigation, or timeout failure is, via :func:`_fetch_with_retries`.
     """
 
     def fetch(url: str) -> bytes:
@@ -141,7 +173,7 @@ def build_browser_fetcher(config: CollectionConfig) -> Fetcher:
                 "&& python3 -m playwright install chromium"
             ) from exc
 
-        try:  # pragma: no cover - exercised only against live pages
+        def attempt() -> bytes:  # pragma: no cover - exercised only against live pages
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch(headless=True)
                 page = browser.new_page(user_agent=config.user_agent)
@@ -153,10 +185,8 @@ def build_browser_fetcher(config: CollectionConfig) -> Fetcher:
                 html = page.content()
                 browser.close()
             return html.encode("utf-8")
-        except FetchError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - normalised into FetchError
-            raise FetchError(f"browser rendering failed for {url}: {exc}") from exc
+
+        return _fetch_with_retries(config, url, attempt)
 
     return fetch
 
@@ -165,26 +195,12 @@ def build_default_fetcher(config: CollectionConfig) -> Fetcher:
     """Return a fetcher applying the configured timeout, retries, and backoff."""
 
     def fetch(url: str) -> bytes:
-        last_error: Optional[Exception] = None
-        for attempt in range(config.max_retries + 1):
-            try:
-                request = Request(url, headers={"User-Agent": config.user_agent})
-                with urlopen(request, timeout=config.request_timeout_seconds) as response:
-                    return response.read()
-            except Exception as exc:  # noqa: BLE001 - re-raised as FetchError below
-                last_error = exc
-                if attempt < config.max_retries:
-                    backoff = config.retry_backoff_seconds * (2**attempt)
-                    logger.warning(
-                        "fetch failed (attempt %s/%s) for %s: %s; retrying in %.1fs",
-                        attempt + 1,
-                        config.max_retries + 1,
-                        url,
-                        exc,
-                        backoff,
-                    )
-                    time.sleep(backoff)
-        raise FetchError(f"could not fetch {url}: {last_error}") from last_error
+        def attempt() -> bytes:
+            request = Request(url, headers={"User-Agent": config.user_agent})
+            with urlopen(request, timeout=config.request_timeout_seconds) as response:
+                return response.read()
+
+        return _fetch_with_retries(config, url, attempt)
 
     return fetch
 

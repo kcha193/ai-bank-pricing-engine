@@ -226,6 +226,72 @@ def test_browser_fetcher_reports_a_clear_error_when_playwright_is_absent():
         fetcher("https://www.anz.co.nz/rates-fees-agreements/home-loans/")
 
 
+def test_fetch_with_retries_succeeds_after_a_transient_failure(monkeypatch):
+    from balance_pricing_engine.competitor_rates.collectors import base as collectors_base
+    from balance_pricing_engine.pricing_intelligence.config import CollectionConfig
+
+    monkeypatch.setattr(collectors_base.time, "sleep", lambda *_: None)
+    attempts = []
+
+    def attempt():
+        attempts.append(1)
+        if len(attempts) < 2:
+            raise ConnectionError("transient")
+        return b"ok"
+
+    config = CollectionConfig(max_retries=2, retry_backoff_seconds=0.01)
+    result = collectors_base._fetch_with_retries(config, "https://example.test", attempt)
+
+    assert result == b"ok"
+    assert len(attempts) == 2
+
+
+def test_fetch_with_retries_gives_up_after_max_retries(monkeypatch):
+    from balance_pricing_engine.competitor_rates.collectors import base as collectors_base
+    from balance_pricing_engine.competitor_rates.collectors.base import FetchError
+    from balance_pricing_engine.pricing_intelligence.config import CollectionConfig
+
+    monkeypatch.setattr(collectors_base.time, "sleep", lambda *_: None)
+    attempts = []
+
+    def attempt():
+        attempts.append(1)
+        raise ConnectionError("still down")
+
+    config = CollectionConfig(max_retries=2, retry_backoff_seconds=0.01)
+    with pytest.raises(FetchError, match="could not fetch"):
+        collectors_base._fetch_with_retries(config, "https://example.test", attempt)
+
+    assert len(attempts) == 3, "initial attempt plus two configured retries"
+
+
+def test_browser_fetcher_applies_the_shared_retry_helper(monkeypatch):
+    """A browser-rendering fetch must route through the same retry/backoff
+    helper as the default fetcher, not fail on the first transient error."""
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        pytest.skip("playwright is not installed; nothing to route through retries")
+
+    from balance_pricing_engine.competitor_rates.collectors import build_browser_fetcher
+    from balance_pricing_engine.competitor_rates.collectors import base as collectors_base
+    from balance_pricing_engine.pricing_intelligence.config import CollectionConfig
+
+    seen_configs = []
+
+    def fake_fetch_with_retries(config, url, attempt):
+        seen_configs.append(config)
+        return b"<html>ok</html>"
+
+    monkeypatch.setattr(collectors_base, "_fetch_with_retries", fake_fetch_with_retries)
+
+    config = CollectionConfig(max_retries=3, retry_backoff_seconds=1.5)
+    html = build_browser_fetcher(config)("https://example.test")
+
+    assert html == b"<html>ok</html>"
+    assert seen_configs == [config]
+
+
 def test_render_javascript_selects_the_browser_fetcher():
     collectors = build_collectors(banks=["ANZ"], render_javascript=True)
 
