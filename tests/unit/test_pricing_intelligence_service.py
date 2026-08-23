@@ -402,6 +402,52 @@ def test_a_suspicious_observation_with_a_rate_category_flip_still_falls_back(mak
     assert snapshot.term(12).rate_for("ANZ") == 4.79
 
 
+def test_a_rejected_record_with_a_rate_category_flip_does_not_withdraw_its_predecessor(
+    make_record,
+):
+    """Mirrors the suspicious-record case, but for a hard-rejected line.
+
+    A rejected record whose rate_category also flipped can't be paired by
+    resolve_pairing() either (rate_category is real identity there too), so
+    without the category-agnostic fallback in _rejected_predecessor_keys()
+    its predecessor is reported REMOVED_PRODUCT purely because a parser
+    fault renamed its category -- even though ANZ's other term still passed
+    validation, keeping ANZ in scope for withdrawal detection at all.
+    """
+    baseline = [
+        make_record(bank="ANZ", term_months=12, rate_category="special", rate_pct=4.79),
+        make_record(bank="ANZ", term_months=24, rate_category="special", rate_pct=4.99),
+    ]
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", baseline)],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    # term 12 flips category and becomes implausible (rejected); term 24 is
+    # unchanged and accepted, giving ANZ 1/2 known-key coverage -- enough to
+    # stay in scope for withdrawal detection under the default 0.5 ratio.
+    rejected_line = make_record(
+        bank="ANZ", term_months=12, rate_category="standard", rate_pct=99.0, observed_at=DAY_TWO
+    )
+    unchanged_line = make_record(
+        bank="ANZ", term_months=24, rate_category="special", rate_pct=4.99, observed_at=DAY_TWO
+    )
+    service._collectors = [_StubCollector("ANZ", [rejected_line, unchanged_line])]
+    outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    assert outcome.validation.rejected, "sanity check: the line really was rejected"
+    withdrawals = [
+        change for change in outcome.changes if change.change_type is ChangeType.REMOVED_PRODUCT
+    ]
+    assert withdrawals == []
+    snapshot = service.get_market_snapshot(now=DAY_TWO)
+    assert snapshot.term(12).rate_for("ANZ") == 4.79
+
+
 def test_resolve_suspicious_does_not_double_count_an_independently_present_fallback(make_record):
     """Unlike an eligibility edit (always superseded out of the current view),
     a rate-category flip's predecessor is a different eligibility group and

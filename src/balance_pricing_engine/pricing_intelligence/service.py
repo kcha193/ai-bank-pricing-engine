@@ -194,6 +194,41 @@ def _suspicious_predecessor_keys(
     return suppressed
 
 
+def _rejected_predecessor_keys(
+    baseline: Sequence[CompetitorRateRecord],
+    rejected: Sequence[CompetitorRateRecord],
+) -> set:
+    """Baseline keys that must not be reported as withdrawn this run because
+    they are the unmatched :meth:`~.models.CompetitorRateRecord.category_agnostic_group_key`
+    predecessor of a hard-rejected record.
+
+    Mirrors :func:`_suspicious_predecessor_keys` for records that failed
+    validation outright rather than being accepted-but-flagged: a rejected
+    row whose ``rate_category`` also flipped alongside its implausible rate
+    cannot be paired by :func:`~.changes.resolve_pairing` either (real
+    identity there too), so without this its predecessor would be reported
+    ``REMOVED_PRODUCT`` purely because a parser fault renamed its category --
+    even though enough of the bank's other rows passed validation for it to
+    stay in scope for withdrawal detection at all. Only suppressed when
+    exactly one unclaimed baseline record shares the group.
+    """
+    pairs = resolve_pairing(baseline, rejected)
+    claimed_baseline_keys = {p.observation_key() for p in pairs.values()}
+    unclaimed: dict[str, list[CompetitorRateRecord]] = {}
+    for p in baseline:
+        if p.observation_key() not in claimed_baseline_keys:
+            unclaimed.setdefault(p.category_agnostic_group_key(), []).append(p)
+
+    suppressed: set = set()
+    for record in rejected:
+        if record.observation_key() in pairs:
+            continue
+        candidates = unclaimed.get(record.category_agnostic_group_key(), [])
+        if len(candidates) == 1:
+            suppressed.add(candidates[0].observation_key())
+    return suppressed
+
+
 def _exclude_stale(
     records: Sequence[CompetitorRateRecord], now: datetime, max_age_hours: float
 ) -> list[CompetitorRateRecord]:
@@ -393,10 +428,11 @@ class PricingIntelligenceService:
             # that garbles the rate and misreads max_lvr together) would
             # otherwise have a key that never matches its last confirmed
             # predecessor, so the predecessor's key is only found via the
-            # same eligibility-group fallback used elsewhere. A suspicious
-            # (accepted-but-flagged) record's predecessor gets the same
-            # treatment via _suspicious_predecessor_keys() when only a
-            # category-agnostic match exists -- see its docstring.
+            # same eligibility-group fallback used elsewhere, or -- when the
+            # rejected line's rate_category flipped too -- the
+            # category-agnostic fallback in _rejected_predecessor_keys(). A
+            # suspicious (accepted-but-flagged) record's predecessor gets the
+            # analogous treatment via _suspicious_predecessor_keys().
             rejected_keys=(
                 {
                     previous_record.observation_key()
@@ -404,6 +440,7 @@ class PricingIntelligenceService:
                         baseline, validation.rejected
                     ).values()
                 }
+                | _rejected_predecessor_keys(baseline, validation.rejected)
                 | _suspicious_predecessor_keys(baseline, accepted, suspicious_keys)
             ),
         )
