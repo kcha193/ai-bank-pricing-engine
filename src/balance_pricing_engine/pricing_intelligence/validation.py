@@ -85,17 +85,40 @@ def validate_observations(
     key and skip the movement check entirely, letting an implausible rate
     (e.g. 5.00% misread as 1.50%) through unflagged and into a market-derived
     pricing assumption before ``detect_changes()`` ever sees it.
+
+    A predecessor left unclaimed by ``resolve_pairing`` (no exact or
+    eligibility-group match) gets one further, validation-only fallback on
+    :meth:`~balance_pricing_engine.competitor_rates.models.CompetitorRateRecord.category_agnostic_group_key`:
+    a parser fault that flips ``rate_category`` *and* misreads the rate has
+    no predecessor under either of the stricter keys, so without this it
+    would have no baseline to compare against and the movement would pass
+    unflagged. Only applied when exactly one unclaimed predecessor shares the
+    category-agnostic group -- an ambiguous match is not used as a baseline.
     """
     thresholds = thresholds or ValidationThresholds()
     records = list(records)
-    pairs = resolve_pairing(previous or [], records)
+    previous = list(previous or [])
+    pairs = resolve_pairing(previous, records)
+
+    claimed_previous_keys = {p.observation_key() for p in pairs.values()}
+    unclaimed_previous = [p for p in previous if p.observation_key() not in claimed_previous_keys]
+    category_agnostic_candidates: dict[str, list[CompetitorRateRecord]] = {}
+    for p in unclaimed_previous:
+        category_agnostic_candidates.setdefault(p.category_agnostic_group_key(), []).append(p)
+
     outcome = ValidationOutcome()
 
     for record in records:
         key = record.observation_key()
         issues = _validate_record(record, thresholds, key)
 
-        movement_issue = _validate_movement(record, pairs.get(key), thresholds, key)
+        baseline = pairs.get(key)
+        if baseline is None:
+            candidates = category_agnostic_candidates.get(record.category_agnostic_group_key(), [])
+            if len(candidates) == 1:
+                baseline = candidates[0]
+
+        movement_issue = _validate_movement(record, baseline, thresholds, key)
         if movement_issue is not None:
             issues.append(movement_issue)
 

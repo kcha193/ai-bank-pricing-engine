@@ -562,6 +562,16 @@ class ObservationStore:
         vanish from the view rather than falling back to what was last
         verified, letting a single parser fault move a MARKET_LEADER/
         MARKET_MEDIAN assumption just by making the old rate disappear.
+
+        Also applies the eligibility-supersession exclusion (only against a
+        *confirmed* superseding sibling, for the same reason as
+        :meth:`get_confirmed_observations_as_of`): without it, a product that
+        moved from key A to a more recent confirmed key B would offer *both*
+        as fallback candidates. If a later suspicious observation happens to
+        revert to A's eligibility condition, exact-key precedence in
+        :func:`resolve_pairing` would then substitute the stale A instead of
+        the immediately preceding B -- itself a market-moving substitution,
+        just a different wrong one.
         """
         rows = self._connection.execute(
             "SELECT * FROM observations o WHERE product_type = ? "
@@ -572,7 +582,11 @@ class ObservationStore:
             ") AND NOT EXISTS ("
             "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
             "  AND rc.change_type = 'REMOVED_PRODUCT' AND rc.detected_at > o.last_seen_at"
-            ") ORDER BY bank, term_months",
+            ") "
+            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(
+                extra=" AND o3.validation_status != 'warning'"
+            )
+            + "ORDER BY bank, term_months",
             (_product_value(product_type),),
         ).fetchall()
         return [_row_to_record(row) for row in rows]

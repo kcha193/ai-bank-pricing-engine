@@ -157,6 +157,33 @@ class CompetitorRateRecord(BaseModel):
         ]
         return "|".join(parts)
 
+    def category_agnostic_group_key(self) -> str:
+        """:meth:`eligibility_group_key`, further ignoring ``rate_category``.
+
+        ``rate_category`` is real identity everywhere else -- a bank
+        typically advertises "standard" and "special" simultaneously, so
+        change detection must not collapse them. But that also means a
+        parser fault that flips a row's category *and* produces an
+        implausible rate change has no predecessor under
+        ``eligibility_group_key()`` either, so validation's suspicious-
+        movement check would find no baseline to compare against and let
+        the movement through unflagged. Used only as a last-resort,
+        validation-only lookup (never for change detection's identity
+        pairing) when the normal fallback finds nothing.
+        """
+        parts = [
+            self.bank,
+            str(self.product_type),
+            str(self.term_months_normalised)
+            if self.term_months_normalised is not None
+            else self.term_label_raw.lower(),
+            self.interest_payment_frequency,
+            self.product_name.strip().lower(),
+            _numeric_band(self.min_balance_or_deposit),
+            _numeric_band(self.max_balance_or_deposit),
+        ]
+        return "|".join(parts)
+
     @model_validator(mode="after")
     def validate_identity_and_range(self) -> "CompetitorRateRecord":
         if not self.term_label_raw and not self.product_name:

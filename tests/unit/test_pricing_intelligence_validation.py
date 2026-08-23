@@ -86,6 +86,38 @@ def test_a_suspicious_movement_is_caught_across_an_eligibility_edit(make_record)
     assert outcome.suspicious_keys, "the movement must be caught via the eligibility fallback"
 
 
+def test_a_suspicious_movement_is_caught_across_a_rate_category_flip(make_record):
+    """A parser fault can flip rate_category alongside a misread rate: this has no
+    predecessor under observation_key or eligibility_group_key (both include
+    rate_category), so only the category-agnostic fallback catches the movement."""
+    previous = [make_record(rate_category="special", rate_pct=5.00)]
+    outcome = validate_observations(
+        [make_record(rate_category="standard", rate_pct=1.50)],
+        thresholds=ValidationThresholds(suspicious_change_bps=75),
+        previous=previous,
+    )
+
+    assert len(outcome.accepted) == 1
+    assert outcome.suspicious_keys, "the movement must be caught via the category-agnostic fallback"
+
+
+def test_the_category_agnostic_fallback_is_not_used_when_ambiguous(make_record):
+    """Two unclaimed predecessors sharing a category-agnostic group must not be
+    guessed between -- an ambiguous match is not a safe baseline."""
+    previous = [
+        make_record(rate_category="special", rate_pct=5.00),
+        make_record(rate_category="premier", rate_pct=5.10),
+    ]
+    outcome = validate_observations(
+        [make_record(rate_category="standard", rate_pct=1.50)],
+        thresholds=ValidationThresholds(suspicious_change_bps=75),
+        previous=previous,
+    )
+
+    assert len(outcome.accepted) == 1
+    assert not outcome.suspicious_keys, "an ambiguous fallback must not be used as a baseline"
+
+
 def test_a_normal_movement_is_not_flagged(make_record):
     outcome = validate_observations(
         [make_record(rate_pct=4.79)],

@@ -335,6 +335,38 @@ def test_a_suspicious_observation_with_an_eligibility_edit_still_falls_back(serv
     assert snapshot.term(12).rate_for("ANZ") == 4.79
 
 
+def test_a_suspicious_reversion_falls_back_to_the_immediate_predecessor(service, make_record):
+    """Reverting to a stale earlier key must fall back to the latest confirmed
+    state (the one it actually superseded), not the stale reverted-to key."""
+    # Key A confirmed.
+    service.store.record_observations(
+        [make_record(bank="ANZ", max_lvr=0.80, min_equity=0.20, rate_pct=4.79)],
+        observed_at=DAY_ONE,
+    )
+    # Key B, an eligibility transition, supersedes A -- also confirmed.
+    service.store.record_observations(
+        [make_record(bank="ANZ", max_lvr=0.75, min_equity=0.25, rate_pct=4.99)],
+        observed_at=DAY_TWO,
+    )
+    # A suspicious observation reverts to A's condition with an implausible rate.
+    service.store.record_observations(
+        [
+            make_record(
+                bank="ANZ",
+                max_lvr=0.80,
+                min_equity=0.20,
+                rate_pct=1.50,
+                validation_status="warning",
+            )
+        ],
+        observed_at=DAY_THREE,
+    )
+
+    snapshot = service.get_market_snapshot(now=DAY_THREE)
+
+    assert snapshot.term(12).rate_for("ANZ") == 4.99
+
+
 def test_a_suspicious_observation_is_excluded_from_the_competitor_assumption(fixture_fetcher):
     def break_kiwibank(bank, html):
         if bank == "Kiwibank":

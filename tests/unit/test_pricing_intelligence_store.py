@@ -554,6 +554,42 @@ def test_a_stale_suspicious_tag_clears_once_reconfirmed(store, make_record):
     assert store.get_latest_rates()[0].validation_status != "warning"
 
 
+def test_last_confirmed_observations_exclude_a_superseded_eligibility_state(store, make_record):
+    """The confirmed fallback source needs the same supersession exclusion."""
+    store.record_observations(
+        [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.79)], observed_at=DAY_ONE
+    )
+    store.record_observations(
+        [make_record(max_lvr=0.75, min_equity=0.25, rate_pct=4.99)], observed_at=DAY_TWO
+    )
+
+    confirmed = store.get_last_confirmed_observations()
+
+    assert len(confirmed) == 1
+    assert confirmed[0].max_lvr == 0.75
+
+
+def test_last_confirmed_observations_keep_a_confirmed_state_even_when_superseded_by_a_warning(
+    store, make_record
+):
+    """A warning-tagged sibling must not retire a confirmed predecessor's candidacy."""
+    store.record_observations(
+        [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.79)], observed_at=DAY_ONE
+    )
+    store.record_observations(
+        [make_record(max_lvr=0.75, min_equity=0.25, rate_pct=4.99)], observed_at=DAY_TWO
+    )
+    warning = make_record(
+        max_lvr=0.80, min_equity=0.20, rate_pct=1.50, validation_status="warning"
+    )
+    store.record_observations([warning], observed_at=DAY_THREE)
+
+    confirmed = store.get_last_confirmed_observations()
+
+    assert len(confirmed) == 1
+    assert confirmed[0].max_lvr == 0.75, "the immediate confirmed predecessor, not the stale key"
+
+
 def test_a_stale_suspicious_tag_clears_via_a_fresh_state_not_a_mutation(store, make_record):
     """The clearing must not touch the original row's own historical status."""
     store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)
