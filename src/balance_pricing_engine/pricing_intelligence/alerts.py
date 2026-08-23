@@ -136,6 +136,13 @@ def _rank_movement(
 ) -> Optional[str]:
     if snapshot is None or previous_snapshot is None or change.term_months is None:
         return None
+    # A snapshot built for a different rate_category (e.g. the CLI's default
+    # "special" snapshot passed alongside a "standard" change) ranks a
+    # different market entirely; the rank shown must not be borrowed from it.
+    if snapshot.rate_category != change.rate_category:
+        return None
+    if previous_snapshot.rate_category != change.rate_category:
+        return None
     current_market = snapshot.term(change.term_months)
     previous_market = previous_snapshot.term(change.term_months)
     if current_market is None or previous_market is None:
@@ -153,6 +160,10 @@ def _market_context(
     change: RateChange, snapshot: Optional[MarketSnapshot]
 ) -> list[str]:
     if snapshot is None or change.term_months is None or change.current_rate_pct is None:
+        return []
+    # Same guard as _rank_movement(): a snapshot built for a different
+    # rate_category compares this change against the wrong market's median.
+    if snapshot.rate_category != change.rate_category:
         return []
     market = snapshot.term(change.term_months)
     if market is None:

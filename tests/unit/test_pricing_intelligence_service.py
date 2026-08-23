@@ -786,6 +786,28 @@ def test_rate_history_series_falls_back_to_the_confirmed_rate_when_suspicious(
     assert series[-1][1]["ANZ"] == 4.79
 
 
+def test_rate_history_series_is_scoped_to_configured_banks(make_record):
+    """The live snapshot applies selected_banks; the history series must too,
+    or the chart can show a bank the current grid correctly hides."""
+    config = PricingIntelligenceConfig(
+        database_path=":memory:",
+        selected_banks=["ANZ"],
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    service = PricingIntelligenceService(config=config, store=ObservationStore(":memory:"))
+    service.store.record_observations(
+        [
+            make_record(bank="ANZ", rate_pct=4.79),
+            make_record(bank="BNZ", rate_pct=4.85),
+        ],
+        observed_at=DAY_ONE,
+    )
+
+    series = service.get_rate_history_series(term_months=12, rate_category="special")
+
+    assert "BNZ" not in series[-1][1]
+
+
 def test_changes_are_queryable_by_window(fixture_fetcher):
     with build_service(fixture_fetcher()) as service:
         service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)

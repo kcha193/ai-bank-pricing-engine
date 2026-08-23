@@ -670,6 +670,7 @@ class PricingIntelligenceService:
                 product_type=product_type,
                 rate_category=rate_category,
                 terms_months=[term_months],
+                banks=self.config.selected_banks,
                 as_of=as_of,
                 excluded_product_names=self.config.excluded_product_names,
             )

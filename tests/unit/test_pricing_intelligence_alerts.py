@@ -82,6 +82,29 @@ def test_alert_omits_rank_movement_without_a_previous_snapshot(make_record):
     assert "Market rank:" not in format_alert(build_change(make_record)).render()
 
 
+def test_alert_omits_market_context_for_a_different_rate_category(make_record):
+    """A "standard" change alongside the CLI's default "special" snapshot must
+    not report a median/rank borrowed from the wrong market."""
+    standard_change = detect_changes(
+        [make_record(rate_category="standard", rate_pct=5.39)],
+        [make_record(rate_category="standard", rate_pct=5.19, observed_at=DAY_TWO)],
+        detected_at=DAY_TWO,
+    )[0]
+    special_snapshot = build_market_snapshot(
+        [
+            make_record(bank="ANZ", rate_category="special", rate_pct=4.79),
+            make_record(bank="BNZ", rate_category="special", rate_pct=4.85),
+        ]
+    )
+
+    rendered = format_alert(
+        standard_change, snapshot=special_snapshot, previous_snapshot=special_snapshot
+    ).render()
+
+    assert "Market median" not in rendered
+    assert "Market rank" not in rendered
+
+
 def test_a_suspicious_change_is_marked_for_review(make_record):
     change = build_change(
         make_record,
