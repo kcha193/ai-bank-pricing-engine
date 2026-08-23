@@ -257,23 +257,31 @@ def _reliably_collected_banks(
     A bank can report SUCCESS with just one parseable row after a page-layout
     regression silently drops the rest of its table. Passing that bank
     straight to withdrawal detection would then read every other, still
-    genuinely-current product as withdrawn. A bank whose accepted-record
-    count this run falls short of its previously known key count (below
+    genuinely-current product as withdrawn. A bank whose *matched* baseline
+    keys this run falls short of its previously known key count (below
     ``min_coverage_ratio``) is excluded here, same as a bank that failed to
     fetch outright: unknown, not withdrawn.
+
+    Coverage is measured by matched predecessor identity (via
+    :func:`~.changes.resolve_pairing`), not a raw accepted-record count: a
+    parser regression that replaces missing rows with the same number of
+    plausible but wrongly-identified ones would otherwise satisfy the
+    baseline count while matching none of the actual known keys, still
+    reading every one of them as withdrawn.
     """
-    baseline_counts: dict[str, int] = {}
+    baseline_keys: dict[str, set[str]] = {}
     for record in baseline:
-        baseline_counts[record.bank] = baseline_counts.get(record.bank, 0) + 1
-    accepted_counts: dict[str, int] = {}
-    for record in accepted:
-        accepted_counts[record.bank] = accepted_counts.get(record.bank, 0) + 1
+        baseline_keys.setdefault(record.bank, set()).add(record.observation_key())
+
+    matched_keys: dict[str, set[str]] = {}
+    for predecessor in resolve_pairing(baseline, accepted).values():
+        matched_keys.setdefault(predecessor.bank, set()).add(predecessor.observation_key())
 
     reliable: list[str] = []
     for bank in (result.bank for result in report.succeeded):
-        known = baseline_counts.get(bank, 0)
-        seen = accepted_counts.get(bank, 0)
-        if known == 0 or seen >= known * min_coverage_ratio:
+        known = baseline_keys.get(bank, set())
+        matched = matched_keys.get(bank, set())
+        if not known or len(matched) >= len(known) * min_coverage_ratio:
             reliable.append(bank)
     return tuple(reliable)
 
@@ -646,8 +654,19 @@ class PricingIntelligenceService:
         for day in sorted(change_dates):
             as_of = datetime.combine(day, datetime.max.time(), tzinfo=timezone.utc)
             records = self.store.get_observations_as_of(as_of=as_of, product_type=product_type)
-            snapshot = build_market_snapshot(
+            # Matches get_market_snapshot()'s as_of_run_id branch: a
+            # warning-tagged (suspicious) state must fall back to its last
+            # confirmed rate here too, not flow straight into the chart --
+            # otherwise a parser fault visibly moves the history even though
+            # the live market view correctly stays on the confirmed rate.
+            records = _resolve_suspicious_if_present(
                 records,
+                lambda as_of=as_of: self.store.get_confirmed_observations_as_of(
+                    as_of=as_of, product_type=product_type
+                ),
+            )
+            snapshot = build_market_snapshot(
+                _exclude_suspicious(records),
                 product_type=product_type,
                 rate_category=rate_category,
                 terms_months=[term_months],
@@ -674,8 +693,21 @@ class PricingIntelligenceService:
         )
 
     def get_market_state(self, now: Optional[datetime] = None) -> MarketStateAssessment:
-        """Classify how competitively active the market currently is."""
+        """Classify how competitively active the market currently is.
+
+        Scoped to ``selected_banks``/``tracked_terms_months``: a database
+        holding observations from an earlier or broader configuration would
+        otherwise let a change outside the currently-configured market push
+        the classification, even though the snapshot it accompanies is
+        already scoped to those same settings.
+        """
         changes = self.get_changes(days=self.config.market_state.lookback_days, now=now)
+        changes = [
+            change
+            for change in changes
+            if change.bank in self.config.selected_banks
+            and change.term_months in self.config.tracked_terms_months
+        ]
         return classify_market_state(
             changes, thresholds=self.config.market_state, now=now
         )

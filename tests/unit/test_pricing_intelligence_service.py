@@ -7,7 +7,7 @@ import pytest
 
 from balance_pricing_engine.competitor_rates.collectors import BankCollectionResult, CollectionStatus
 from balance_pricing_engine.competitor_rates.models import ProductType
-from balance_pricing_engine.pricing_intelligence.changes import ChangeType, detect_changes
+from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange, detect_changes
 from balance_pricing_engine.pricing_intelligence.config import (
     CollectionConfig,
     PricingIntelligenceConfig,
@@ -244,6 +244,42 @@ def test_a_partial_parse_regression_is_not_reported_as_a_mass_withdrawal(fixture
     assert asb_withdrawals == []
 
 
+def test_bogus_rows_matching_the_baseline_count_are_not_a_reliable_collection(make_record):
+    """Coverage must be measured by matched predecessor identity, not a raw
+    accepted-record count: a parser regression that replaces missing rows
+    with the same number of plausible but wrongly-identified ones would
+    otherwise satisfy the baseline count while matching none of the bank's
+    actual known products, still reading all of them as withdrawn."""
+    baseline = [
+        make_record(bank="ANZ", term_months=term, product_name=f"Fixed {term}m")
+        for term in (6, 12, 18, 24)
+    ]
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", baseline)],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    # Same row count as the baseline, but none share an identity with it --
+    # a stand-in for a parser fault that garbles term/product fields.
+    garbled = [
+        make_record(bank="ANZ", term_months=term, product_name=f"Garbled {term}m")
+        for term in (36, 48, 60, 84)
+    ]
+    service._collectors = [_StubCollector("ANZ", garbled)]
+    outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    anz_withdrawals = [
+        change
+        for change in outcome.changes
+        if change.change_type is ChangeType.REMOVED_PRODUCT and change.bank == "ANZ"
+    ]
+    assert anz_withdrawals == []
+
+
 def test_a_validation_rejected_record_is_not_reported_as_a_withdrawal(fixture_fetcher):
     """A single implausible rate must not read as the bank withdrawing that line."""
 
@@ -297,6 +333,38 @@ def test_a_broken_parser_is_flagged_suspicious_not_silently_accepted(fixture_fet
     assert len(suspicious) == 1
     assert suspicious[0].change_bps == 314.0
     assert state.state is MarketState.LOW, "a parser artefact must not fake market activity"
+
+
+def test_market_state_ignores_changes_outside_the_configured_market():
+    """A change for a bank or term outside selected_banks/tracked_terms_months
+    must not push the classification, even if the database holds it from an
+    earlier or broader configuration -- the snapshot is already scoped to
+    those settings, so market state must match."""
+    config = PricingIntelligenceConfig(
+        database_path=":memory:",
+        selected_banks=["ANZ"],
+        tracked_terms_months=[12],
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    service = PricingIntelligenceService(config=config, store=ObservationStore(":memory:"))
+    out_of_scope_change = RateChange(
+        observation_key="BNZ|home_loan|special|24|unknown|fixed special",
+        bank="BNZ",
+        product_type=ProductType.HOME_LOAN,
+        product_name="Fixed Special",
+        rate_category="special",
+        term_months=24,
+        change_type=ChangeType.RATE_DECREASE,
+        detected_at=DAY_ONE,
+        previous_rate_pct=5.00,
+        current_rate_pct=4.50,
+        change_bps=-50.0,
+    )
+    service.store.record_changes([out_of_scope_change])
+
+    state = service.get_market_state(now=DAY_ONE)
+
+    assert state.state is MarketState.LOW, "the change is outside the configured market"
 
 
 def test_a_confirmed_large_movement_counts_as_market_activity(fixture_fetcher):
@@ -696,6 +764,26 @@ def test_rate_history_series_keeps_a_surviving_product_when_a_sibling_is_withdra
     series = service.get_rate_history_series(term_months=12, rate_category="special")
 
     assert series[-1][1]["ANZ"] == 5.19
+
+
+def test_rate_history_series_falls_back_to_the_confirmed_rate_when_suspicious(
+    service, make_record
+):
+    """A warning-tagged (suspicious) state must not flow straight into the
+    chart -- matches get_market_snapshot()'s own confirmed-rate fallback, so
+    a parser fault doesn't visibly move the history the live view correctly
+    ignores."""
+    service.store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.79)], observed_at=DAY_ONE
+    )
+    service.store.record_observations(
+        [make_record(bank="ANZ", rate_pct=1.50, validation_status="warning")],
+        observed_at=DAY_TWO,
+    )
+
+    series = service.get_rate_history_series(term_months=12, rate_category="special")
+
+    assert series[-1][1]["ANZ"] == 4.79
 
 
 def test_changes_are_queryable_by_window(fixture_fetcher):
