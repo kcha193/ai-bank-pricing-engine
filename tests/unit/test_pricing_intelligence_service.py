@@ -5,13 +5,18 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from balance_pricing_engine.competitor_rates.collectors import BankCollectionResult, CollectionStatus
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType, detect_changes
 from balance_pricing_engine.pricing_intelligence.config import (
     CollectionConfig,
     PricingIntelligenceConfig,
 )
 from balance_pricing_engine.pricing_intelligence.market_state import MarketState
-from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
+from balance_pricing_engine.pricing_intelligence.service import (
+    PricingIntelligenceService,
+    _resolve_suspicious,
+)
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 
 DAY_ONE = datetime(2026, 8, 20, tzinfo=timezone.utc)
@@ -30,6 +35,30 @@ def build_service(fetcher, **config_overrides):
     return PricingIntelligenceService(
         config=config, store=ObservationStore(":memory:"), fetcher=fetcher
     )
+
+
+class _StubCollector:
+    """Returns pre-built records instead of parsing HTML.
+
+    Every real per-bank parser derives ``product_name`` from the same table
+    cell that determines ``rate_category`` (see ``extractors._product_name``),
+    so an HTML-fixture edit can't flip one without the other. This isolates a
+    pure rate_category flip -- the exact scenario the category-agnostic
+    fallback exists for -- while going through the real collect() pipeline.
+    """
+
+    def __init__(self, bank, records):
+        self.bank = bank
+        self._records = records
+
+    def collect_mortgage_rates(self, captured_at_utc=None, persist_snapshot=True):
+        return BankCollectionResult(
+            bank=self.bank,
+            product_type=ProductType.HOME_LOAN,
+            status=CollectionStatus.SUCCESS,
+            source_url=f"https://www.example-bank.co.nz/{self.bank.lower()}/rates",
+            records=tuple(self._records),
+        )
 
 
 def cut_anz_one_year(bank, html):
@@ -333,6 +362,62 @@ def test_a_suspicious_observation_with_an_eligibility_edit_still_falls_back(serv
     snapshot = service.get_market_snapshot(now=DAY_TWO)
 
     assert snapshot.term(12).rate_for("ANZ") == 4.79
+
+
+def test_a_suspicious_observation_with_a_rate_category_flip_still_falls_back(make_record):
+    """A rate_category flip changes both observation_key() and
+    eligibility_group_key(), so resolve_pairing() can pair neither the
+    suspicious record itself nor -- critically -- its predecessor during
+    withdrawal detection. Without collect() suppressing that withdrawal,
+    detect_changes() reports the predecessor REMOVED_PRODUCT, which
+    permanently excludes it from get_last_confirmed_observations() -- the
+    very fallback source the category-agnostic substitution in
+    _resolve_suspicious() depends on. Driven through the real collect()
+    pipeline (via a stub collector, so product_name can be held constant --
+    see _StubCollector) rather than reimplementing its steps, so this fails
+    if collect()'s own wiring regresses, not just the underlying helpers.
+    """
+    confirmed = make_record(bank="ANZ", rate_category="special", rate_pct=4.79)
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", [confirmed])],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    suspicious = make_record(
+        bank="ANZ", rate_category="standard", rate_pct=1.50, observed_at=DAY_TWO
+    )
+    service._collectors = [_StubCollector("ANZ", [suspicious])]
+    outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    snapshot = service.get_market_snapshot(now=DAY_TWO)
+
+    assert outcome.validation.suspicious_keys, "the movement must be flagged suspicious"
+    assert {c.change_type for c in outcome.changes} == {ChangeType.NEW_PRODUCT}, (
+        "the predecessor's withdrawal must be suppressed, not merely its effect papered over"
+    )
+    assert snapshot.term(12).rate_for("ANZ") == 4.79
+
+
+def test_resolve_suspicious_does_not_double_count_an_independently_present_fallback(make_record):
+    """Unlike an eligibility edit (always superseded out of the current view),
+    a rate-category flip's predecessor is a different eligibility group and
+    is never superseded -- it can be genuinely, independently present in
+    ``records`` in its own right. The fallback substitution must not add a
+    second copy of it.
+    """
+    confirmed = make_record(bank="ANZ", rate_category="special", rate_pct=4.79)
+    suspicious = make_record(
+        bank="ANZ", rate_category="standard", rate_pct=1.50, validation_status="warning"
+    )
+
+    resolved = _resolve_suspicious([confirmed, suspicious], confirmed=[confirmed])
+
+    assert len(resolved) == 1
+    assert resolved[0].advertised_rate_pct == 4.79
 
 
 def test_a_suspicious_reversion_falls_back_to_the_immediate_predecessor(service, make_record):

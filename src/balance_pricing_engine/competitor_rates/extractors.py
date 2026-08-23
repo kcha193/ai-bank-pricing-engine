@@ -20,6 +20,7 @@ from balance_pricing_engine.competitor_rates.normalise import (
     normalise_balance,
     normalise_frequency,
     normalise_lvr_condition,
+    normalise_lvr_values,
     normalise_term,
 )
 from balance_pricing_engine.competitor_rates.sources import RateSource
@@ -370,14 +371,22 @@ def _dedupe_records(records: list[CompetitorRateRecord]) -> list[CompetitorRateR
     """Drop an exact repeat row, without collapsing two distinct simultaneous
     tiers (e.g. different LVR conditions or product names at the same rate).
 
-    Runs before mortgage eligibility enrichment, so max_lvr/min_equity are not
-    yet populated and can't be part of the key; lvr_condition and
-    product_name are already set within :func:`parse_html_rates`'s own loop
-    and are the discriminators available at this stage.
+    Runs before mortgage eligibility enrichment, so ``max_lvr``/``min_equity``
+    are not yet populated *on the record* and can't be read from it directly.
+    ``lvr_condition`` alone is too coarse to stand in for them here: it only
+    distinguishes three buckets ("standard", "min_20_percent_equity",
+    "low_equity_margin_applies"), so two simultaneous tiers like "70% LVR" and
+    "80% LVR" both normalise to "standard" and would otherwise collide onto
+    the same key. The numeric LVR is instead re-derived straight from
+    ``raw_text_context`` via :func:`~.normalise.normalise_lvr_values` -- the
+    same extraction :meth:`.collectors.base.BankPricingCollector.enrich_mortgage_record`
+    applies later from the same field -- purely as an extra key discriminator;
+    the record's own ``max_lvr``/``min_equity`` are left for enrichment to set.
     """
     seen: set[tuple] = set()
     deduped: list[CompetitorRateRecord] = []
     for record in records:
+        numeric_lvr, _ = normalise_lvr_values(record.raw_text_context)
         key = (
             record.bank,
             str(record.product_type),
@@ -387,6 +396,7 @@ def _dedupe_records(records: list[CompetitorRateRecord]) -> list[CompetitorRateR
             record.advertised_rate_pct,
             record.product_name.strip().lower(),
             record.lvr_condition or "",
+            numeric_lvr,
             record.min_balance_or_deposit,
             record.max_balance_or_deposit,
         )

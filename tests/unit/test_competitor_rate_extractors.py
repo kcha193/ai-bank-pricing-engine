@@ -130,6 +130,34 @@ def test_parse_html_rates_preserves_simultaneous_tiers_at_the_same_rate():
     }
 
 
+def test_parse_html_rates_preserves_simultaneous_numeric_lvr_tiers():
+    """Two numeric LVR tiers ("70% LVR", "80% LVR") both normalise to the same
+    coarse lvr_condition bucket ("standard" -- neither matches the "under 80%"
+    wording normalise_lvr_condition looks for), so lvr_condition alone can't
+    tell them apart at dedup time, before enrichment has populated max_lvr.
+    Deduping on lvr_condition alone would collapse a real, distinct tier and
+    lose its later changes entirely.
+    """
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>LVR</th><th>Term</th><th>Rate</th></tr>
+      <tr><td>Fixed Special</td><td>70% LVR</td><td>1 year</td><td>4.79%</td></tr>
+      <tr><td>Fixed Special</td><td>80% LVR</td><td>1 year</td><td>4.79%</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 2
+    assert {record.lvr_condition for record in records} == {"standard"}
+
+
 def test_fetch_source_writes_snapshot_for_successful_http_response(tmp_path, monkeypatch):
     source = RateSource("ANZ", ProductType.HOME_LOAN, "https://example.test/home")
 

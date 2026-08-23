@@ -92,16 +92,50 @@ def _resolve_suspicious(
     the very predecessor it needs to fall back to and drop the record
     regardless. A key with no confirmed fallback (a suspicious value on its
     very first-ever observation) is dropped, matching :func:`_exclude_suspicious`.
+
+    A further, validation-only-style fallback on
+    :meth:`~.models.CompetitorRateRecord.category_agnostic_group_key` covers
+    the case :func:`~.validation.validate_observations` already flags via the
+    same key: a suspicious value that also flips ``rate_category`` (e.g. a
+    ``special`` rate misclassified as ``standard``) changes both
+    ``observation_key`` and ``eligibility_group_key`` too, so without this
+    the bank's last confirmed rate would simply vanish from the snapshot
+    instead of substituting back in. Applied only when exactly one unclaimed
+    confirmed record shares the group -- an ambiguous match is never guessed
+    at as a substitute.
+
+    Deduplicated by ``observation_key()``: unlike an eligibility edit (which
+    ``get_current_observations()`` always supersedes out of ``records``, so
+    its fallback target is never independently present), a category flip's
+    predecessor is a *different* eligibility group and is never superseded --
+    it can legitimately already be sitting in ``records`` in its own right
+    (still genuinely advertised, unaffected by this run's parser fault). Left
+    undeduplicated, the same confirmed rate would appear twice: once on its
+    own row, once again as the flagged record's substitute.
     """
     suspicious = [record for record in records if record.validation_status == "warning"]
     fallback_by_key = resolve_pairing(confirmed, suspicious) if suspicious else {}
+    claimed_confirmed_keys = {c.observation_key() for c in fallback_by_key.values()}
+    unclaimed_confirmed = [c for c in confirmed if c.observation_key() not in claimed_confirmed_keys]
+    category_agnostic_candidates: dict[str, list[CompetitorRateRecord]] = {}
+    for c in unclaimed_confirmed:
+        category_agnostic_candidates.setdefault(c.category_agnostic_group_key(), []).append(c)
+
     resolved: list[CompetitorRateRecord] = []
+    seen_keys: set = set()
     for record in records:
         if record.validation_status != "warning":
-            resolved.append(record)
+            if record.observation_key() not in seen_keys:
+                seen_keys.add(record.observation_key())
+                resolved.append(record)
             continue
         fallback = fallback_by_key.get(record.observation_key())
-        if fallback is not None:
+        if fallback is None:
+            candidates = category_agnostic_candidates.get(record.category_agnostic_group_key(), [])
+            if len(candidates) == 1:
+                fallback = candidates[0]
+        if fallback is not None and fallback.observation_key() not in seen_keys:
+            seen_keys.add(fallback.observation_key())
             resolved.append(fallback)
     return resolved
 
@@ -117,6 +151,47 @@ def _resolve_suspicious_if_present(
     if any(record.validation_status == "warning" for record in records):
         return _resolve_suspicious(records, confirmed_source())
     return list(records)
+
+
+def _suspicious_predecessor_keys(
+    baseline: Sequence[CompetitorRateRecord],
+    accepted: Sequence[CompetitorRateRecord],
+    suspicious_keys: set,
+) -> set:
+    """Baseline keys that must not be reported as withdrawn this run because
+    they are the unmatched :meth:`~.models.CompetitorRateRecord.category_agnostic_group_key`
+    predecessor of a suspicious record in ``accepted``.
+
+    ``resolve_pairing()`` (used by :func:`~.changes.detect_changes` for
+    withdrawal detection) cannot pair a record whose ``rate_category`` flipped
+    alongside an implausible rate -- ``rate_category`` is real identity in
+    ``eligibility_group_key()``, unlike an eligibility field, precisely so two
+    simultaneously-advertised categories are never collapsed together. Left
+    unhandled, that predecessor would be reported ``REMOVED_PRODUCT`` purely
+    because this run's parser fault renamed its category, which permanently
+    excludes it from :meth:`~.store.ObservationStore.get_last_confirmed_observations`
+    -- the very fallback :func:`_resolve_suspicious` needs to substitute it
+    back into the market view. Only suppressed when exactly one unclaimed
+    baseline record shares the group, the same ambiguity guard
+    :func:`~.validation.validate_observations` applies when it flags the
+    record in the first place.
+    """
+    pairs = resolve_pairing(baseline, accepted)
+    claimed_baseline_keys = {p.observation_key() for p in pairs.values()}
+    unclaimed: dict[str, list[CompetitorRateRecord]] = {}
+    for p in baseline:
+        if p.observation_key() not in claimed_baseline_keys:
+            unclaimed.setdefault(p.category_agnostic_group_key(), []).append(p)
+
+    suppressed: set = set()
+    for record in accepted:
+        key = record.observation_key()
+        if key not in suspicious_keys or pairs.get(key) is not None:
+            continue
+        candidates = unclaimed.get(record.category_agnostic_group_key(), [])
+        if len(candidates) == 1:
+            suppressed.add(candidates[0].observation_key())
+    return suppressed
 
 
 def _exclude_stale(
@@ -318,10 +393,18 @@ class PricingIntelligenceService:
             # that garbles the rate and misreads max_lvr together) would
             # otherwise have a key that never matches its last confirmed
             # predecessor, so the predecessor's key is only found via the
-            # same eligibility-group fallback used elsewhere.
+            # same eligibility-group fallback used elsewhere. A suspicious
+            # (accepted-but-flagged) record's predecessor gets the same
+            # treatment via _suspicious_predecessor_keys() when only a
+            # category-agnostic match exists -- see its docstring.
             rejected_keys=(
-                previous_record.observation_key()
-                for previous_record in resolve_pairing(baseline, validation.rejected).values()
+                {
+                    previous_record.observation_key()
+                    for previous_record in resolve_pairing(
+                        baseline, validation.rejected
+                    ).values()
+                }
+                | _suspicious_predecessor_keys(baseline, accepted, suspicious_keys)
             ),
         )
         # A first-ever collection would otherwise report every rate as a new
