@@ -367,6 +367,41 @@ def test_market_snapshot_reconstructs_an_older_run_by_id(fixture_fetcher):
     assert snapshot_at_run_two.term(12).rate_for("ANZ") == 4.79
 
 
+def test_market_snapshot_as_of_a_suspicious_run_falls_back_to_the_confirmed_rate(
+    service, make_record
+):
+    """A historical reconstruction of a suspicious run must not drop the bank."""
+    service.store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.79)], observed_at=DAY_ONE
+    )
+    write_result = service.store.record_observations(
+        [make_record(bank="ANZ", rate_pct=1.50, validation_status="warning")],
+        observed_at=DAY_TWO,
+    )
+
+    snapshot = service.get_market_snapshot(as_of_run_id=write_result.run_id)
+
+    assert snapshot.term(12).rate_for("ANZ") == 4.79
+
+
+def test_previous_market_snapshot_falls_back_to_the_confirmed_rate(service, make_record):
+    """The previous-run snapshot must not drop a bank whose latest state was suspicious."""
+    service.store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.79)], observed_at=DAY_ONE
+    )
+    service.store.record_observations(
+        [make_record(bank="ANZ", rate_pct=1.50, validation_status="warning")],
+        observed_at=DAY_TWO,
+    )
+    service.store.record_observations(
+        [make_record(bank="BNZ", rate_pct=4.85)], observed_at=DAY_THREE
+    )
+
+    snapshot = service.get_previous_market_snapshot()
+
+    assert snapshot.term(12).rate_for("ANZ") == 4.79
+
+
 def test_history_is_queryable_after_a_reprice(fixture_fetcher):
     with build_service(fixture_fetcher()) as service:
         service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)

@@ -304,9 +304,42 @@ class ObservationStore:
             (payload["observation_key"], current["last_seen_at"]),
         ).fetchone() is not None
 
+        # A product that reverts to an earlier eligibility condition (e.g.
+        # 80% LVR -> 75% -> back to 80%) is not a withdrawal -- an
+        # ELIGIBILITY_CHANGE never records a REMOVED_PRODUCT for the key it
+        # moved away from (that's the whole point of resolve_pairing()'s
+        # fallback match). Detected instead via the same eligibility-group
+        # sibling signal the read-side supersession check uses: if another
+        # key in this product's group started after this row was last
+        # confirmed, the identity moved away and back, so merging into this
+        # stale row would let its first_observed_at retroactively cover the
+        # gap, corrupting both the live view and any as-of reconstruction of
+        # the intervening period.
+        returned_after_an_eligibility_transition = current is not None and connection.execute(
+            "SELECT 1 FROM observations WHERE observation_key <> ? "
+            "AND bank = ? AND product_type = ? AND rate_category = ? "
+            "AND term_months IS ? AND term_label_raw = ? "
+            "AND interest_payment_frequency = ? AND LOWER(product_name) = LOWER(?) "
+            "AND min_balance IS ? AND max_balance IS ? AND first_observed_at > ? LIMIT 1",
+            (
+                payload["observation_key"],
+                payload["bank"],
+                payload["product_type"],
+                payload["rate_category"],
+                payload["term_months"],
+                payload["term_label_raw"],
+                payload["interest_payment_frequency"],
+                payload["product_name"],
+                payload["min_balance"],
+                payload["max_balance"],
+                current["last_seen_at"],
+            ),
+        ).fetchone() is not None
+
         if (
             current is not None
             and not returned_after_a_withdrawal
+            and not returned_after_an_eligibility_transition
             and _is_unchanged(current, payload)
         ):
             connection.execute(
@@ -563,6 +596,40 @@ class ObservationStore:
             "AND id = ("
             "  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
             "  AND o2.first_observed_at <= ? ORDER BY first_observed_at DESC, id DESC LIMIT 1"
+            ") "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
+            "  AND rc.change_type = 'REMOVED_PRODUCT' AND rc.detected_at <= ? "
+            "  AND rc.detected_at > o.first_observed_at"
+            ") "
+            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra=" AND o3.first_observed_at <= ?")
+            + "ORDER BY bank, term_months",
+            (_product_value(product_type), timestamp, timestamp, timestamp, timestamp),
+        ).fetchall()
+        return [_row_to_history_record(row) for row in rows]
+
+    def get_confirmed_observations_as_of(
+        self,
+        as_of: datetime,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+    ) -> list[CompetitorRateRecord]:
+        """Like :meth:`get_observations_as_of`, but skips a "warning"-tagged
+        row to find the last confirmed state per key as of a point in time.
+
+        Used as the historical counterpart to :meth:`get_last_confirmed_observations`:
+        a market-derived view of an older run (``get_previous_market_snapshot()``,
+        or ``get_market_snapshot(as_of_run_id=...)``) must fall back to what
+        was last verified as of that point rather than dropping a
+        suspicious-tagged bank/term from the reconstruction outright.
+        """
+        timestamp = _iso(as_of)
+        rows = self._connection.execute(
+            "SELECT * FROM observations o WHERE product_type = ? AND first_observed_at <= ? "
+            "AND validation_status != 'warning' "
+            "AND id = ("
+            "  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
+            "  AND o2.first_observed_at <= ? AND o2.validation_status != 'warning' "
+            "  ORDER BY first_observed_at DESC, id DESC LIMIT 1"
             ") "
             "AND NOT EXISTS ("
             "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "

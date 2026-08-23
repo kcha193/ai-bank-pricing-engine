@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 from balance_pricing_engine.competitor_rates.collectors import (
     BankPricingCollector,
@@ -104,6 +104,19 @@ def _resolve_suspicious(
         if fallback is not None:
             resolved.append(fallback)
     return resolved
+
+
+def _resolve_suspicious_if_present(
+    records: Sequence[CompetitorRateRecord],
+    confirmed_source: Callable[[], Sequence[CompetitorRateRecord]],
+) -> list[CompetitorRateRecord]:
+    """Apply :func:`_resolve_suspicious`, deferring the confirmed-fallback
+    lookup (a separate store query) until a suspicious record is actually
+    present. Shared by the live and historical (as-of) snapshot paths.
+    """
+    if any(record.validation_status == "warning" for record in records):
+        return _resolve_suspicious(records, confirmed_source())
+    return list(records)
 
 
 def _exclude_stale(
@@ -361,18 +374,24 @@ class PricingIntelligenceService:
         as_of: Optional[datetime] = None
         if as_of_run_id is not None:
             as_of = self.store.get_run_started_at(as_of_run_id)
-            records = (
-                self.store.get_observations_as_of(as_of=as_of, product_type=product_type)
-                if as_of is not None
-                else []
-            )
+            if as_of is None:
+                records = []
+            else:
+                records = self.store.get_observations_as_of(
+                    as_of=as_of, product_type=product_type
+                )
+                records = _resolve_suspicious_if_present(
+                    records,
+                    lambda: self.store.get_confirmed_observations_as_of(
+                        as_of=as_of, product_type=product_type
+                    ),
+                )
         else:
             records = self.store.get_current_observations(product_type=product_type)
-            if any(record.validation_status == "warning" for record in records):
-                confirmed = self.store.get_last_confirmed_observations(
-                    product_type=product_type
-                )
-                records = _resolve_suspicious(records, confirmed)
+            records = _resolve_suspicious_if_present(
+                records,
+                lambda: self.store.get_last_confirmed_observations(product_type=product_type),
+            )
             records = _exclude_stale(
                 records,
                 now=now or datetime.now(timezone.utc),
@@ -399,6 +418,12 @@ class PricingIntelligenceService:
         records = self.store.get_observations_as_of(as_of=as_of, product_type=product_type)
         if not records:
             return None
+        records = _resolve_suspicious_if_present(
+            records,
+            lambda: self.store.get_confirmed_observations_as_of(
+                as_of=as_of, product_type=product_type
+            ),
+        )
         return build_market_snapshot(
             _exclude_suspicious(records),
             product_type=product_type,

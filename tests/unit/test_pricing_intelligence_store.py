@@ -11,6 +11,7 @@ from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 DAY_ONE = datetime(2026, 8, 20, tzinfo=timezone.utc)
 DAY_TWO = DAY_ONE + timedelta(days=1)
 DAY_THREE = DAY_ONE + timedelta(days=2)
+DAY_FOUR = DAY_ONE + timedelta(days=3)
 
 
 @pytest.fixture
@@ -422,6 +423,32 @@ def test_observations_as_of_keep_simultaneous_lvr_tiers_that_started_later(store
     current = store.get_observations_as_of(as_of=DAY_THREE)
 
     assert {r.max_lvr for r in current} == {0.80, 0.70}
+
+
+def test_a_reverted_eligibility_condition_starts_a_fresh_state(store, make_record):
+    """80% LVR -> 75% -> back to 80% must not merge into the original stale row."""
+    store.record_observations(
+        [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=5.19)], observed_at=DAY_ONE
+    )
+    store.record_observations(
+        [make_record(max_lvr=0.75, min_equity=0.25, rate_pct=4.99)], observed_at=DAY_TWO
+    )
+    # Reverts to the exact same values as the original 80% state.
+    result = store.record_observations(
+        [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=5.19)], observed_at=DAY_FOUR
+    )
+
+    assert result.inserted == 1, "must start a fresh state, not silently touch the old row"
+
+    current = store.get_current_observations()
+    assert len(current) == 1
+    assert current[0].max_lvr == 0.80
+    assert current[0].advertised_rate_pct == 5.19
+
+    # The 75% state, correctly current for the intervening period, must not
+    # be resurrected by the later reversion's row now sharing its group.
+    mid_period = store.get_observations_as_of(as_of=DAY_THREE)
+    assert [r.max_lvr for r in mid_period] == [0.75]
 
 
 def test_observations_as_of_does_not_resurrect_a_withdrawn_product(store, make_record):
