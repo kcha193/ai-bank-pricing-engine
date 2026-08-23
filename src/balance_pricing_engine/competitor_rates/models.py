@@ -158,7 +158,8 @@ class CompetitorRateRecord(BaseModel):
         return "|".join(parts)
 
     def category_agnostic_group_key(self) -> str:
-        """:meth:`eligibility_group_key`, further ignoring ``rate_category``.
+        """:meth:`eligibility_group_key`, further ignoring ``rate_category``
+        *and* ``product_name``.
 
         ``rate_category`` is real identity everywhere else -- a bank
         typically advertises "standard" and "special" simultaneously, so
@@ -170,6 +171,15 @@ class CompetitorRateRecord(BaseModel):
         the movement through unflagged. Used only as a last-resort,
         validation-only lookup (never for change detection's identity
         pairing) when the normal fallback finds nothing.
+
+        ``product_name`` is dropped too: the generic extractor derives it by
+        searching the row for the category text itself (see
+        ``competitor_rates.extractors._product_name``), so a genuine category
+        flip commonly changes ``product_name`` right along with it (e.g.
+        "Fixed Standard" -> "Fixed Special") -- keeping it here would defeat
+        the very fallback this key exists for. The remaining fields are
+        deliberately coarse; ambiguity is handled by every caller's
+        "exactly one unclaimed candidate" guard, not by this key.
         """
         parts = [
             self.bank,
@@ -178,7 +188,6 @@ class CompetitorRateRecord(BaseModel):
             if self.term_months_normalised is not None
             else self.term_label_raw.lower(),
             self.interest_payment_frequency,
-            self.product_name.strip().lower(),
             _numeric_band(self.min_balance_or_deposit),
             _numeric_band(self.max_balance_or_deposit),
         ]

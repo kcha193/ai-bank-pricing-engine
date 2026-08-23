@@ -101,6 +101,23 @@ def test_a_suspicious_movement_is_caught_across_a_rate_category_flip(make_record
     assert outcome.suspicious_keys, "the movement must be caught via the category-agnostic fallback"
 
 
+def test_the_category_agnostic_fallback_survives_a_realistic_product_name_change(make_record):
+    """The generic extractor derives product_name by searching the row for the
+    category text itself (extractors._product_name), so a genuine category
+    flip commonly changes product_name too (e.g. "Fixed Standard" -> "Fixed
+    Special") -- category_agnostic_group_key() must not include it, or this
+    realistic case defeats the very fallback it exists for."""
+    previous = [make_record(rate_category="special", product_name="Fixed Special", rate_pct=5.00)]
+    outcome = validate_observations(
+        [make_record(rate_category="standard", product_name="Fixed Standard", rate_pct=1.50)],
+        thresholds=ValidationThresholds(suspicious_change_bps=75),
+        previous=previous,
+    )
+
+    assert len(outcome.accepted) == 1
+    assert outcome.suspicious_keys, "the movement must be caught despite the product_name change"
+
+
 def test_the_category_agnostic_fallback_is_not_used_when_ambiguous(make_record):
     """Two unclaimed predecessors sharing a category-agnostic group must not be
     guessed between -- an ambiguous match is not a safe baseline."""

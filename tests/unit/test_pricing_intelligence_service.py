@@ -402,6 +402,43 @@ def test_a_suspicious_observation_with_a_rate_category_flip_still_falls_back(mak
     assert snapshot.term(12).rate_for("ANZ") == 4.79
 
 
+def test_a_rate_category_flip_still_falls_back_when_product_name_changes_too(make_record):
+    """The generic extractor derives product_name by searching the row for the
+    category text (extractors._product_name), so a real category flip usually
+    changes product_name right along with it (e.g. "Fixed Standard" -> "Fixed
+    Special") -- unlike the sibling test above, which (deliberately, per its
+    own docstring) holds product_name constant. category_agnostic_group_key()
+    must not include product_name, or this realistic case defeats the very
+    fallback it exists for.
+    """
+    confirmed = make_record(
+        bank="ANZ", rate_category="special", product_name="Fixed Special", rate_pct=4.79
+    )
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", [confirmed])],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    suspicious = make_record(
+        bank="ANZ",
+        rate_category="standard",
+        product_name="Fixed Standard",
+        rate_pct=1.50,
+        observed_at=DAY_TWO,
+    )
+    service._collectors = [_StubCollector("ANZ", [suspicious])]
+    outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    snapshot = service.get_market_snapshot(now=DAY_TWO)
+
+    assert outcome.validation.suspicious_keys, "the movement must be flagged suspicious"
+    assert snapshot.term(12).rate_for("ANZ") == 4.79
+
+
 def test_a_rejected_record_with_a_rate_category_flip_does_not_withdraw_its_predecessor(
     make_record,
 ):
@@ -613,6 +650,52 @@ def test_history_is_queryable_after_a_reprice(fixture_fetcher):
         history = service.get_rate_history(bank="ANZ", term_months=12, rate_category="special")
 
     assert [record.advertised_rate_pct for record in history] == [4.79, 4.59]
+
+
+def test_rate_history_series_uses_the_most_competitive_simultaneous_product(make_record):
+    """Mirrors build_market_snapshot()'s own representative-rate selection:
+    when a bank advertises several simultaneous special products/LVR tiers at
+    one term, the chart series must use the same most-competitive one -- not
+    whichever row a naive same-date collapse happens to keep."""
+    tier_a = make_record(bank="ANZ", product_name="LVR Tier A", rate_pct=4.79)
+    tier_b = make_record(bank="ANZ", product_name="LVR Tier B", rate_pct=5.19)
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", [tier_a, tier_b])],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    series = service.get_rate_history_series(term_months=12, rate_category="special")
+
+    assert series[-1][1]["ANZ"] == 4.79
+
+
+def test_rate_history_series_keeps_a_surviving_product_when_a_sibling_is_withdrawn(make_record):
+    """A same-category, same-term product withdrawal must not blank a
+    surviving sibling product's representative rate."""
+    tier_a = make_record(bank="ANZ", product_name="LVR Tier A", rate_pct=4.79)
+    tier_b = make_record(bank="ANZ", product_name="LVR Tier B", rate_pct=5.19)
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", [tier_a, tier_b])],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    service._collectors = [_StubCollector("ANZ", [tier_b])]
+    outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+    assert {c.change_type for c in outcome.changes} == {ChangeType.REMOVED_PRODUCT}, (
+        "sanity check: Tier A really was detected withdrawn"
+    )
+
+    series = service.get_rate_history_series(term_months=12, rate_category="special")
+
+    assert series[-1][1]["ANZ"] == 5.19
 
 
 def test_changes_are_queryable_by_window(fixture_fetcher):

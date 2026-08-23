@@ -98,79 +98,42 @@ def test_history_frame_is_sorted_oldest_first(make_record):
     assert list(frame["Rate (%)"]) == [4.99, 4.79]
 
 
-def test_history_series_pivots_to_date_by_bank(make_record):
-    records = [
-        make_record(bank="ANZ", rate_pct=4.99, observed_at=DAY_ONE),
-        make_record(bank="BNZ", rate_pct=4.95, observed_at=DAY_ONE),
-        make_record(bank="ANZ", rate_pct=4.79, observed_at=DAY_TWO),
-    ]
-    series = build_history_series(records, term_months=12)
-
-    assert list(series.columns) == ["ANZ", "BNZ"]
-    assert series.loc[DAY_TWO.date(), "ANZ"] == 4.79
-
-
-def test_history_series_keeps_the_latest_same_day_reprice(make_record):
-    records = [
-        make_record(bank="ANZ", rate_pct=4.79, observed_at=DAY_ONE),
-        make_record(bank="ANZ", rate_pct=4.99, observed_at=DAY_ONE + timedelta(hours=6)),
+def test_history_series_pivots_to_date_by_bank():
+    series = [
+        (DAY_ONE.date(), {"ANZ": 4.99, "BNZ": 4.95}),
+        (DAY_TWO.date(), {"ANZ": 4.79, "BNZ": 4.95}),
     ]
 
-    series = build_history_series(records, term_months=12)
+    frame = build_history_series(series)
 
-    assert series.loc[DAY_ONE.date(), "ANZ"] == 4.99
+    assert list(frame.columns) == ["ANZ", "BNZ"]
+    assert frame.loc[DAY_TWO.date(), "ANZ"] == 4.79
 
 
-def test_history_series_stops_forward_filling_after_a_confirmed_withdrawal(make_record):
-    """A withdrawn product's last rate must not be carried into later chart
-    dates introduced by other banks' changes -- the observation history has
-    no terminating row for a withdrawal, so ffill() alone can't know to stop."""
-    later_day = DAY_ONE + timedelta(days=2)
-    records = [
-        make_record(bank="ANZ", rate_pct=4.79, observed_at=DAY_ONE),
-        make_record(bank="BNZ", rate_pct=4.85, observed_at=DAY_ONE),
-        make_record(bank="BNZ", rate_pct=4.75, observed_at=later_day),
+def test_history_series_gaps_a_bank_absent_from_a_dates_representative_rates():
+    """get_rate_history_series() already resolves withdrawals and multi-product
+    selection against the store; a bank missing from a date's dict (withdrawn,
+    or not yet observed) must chart as a genuine gap, not be filled forward."""
+    series = [
+        (DAY_ONE.date(), {"ANZ": 4.79, "BNZ": 4.85}),
+        (DAY_TWO.date(), {"BNZ": 4.75}),
     ]
 
-    series = build_history_series(
-        records, term_months=12, withdrawn_dates={"ANZ": [DAY_TWO.date()]}
-    )
+    frame = build_history_series(series)
 
-    assert series.loc[DAY_ONE.date(), "ANZ"] == 4.79
-    assert series.loc[later_day.date(), "ANZ"] != series.loc[later_day.date(), "ANZ"], (
-        "expected NaN: ANZ was withdrawn before this date and never returned"
-    )
+    assert frame.loc[DAY_ONE.date(), "ANZ"] == 4.79
+    assert frame.loc[DAY_TWO.date(), "ANZ"] != frame.loc[DAY_TWO.date(), "ANZ"], "expected NaN"
 
 
-def test_history_series_only_blanks_the_gap_when_a_withdrawn_bank_returns(make_record):
-    middle_day = DAY_ONE + timedelta(days=2)
-    return_day = DAY_ONE + timedelta(days=3)
-    records = [
-        make_record(bank="ANZ", rate_pct=4.79, observed_at=DAY_ONE),
-        make_record(bank="BNZ", rate_pct=4.85, observed_at=DAY_ONE),
-        make_record(bank="BNZ", rate_pct=4.75, observed_at=middle_day),
-        make_record(bank="ANZ", rate_pct=5.09, observed_at=return_day),
+def test_history_series_sorts_dates_regardless_of_input_order():
+    series = [
+        (DAY_TWO.date(), {"ANZ": 4.79}),
+        (DAY_ONE.date(), {"ANZ": 4.99}),
     ]
 
-    series = build_history_series(
-        records, term_months=12, withdrawn_dates={"ANZ": [DAY_TWO.date()]}
-    )
+    frame = build_history_series(series)
 
-    assert series.loc[DAY_ONE.date(), "ANZ"] == 4.79
-    assert series.loc[middle_day.date(), "ANZ"] != series.loc[middle_day.date(), "ANZ"], (
-        "expected NaN: ANZ was withdrawn and had not yet returned"
-    )
-    assert series.loc[return_day.date(), "ANZ"] == 5.09
-
-
-def test_history_series_filters_by_term(make_record):
-    records = [
-        make_record(term_months=12, rate_pct=4.79),
-        make_record(term_months=24, rate_pct=4.95),
-    ]
-
-    assert build_history_series(records, term_months=24).iloc[0]["ANZ"] == 4.95
-    assert build_history_series(records, term_months=36).empty
+    assert list(frame.index) == [DAY_ONE.date(), DAY_TWO.date()]
 
 
 def test_history_series_of_nothing_is_empty():

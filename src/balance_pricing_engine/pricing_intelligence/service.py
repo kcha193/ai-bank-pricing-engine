@@ -13,7 +13,7 @@ remains the optimiser's job.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import logging
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -27,6 +27,7 @@ from balance_pricing_engine.competitor_rates.collectors import (
 )
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
 from balance_pricing_engine.pricing_intelligence.changes import (
+    ChangeType,
     RateChange,
     detect_changes,
     load_changes,
@@ -608,6 +609,55 @@ class PricingIntelligenceService:
             rate_category=rate_category,
             since=since,
         )
+
+    def get_rate_history_series(
+        self,
+        term_months: int,
+        rate_category: str = "special",
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+    ) -> list[tuple[date, dict[str, float]]]:
+        """Each bank's representative advertised rate at ``term_months``, one
+        entry per date something changed, oldest first.
+
+        Reconstructed via :meth:`~.store.ObservationStore.get_observations_as_of`
+        (already handles withdrawal and eligibility-supersession exclusion) run
+        through :func:`~.snapshot.build_market_snapshot` (already picks the
+        single most competitive rate per bank when several products are
+        simultaneously advertised) at every date something changed --
+        deliberately not derived from raw per-state rows in the dashboard/chart
+        layer, which cannot see either of those without reimplementing them: a
+        bank with several simultaneous special products or LVR tiers needs the
+        same representative-rate selection the live snapshot uses, and a
+        product withdrawn on one date must actually stop appearing, not just
+        forward-fill its last rate through every later date some other bank's
+        change happens to introduce.
+        """
+        history = self.store.get_rate_history(
+            term_months=term_months, product_type=product_type, rate_category=rate_category
+        )
+        change_dates = {record.captured_at_utc.date() for record in history}
+        for change in self.get_changes(days=None, term_months=term_months):
+            if change.change_type is ChangeType.REMOVED_PRODUCT and (
+                change.rate_category == rate_category
+            ):
+                change_dates.add(change.detected_at.date())
+
+        series: list[tuple[date, dict[str, float]]] = []
+        for day in sorted(change_dates):
+            as_of = datetime.combine(day, datetime.max.time(), tzinfo=timezone.utc)
+            records = self.store.get_observations_as_of(as_of=as_of, product_type=product_type)
+            snapshot = build_market_snapshot(
+                records,
+                product_type=product_type,
+                rate_category=rate_category,
+                terms_months=[term_months],
+                as_of=as_of,
+                excluded_product_names=self.config.excluded_product_names,
+            )
+            market = snapshot.term(term_months)
+            rates = {entry.bank: entry.rate_pct for entry in market.entries} if market else {}
+            series.append((day, rates))
+        return series
 
     def get_market_activity(
         self, days: Optional[int] = None, now: Optional[datetime] = None
