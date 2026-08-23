@@ -373,11 +373,15 @@ class PricingIntelligenceService:
             inter_request_delay_seconds=self.config.collection.inter_request_delay_seconds,
         )
 
-        # Captured before this run's own storage creates a collection_runs
-        # row: an empty baseline does not by itself mean "first collection
-        # ever" (every currently tracked product could simply have been
-        # withdrawn), so first-run suppression below needs this instead.
-        is_first_collection = self.store.latest_run_id() is None
+        # Captured before this run's own storage write, per bank: an empty
+        # baseline does not by itself mean "first collection ever for this
+        # bank" (every currently tracked product could simply have been
+        # withdrawn), so bootstrap suppression below asks instead whether
+        # this bank has ever had any observation stored -- independently of
+        # whether some other bank already has a long history, so a bank that
+        # failed every prior run and only now recovers is still treated as
+        # bootstrapping, not a burst of genuine new products.
+        previously_seen_banks = set(self.store.get_banks(product_type=ProductType.HOME_LOAN))
 
         # The last known state per key, not scoped to the latest completed
         # run: a bank that failed a prior run would otherwise fall out of the
@@ -453,11 +457,29 @@ class PricingIntelligenceService:
                 | _suspicious_predecessor_keys(baseline, accepted, suspicious_keys)
             ),
         )
-        # A first-ever collection would otherwise report every rate as a new
-        # product, which is noise rather than market intelligence.
-        if is_first_collection:
-            logger.info("first collection for this store; suppressing new-product events")
-            changes = []
+        # A bank's first-ever successful collection would otherwise report
+        # every one of its rates as a new product, which is noise rather than
+        # market intelligence. Suppressed per bank, not globally.
+        bootstrapping_banks = {
+            change.bank
+            for change in changes
+            if change.change_type is ChangeType.NEW_PRODUCT
+            and change.bank not in previously_seen_banks
+        }
+        if bootstrapping_banks:
+            logger.info(
+                "bootstrapping bank(s) with no prior observation; suppressing "
+                "new-product events for %s",
+                ", ".join(sorted(bootstrapping_banks)),
+            )
+            changes = [
+                change
+                for change in changes
+                if not (
+                    change.change_type is ChangeType.NEW_PRODUCT
+                    and change.bank in bootstrapping_banks
+                )
+            ]
         if changes and persist:
             self.store.record_changes(changes)
 
@@ -586,16 +608,31 @@ class PricingIntelligenceService:
         bank: Optional[str] = None,
         term_months: Optional[int] = None,
         now: Optional[datetime] = None,
+        scope_to_market: bool = False,
     ) -> list[RateChange]:
         """Return detected changes inside a lookback window, newest first.
 
         ``days=None`` returns every stored change with no lookback limit,
         matching :meth:`get_rate_history`'s own ``days=None`` convention.
+
+        ``scope_to_market=True`` additionally restricts to
+        ``selected_banks``/``tracked_terms_months`` -- the same scope every
+        snapshot/history view already uses -- so a database holding
+        observations from an earlier or broader configuration can't report
+        activity for a bank or term the rest of the market view doesn't show.
         """
         rows = self.store.get_changes_since(
             days=days, bank=bank, term_months=term_months, now=now
         )
-        return load_changes(rows)
+        changes = load_changes(rows)
+        if scope_to_market:
+            changes = [
+                change
+                for change in changes
+                if change.bank in self.config.selected_banks
+                and change.term_months in self.config.tracked_terms_months
+            ]
+        return changes
 
     def get_rate_history(
         self,
@@ -702,13 +739,9 @@ class PricingIntelligenceService:
         the classification, even though the snapshot it accompanies is
         already scoped to those same settings.
         """
-        changes = self.get_changes(days=self.config.market_state.lookback_days, now=now)
-        changes = [
-            change
-            for change in changes
-            if change.bank in self.config.selected_banks
-            and change.term_months in self.config.tracked_terms_months
-        ]
+        changes = self.get_changes(
+            days=self.config.market_state.lookback_days, now=now, scope_to_market=True
+        )
         return classify_market_state(
             changes, thresholds=self.config.market_state, now=now
         )

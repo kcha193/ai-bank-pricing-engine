@@ -123,7 +123,9 @@ def _render_market_intelligence() -> None:
         st.caption(state.rationale)
 
         st.subheader("Recent repricing")
-        changes_frame = build_changes_frame(service.get_changes(days=30))
+        changes_frame = build_changes_frame(
+            service.get_changes(days=30, scope_to_market=True)
+        )
         if changes_frame.empty:
             st.info("No repricing detected in the last 30 days.")
         else:

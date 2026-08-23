@@ -114,6 +114,36 @@ def test_new_products_are_reported_after_the_market_goes_fully_quiet(fixture_fet
     assert len(new_products) > 0
 
 
+def test_a_bank_succeeding_for_the_first_time_is_not_reported_as_new_products(make_record):
+    """A bank that failed (or was unreachable) every prior run and only now
+    succeeds must not report a burst of new-product events just because some
+    other bank already has a long baseline -- bootstrap suppression is per
+    bank, not global."""
+    anz_records = [make_record(bank="ANZ", rate_pct=4.79)]
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", anz_records)],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)  # ANZ's genuine first run
+
+    bnz_records = [make_record(bank="BNZ", rate_pct=4.85)]
+    service._collectors = [
+        _StubCollector("ANZ", anz_records),
+        _StubCollector("BNZ", bnz_records),
+    ]
+    outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    bnz_new_products = [
+        change
+        for change in outcome.changes
+        if change.change_type is ChangeType.NEW_PRODUCT and change.bank == "BNZ"
+    ]
+    assert bnz_new_products == [], "BNZ's first-ever success must be suppressed as bootstrap"
+
+
 def test_an_unchanged_second_collection_produces_no_changes(service):
     service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
     outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
@@ -365,6 +395,50 @@ def test_market_state_ignores_changes_outside_the_configured_market():
     state = service.get_market_state(now=DAY_ONE)
 
     assert state.state is MarketState.LOW, "the change is outside the configured market"
+
+
+def test_get_changes_scope_to_market_filters_by_selected_banks_and_terms():
+    """The same scope get_market_state() and every snapshot already use,
+    available directly to callers like the dashboard's "Recent repricing"
+    section that read get_changes() without their own bank/term filter."""
+    config = PricingIntelligenceConfig(
+        database_path=":memory:",
+        selected_banks=["ANZ"],
+        tracked_terms_months=[12],
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    service = PricingIntelligenceService(config=config, store=ObservationStore(":memory:"))
+    in_scope = RateChange(
+        observation_key="ANZ|home_loan|special|12|unknown|fixed special",
+        bank="ANZ",
+        product_type=ProductType.HOME_LOAN,
+        product_name="Fixed Special",
+        rate_category="special",
+        term_months=12,
+        change_type=ChangeType.RATE_DECREASE,
+        detected_at=DAY_ONE,
+        previous_rate_pct=5.00,
+        current_rate_pct=4.90,
+        change_bps=-10.0,
+    )
+    out_of_scope = RateChange(
+        observation_key="BNZ|home_loan|special|24|unknown|fixed special",
+        bank="BNZ",
+        product_type=ProductType.HOME_LOAN,
+        product_name="Fixed Special",
+        rate_category="special",
+        term_months=24,
+        change_type=ChangeType.RATE_DECREASE,
+        detected_at=DAY_ONE,
+        previous_rate_pct=5.00,
+        current_rate_pct=4.50,
+        change_bps=-50.0,
+    )
+    service.store.record_changes([in_scope, out_of_scope])
+
+    changes = service.get_changes(days=30, now=DAY_ONE, scope_to_market=True)
+
+    assert [change.bank for change in changes] == ["ANZ"]
 
 
 def test_a_confirmed_large_movement_counts_as_market_activity(fixture_fetcher):
