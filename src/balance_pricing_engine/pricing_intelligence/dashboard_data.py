@@ -122,9 +122,21 @@ def build_history_frame(records: Sequence[CompetitorRateRecord]) -> pd.DataFrame
 
 
 def build_history_series(
-    records: Sequence[CompetitorRateRecord], term_months: Optional[int] = None
+    records: Sequence[CompetitorRateRecord],
+    term_months: Optional[int] = None,
+    withdrawn_dates: Optional[dict] = None,
 ) -> pd.DataFrame:
-    """Wide date-by-bank frame of advertised rates, ready to line-chart."""
+    """Wide date-by-bank frame of advertised rates, ready to line-chart.
+
+    ``withdrawn_dates`` maps a bank to the dates it was confirmed withdrawn at
+    this term (see :class:`RateChange`, ``change_type is ChangeType.REMOVED_PRODUCT``).
+    The observation history itself has no terminating row for a withdrawal, so
+    without this the ``ffill()`` below would carry the bank's last advertised
+    rate through every later chart date -- introduced by other banks'
+    changes -- straight past the point it actually stopped being offered. A
+    bank that later returns only has the gap between withdrawal and its next
+    real observation blanked, not every date after the withdrawal.
+    """
     frame = build_history_frame(records)
     if frame.empty:
         return frame
@@ -136,4 +148,17 @@ def build_history_series(
     # the chronologically last observation per (Date, Bank) so a same-day
     # increase isn't charted as the day's lowest rate.
     frame = frame.drop_duplicates(subset=["Date", "Bank"], keep="last")
-    return frame.pivot_table(index="Date", columns="Bank", values="Rate (%)").ffill()
+    pivoted = frame.pivot_table(index="Date", columns="Bank", values="Rate (%)").ffill()
+
+    for bank, dates in (withdrawn_dates or {}).items():
+        if bank not in pivoted.columns:
+            continue
+        real_dates = sorted(frame.loc[frame["Bank"] == bank, "Date"])
+        for withdrawn_on in dates:
+            gap = pivoted.index > withdrawn_on
+            next_real = next((d for d in real_dates if d > withdrawn_on), None)
+            if next_real is not None:
+                gap &= pivoted.index < next_real
+            pivoted.loc[gap, bank] = None
+
+    return pivoted

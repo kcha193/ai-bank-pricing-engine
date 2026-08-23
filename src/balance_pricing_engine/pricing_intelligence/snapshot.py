@@ -187,6 +187,7 @@ def build_market_snapshot(
     terms_months: Optional[Iterable[int]] = None,
     as_of: Optional[datetime] = None,
     banks: Optional[Iterable[str]] = None,
+    excluded_product_names: Optional[Iterable[str]] = None,
 ) -> MarketSnapshot:
     """Build a market snapshot from a set of current observations.
 
@@ -195,11 +196,19 @@ def build_market_snapshot(
     each bank appears once per term. Filter with ``rate_category`` to compare
     like with like -- the default compares advertised specials, which is what
     front-book competition is actually fought on.
+
+    ``excluded_product_names`` drops a record whose ``product_name`` contains
+    any of the given markers (case-insensitive) before that selection, so a
+    niche, structurally non-comparable product -- e.g. ASB's construction-only
+    "Back My Build", deliberately captured under its own product name for
+    exactly this purpose (see ``ASBCollector``) -- cannot win MARKET_LEADER on
+    rate alone.
     """
     product = ProductType(product_type)
     lower_is_better = _better_is_lower(product)
     allowed_banks = set(banks) if banks is not None else None
     allowed_terms = set(terms_months) if terms_months is not None else None
+    excluded_markers = tuple(name.lower() for name in excluded_product_names or ())
 
     best_by_term_bank: dict[int, dict[str, CompetitorRateRecord]] = {}
     latest_observed: Optional[datetime] = None
@@ -212,6 +221,10 @@ def build_market_snapshot(
         if rate_category is not None and record.rate_category != rate_category:
             continue
         if allowed_banks is not None and record.bank not in allowed_banks:
+            continue
+        if excluded_markers and any(
+            marker in record.product_name.lower() for marker in excluded_markers
+        ):
             continue
         term = record.term_months_normalised
         if allowed_terms is not None and term not in allowed_terms:

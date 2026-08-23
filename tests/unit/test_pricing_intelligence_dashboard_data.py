@@ -121,6 +121,48 @@ def test_history_series_keeps_the_latest_same_day_reprice(make_record):
     assert series.loc[DAY_ONE.date(), "ANZ"] == 4.99
 
 
+def test_history_series_stops_forward_filling_after_a_confirmed_withdrawal(make_record):
+    """A withdrawn product's last rate must not be carried into later chart
+    dates introduced by other banks' changes -- the observation history has
+    no terminating row for a withdrawal, so ffill() alone can't know to stop."""
+    later_day = DAY_ONE + timedelta(days=2)
+    records = [
+        make_record(bank="ANZ", rate_pct=4.79, observed_at=DAY_ONE),
+        make_record(bank="BNZ", rate_pct=4.85, observed_at=DAY_ONE),
+        make_record(bank="BNZ", rate_pct=4.75, observed_at=later_day),
+    ]
+
+    series = build_history_series(
+        records, term_months=12, withdrawn_dates={"ANZ": [DAY_TWO.date()]}
+    )
+
+    assert series.loc[DAY_ONE.date(), "ANZ"] == 4.79
+    assert series.loc[later_day.date(), "ANZ"] != series.loc[later_day.date(), "ANZ"], (
+        "expected NaN: ANZ was withdrawn before this date and never returned"
+    )
+
+
+def test_history_series_only_blanks_the_gap_when_a_withdrawn_bank_returns(make_record):
+    middle_day = DAY_ONE + timedelta(days=2)
+    return_day = DAY_ONE + timedelta(days=3)
+    records = [
+        make_record(bank="ANZ", rate_pct=4.79, observed_at=DAY_ONE),
+        make_record(bank="BNZ", rate_pct=4.85, observed_at=DAY_ONE),
+        make_record(bank="BNZ", rate_pct=4.75, observed_at=middle_day),
+        make_record(bank="ANZ", rate_pct=5.09, observed_at=return_day),
+    ]
+
+    series = build_history_series(
+        records, term_months=12, withdrawn_dates={"ANZ": [DAY_TWO.date()]}
+    )
+
+    assert series.loc[DAY_ONE.date(), "ANZ"] == 4.79
+    assert series.loc[middle_day.date(), "ANZ"] != series.loc[middle_day.date(), "ANZ"], (
+        "expected NaN: ANZ was withdrawn and had not yet returned"
+    )
+    assert series.loc[return_day.date(), "ANZ"] == 5.09
+
+
 def test_history_series_filters_by_term(make_record):
     records = [
         make_record(term_months=12, rate_pct=4.79),

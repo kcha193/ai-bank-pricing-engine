@@ -540,6 +540,7 @@ class PricingIntelligenceService:
             terms_months=self.config.tracked_terms_months,
             banks=self.config.selected_banks,
             as_of=as_of,
+            excluded_product_names=self.config.excluded_product_names,
         )
 
     def get_previous_market_snapshot(
@@ -567,16 +568,21 @@ class PricingIntelligenceService:
             terms_months=self.config.tracked_terms_months,
             banks=self.config.selected_banks,
             as_of=as_of,
+            excluded_product_names=self.config.excluded_product_names,
         )
 
     def get_changes(
         self,
-        days: int = 7,
+        days: Optional[int] = 7,
         bank: Optional[str] = None,
         term_months: Optional[int] = None,
         now: Optional[datetime] = None,
     ) -> list[RateChange]:
-        """Return detected changes inside a lookback window, newest first."""
+        """Return detected changes inside a lookback window, newest first.
+
+        ``days=None`` returns every stored change with no lookback limit,
+        matching :meth:`get_rate_history`'s own ``days=None`` convention.
+        """
         rows = self.store.get_changes_since(
             days=days, bank=bank, term_months=term_months, now=now
         )

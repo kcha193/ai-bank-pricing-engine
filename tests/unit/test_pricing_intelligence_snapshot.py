@@ -101,6 +101,28 @@ def test_a_bank_advertising_two_rates_at_one_term_appears_once(make_record):
     assert market.rate_for("ANZ") == 4.79, "the most competitive rate represents the bank"
 
 
+def test_a_non_comparable_product_does_not_win_market_leader(make_record):
+    """ASB's construction-only "Back My Build" must not out-compete standard
+    fixed lending on rate alone -- see ASBCollector's docstring."""
+    records = [
+        make_record(bank="ASB", rate_pct=4.29, product_name="Back My Build"),
+        make_record(bank="ASB", rate_pct=4.89, product_name="Fixed Special"),
+        make_record(bank="BNZ", rate_pct=4.85),
+    ]
+    market = build_market_snapshot(records, excluded_product_names=("Back My Build",))[12]
+
+    assert market.rate_for("ASB") == 4.89
+    assert market.market_leader == "BNZ"
+
+
+def test_excluded_product_name_matches_case_insensitively(make_record):
+    records = [make_record(bank="ASB", rate_pct=4.29, product_name="back my build special")]
+
+    snapshot = build_market_snapshot(records, excluded_product_names=("Back My Build",))
+
+    assert 12 not in snapshot
+
+
 def test_rate_category_filter_compares_like_with_like(make_record):
     records = [
         make_record(bank="ANZ", rate_pct=4.79, rate_category="special"),

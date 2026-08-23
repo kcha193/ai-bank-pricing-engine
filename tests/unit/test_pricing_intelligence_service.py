@@ -498,6 +498,24 @@ def test_a_suspicious_reversion_falls_back_to_the_immediate_predecessor(service,
     assert snapshot.term(12).rate_for("ANZ") == 4.99
 
 
+def test_a_non_comparable_product_is_excluded_from_the_market_snapshot(service, make_record):
+    """The default excluded_product_names config must reach the live snapshot,
+    not just build_market_snapshot() in isolation -- see ASBCollector's
+    "Back My Build" docstring."""
+    service.store.record_observations(
+        [
+            make_record(bank="ASB", rate_pct=3.99, product_name="Back My Build"),
+            make_record(bank="ASB", rate_pct=4.89, product_name="Fixed Special"),
+            make_record(bank="BNZ", rate_pct=4.85),
+        ],
+        observed_at=DAY_ONE,
+    )
+
+    snapshot = service.get_market_snapshot(now=DAY_ONE)
+
+    assert snapshot.term(12).rate_for("ASB") == 4.89
+
+
 def test_a_suspicious_observation_is_excluded_from_the_competitor_assumption(fixture_fetcher):
     def break_kiwibank(bank, html):
         if bank == "Kiwibank":

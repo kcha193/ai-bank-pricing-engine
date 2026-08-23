@@ -101,6 +101,12 @@ class PricingIntelligenceConfig(BaseModel):
     # left in a live pricing view forever is itself a risk: MARKET_LEADER or
     # MARKET_MEDIAN could otherwise keep tracking a months-stale rate.
     max_observation_age_hours: float = Field(default=168.0, gt=0)
+    # Product names that are structurally not comparable to standard fixed
+    # lending -- e.g. ASB's construction-only "Back My Build" (see
+    # ASBCollector) -- and so must not win MARKET_LEADER/MARKET_MEDIAN purely
+    # because their niche rate happens to be the lowest. Matched
+    # case-insensitively as a substring of the record's product_name.
+    excluded_product_names: tuple[str, ...] = ("Back My Build",)
     collection: CollectionConfig = Field(default_factory=CollectionConfig)
     validation: ValidationThresholds = Field(default_factory=ValidationThresholds)
     market_state: MarketStateThresholds = Field(default_factory=MarketStateThresholds)

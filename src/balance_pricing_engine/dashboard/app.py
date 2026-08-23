@@ -8,6 +8,7 @@ import streamlit as st
 
 from balance_pricing_engine.config import EngineConfig
 from balance_pricing_engine.diagnostics import run_sensitivity_analysis
+from balance_pricing_engine.pricing_intelligence.changes import ChangeType
 from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
 from balance_pricing_engine.pricing_intelligence.dashboard_data import (
     build_changes_frame,
@@ -133,7 +134,13 @@ def _render_market_intelligence() -> None:
         history = service.get_rate_history(
             term_months=selected_term, rate_category="special"
         )
-        history_series = build_history_series(history, term_months=selected_term)
+        withdrawn_dates: dict[str, list] = {}
+        for change in service.get_changes(days=None, term_months=selected_term):
+            if change.change_type is ChangeType.REMOVED_PRODUCT:
+                withdrawn_dates.setdefault(change.bank, []).append(change.detected_at.date())
+        history_series = build_history_series(
+            history, term_months=selected_term, withdrawn_dates=withdrawn_dates
+        )
         if history_series.empty:
             st.info("Not enough history yet. History builds up as collections run.")
         else:
