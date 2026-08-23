@@ -12,24 +12,10 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, model_validator
 
-DEFAULT_USER_AGENT = (
-    "ai-bank-pricing-engine/0.1 (+pricing-intelligence; public advertised rates only)"
-)
+from balance_pricing_engine.competitor_rates.collection_config import CollectionConfig
 
 # Fixed home-loan terms tracked in phase 1, in months.
 DEFAULT_TRACKED_TERMS_MONTHS: tuple[int, ...] = (6, 12, 18, 24, 36, 48, 60)
-
-
-class CollectionConfig(BaseModel):
-    """HTTP behaviour for public bank page collection."""
-
-    request_timeout_seconds: float = Field(default=30.0, gt=0)
-    max_retries: int = Field(default=2, ge=0)
-    retry_backoff_seconds: float = Field(default=2.0, ge=0)
-    # Politeness delay between requests to the same host. Public pages only; this
-    # keeps collection well below anything a bank would consider aggressive.
-    inter_request_delay_seconds: float = Field(default=1.0, ge=0)
-    user_agent: str = DEFAULT_USER_AGENT
 
 
 class ValidationThresholds(BaseModel):

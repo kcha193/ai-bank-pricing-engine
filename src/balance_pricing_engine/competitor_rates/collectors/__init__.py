@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Sequence
 
+from balance_pricing_engine.competitor_rates.collection_config import CollectionConfig
 from balance_pricing_engine.competitor_rates.collectors.anz import ANZCollector
 from balance_pricing_engine.competitor_rates.collectors.asb import ASBCollector
 from balance_pricing_engine.competitor_rates.collectors.base import (
@@ -28,7 +29,6 @@ from balance_pricing_engine.competitor_rates.collectors.base import (
 from balance_pricing_engine.competitor_rates.collectors.bnz import BNZCollector
 from balance_pricing_engine.competitor_rates.collectors.kiwibank import KiwibankCollector
 from balance_pricing_engine.competitor_rates.collectors.westpac import WestpacCollector
-from balance_pricing_engine.pricing_intelligence.config import CollectionConfig
 
 COLLECTOR_CLASSES: tuple[type[BankPricingCollector], ...] = (
     ANZCollector,

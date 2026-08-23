@@ -109,6 +109,7 @@ def build_history_frame(records: Sequence[CompetitorRateRecord]) -> pd.DataFrame
         [
             {
                 "Date": record.captured_at_utc.date(),
+                "Timestamp": record.captured_at_utc,
                 "Bank": record.bank,
                 "Term": record.term_months_normalised,
                 "Category": record.rate_category,
@@ -117,7 +118,7 @@ def build_history_frame(records: Sequence[CompetitorRateRecord]) -> pd.DataFrame
             for record in records
         ]
     )
-    return frame.sort_values("Date").reset_index(drop=True)
+    return frame.sort_values("Timestamp").reset_index(drop=True)
 
 
 def build_history_series(
@@ -131,6 +132,8 @@ def build_history_series(
         frame = frame[frame["Term"] == term_months]
     if frame.empty:
         return pd.DataFrame()
-    return frame.pivot_table(
-        index="Date", columns="Bank", values="Rate (%)", aggfunc="min"
-    ).ffill()
+    # A bank can reprice the same term more than once on one UTC date. Keep only
+    # the chronologically last observation per (Date, Bank) so a same-day
+    # increase isn't charted as the day's lowest rate.
+    frame = frame.drop_duplicates(subset=["Date", "Bank"], keep="last")
+    return frame.pivot_table(index="Date", columns="Bank", values="Rate (%)").ffill()

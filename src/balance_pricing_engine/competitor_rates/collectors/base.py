@@ -19,6 +19,7 @@ import time
 from typing import Callable, ClassVar, Optional, Sequence
 from urllib.request import Request, urlopen
 
+from balance_pricing_engine.competitor_rates.collection_config import CollectionConfig
 from balance_pricing_engine.competitor_rates.extractors import parse_html_rates
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
 from balance_pricing_engine.competitor_rates.normalise import (
@@ -27,7 +28,6 @@ from balance_pricing_engine.competitor_rates.normalise import (
     extract_package_requirement,
     normalise_lvr_values,
 )
-from balance_pricing_engine.pricing_intelligence.config import CollectionConfig
 
 logger = logging.getLogger(__name__)
 

@@ -110,6 +110,17 @@ def test_history_series_pivots_to_date_by_bank(make_record):
     assert series.loc[DAY_TWO.date(), "ANZ"] == 4.79
 
 
+def test_history_series_keeps_the_latest_same_day_reprice(make_record):
+    records = [
+        make_record(bank="ANZ", rate_pct=4.79, observed_at=DAY_ONE),
+        make_record(bank="ANZ", rate_pct=4.99, observed_at=DAY_ONE + timedelta(hours=6)),
+    ]
+
+    series = build_history_series(records, term_months=12)
+
+    assert series.loc[DAY_ONE.date(), "ANZ"] == 4.99
+
+
 def test_history_series_filters_by_term(make_record):
     records = [
         make_record(term_months=12, rate_pct=4.79),
