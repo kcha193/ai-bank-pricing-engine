@@ -270,6 +270,28 @@ def test_a_broken_parser_is_flagged_suspicious_not_silently_accepted(fixture_fet
     assert state.state is MarketState.LOW, "a parser artefact must not fake market activity"
 
 
+def test_a_confirmed_large_movement_counts_as_market_activity(fixture_fetcher):
+    """A repeated 'suspicious' value is confirmed genuine, not permanently discounted."""
+
+    def break_kiwibank(bank, html):
+        if bank == "Kiwibank":
+            return html.replace("<td>3 years</td><td>5.35%", "<td>3 years</td><td>8.49%")
+        return html
+
+    with build_service(fixture_fetcher()) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=break_kiwibank)
+        service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)  # flagged suspicious
+        service.collect(captured_at_utc=DAY_THREE, persist_snapshot=False)  # confirmed
+
+        changes = service.get_changes(days=30, now=DAY_THREE)
+        activity = service.get_market_activity(days=30, now=DAY_THREE)
+
+    kiwibank_change = next(change for change in changes if change.bank == "Kiwibank")
+    assert kiwibank_change.suspicious is False
+    assert activity.changes >= 1
+
+
 def test_a_suspicious_observation_falls_back_to_its_last_confirmed_rate(fixture_fetcher):
     """An unconfirmed parser artefact must not feed market-derived pricing --
     but the bank/term must fall back to its last confirmed rate, not vanish."""

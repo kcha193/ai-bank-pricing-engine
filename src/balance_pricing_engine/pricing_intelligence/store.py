@@ -336,23 +336,31 @@ class ObservationStore:
             ),
         ).fetchone() is not None
 
+        # A repeated suspicious value that is no longer independently flagged
+        # this run (0 bps movement against its own warning-tagged baseline)
+        # is a confirmation, not a continuation: touching validation_status
+        # on the existing row in place would let today's confirmation
+        # retroactively rewrite what get_market_snapshot(as_of_run_id=...)
+        # or get_previous_market_snapshot() reconstruct for the run when it
+        # was still unverified. A fresh row leaves that historical row's
+        # "warning" status frozen, exactly like the checks above.
+        confirming_a_suspicious_state = (
+            current is not None
+            and current["validation_status"] == "warning"
+            and payload["validation_status"] != "warning"
+        )
+
         if (
             current is not None
             and not returned_after_a_withdrawal
             and not returned_after_an_eligibility_transition
+            and not confirming_a_suspicious_state
             and _is_unchanged(current, payload)
         ):
             connection.execute(
                 "UPDATE observations SET last_seen_at = ?, last_seen_run_id = ?, "
-                "observation_count = observation_count + 1, validation_status = ?, "
-                "validation_warnings = ? WHERE id = ?",
-                (
-                    timestamp,
-                    run_id,
-                    payload["validation_status"],
-                    payload["validation_warnings"],
-                    current["id"],
-                ),
+                "observation_count = observation_count + 1 WHERE id = ?",
+                (timestamp, run_id, current["id"]),
             )
             return False
 
@@ -400,6 +408,26 @@ class ObservationStore:
                 )
                 written += cursor.rowcount or 0
         return written
+
+    def confirm_suspicious_changes(self, observation_keys: Iterable[str]) -> None:
+        """Clear the suspicious flag on the most recent change event for each key.
+
+        A suspicious-but-accepted movement stays permanently excluded from
+        market activity / market-state (both default to skipping suspicious
+        changes) even after the same value repeats on a later, clean
+        collection -- strong evidence it was a genuine reprice, not a parser
+        fault. Called once ``_upsert_observation``'s own confirmation check
+        (a repeated value no longer flagged this run) identifies the key.
+        """
+        with self._transaction() as connection:
+            for key in observation_keys:
+                connection.execute(
+                    "UPDATE rate_changes SET suspicious = 0 WHERE id = ("
+                    "  SELECT id FROM rate_changes WHERE observation_key = ? "
+                    "  AND suspicious = 1 ORDER BY detected_at DESC, id DESC LIMIT 1"
+                    ")",
+                    (key,),
+                )
 
     # ----------------------------------------------------------------- reads
 
@@ -621,6 +649,11 @@ class ObservationStore:
         or ``get_market_snapshot(as_of_run_id=...)``) must fall back to what
         was last verified as of that point rather than dropping a
         suspicious-tagged bank/term from the reconstruction outright.
+
+        The eligibility-supersession exclusion only considers a *confirmed*
+        sibling key: a warning-tagged sibling is precisely the unreliable
+        state a caller is falling back away from, not a confirmed transition
+        that should retire this row's candidacy as the fallback.
         """
         timestamp = _iso(as_of)
         rows = self._connection.execute(
@@ -636,7 +669,9 @@ class ObservationStore:
             "  AND rc.change_type = 'REMOVED_PRODUCT' AND rc.detected_at <= ? "
             "  AND rc.detected_at > o.first_observed_at"
             ") "
-            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra=" AND o3.first_observed_at <= ?")
+            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(
+                extra=" AND o3.first_observed_at <= ? AND o3.validation_status != 'warning'"
+            )
             + "ORDER BY bank, term_months",
             (_product_value(product_type), timestamp, timestamp, timestamp, timestamp),
         ).fetchall()

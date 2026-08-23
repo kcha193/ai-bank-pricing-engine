@@ -105,6 +105,31 @@ def test_parse_html_rates_deduplicates_identical_rows_and_marks_special_deposits
     assert records[0].special_conditions is not None
 
 
+def test_parse_html_rates_preserves_simultaneous_tiers_at_the_same_rate():
+    """Two distinct LVR tiers happening to share a rate must not collapse to one."""
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>Term</th><th>Rate</th></tr>
+      <tr><td>Fixed Special</td><td>1 year</td><td>4.79%</td></tr>
+      <tr><td>Fixed Special (requires 20% equity)</td><td>1 year</td><td>4.79%</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 2
+    assert {record.lvr_condition for record in records} == {
+        "standard",
+        "min_20_percent_equity",
+    }
+
+
 def test_fetch_source_writes_snapshot_for_successful_http_response(tmp_path, monkeypatch):
     source = RateSource("ANZ", ProductType.HOME_LOAN, "https://example.test/home")
 

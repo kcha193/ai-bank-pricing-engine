@@ -367,7 +367,15 @@ def _special_conditions(context: str) -> str | None:
 
 
 def _dedupe_records(records: list[CompetitorRateRecord]) -> list[CompetitorRateRecord]:
-    seen: set[tuple[str, str, str, str, str, float]] = set()
+    """Drop an exact repeat row, without collapsing two distinct simultaneous
+    tiers (e.g. different LVR conditions or product names at the same rate).
+
+    Runs before mortgage eligibility enrichment, so max_lvr/min_equity are not
+    yet populated and can't be part of the key; lvr_condition and
+    product_name are already set within :func:`parse_html_rates`'s own loop
+    and are the discriminators available at this stage.
+    """
+    seen: set[tuple] = set()
     deduped: list[CompetitorRateRecord] = []
     for record in records:
         key = (
@@ -377,6 +385,10 @@ def _dedupe_records(records: list[CompetitorRateRecord]) -> list[CompetitorRateR
             record.rate_category,
             record.interest_payment_frequency,
             record.advertised_rate_pct,
+            record.product_name.strip().lower(),
+            record.lvr_condition or "",
+            record.min_balance_or_deposit,
+            record.max_balance_or_deposit,
         )
         if key not in seen:
             seen.add(key)

@@ -332,6 +332,22 @@ class PricingIntelligenceService:
         if changes and persist:
             self.store.record_changes(changes)
 
+        # A repeated suspicious value that is no longer independently
+        # flagged this run confirms the earlier movement as genuine. Its
+        # original RateChange event stays permanently suspicious -- and so
+        # excluded from market activity/market-state by default -- unless
+        # cleared here: a 0 bps re-observation produces no new change event
+        # for detect_changes() to mark confirmed instead.
+        if persist:
+            pairs = resolve_pairing(baseline, accepted)
+            confirmed_keys = [
+                key
+                for key, previous_record in pairs.items()
+                if previous_record.validation_status == "warning" and key not in suspicious_keys
+            ]
+            if confirmed_keys:
+                self.store.confirm_suspicious_changes(confirmed_keys)
+
         return CollectionOutcome(
             report=report,
             validation=validation,

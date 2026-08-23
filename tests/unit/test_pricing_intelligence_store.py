@@ -425,6 +425,25 @@ def test_observations_as_of_keep_simultaneous_lvr_tiers_that_started_later(store
     assert {r.max_lvr for r in current} == {0.80, 0.70}
 
 
+def test_confirmed_observations_as_of_falls_back_across_an_eligibility_change(
+    store, make_record
+):
+    """A suspicious value that also shifted eligibility must not lose its fallback."""
+    store.record_observations(
+        [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.79)], observed_at=DAY_ONE
+    )
+    warning = make_record(
+        max_lvr=0.75, min_equity=0.25, rate_pct=1.50, validation_status="warning"
+    )
+    store.record_observations([warning], observed_at=DAY_TWO)
+
+    confirmed = store.get_confirmed_observations_as_of(as_of=DAY_TWO)
+
+    assert len(confirmed) == 1
+    assert confirmed[0].max_lvr == 0.80
+    assert confirmed[0].advertised_rate_pct == 4.79
+
+
 def test_a_reverted_eligibility_condition_starts_a_fresh_state(store, make_record):
     """80% LVR -> 75% -> back to 80% must not merge into the original stale row."""
     store.record_observations(
@@ -500,6 +519,34 @@ def test_a_stale_suspicious_tag_clears_once_reconfirmed(store, make_record):
     store.record_observations([confirmed], observed_at=DAY_THREE)
 
     assert store.get_latest_rates()[0].validation_status != "warning"
+
+
+def test_a_stale_suspicious_tag_clears_via_a_fresh_state_not_a_mutation(store, make_record):
+    """The clearing must not touch the original row's own historical status."""
+    store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)
+    suspicious = make_record(rate_pct=8.49, observed_at=DAY_TWO, validation_status="warning")
+    result = store.record_observations([suspicious], observed_at=DAY_TWO)
+    assert result.inserted == 1
+
+    confirmed = make_record(rate_pct=8.49, observed_at=DAY_THREE)
+    result = store.record_observations([confirmed], observed_at=DAY_THREE)
+
+    assert result.inserted == 1, "confirmation must start a fresh state, not mutate the old one"
+    history = store.get_rate_history(bank="ANZ", term_months=12)
+    assert len(history) == 3
+
+
+def test_confirmation_does_not_rewrite_the_historical_warning_state(store, make_record):
+    """A later confirmation must not retroactively change what an earlier run looked like."""
+    store.record_observations([make_record(rate_pct=5.00)], observed_at=DAY_ONE)
+    warning = make_record(rate_pct=8.00, observed_at=DAY_TWO, validation_status="warning")
+    store.record_observations([warning], observed_at=DAY_TWO)
+    confirmed = make_record(rate_pct=8.00, observed_at=DAY_THREE)
+    store.record_observations([confirmed], observed_at=DAY_THREE)
+
+    as_of_day_two = store.get_confirmed_observations_as_of(as_of=DAY_TWO)
+
+    assert [r.advertised_rate_pct for r in as_of_day_two] == [5.00]
 
 
 def test_changes_are_persisted_and_queried_by_window(store, make_record):
