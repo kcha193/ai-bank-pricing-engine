@@ -185,6 +185,33 @@ def test_parse_html_rates_splits_a_row_with_two_rate_bearing_cells():
     assert by_category == {"special": 4.79, "standard": 5.39}
 
 
+def test_parse_html_rates_uses_column_headers_for_bare_multi_rate_cells():
+    """When the category label lives only in the column header -- not the
+    data cell itself -- a row with two bare rate cells ("4.79%", "5.39%",
+    neither containing "Special"/"Standard") must still split into two
+    records, one per header column, instead of both cells falling through to
+    the generic "home_loan" category and colliding on the same
+    observation_key (silently dropping one rate)."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Special</th><th>Standard</th></tr>
+      <tr><td>1 year</td><td>4.79%</td><td>5.39%</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 2
+    by_category = {record.rate_category: record.advertised_rate_pct for record in records}
+    assert by_category == {"special": 4.79, "standard": 5.39}
+
+
 def test_fetch_source_writes_snapshot_for_successful_http_response(tmp_path, monkeypatch):
     source = RateSource("ANZ", ProductType.HOME_LOAN, "https://example.test/home")
 

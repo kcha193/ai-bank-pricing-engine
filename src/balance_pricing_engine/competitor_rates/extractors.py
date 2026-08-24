@@ -221,15 +221,20 @@ def parse_html_rates(
     parser.feed(html)
     raw_hash = hashlib.sha256(html.encode("utf-8")).hexdigest()
     records: list[CompetitorRateRecord] = []
+    current_header_row: list[str] | None = None
     for row in parser.rows:
         if _is_header_row(row):
+            current_header_row = row
             continue
         context = _clean_text(" | ".join(row))
         term_label = _find_term_label(row, product)
         if term_label is None:
+            current_header_row = row
             continue
         term = normalise_term(term_label)
-        rate_categories = _extract_rates_with_categories(row, context, product, term.special_label)
+        rate_categories = _extract_rates_with_categories(
+            row, context, product, term.special_label, header_row=current_header_row
+        )
         if not rate_categories:
             continue
         min_balance, max_balance = (
@@ -327,7 +332,11 @@ def _extract_plausible_rate(text: str) -> float | None:
 
 
 def _extract_rates_with_categories(
-    row: list[str], context: str, product: ProductType, special_label: str | None
+    row: list[str],
+    context: str,
+    product: ProductType,
+    special_label: str | None,
+    header_row: list[str] | None = None,
 ) -> list[tuple[float, str]]:
     """One ``(rate, category)`` pair per rate-bearing cell in the row.
 
@@ -340,17 +349,31 @@ def _extract_rates_with_categories(
     the row (typically "special", checked first) and pairs it with
     whichever rate ``_extract_rate`` happened to pick last, silently
     dropping the other rate and mislabelling the one that is kept.
+
+    Some tables carry the category only in the column header (e.g. a
+    "Special" / "Standard" header pair over bare "4.79%" / "5.39%" data
+    cells), so a data cell with no category word of its own falls back to
+    ``header_row``'s cell at the same column index before giving up to the
+    generic category -- otherwise both bare cells collide on the same
+    generic category and the same ``observation_key()``, and one silently
+    overwrites the other.
     """
-    cell_rates = [(cell, _extract_plausible_rate(cell)) for cell in row]
-    plausible_cells = [(cell, rate) for cell, rate in cell_rates if rate is not None]
+    cell_rates = [(idx, cell, _extract_plausible_rate(cell)) for idx, cell in enumerate(row)]
+    plausible_cells = [(idx, cell, rate) for idx, cell, rate in cell_rates if rate is not None]
     if len(plausible_cells) <= 1:
         rate = _extract_rate(context)
         if rate is None:
             return []
         return [(rate, _rate_category(product, context, special_label))]
-    return [
-        (rate, _rate_category(product, cell, special_label)) for cell, rate in plausible_cells
-    ]
+    results: list[tuple[float, str]] = []
+    for idx, cell, rate in plausible_cells:
+        hint = _rate_category_hint(product, cell, special_label)
+        if hint is None and header_row is not None and idx < len(header_row):
+            hint = _rate_category_hint(product, header_row[idx], special_label)
+        if hint is None:
+            hint = _rate_category(product, "", special_label)
+        results.append((rate, hint))
+    return results
 
 
 def _find_term_label(row: list[str], product: ProductType) -> str | None:
@@ -373,23 +396,37 @@ def _strip_product_prefix(cell: str) -> str:
     return re.sub(r"^(?:pie|term deposit|fixed|special|standard)\s+", "", cell.strip(), flags=re.I)
 
 
-def _rate_category(product: ProductType, context: str, special_label: str | None) -> str:
-    text = context.lower()
+def _rate_category_hint(product: ProductType, text: str, special_label: str | None) -> str | None:
+    """Category implied by ``text`` alone, or ``None`` if it carries no
+    recognisable category word -- distinct from :func:`_rate_category`, which
+    always returns *some* category by falling back to a generic default.
+    Callers that have another source of category information (e.g. a column
+    header) to try before giving up need to tell "no hint" apart from "the
+    generic fallback", which a function that never returns ``None`` can't do.
+    """
+    lowered = text.lower()
     if product == ProductType.TERM_DEPOSIT:
-        if "pie" in text:
+        if "pie" in lowered:
             return "pie_term_deposit"
-        if "special" in text:
+        if "special" in lowered:
             return "special"
-        return "term_deposit"
+        return None
     if special_label in {"floating", "variable"}:
         return special_label
-    if "special" in text:
+    if "special" in lowered:
         return "special"
-    if "standard" in text:
+    if "standard" in lowered:
         return "standard"
-    if "fixed" in text:
+    if "fixed" in lowered:
         return "fixed"
-    return "home_loan"
+    return None
+
+
+def _rate_category(product: ProductType, context: str, special_label: str | None) -> str:
+    hint = _rate_category_hint(product, context, special_label)
+    if hint is not None:
+        return hint
+    return "term_deposit" if product == ProductType.TERM_DEPOSIT else "home_loan"
 
 
 def _product_name(product: ProductType, row: list[str], category: str) -> str:
