@@ -662,6 +662,47 @@ def test_a_suspicious_observation_with_a_rate_category_flip_still_falls_back(mak
     assert snapshot.term(12).rate_for("ANZ") == 4.79
 
 
+def test_a_suspicious_category_flip_that_stays_suspicious_still_protects_the_confirmed_key(
+    make_record,
+):
+    """A category flip that remains suspicious for a second run (5.00%
+    special -> 8.00% standard warning -> 7.00% standard warning) gives the
+    second run's record an exact warning-tagged predecessor (itself, from
+    the first flip), which must not stop the category-agnostic fallback
+    from also protecting the confirmed special key from before the flip --
+    that's a different, still-orphaned baseline record."""
+    confirmed = make_record(bank="ANZ", rate_category="special", rate_pct=5.00)
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", [confirmed])],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    first_flip = make_record(
+        bank="ANZ", rate_category="standard", rate_pct=8.00, observed_at=DAY_TWO
+    )
+    service._collectors = [_StubCollector("ANZ", [first_flip])]
+    outcome_two = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+    assert outcome_two.validation.suspicious_keys, "sanity check: run 2 flagged suspicious"
+
+    still_suspicious = make_record(
+        bank="ANZ", rate_category="standard", rate_pct=7.00, observed_at=DAY_THREE
+    )
+    service._collectors = [_StubCollector("ANZ", [still_suspicious])]
+    outcome_three = service.collect(captured_at_utc=DAY_THREE, persist_snapshot=False)
+
+    snapshot = service.get_market_snapshot(now=DAY_THREE)
+
+    assert outcome_three.validation.suspicious_keys, "sanity check: run 3 still flagged suspicious"
+    assert ChangeType.REMOVED_PRODUCT not in {c.change_type for c in outcome_three.changes}, (
+        "the confirmed special key must stay protected, not reported withdrawn"
+    )
+    assert snapshot.term(12).rate_for("ANZ") == 5.00
+
+
 def test_a_rate_category_flip_still_falls_back_when_product_name_changes_too(make_record):
     """The generic extractor derives product_name by searching the row for the
     category text (extractors._product_name), so a real category flip usually

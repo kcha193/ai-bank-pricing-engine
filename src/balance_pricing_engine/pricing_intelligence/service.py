@@ -176,6 +176,14 @@ def _suspicious_predecessor_keys(
     baseline record shares the group, the same ambiguity guard
     :func:`~.validation.validate_observations` applies when it flags the
     record in the first place.
+
+    Checked even when ``record`` already has its own exact-or-eligibility
+    match this run: a category flip that stays suspicious for a second run
+    (5.00% special -> 8.00% standard warning -> 7.00% standard warning) has
+    an exact warning-tagged predecessor by the second run (same key both
+    times), but that predecessor is itself unconfirmed -- the confirmed
+    special key from before the flip is a *different*, still-orphaned
+    baseline record that needs this same protection regardless.
     """
     pairs = resolve_pairing(baseline, accepted)
     claimed_baseline_keys = {p.observation_key() for p in pairs.values()}
@@ -186,8 +194,7 @@ def _suspicious_predecessor_keys(
 
     suppressed: set = set()
     for record in accepted:
-        key = record.observation_key()
-        if key not in suspicious_keys or pairs.get(key) is not None:
+        if record.observation_key() not in suspicious_keys:
             continue
         candidates = unclaimed.get(record.category_agnostic_group_key(), [])
         if len(candidates) == 1:
@@ -212,6 +219,12 @@ def _rejected_predecessor_keys(
     even though enough of the bank's other rows passed validation for it to
     stay in scope for withdrawal detection at all. Only suppressed when
     exactly one unclaimed baseline record shares the group.
+
+    Checked even when ``record`` already has its own exact-or-eligibility
+    match this run -- see :func:`_suspicious_predecessor_keys`'s docstring
+    for why a repeated rejection across runs can give the record an exact
+    (but itself still-orphaned) predecessor without that protecting the
+    confirmed key from before the category flip.
     """
     pairs = resolve_pairing(baseline, rejected)
     claimed_baseline_keys = {p.observation_key() for p in pairs.values()}
@@ -222,8 +235,6 @@ def _rejected_predecessor_keys(
 
     suppressed: set = set()
     for record in rejected:
-        if record.observation_key() in pairs:
-            continue
         candidates = unclaimed.get(record.category_agnostic_group_key(), [])
         if len(candidates) == 1:
             suppressed.add(candidates[0].observation_key())
