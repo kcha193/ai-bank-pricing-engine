@@ -214,6 +214,7 @@ class ObservationStore:
         self._connection = sqlite3.connect(self.database_path)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA foreign_keys = ON")
+        self._transaction_depth = 0
         self._create_schema()
 
     # ------------------------------------------------------------- lifecycle
@@ -229,8 +230,42 @@ class ObservationStore:
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
-        with self._connection:
-            yield self._connection
+        # Reentrant: sqlite3's own connection context manager commits on
+        # __exit__ regardless of nesting, so a write method called from
+        # inside atomic() would otherwise commit early on its own, defeating
+        # the whole point of grouping several writes into one commit unit.
+        # Only the outermost call actually opens/commits the transaction;
+        # nested calls just yield.
+        if self._transaction_depth > 0:
+            self._transaction_depth += 1
+            try:
+                yield self._connection
+            finally:
+                self._transaction_depth -= 1
+            return
+        self._transaction_depth += 1
+        try:
+            with self._connection:
+                yield self._connection
+        finally:
+            self._transaction_depth -= 1
+
+    @contextmanager
+    def atomic(self) -> Iterator[None]:
+        """Group several writes (e.g. :meth:`record_observations`,
+        :meth:`record_changes`, :meth:`confirm_suspicious_changes`) into one
+        commit unit, so they all persist or all roll back together.
+
+        Each of those methods normally commits independently. Called without
+        this, a failure between them (e.g. record_changes() raising after
+        record_observations() already committed) would leave the new
+        observation state persisted with no corresponding audit event: a
+        retry of the same collection then compares against the
+        already-updated state, sees no movement, and the missed change is
+        never reconstructed.
+        """
+        with self._transaction():
+            yield
 
     def _create_schema(self) -> None:
         with self._transaction() as connection:
@@ -457,7 +492,7 @@ class ObservationStore:
         rate events after their companions -- would leave the companions
         suspicious forever even though the service has already accepted the
         transition. Every suspicious sibling from that same run is cleared
-        here too, not just the rate row.
+        here too, when it is still accurate to do so (see below).
 
         A suspicious chain can partially revert (confirmed 5.00% -> warning
         8.00% -> warning 7.00% -> clean 7.00%): the latest stored rate event
@@ -468,26 +503,46 @@ class ObservationStore:
         rewritten to reflect the movement from *that* rate (5.00% -> 7.00%,
         +200 bps) rather than merely un-suspicious-ing the stale
         intermediate hop. ``None`` (no known prior confirmed state for this
-        key) just clears the flags, as before.
+        key) just clears the rate row's flag, as before.
+
+        A companion sibling is only cleared alongside an *unrebased* rate
+        event (its stored ``previous_rate_pct`` already matches the last
+        verified predecessor -- the simple, single-hop case). When the rate
+        event *is* rebased (a multi-hop chain), a companion sharing that run
+        still describes the stale intermediate diff (e.g. "max_lvr:
+        0.75 -> 0.70" from the unverified B -> C hop, not the accepted
+        A -> C transition) and is left quarantined rather than being
+        misleadingly presented as confirmed.
         """
         rate_types = (ChangeType.RATE_INCREASE.value, ChangeType.RATE_DECREASE.value)
         with self._transaction() as connection:
             for key, last_verified in confirmations.items():
                 row = connection.execute(
-                    "SELECT id, current_rate_pct, detected_at, change_type FROM rate_changes "
-                    "WHERE observation_key = ? AND suspicious = 1 ORDER BY "
+                    "SELECT id, current_rate_pct, previous_rate_pct, detected_at, change_type "
+                    "FROM rate_changes WHERE observation_key = ? AND suspicious = 1 ORDER BY "
                     "CASE WHEN change_type IN (?, ?) THEN 0 ELSE 1 END, "
                     "detected_at DESC, id DESC LIMIT 1",
                     (key, *rate_types),
                 ).fetchone()
                 if row is None:
                     continue
-                connection.execute(
-                    "UPDATE rate_changes SET suspicious = 0 WHERE observation_key = ? "
-                    "AND suspicious = 1 AND detected_at = ?",
-                    (key, row["detected_at"]),
+                is_rate_row = row["change_type"] in rate_types
+                rebasing = (
+                    is_rate_row
+                    and last_verified is not None
+                    and row["previous_rate_pct"] != last_verified.advertised_rate_pct
                 )
-                if last_verified is None or row["change_type"] not in rate_types:
+                if rebasing:
+                    connection.execute(
+                        "UPDATE rate_changes SET suspicious = 0 WHERE id = ?", (row["id"],)
+                    )
+                else:
+                    connection.execute(
+                        "UPDATE rate_changes SET suspicious = 0 WHERE observation_key = ? "
+                        "AND suspicious = 1 AND detected_at = ?",
+                        (key, row["detected_at"]),
+                    )
+                if last_verified is None or not is_rate_row:
                     continue
                 change_bps = rate_change_bps(
                     last_verified.advertised_rate_pct, row["current_rate_pct"]

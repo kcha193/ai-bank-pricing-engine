@@ -712,6 +712,36 @@ def test_an_empty_store_answers_safely(store):
     assert store.latest_run_id() is None
 
 
+def test_atomic_rolls_back_every_write_on_a_later_failure(store, make_record):
+    """A failure partway through a group of writes must not leave a partial
+    commit -- e.g. an observation persisted with no corresponding change
+    event, which a retry of the same collection could never reconstruct
+    (it would compare against the already-updated state and see no
+    movement)."""
+    with pytest.raises(RuntimeError, match="simulated failure"):
+        with store.atomic():
+            store.record_observations([make_record(rate_pct=4.79)], observed_at=DAY_ONE)
+            raise RuntimeError("simulated failure after the observation write")
+
+    assert store.get_current_observations() == []
+    assert store.latest_run_id() is None
+
+
+def test_atomic_commits_every_write_together_on_success(store, make_record):
+    changes = detect_changes(
+        [make_record(rate_pct=4.99)],
+        [make_record(rate_pct=4.79, observed_at=DAY_TWO)],
+        detected_at=DAY_TWO,
+    )
+    with store.atomic():
+        store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)
+        store.record_observations([make_record(rate_pct=4.79)], observed_at=DAY_TWO)
+        store.record_changes(changes)
+
+    assert store.get_current_observations() != []
+    assert len(store.get_changes_since(days=7, now=DAY_TWO)) == 1
+
+
 def test_the_store_persists_to_disk(tmp_path, make_record):
     path = tmp_path / "nested" / "observations.db"
     with ObservationStore(path) as store:

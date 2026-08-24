@@ -225,48 +225,48 @@ def parse_html_rates(
         if _is_header_row(row):
             continue
         context = _clean_text(" | ".join(row))
-        rate = _extract_rate(context)
-        if rate is None:
-            continue
         term_label = _find_term_label(row, product)
         if term_label is None:
             continue
         term = normalise_term(term_label)
-        category = _rate_category(product, context, term.special_label)
+        rate_categories = _extract_rates_with_categories(row, context, product, term.special_label)
+        if not rate_categories:
+            continue
         min_balance, max_balance = (
             normalise_balance(context) if product == ProductType.TERM_DEPOSIT else (None, None)
         )
-        records.append(
-            CompetitorRateRecord(
-                bank=bank,
-                product_type=product,
-                product_name=_product_name(product, row, category),
-                rate_category=category,
-                term_label_raw=term.raw_label,
-                term_months_normalised=term.months,
-                term_days_raw=term.days,
-                advertised_rate_pct=rate,
-                interest_payment_frequency=(
-                    normalise_frequency(context)
-                    if product == ProductType.TERM_DEPOSIT
-                    else "unknown"
-                ),
-                min_balance_or_deposit=min_balance,
-                max_balance_or_deposit=max_balance,
-                lvr_condition=(
-                    normalise_lvr_condition(context)
-                    if product == ProductType.HOME_LOAN
-                    else None
-                ),
-                special_conditions=_special_conditions(context),
-                source_url=source_url,
-                source_bank_page_title=parser.title,
-                captured_at_utc=captured_at_utc,
-                raw_text_context=context,
-                raw_html_sha256=raw_hash,
-                parser_version=PARSER_VERSION,
+        for rate, category in rate_categories:
+            records.append(
+                CompetitorRateRecord(
+                    bank=bank,
+                    product_type=product,
+                    product_name=_product_name(product, row, category),
+                    rate_category=category,
+                    term_label_raw=term.raw_label,
+                    term_months_normalised=term.months,
+                    term_days_raw=term.days,
+                    advertised_rate_pct=rate,
+                    interest_payment_frequency=(
+                        normalise_frequency(context)
+                        if product == ProductType.TERM_DEPOSIT
+                        else "unknown"
+                    ),
+                    min_balance_or_deposit=min_balance,
+                    max_balance_or_deposit=max_balance,
+                    lvr_condition=(
+                        normalise_lvr_condition(context)
+                        if product == ProductType.HOME_LOAN
+                        else None
+                    ),
+                    special_conditions=_special_conditions(context),
+                    source_url=source_url,
+                    source_bank_page_title=parser.title,
+                    captured_at_utc=captured_at_utc,
+                    raw_text_context=context,
+                    raw_html_sha256=raw_hash,
+                    parser_version=PARSER_VERSION,
+                )
             )
-        )
     return _dedupe_records(records)
 
 
@@ -310,6 +310,47 @@ def _extract_rate(context: str) -> float | None:
         return None
     plausible = [rate for rate in rates if 0 <= rate <= 15]
     return plausible[-1] if plausible else rates[-1]
+
+
+def _extract_plausible_rate(text: str) -> float | None:
+    """Like :func:`_extract_rate`, but never falls back to an implausible
+    reading -- used per-cell below, where a non-rate percentage (e.g. "70%
+    LVR" or "80% equity") must not be mistaken for a rate just because it is
+    the only percentage in that particular cell.
+    """
+    rates = [
+        float(match.group(1))
+        for match in re.finditer(r"(?<![\d.])(\d{1,2}(?:\.\d{1,3})?)\s*%", text)
+    ]
+    plausible = [rate for rate in rates if 0 <= rate <= 15]
+    return plausible[-1] if plausible else None
+
+
+def _extract_rates_with_categories(
+    row: list[str], context: str, product: ProductType, special_label: str | None
+) -> list[tuple[float, str]]:
+    """One ``(rate, category)`` pair per rate-bearing cell in the row.
+
+    Most rows advertise a single rate, handled the existing way: the last
+    plausible percentage anywhere in the row, categorised from the row's
+    full joined text. A row with *several* rate-bearing cells -- e.g.
+    adjacent "Special 4.79%" and "Standard 5.39%" cells for one term --
+    needs each rate categorised from its own cell instead: categorising from
+    the row-wide context finds whichever category word appears anywhere in
+    the row (typically "special", checked first) and pairs it with
+    whichever rate ``_extract_rate`` happened to pick last, silently
+    dropping the other rate and mislabelling the one that is kept.
+    """
+    cell_rates = [(cell, _extract_plausible_rate(cell)) for cell in row]
+    plausible_cells = [(cell, rate) for cell, rate in cell_rates if rate is not None]
+    if len(plausible_cells) <= 1:
+        rate = _extract_rate(context)
+        if rate is None:
+            return []
+        return [(rate, _rate_category(product, context, special_label))]
+    return [
+        (rate, _rate_category(product, cell, special_label)) for cell, rate in plausible_cells
+    ]
 
 
 def _find_term_label(row: list[str], product: ProductType) -> str | None:

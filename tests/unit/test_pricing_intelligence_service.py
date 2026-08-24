@@ -484,6 +484,60 @@ def test_confirming_a_suspicious_movement_also_clears_its_companion_eligibility_
     )
 
 
+def test_a_multi_hop_reversion_leaves_its_stale_companion_event_quarantined(make_record):
+    """confirmed 5.00% (max_lvr 0.80) -> warning 8.00% (max_lvr 0.75) ->
+    warning 7.00% (max_lvr 0.70) -> clean 7.00% (max_lvr 0.70). The rate
+    event rebases onto the last verified predecessor (5.00% -> 7.00%), but
+    the companion ELIGIBILITY_CHANGE from the same run still describes the
+    unverified intermediate hop (max_lvr 0.75 -> 0.70, B to C) rather than
+    the accepted transition (A to C) -- clearing it too would present that
+    stale diff as confirmed, so it is left quarantined instead."""
+    day_four = DAY_ONE + timedelta(days=3)
+    confirmed = make_record(bank="ANZ", rate_pct=5.00, max_lvr=0.80, min_equity=0.20)
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", [confirmed])],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    spike = make_record(
+        bank="ANZ", rate_pct=8.00, max_lvr=0.75, min_equity=0.25, observed_at=DAY_TWO
+    )
+    service._collectors = [_StubCollector("ANZ", [spike])]
+    service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)  # flagged suspicious
+
+    partial_revert = make_record(
+        bank="ANZ", rate_pct=7.00, max_lvr=0.70, min_equity=0.30, observed_at=DAY_THREE
+    )
+    service._collectors = [_StubCollector("ANZ", [partial_revert])]
+    outcome_three = service.collect(captured_at_utc=DAY_THREE, persist_snapshot=False)
+    assert {c.change_type for c in outcome_three.changes} == {
+        ChangeType.RATE_DECREASE,
+        ChangeType.ELIGIBILITY_CHANGE,
+    }
+    assert all(c.suspicious for c in outcome_three.changes), "sanity check: both flagged"
+
+    repeat = make_record(
+        bank="ANZ", rate_pct=7.00, max_lvr=0.70, min_equity=0.30, observed_at=day_four
+    )
+    service._collectors = [_StubCollector("ANZ", [repeat])]
+    service.collect(captured_at_utc=day_four, persist_snapshot=False)  # clean re-observation
+
+    changes = service.get_changes(days=30, now=day_four)
+    confirmed_rate_events = [c for c in changes if not c.suspicious]
+    eligibility_events = [c for c in changes if c.change_type is ChangeType.ELIGIBILITY_CHANGE]
+
+    assert len(confirmed_rate_events) == 1
+    assert confirmed_rate_events[0].previous_rate_pct == 5.00
+    assert confirmed_rate_events[0].current_rate_pct == 7.00
+    assert all(c.suspicious for c in eligibility_events), (
+        "the companion still describes the unverified B -> C hop, not the accepted A -> C move"
+    )
+
+
 def test_a_confirmed_large_movement_counts_as_market_activity(fixture_fetcher):
     """A repeated 'suspicious' value is confirmed genuine, not permanently discounted."""
 
@@ -1184,6 +1238,39 @@ def test_the_service_resolves_a_competitor_assumption(service):
     assert median.rate_pct == 4.85
     assert leader.rate_pct == 4.79
     assert leader.competitor_loan_rate == 0.0479
+
+
+def test_a_write_failure_leaves_no_partial_observation_state(make_record, monkeypatch):
+    """If record_changes() (or confirmation) raises after observations would
+    otherwise have already committed, the whole collection must roll back --
+    not leave a new observation state with no corresponding change event,
+    which a retry could never reconstruct (it would compare against the
+    already-updated state and see no movement)."""
+    confirmed = make_record(bank="ANZ", rate_pct=5.00)
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", [confirmed])],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)  # baseline, bootstrapped
+
+    reprice = make_record(bank="ANZ", rate_pct=4.79, observed_at=DAY_TWO)
+    service._collectors = [_StubCollector("ANZ", [reprice])]
+
+    def failing_record_changes(*args, **kwargs):
+        raise RuntimeError("simulated failure")
+
+    monkeypatch.setattr(service.store, "record_changes", failing_record_changes)
+
+    with pytest.raises(RuntimeError, match="simulated failure"):
+        service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    # Must still reflect DAY_ONE's baseline, not DAY_TWO's reprice -- the
+    # failed write must not have partially committed.
+    current = service.store.get_current_observations()
+    assert [record.advertised_rate_pct for record in current] == [5.00]
 
 
 def test_a_dry_run_stores_nothing(service):

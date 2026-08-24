@@ -158,6 +158,33 @@ def test_parse_html_rates_preserves_simultaneous_numeric_lvr_tiers():
     assert {record.lvr_condition for record in records} == {"standard"}
 
 
+def test_parse_html_rates_splits_a_row_with_two_rate_bearing_cells():
+    """A row that carries "Special 4.79%" and "Standard 5.39%" as two
+    separate cells for one term must produce two records, each with its own
+    rate paired to its own category -- not one record for the last cell's
+    rate mislabelled with whichever category word appears anywhere in the
+    row (here "special", checked first, would otherwise be paired with
+    5.39% while 4.79% is silently dropped)."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Special</th><th>Standard</th></tr>
+      <tr><td>1 year</td><td>Special 4.79%</td><td>Standard 5.39%</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 2
+    by_category = {record.rate_category: record.advertised_rate_pct for record in records}
+    assert by_category == {"special": 4.79, "standard": 5.39}
+
+
 def test_fetch_source_writes_snapshot_for_successful_http_response(tmp_path, monkeypatch):
     source = RateSource("ANZ", ProductType.HOME_LOAN, "https://example.test/home")
 

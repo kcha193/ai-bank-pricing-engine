@@ -465,125 +465,132 @@ class PricingIntelligenceService:
             for record in validation.accepted
         ]
 
-        # A dry run (persist=False) skips writing, but still detects changes
-        # against the stored baseline -- otherwise --no-persist could not be
-        # used to preview what a real collection would do.
-        write_result = (
-            self.store.record_observations(accepted, observed_at=captured_at_utc)
-            if persist
-            else None
-        )
-        changes = detect_changes(
-            previous=baseline,
-            current=accepted,
-            detected_at=captured_at_utc,
-            thresholds=self.config.validation,
-            run_id=write_result.run_id if write_result is not None else None,
-            # Scoped to banks that both responded and whose coverage this run
-            # plausibly matches their known range, so neither an unreachable
-            # bank nor a partial-parse regression is read as withdrawing its
-            # whole range.
-            banks_collected=_reliably_collected_banks(
-                report, accepted, baseline, self.config.validation.min_bank_coverage_ratio
-            ),
-            # A record rejected by validation this run is unknown, not
-            # withdrawn -- a single implausible line must not read as a
-            # market event. Suppressed by the *previous* record's key, not
-            # the rejected record's own key: a rejected line that also
-            # changed a key-forming eligibility field (e.g. a parser fault
-            # that garbles the rate and misreads max_lvr together) would
-            # otherwise have a key that never matches its last confirmed
-            # predecessor, so the predecessor's key is only found via the
-            # same eligibility-group fallback used elsewhere, or -- when the
-            # rejected line's rate_category flipped too -- the
-            # category-agnostic fallback in _rejected_predecessor_keys(). A
-            # suspicious (accepted-but-flagged) record's predecessor gets the
-            # analogous treatment via _suspicious_predecessor_keys().
-            rejected_keys=(
-                {
-                    previous_record.observation_key()
-                    for previous_record in resolve_pairing(
-                        baseline, validation.rejected
-                    ).values()
-                }
-                | _rejected_predecessor_keys(baseline, validation.rejected)
-                | _suspicious_predecessor_keys(baseline, accepted, suspicious_keys)
-            ),
-        )
-        # A bank's first-ever successful collection would otherwise report
-        # every one of its rates as a new product, which is noise rather than
-        # market intelligence. Suppressed per bank, not globally.
-        bootstrapping_banks = {
-            change.bank
-            for change in changes
-            if change.change_type is ChangeType.NEW_PRODUCT
-            and change.bank not in previously_seen_banks
-        }
-        if bootstrapping_banks:
-            logger.info(
-                "bootstrapping bank(s) with no prior observation; suppressing "
-                "new-product events for %s",
-                ", ".join(sorted(bootstrapping_banks)),
+        # Observations, their detected changes, and any suspicious-change
+        # confirmation all commit together: if record_changes() (or
+        # confirmation) raised after record_observations() alone had already
+        # committed, a retry of this same collection would compare against
+        # the already-updated state, see no movement, and the change that
+        # should have been reconstructed would be lost for good.
+        with self.store.atomic():
+            # A dry run (persist=False) skips writing, but still detects changes
+            # against the stored baseline -- otherwise --no-persist could not be
+            # used to preview what a real collection would do.
+            write_result = (
+                self.store.record_observations(accepted, observed_at=captured_at_utc)
+                if persist
+                else None
             )
-            changes = [
-                change
+            changes = detect_changes(
+                previous=baseline,
+                current=accepted,
+                detected_at=captured_at_utc,
+                thresholds=self.config.validation,
+                run_id=write_result.run_id if write_result is not None else None,
+                # Scoped to banks that both responded and whose coverage this run
+                # plausibly matches their known range, so neither an unreachable
+                # bank nor a partial-parse regression is read as withdrawing its
+                # whole range.
+                banks_collected=_reliably_collected_banks(
+                    report, accepted, baseline, self.config.validation.min_bank_coverage_ratio
+                ),
+                # A record rejected by validation this run is unknown, not
+                # withdrawn -- a single implausible line must not read as a
+                # market event. Suppressed by the *previous* record's key, not
+                # the rejected record's own key: a rejected line that also
+                # changed a key-forming eligibility field (e.g. a parser fault
+                # that garbles the rate and misreads max_lvr together) would
+                # otherwise have a key that never matches its last confirmed
+                # predecessor, so the predecessor's key is only found via the
+                # same eligibility-group fallback used elsewhere, or -- when the
+                # rejected line's rate_category flipped too -- the
+                # category-agnostic fallback in _rejected_predecessor_keys(). A
+                # suspicious (accepted-but-flagged) record's predecessor gets the
+                # analogous treatment via _suspicious_predecessor_keys().
+                rejected_keys=(
+                    {
+                        previous_record.observation_key()
+                        for previous_record in resolve_pairing(
+                            baseline, validation.rejected
+                        ).values()
+                    }
+                    | _rejected_predecessor_keys(baseline, validation.rejected)
+                    | _suspicious_predecessor_keys(baseline, accepted, suspicious_keys)
+                ),
+            )
+            # A bank's first-ever successful collection would otherwise report
+            # every one of its rates as a new product, which is noise rather than
+            # market intelligence. Suppressed per bank, not globally.
+            bootstrapping_banks = {
+                change.bank
                 for change in changes
-                if not (
-                    change.change_type is ChangeType.NEW_PRODUCT
-                    and change.bank in bootstrapping_banks
-                )
-            ]
-        if changes and persist:
-            self.store.record_changes(changes)
-
-        # A repeated suspicious value that is no longer independently
-        # flagged this run confirms the earlier movement as genuine. Its
-        # original RateChange event stays permanently suspicious -- and so
-        # excluded from market activity/market-state by default -- unless
-        # cleared here: a 0 bps re-observation produces no new change event
-        # for detect_changes() to mark confirmed instead.
-        if persist:
-            pairs = resolve_pairing(baseline, accepted)
-            accepted_by_key = {record.observation_key(): record for record in accepted}
-            # Matched via _last_confirmed_predecessors() (exact key, then an
-            # eligibility-group match, then a category-agnostic match), not
-            # a plain dict lookup by exact key: a spike that also changes
-            # eligibility identity -- or rate_category itself -- stores the
-            # warning chain under a different key than the one the last
-            # confirmed state is filed under, so an exact-key lookup would
-            # always miss it and treat the missing key as proof of a genuine
-            # move -- see the confirmed_keys comment below.
-            last_confirmed_pairs = _last_confirmed_predecessors(
-                last_confirmed_before_run, accepted
-            )
-            # Rebased onto the last verified predecessor (or None when there
-            # isn't one) rather than passed as bare keys: a suspicious chain
-            # can partially revert (confirmed 5.00% -> warning 8.00% ->
-            # warning 7.00% -> clean 7.00%), where the latest stored event
-            # (8.00% -> 7.00%) is an intermediate misread's artefact, not the
-            # real movement (5.00% -> 7.00%). confirm_suspicious_changes()
-            # rewrites the event to reflect the true movement.
-            confirmations = {
-                key: last_confirmed_pairs.get(key)
-                for key, previous_record in pairs.items()
-                if previous_record.validation_status == "warning"
-                and key not in suspicious_keys
-                # A parser spike that reverts exactly (confirmed 5.00% ->
-                # warning 8.00% -> warning 5.00% -> clean 5.00%) must not
-                # confirm the latest suspicious event as a genuine -300 bps
-                # move: 8.00% was itself never confirmed, and the market
-                # view never actually left 5.00%. Only confirm when this
-                # run's value differs from the last genuinely confirmed
-                # state -- i.e. a real new value, not a round trip back to
-                # where the chain of unconfirmed readings began.
-                and (
-                    key not in last_confirmed_pairs
-                    or last_confirmed_pairs[key].advertised_rate_pct
-                    != accepted_by_key[key].advertised_rate_pct
-                )
+                if change.change_type is ChangeType.NEW_PRODUCT
+                and change.bank not in previously_seen_banks
             }
-            if confirmations:
-                self.store.confirm_suspicious_changes(confirmations)
+            if bootstrapping_banks:
+                logger.info(
+                    "bootstrapping bank(s) with no prior observation; suppressing "
+                    "new-product events for %s",
+                    ", ".join(sorted(bootstrapping_banks)),
+                )
+                changes = [
+                    change
+                    for change in changes
+                    if not (
+                        change.change_type is ChangeType.NEW_PRODUCT
+                        and change.bank in bootstrapping_banks
+                    )
+                ]
+            if changes and persist:
+                self.store.record_changes(changes)
+
+            # A repeated suspicious value that is no longer independently
+            # flagged this run confirms the earlier movement as genuine. Its
+            # original RateChange event stays permanently suspicious -- and so
+            # excluded from market activity/market-state by default -- unless
+            # cleared here: a 0 bps re-observation produces no new change event
+            # for detect_changes() to mark confirmed instead.
+            if persist:
+                pairs = resolve_pairing(baseline, accepted)
+                accepted_by_key = {record.observation_key(): record for record in accepted}
+                # Matched via _last_confirmed_predecessors() (exact key, then an
+                # eligibility-group match, then a category-agnostic match), not
+                # a plain dict lookup by exact key: a spike that also changes
+                # eligibility identity -- or rate_category itself -- stores the
+                # warning chain under a different key than the one the last
+                # confirmed state is filed under, so an exact-key lookup would
+                # always miss it and treat the missing key as proof of a genuine
+                # move -- see the confirmed_keys comment below.
+                last_confirmed_pairs = _last_confirmed_predecessors(
+                    last_confirmed_before_run, accepted
+                )
+                # Rebased onto the last verified predecessor (or None when there
+                # isn't one) rather than passed as bare keys: a suspicious chain
+                # can partially revert (confirmed 5.00% -> warning 8.00% ->
+                # warning 7.00% -> clean 7.00%), where the latest stored event
+                # (8.00% -> 7.00%) is an intermediate misread's artefact, not the
+                # real movement (5.00% -> 7.00%). confirm_suspicious_changes()
+                # rewrites the event to reflect the true movement.
+                confirmations = {
+                    key: last_confirmed_pairs.get(key)
+                    for key, previous_record in pairs.items()
+                    if previous_record.validation_status == "warning"
+                    and key not in suspicious_keys
+                    # A parser spike that reverts exactly (confirmed 5.00% ->
+                    # warning 8.00% -> warning 5.00% -> clean 5.00%) must not
+                    # confirm the latest suspicious event as a genuine -300 bps
+                    # move: 8.00% was itself never confirmed, and the market
+                    # view never actually left 5.00%. Only confirm when this
+                    # run's value differs from the last genuinely confirmed
+                    # state -- i.e. a real new value, not a round trip back to
+                    # where the chain of unconfirmed readings began.
+                    and (
+                        key not in last_confirmed_pairs
+                        or last_confirmed_pairs[key].advertised_rate_pct
+                        != accepted_by_key[key].advertised_rate_pct
+                    )
+                }
+                if confirmations:
+                    self.store.confirm_suspicious_changes(confirmations)
 
         return CollectionOutcome(
             report=report,
