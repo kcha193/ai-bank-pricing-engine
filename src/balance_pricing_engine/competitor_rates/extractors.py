@@ -317,12 +317,25 @@ def _extract_rate(context: str) -> float | None:
     return plausible[-1] if plausible else rates[-1]
 
 
+_NON_RATE_PERCENTAGE_MARKERS = ("cashback", "cash back", "discount", "bonus", "rebate")
+
+
 def _extract_plausible_rate(text: str) -> float | None:
     """Like :func:`_extract_rate`, but never falls back to an implausible
     reading -- used per-cell below, where a non-rate percentage (e.g. "70%
     LVR" or "80% equity") must not be mistaken for a rate just because it is
     the only percentage in that particular cell.
+
+    A cell carrying an obvious non-rate promotional marker (e.g. "1%
+    cashback") is rejected outright, even though its value falls inside the
+    plausible rate range -- a low promotional percentage is not
+    distinguishable from a genuine low rate by magnitude alone, and pairing
+    it with a real rate cell in the same row would otherwise emit a second,
+    bogus rate observation.
     """
+    lowered = text.lower()
+    if any(marker in lowered for marker in _NON_RATE_PERCENTAGE_MARKERS):
+        return None
     rates = [
         float(match.group(1))
         for match in re.finditer(r"(?<![\d.])(\d{1,2}(?:\.\d{1,3})?)\s*%", text)
@@ -356,15 +369,28 @@ def _extract_rates_with_categories(
     ``header_row``'s cell at the same column index before giving up to the
     generic category -- otherwise both bare cells collide on the same
     generic category and the same ``observation_key()``, and one silently
-    overwrites the other.
+    overwrites the other. The same header fallback applies when only one
+    cell carries a rate: a single "Special rate" header over a bare data
+    cell must still resolve to "special", not the generic default.
     """
     cell_rates = [(idx, cell, _extract_plausible_rate(cell)) for idx, cell in enumerate(row)]
     plausible_cells = [(idx, cell, rate) for idx, cell, rate in cell_rates if rate is not None]
-    if len(plausible_cells) <= 1:
+
+    if not plausible_cells:
         rate = _extract_rate(context)
         if rate is None:
             return []
         return [(rate, _rate_category(product, context, special_label))]
+
+    if len(plausible_cells) == 1:
+        idx, cell, rate = plausible_cells[0]
+        hint = _rate_category_hint(product, cell, special_label)
+        if hint is None and header_row is not None and idx < len(header_row):
+            hint = _rate_category_hint(product, header_row[idx], special_label)
+        if hint is None:
+            hint = _rate_category(product, context, special_label)
+        return [(rate, hint)]
+
     results: list[tuple[float, str]] = []
     for idx, cell, rate in plausible_cells:
         hint = _rate_category_hint(product, cell, special_label)

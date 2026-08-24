@@ -212,6 +212,56 @@ def test_parse_html_rates_uses_column_headers_for_bare_multi_rate_cells():
     assert by_category == {"special": 4.79, "standard": 5.39}
 
 
+def test_parse_html_rates_uses_column_header_for_bare_single_rate_cell():
+    """The header fallback used for multi-rate rows must also apply when
+    only one cell in the row carries a plausible rate: a single "Special
+    rate" header over a bare "4.79%" data cell must resolve to "special",
+    not the generic "home_loan" default that ignores the header entirely."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Special rate</th></tr>
+      <tr><td>1 year</td><td>4.79%</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].rate_category == "special"
+    assert records[0].advertised_rate_pct == 4.79
+
+
+def test_parse_html_rates_rejects_promotional_percentage_alongside_a_real_rate():
+    """A row carrying a genuine rate cell plus an unrelated promotional
+    percentage in another cell (e.g. "1% cashback") must emit only the real
+    rate. Treating both cells as plausible rates would emit a second, bogus
+    observation that -- after enrichment -- can collide on identity with the
+    real rate and silently overwrite it in storage."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Rate</th><th>Cashback</th></tr>
+      <tr><td>1 year</td><td>5.00%</td><td>1% cashback</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.00
+
+
 def test_fetch_source_writes_snapshot_for_successful_http_response(tmp_path, monkeypatch):
     source = RateSource("ANZ", ProductType.HOME_LOAN, "https://example.test/home")
 
