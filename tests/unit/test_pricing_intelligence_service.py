@@ -499,6 +499,45 @@ def test_a_spike_that_reverts_is_not_confirmed_as_a_genuine_movement(make_record
     assert activity.changes == 0, "the market view never left the original confirmed 5.00%"
 
 
+def test_a_partial_reversion_is_confirmed_relative_to_the_last_verified_rate(make_record):
+    """confirmed 5.00% -> warning 8.00% -> warning 7.00% -> clean 7.00% must
+    confirm the movement relative to the last verified rate (5.00% -> 7.00%,
+    +200 bps), not the stale intermediate hop (8.00% -> 7.00%, -100 bps)."""
+    day_four = DAY_ONE + timedelta(days=3)
+    confirmed = make_record(bank="ANZ", rate_pct=5.00)
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", [confirmed])],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    spike = make_record(bank="ANZ", rate_pct=8.00, observed_at=DAY_TWO)
+    service._collectors = [_StubCollector("ANZ", [spike])]
+    service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)  # flagged suspicious
+
+    partial_revert = make_record(bank="ANZ", rate_pct=7.00, observed_at=DAY_THREE)
+    service._collectors = [_StubCollector("ANZ", [partial_revert])]
+    service.collect(captured_at_utc=DAY_THREE, persist_snapshot=False)  # also flagged suspicious
+
+    repeat = make_record(bank="ANZ", rate_pct=7.00, observed_at=day_four)
+    service._collectors = [_StubCollector("ANZ", [repeat])]
+    service.collect(captured_at_utc=day_four, persist_snapshot=False)  # clean re-observation
+
+    changes = service.get_changes(days=30, now=day_four)
+    activity = service.get_market_activity(days=30, now=day_four)
+
+    confirmed_change = next(c for c in changes if not c.suspicious)
+    assert confirmed_change.previous_rate_pct == 5.00
+    assert confirmed_change.current_rate_pct == 7.00
+    assert confirmed_change.change_bps == 200.0
+    assert confirmed_change.change_type is ChangeType.RATE_INCREASE
+    assert activity.changes == 1
+    assert activity.mean_change_bps == 200.0
+
+
 def test_a_spike_that_reverts_across_an_eligibility_key_change_is_not_confirmed(make_record):
     """Same bug as the sibling test above, but the spike also changes
     eligibility identity (key A -> key B): the last confirmed state is filed
@@ -871,6 +910,21 @@ def test_history_is_queryable_after_a_reprice(fixture_fetcher):
         history = service.get_rate_history(bank="ANZ", term_months=12, rate_category="special")
 
     assert [record.advertised_rate_pct for record in history] == [4.79, 4.59]
+
+
+def test_get_rate_history_excludes_states_first_observed_after_now(fixture_fetcher):
+    """A historical now= must not expose a state first observed after that
+    point, matching get_changes()'s own upper bound."""
+    with build_service(fixture_fetcher()) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=cut_anz_one_year)
+        service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+        as_of_day_one = service.get_rate_history(
+            bank="ANZ", term_months=12, rate_category="special", now=DAY_ONE
+        )
+
+    assert [record.advertised_rate_pct for record in as_of_day_one] == [4.79]
 
 
 def test_rate_history_series_uses_the_most_competitive_simultaneous_product(make_record):

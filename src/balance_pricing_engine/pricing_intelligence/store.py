@@ -29,10 +29,11 @@ import json
 import logging
 from pathlib import Path
 import sqlite3
-from typing import Iterable, Iterator, Optional, Sequence
+from typing import Iterable, Iterator, Mapping, Optional, Sequence
 import uuid
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
+from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType
 
 logger = logging.getLogger(__name__)
@@ -433,8 +434,11 @@ class ObservationStore:
                 written += cursor.rowcount or 0
         return written
 
-    def confirm_suspicious_changes(self, observation_keys: Iterable[str]) -> None:
-        """Clear the suspicious flag on the most recent change event for each key.
+    def confirm_suspicious_changes(
+        self, confirmations: Mapping[str, Optional[CompetitorRateRecord]]
+    ) -> None:
+        """Clear the suspicious flag on the most recent change event for each
+        key, rebased onto the last verified predecessor where one is known.
 
         A suspicious-but-accepted movement stays permanently excluded from
         market activity / market-state (both default to skipping suspicious
@@ -442,15 +446,48 @@ class ObservationStore:
         collection -- strong evidence it was a genuine reprice, not a parser
         fault. Called once ``_upsert_observation``'s own confirmation check
         (a repeated value no longer flagged this run) identifies the key.
+
+        A suspicious chain can partially revert (confirmed 5.00% -> warning
+        8.00% -> warning 7.00% -> clean 7.00%): the latest stored event
+        (8.00% -> 7.00%) is an artefact of the intermediate misread, not the
+        real movement. When the caller supplies the last verified
+        predecessor for a key, ``previous_rate_pct``/``change_bps``/
+        ``previous_observed_at``/``change_type`` are rewritten to reflect
+        the movement from *that* rate (5.00% -> 7.00%, +200 bps) rather than
+        merely un-suspicious-ing the stale intermediate hop. ``None``
+        (no known prior confirmed state for this key) just clears the flag,
+        as before.
         """
         with self._transaction() as connection:
-            for key in observation_keys:
-                connection.execute(
-                    "UPDATE rate_changes SET suspicious = 0 WHERE id = ("
-                    "  SELECT id FROM rate_changes WHERE observation_key = ? "
-                    "  AND suspicious = 1 ORDER BY detected_at DESC, id DESC LIMIT 1"
-                    ")",
+            for key, last_verified in confirmations.items():
+                row = connection.execute(
+                    "SELECT id, current_rate_pct FROM rate_changes WHERE observation_key = ? "
+                    "AND suspicious = 1 ORDER BY detected_at DESC, id DESC LIMIT 1",
                     (key,),
+                ).fetchone()
+                if row is None:
+                    continue
+                if last_verified is None:
+                    connection.execute(
+                        "UPDATE rate_changes SET suspicious = 0 WHERE id = ?", (row["id"],)
+                    )
+                    continue
+                change_bps = rate_change_bps(
+                    last_verified.advertised_rate_pct, row["current_rate_pct"]
+                )
+                change_type = (
+                    ChangeType.RATE_INCREASE if change_bps > 0 else ChangeType.RATE_DECREASE
+                )
+                connection.execute(
+                    "UPDATE rate_changes SET suspicious = 0, previous_rate_pct = ?, "
+                    "change_bps = ?, previous_observed_at = ?, change_type = ? WHERE id = ?",
+                    (
+                        last_verified.advertised_rate_pct,
+                        change_bps,
+                        _iso(last_verified.captured_at_utc),
+                        change_type.value,
+                        row["id"],
+                    ),
                 )
 
     # ----------------------------------------------------------------- reads

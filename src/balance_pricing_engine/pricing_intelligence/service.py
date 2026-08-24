@@ -507,15 +507,22 @@ class PricingIntelligenceService:
             # always miss it and treat the missing key as proof of a genuine
             # move -- see the confirmed_keys comment below.
             last_confirmed_pairs = resolve_pairing(last_confirmed_before_run, accepted)
-            confirmed_keys = [
-                key
+            # Rebased onto the last verified predecessor (or None when there
+            # isn't one) rather than passed as bare keys: a suspicious chain
+            # can partially revert (confirmed 5.00% -> warning 8.00% ->
+            # warning 7.00% -> clean 7.00%), where the latest stored event
+            # (8.00% -> 7.00%) is an intermediate misread's artefact, not the
+            # real movement (5.00% -> 7.00%). confirm_suspicious_changes()
+            # rewrites the event to reflect the true movement.
+            confirmations = {
+                key: last_confirmed_pairs.get(key)
                 for key, previous_record in pairs.items()
                 if previous_record.validation_status == "warning"
                 and key not in suspicious_keys
-                # A parser spike that reverts (confirmed 5.00% -> warning
-                # 8.00% -> warning 5.00% -> clean 5.00%) must not confirm the
-                # latest suspicious event (8.00% -> 5.00%) as a genuine -300
-                # bps move: 8.00% was itself never confirmed, and the market
+                # A parser spike that reverts exactly (confirmed 5.00% ->
+                # warning 8.00% -> warning 5.00% -> clean 5.00%) must not
+                # confirm the latest suspicious event as a genuine -300 bps
+                # move: 8.00% was itself never confirmed, and the market
                 # view never actually left 5.00%. Only confirm when this
                 # run's value differs from the last genuinely confirmed
                 # state -- i.e. a real new value, not a round trip back to
@@ -525,9 +532,9 @@ class PricingIntelligenceService:
                     or last_confirmed_pairs[key].advertised_rate_pct
                     != accepted_by_key[key].advertised_rate_pct
                 )
-            ]
-            if confirmed_keys:
-                self.store.confirm_suspicious_changes(confirmed_keys)
+            }
+            if confirmations:
+                self.store.confirm_suspicious_changes(confirmations)
 
         return CollectionOutcome(
             report=report,
@@ -673,16 +680,21 @@ class PricingIntelligenceService:
         days: Optional[int] = None,
         now: Optional[datetime] = None,
     ) -> list[CompetitorRateRecord]:
-        """Return the distinct advertised states for a bank/term, oldest first."""
-        since = None
-        if days is not None:
-            since = (now or datetime.now(timezone.utc)) - timedelta(days=days)
+        """Return the distinct advertised states for a bank/term, oldest first.
+
+        Bounded by ``now`` (defaulting to the current time) on the upper edge
+        too, matching :meth:`get_changes`: a historical ``now=`` must not
+        expose a state first observed after that point.
+        """
+        now = now or datetime.now(timezone.utc)
+        since = now - timedelta(days=days) if days is not None else None
         return self.store.get_rate_history(
             bank=bank,
             term_months=term_months,
             product_type=product_type,
             rate_category=rate_category,
             since=since,
+            until=now,
         )
 
     def get_rate_history_series(
