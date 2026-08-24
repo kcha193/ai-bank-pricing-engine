@@ -306,10 +306,30 @@ def _is_header_row(row: list[str]) -> bool:
     return "rate" in text and not re.search(r"\d+(?:\.\d+)?\s*%", text)
 
 
+_PROMOTIONAL_PERCENTAGE_MARKERS = ("cashback", "cash back", "discount", "bonus", "rebate")
+_PROMOTIONAL_PERCENTAGE_PATTERN = re.compile(
+    r"(?<![\d.])\d{1,2}(?:\.\d{1,3})?\s*%\s*"
+    r"(?:" + "|".join(marker.replace(" ", r"\s+") for marker in _PROMOTIONAL_PERCENTAGE_MARKERS) + r")",
+    re.I,
+)
+
+
+def _strip_promotional_percentages(text: str) -> str:
+    """Remove "<rate>% <promo marker>" spans (e.g. "1% cashback") so a
+    promotional percentage sharing a cell or row with a genuine rate isn't
+    mistaken for it. Only the marker-adjacent percentage is removed --
+    rejecting the whole cell/row would also discard a genuine rate advertised
+    alongside a cashback offer (e.g. "Special 5.00% with 1% cashback").
+    """
+    return _PROMOTIONAL_PERCENTAGE_PATTERN.sub("", text)
+
+
 def _extract_rate(context: str) -> float | None:
     rates = [
         float(match.group(1))
-        for match in re.finditer(r"(?<![\d.])(\d{1,2}(?:\.\d{1,3})?)\s*%", context)
+        for match in re.finditer(
+            r"(?<![\d.])(\d{1,2}(?:\.\d{1,3})?)\s*%", _strip_promotional_percentages(context)
+        )
     ]
     if not rates:
         return None
@@ -317,28 +337,17 @@ def _extract_rate(context: str) -> float | None:
     return plausible[-1] if plausible else rates[-1]
 
 
-_NON_RATE_PERCENTAGE_MARKERS = ("cashback", "cash back", "discount", "bonus", "rebate")
-
-
 def _extract_plausible_rate(text: str) -> float | None:
     """Like :func:`_extract_rate`, but never falls back to an implausible
     reading -- used per-cell below, where a non-rate percentage (e.g. "70%
     LVR" or "80% equity") must not be mistaken for a rate just because it is
     the only percentage in that particular cell.
-
-    A cell carrying an obvious non-rate promotional marker (e.g. "1%
-    cashback") is rejected outright, even though its value falls inside the
-    plausible rate range -- a low promotional percentage is not
-    distinguishable from a genuine low rate by magnitude alone, and pairing
-    it with a real rate cell in the same row would otherwise emit a second,
-    bogus rate observation.
     """
-    lowered = text.lower()
-    if any(marker in lowered for marker in _NON_RATE_PERCENTAGE_MARKERS):
-        return None
     rates = [
         float(match.group(1))
-        for match in re.finditer(r"(?<![\d.])(\d{1,2}(?:\.\d{1,3})?)\s*%", text)
+        for match in re.finditer(
+            r"(?<![\d.])(\d{1,2}(?:\.\d{1,3})?)\s*%", _strip_promotional_percentages(text)
+        )
     ]
     plausible = [rate for rate in rates if 0 <= rate <= 15]
     return plausible[-1] if plausible else None
