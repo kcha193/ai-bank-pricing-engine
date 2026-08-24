@@ -139,6 +139,18 @@ def test_activity_excludes_changes_outside_the_window():
     assert compute_market_activity(changes, lookback_days=30, now=NOW).changes == 2
 
 
+def test_activity_excludes_changes_detected_after_now():
+    """A historical now=... assessment must not count a change detected after
+    that point -- only the lookback window's lower edge was bounded, so a
+    later-detected change could still leak into an as-of result."""
+    changes = [
+        make_change("ANZ", 12, 4.99, 4.79, 1),
+        make_change("BNZ", 12, 4.95, 4.85, -1),  # detected after `now`
+    ]
+
+    assert compute_market_activity(changes, lookback_days=7, now=NOW).changes == 1
+
+
 def test_activity_excludes_suspicious_changes_by_default():
     """One bogus parser artefact must not fake a repricing round."""
     changes = [

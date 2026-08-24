@@ -463,6 +463,42 @@ def test_a_confirmed_large_movement_counts_as_market_activity(fixture_fetcher):
     assert activity.changes >= 1
 
 
+def test_a_spike_that_reverts_is_not_confirmed_as_a_genuine_movement(make_record):
+    """confirmed 5.00% -> warning 8.00% -> warning 5.00% -> clean 5.00% must
+    not confirm the latest suspicious event (8.00% -> 5.00%) as a genuine
+    -300 bps move: 8.00% was itself never confirmed, and the market view
+    never actually left 5.00%."""
+    day_four = DAY_ONE + timedelta(days=3)
+    confirmed = make_record(bank="ANZ", rate_pct=5.00)
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", [confirmed])],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    spike = make_record(bank="ANZ", rate_pct=8.00, observed_at=DAY_TWO)
+    service._collectors = [_StubCollector("ANZ", [spike])]
+    service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)  # flagged suspicious
+
+    revert = make_record(bank="ANZ", rate_pct=5.00, observed_at=DAY_THREE)
+    service._collectors = [_StubCollector("ANZ", [revert])]
+    service.collect(captured_at_utc=DAY_THREE, persist_snapshot=False)  # also flagged suspicious
+
+    repeat = make_record(bank="ANZ", rate_pct=5.00, observed_at=day_four)
+    service._collectors = [_StubCollector("ANZ", [repeat])]
+    service.collect(captured_at_utc=day_four, persist_snapshot=False)  # clean re-observation
+
+    changes = service.get_changes(days=30, now=day_four)
+    activity = service.get_market_activity(days=30, now=day_four)
+
+    reversal = next(c for c in changes if c.previous_rate_pct == 8.00 and c.current_rate_pct == 5.00)
+    assert reversal.suspicious is True, "the bogus reversal must stay excluded from market activity"
+    assert activity.changes == 0, "the market view never left the original confirmed 5.00%"
+
+
 def test_a_suspicious_observation_falls_back_to_its_last_confirmed_rate(fixture_fetcher):
     """An unconfirmed parser artefact must not feed market-derived pricing --
     but the bank/term must fall back to its last confirmed rate, not vanish."""

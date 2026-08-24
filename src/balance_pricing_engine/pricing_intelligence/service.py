@@ -388,6 +388,16 @@ class PricingIntelligenceService:
         # baseline entirely, making its next (unchanged) collection look like
         # every advertised line is new.
         baseline = self.store.get_current_observations(product_type=ProductType.HOME_LOAN)
+        # Also captured before this run's write, for the suspicious-confirmation
+        # check below: the last state that was actually confirmed (not just the
+        # immediately-preceding baseline record, which can itself still be an
+        # unconfirmed warning-tagged reading).
+        last_confirmed_before_run = {
+            record.observation_key(): record
+            for record in self.store.get_last_confirmed_observations(
+                product_type=ProductType.HOME_LOAN
+            )
+        }
         validation = validate_observations(
             report.records, thresholds=self.config.validation, previous=baseline
         )
@@ -491,10 +501,25 @@ class PricingIntelligenceService:
         # for detect_changes() to mark confirmed instead.
         if persist:
             pairs = resolve_pairing(baseline, accepted)
+            accepted_by_key = {record.observation_key(): record for record in accepted}
             confirmed_keys = [
                 key
                 for key, previous_record in pairs.items()
-                if previous_record.validation_status == "warning" and key not in suspicious_keys
+                if previous_record.validation_status == "warning"
+                and key not in suspicious_keys
+                # A parser spike that reverts (confirmed 5.00% -> warning
+                # 8.00% -> warning 5.00% -> clean 5.00%) must not confirm the
+                # latest suspicious event (8.00% -> 5.00%) as a genuine -300
+                # bps move: 8.00% was itself never confirmed, and the market
+                # view never actually left 5.00%. Only confirm when this
+                # run's value differs from the last genuinely confirmed
+                # state -- i.e. a real new value, not a round trip back to
+                # where the chain of unconfirmed readings began.
+                and (
+                    key not in last_confirmed_before_run
+                    or last_confirmed_before_run[key].advertised_rate_pct
+                    != accepted_by_key[key].advertised_rate_pct
+                )
             ]
             if confirmed_keys:
                 self.store.confirm_suspicious_changes(confirmed_keys)
@@ -719,10 +744,16 @@ class PricingIntelligenceService:
     def get_market_activity(
         self, days: Optional[int] = None, now: Optional[datetime] = None
     ) -> MarketActivity:
-        """Summarise repricing activity over a lookback window."""
+        """Summarise repricing activity over a lookback window.
+
+        Scoped to ``selected_banks``/``tracked_terms_months``, matching every
+        snapshot, the dashboard, and :meth:`get_market_state`: a database
+        holding observations from an earlier or broader configuration must
+        not alter this public market summary via an excluded bank or term.
+        """
         days = days or self.config.market_state.lookback_days
         return compute_market_activity(
-            self.get_changes(days=days, now=now),
+            self.get_changes(days=days, now=now, scope_to_market=True),
             lookback_days=days,
             now=now,
             directional_dominance_ratio=(

@@ -152,7 +152,7 @@ def compute_market_activity(
         for change in changes
         if change.is_rate_move
         and change.change_bps is not None
-        and change.detected_at >= cutoff
+        and cutoff <= change.detected_at <= now
         and (include_suspicious or not change.suspicious)
     ]
 
