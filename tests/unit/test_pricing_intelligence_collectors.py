@@ -126,6 +126,32 @@ def test_enrichment_preserves_per_cell_categories_from_a_multi_rate_row():
     assert by_category == {"special": 4.79, "standard": 5.39}
 
 
+def test_enrichment_catches_a_bank_specific_header_only_alias():
+    """When BNZ's category label lives only in the column header -- bare
+    "4.79%"/"5.39%" data cells under "Classic rate"/"Standard rate" headers,
+    not "Classic 4.79%" in the cell text itself -- the generic per-cell
+    header lookup in extractors.py has no notion of "Classic" (a
+    bank-specific alias, not one of its generic special/standard/fixed
+    words), so it falls through to the generic "home_loan" category.
+    enrich_mortgage_record() is meant to catch exactly this via
+    special_product_markers, but it only reads raw_text_context -- which,
+    without the header folded in, is built from the data row alone and
+    never contains "Classic" either. Both stages need to see the header for
+    BNZ's own known alias to resolve correctly."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Classic rate</th><th>Standard rate</th></tr>
+      <tr><td>1 year</td><td>4.79%</td><td>5.39%</td></tr>
+    </table></body></html>
+    """
+    collector = BNZCollector()
+
+    records = collector.parse_mortgage_html(html, captured_at_utc=OBSERVED_AT)
+
+    by_category = {record.rate_category: record.advertised_rate_pct for record in records}
+    assert by_category == {"special": 4.79, "standard": 5.39}
+
+
 def test_fetch_failure_is_returned_not_raised(fixture_fetcher):
     collector = ANZCollector(fetcher=fixture_fetcher(failing_banks=["ANZ"]))
     result = collector.collect_mortgage_rates(persist_snapshot=False)

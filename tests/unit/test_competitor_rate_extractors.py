@@ -312,6 +312,55 @@ def test_parse_html_rates_extracts_the_rate_when_promo_marker_precedes_its_perce
     assert records[0].advertised_rate_pct == 5.00
 
 
+def test_parse_html_rates_ignores_deposit_eligibility_percentage_for_home_loans():
+    """A low deposit-requirement percentage sharing a row with a genuine
+    home-loan rate (e.g. "5.49%" and, in another cell, "5% deposit
+    required") must not be treated as a second rate: unlike an LVR/equity
+    percentage, a deposit requirement can fall within the plausible 0-15%
+    range, so the numeric-range filter alone doesn't exclude it."""
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>Term</th><th>Rate</th><th>Eligibility</th></tr>
+      <tr><td>Special fixed</td><td>1 year</td><td>5.49%</td><td>5% deposit required</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.49
+
+
+def test_parse_html_rates_keeps_a_low_term_deposit_rate_next_to_the_word_deposit():
+    """The home-loan-only deposit/equity exclusion must not reach term
+    deposits, where "deposit" is the product name itself and appears next
+    to every genuine rate -- excluding it there would discard real rates
+    wholesale, not just eligibility percentages."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Deposit</th><th>Frequency</th><th>Rate</th></tr>
+      <tr><td>6 months</td><td>$10,000+</td><td>At maturity</td><td>4.50%</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="term_deposit",
+        source_url="https://example.test/td",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 4.50
+
+
 def test_fetch_source_writes_snapshot_for_successful_http_response(tmp_path, monkeypatch):
     source = RateSource("ANZ", ProductType.HOME_LOAN, "https://example.test/home")
 

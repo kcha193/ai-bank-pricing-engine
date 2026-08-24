@@ -240,6 +240,22 @@ def parse_html_rates(
         min_balance, max_balance = (
             normalise_balance(context) if product == ProductType.TERM_DEPOSIT else (None, None)
         )
+        # Retained on the record verbatim (not just used transiently above)
+        # so a bank-specific category alias that lives only in the column
+        # header -- e.g. BNZ's "Classic" -- reaches
+        # BankPricingCollector.enrich_mortgage_record() too: enrichment reads
+        # raw_text_context, which is otherwise built from the data row alone
+        # and never sees a header-only word. Not folded into `context` itself
+        # (used above for lvr_condition/special_conditions/balance/frequency
+        # at parse time): a header cell is normally just a short category
+        # label, but there is no guarantee it can never coincide with one of
+        # those other parsers' trigger words, so the blast radius is kept to
+        # exactly what reads raw_text_context afterwards.
+        raw_text_context = (
+            _clean_text(context + " | " + " | ".join(current_header_row))
+            if current_header_row
+            else context
+        )
         for rate, category in rate_categories:
             records.append(
                 CompetitorRateRecord(
@@ -267,7 +283,7 @@ def parse_html_rates(
                     source_url=source_url,
                     source_bank_page_title=parser.title,
                     captured_at_utc=captured_at_utc,
-                    raw_text_context=context,
+                    raw_text_context=raw_text_context,
                     raw_html_sha256=raw_hash,
                     parser_version=PARSER_VERSION,
                 )
@@ -316,24 +332,39 @@ _PROMOTIONAL_PERCENTAGE_PATTERN = re.compile(
     re.I,
 )
 
+# Home-loan-only: "deposit"/"equity" describe a borrower's eligibility
+# position (e.g. "5% deposit required"), unlike in TERM_DEPOSIT context,
+# where "deposit" is the product name itself and appears next to every
+# genuine rate -- stripping it there would discard real rates wholesale.
+_ELIGIBILITY_PERCENTAGE_MARKERS = ("deposit", "equity")
+_ELIGIBILITY_MARKER_ALTERNATION = "|".join(_ELIGIBILITY_PERCENTAGE_MARKERS)
+_ELIGIBILITY_PERCENTAGE_PATTERN = re.compile(
+    r"(?<![\d.])\d{1,2}(?:\.\d{1,3})?\s*%\s*(?:" + _ELIGIBILITY_MARKER_ALTERNATION + r")"
+    r"|(?:" + _ELIGIBILITY_MARKER_ALTERNATION + r")[^%]{0,20}\d{1,2}(?:\.\d{1,3})?\s*%",
+    re.I,
+)
 
-def _strip_promotional_percentages(text: str) -> str:
-    """Remove a promotional percentage's span (e.g. "1% cashback" or,
-    reversed, "cashback of 1%") so it isn't mistaken for a genuine rate
-    sharing its cell or row. Only the marker-adjacent percentage is removed
-    -- rejecting the whole cell/row would also discard a genuine rate
-    advertised alongside a cashback offer (e.g. "Special 5.00% with 1%
-    cashback"). Both grammatical orders are stripped: the marker can follow
-    its percentage ("1% cashback") or precede it ("cashback of 1%").
+
+def _strip_non_rate_percentages(text: str, product: ProductType) -> str:
+    """Remove a non-rate percentage's span (e.g. "1% cashback", reversed
+    "cashback of 1%", or -- for home loans only -- "5% deposit required")
+    so it isn't mistaken for a genuine rate sharing its cell or row. Only
+    the marker-adjacent percentage is removed -- rejecting the whole
+    cell/row would also discard a genuine rate advertised alongside it
+    (e.g. "Special 5.00% with 1% cashback"). Both grammatical orders are
+    stripped: the marker can follow its percentage or precede it.
     """
-    return _PROMOTIONAL_PERCENTAGE_PATTERN.sub("", text)
+    stripped = _PROMOTIONAL_PERCENTAGE_PATTERN.sub("", text)
+    if product == ProductType.HOME_LOAN:
+        stripped = _ELIGIBILITY_PERCENTAGE_PATTERN.sub("", stripped)
+    return stripped
 
 
-def _extract_rate(context: str) -> float | None:
+def _extract_rate(context: str, product: ProductType) -> float | None:
     rates = [
         float(match.group(1))
         for match in re.finditer(
-            r"(?<![\d.])(\d{1,2}(?:\.\d{1,3})?)\s*%", _strip_promotional_percentages(context)
+            r"(?<![\d.])(\d{1,2}(?:\.\d{1,3})?)\s*%", _strip_non_rate_percentages(context, product)
         )
     ]
     if not rates:
@@ -342,7 +373,7 @@ def _extract_rate(context: str) -> float | None:
     return plausible[-1] if plausible else rates[-1]
 
 
-def _extract_plausible_rate(text: str) -> float | None:
+def _extract_plausible_rate(text: str, product: ProductType) -> float | None:
     """Like :func:`_extract_rate`, but never falls back to an implausible
     reading -- used per-cell below, where a non-rate percentage (e.g. "70%
     LVR" or "80% equity") must not be mistaken for a rate just because it is
@@ -351,7 +382,7 @@ def _extract_plausible_rate(text: str) -> float | None:
     rates = [
         float(match.group(1))
         for match in re.finditer(
-            r"(?<![\d.])(\d{1,2}(?:\.\d{1,3})?)\s*%", _strip_promotional_percentages(text)
+            r"(?<![\d.])(\d{1,2}(?:\.\d{1,3})?)\s*%", _strip_non_rate_percentages(text, product)
         )
     ]
     plausible = [rate for rate in rates if 0 <= rate <= 15]
@@ -387,11 +418,13 @@ def _extract_rates_with_categories(
     cell carries a rate: a single "Special rate" header over a bare data
     cell must still resolve to "special", not the generic default.
     """
-    cell_rates = [(idx, cell, _extract_plausible_rate(cell)) for idx, cell in enumerate(row)]
+    cell_rates = [
+        (idx, cell, _extract_plausible_rate(cell, product)) for idx, cell in enumerate(row)
+    ]
     plausible_cells = [(idx, cell, rate) for idx, cell, rate in cell_rates if rate is not None]
 
     if not plausible_cells:
-        rate = _extract_rate(context)
+        rate = _extract_rate(context, product)
         if rate is None:
             return []
         return [(rate, _rate_category(product, context, special_label))]

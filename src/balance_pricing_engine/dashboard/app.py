@@ -82,9 +82,11 @@ def _render_market_intelligence() -> None:
     database_path = Path(intelligence_config.database_path)
     if not database_path.exists():
         st.info(
-            "No market data collected yet. Run "
-            "`python3 -m balance_pricing_engine.pricing_intelligence collect` "
-            "to populate the observation store."
+            "No market data collected yet. Every tracked bank now builds its "
+            "rate table client-side, so run `python3 -m balance_pricing_engine."
+            "pricing_intelligence collect --render-javascript` (needs the "
+            "optional browser extra: `pip install -e '.[browser]' && python3 -m "
+            "playwright install chromium`) to populate the observation store."
         )
         return
 

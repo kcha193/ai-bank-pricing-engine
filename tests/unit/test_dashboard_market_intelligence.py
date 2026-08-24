@@ -239,11 +239,19 @@ def test_history_chart_is_not_blanked_by_a_different_products_withdrawal(
 
 
 def test_section_guides_the_user_when_no_data_exists(monkeypatch, tmp_path):
+    """The suggested recovery command must actually work: every tracked
+    bank's collector now needs --render-javascript (collectors/base.py:
+    "Every tracked bank now builds its rate table client-side"), so a plain
+    `collect` invocation returns a ParserError for every bank and leaves the
+    dashboard exactly as empty as before -- the guidance must show the
+    browser-rendering flag and its install prerequisite, not the static
+    HTTP command that cannot succeed."""
     fake = render_dashboard(monkeypatch, str(tmp_path / "missing.db"))
     messages = " ".join(fake.texts("info"))
 
     assert "No market data collected yet" in messages
-    assert "pricing_intelligence collect" in messages
+    assert "pricing_intelligence collect --render-javascript" in messages
+    assert "playwright" in messages
 
 
 def _minimal_engine_yaml(**pricing_intelligence_overrides):
