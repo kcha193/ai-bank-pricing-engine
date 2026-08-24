@@ -223,6 +223,33 @@ def test_promotion_change_is_detected(make_record):
     assert [change.change_type for change in changes] == [ChangeType.PROMOTION_CHANGE]
 
 
+def test_a_warning_tagged_companion_eligibility_change_is_flagged_suspicious(make_record):
+    """A parser fault that corrupts both the rate and an eligibility field in
+    the same observation must not quarantine only the rate event -- the
+    companion ELIGIBILITY_CHANGE derived from the same warning-tagged record
+    must carry the same unverified status through to the dashboard and
+    changes --alerts."""
+    changes = detect_changes(
+        [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.99)],
+        [
+            make_record(
+                max_lvr=0.75,
+                min_equity=0.25,
+                rate_pct=8.00,
+                validation_status="warning",
+                observed_at=DAY_TWO,
+            )
+        ],
+        thresholds=ValidationThresholds(suspicious_change_bps=75),
+    )
+
+    assert {c.change_type for c in changes} == {
+        ChangeType.RATE_INCREASE,
+        ChangeType.ELIGIBILITY_CHANGE,
+    }
+    assert all(c.suspicious for c in changes)
+
+
 def test_a_reprice_matches_on_identity_rather_than_looking_like_remove_and_add(make_record):
     """A repriced line must be one movement, not a removal plus an addition."""
     changes = detect_changes(

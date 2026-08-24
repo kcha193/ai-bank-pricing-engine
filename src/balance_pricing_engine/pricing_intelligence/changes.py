@@ -296,6 +296,13 @@ def _compare_records(
             )
         )
 
+    # A companion event derived from the same warning-tagged observation as
+    # the rate move above must carry the same unverified status through --
+    # otherwise a parser fault that corrupts both the rate and an eligibility/
+    # promotion field is quarantined for the rate but shown as a verified
+    # eligibility/promotion event in the dashboard and changes --alerts.
+    record_suspicious = current.validation_status == "warning"
+
     eligibility_diff = _diff_fields(previous, current, _ELIGIBILITY_FIELDS)
     if eligibility_diff:
         changes.append(
@@ -307,6 +314,7 @@ def _compare_records(
                 previous_rate_pct=previous.advertised_rate_pct,
                 current_rate_pct=current.advertised_rate_pct,
                 previous_observed_at=previous.captured_at_utc,
+                suspicious=record_suspicious,
                 detail=eligibility_diff,
             )
         )
@@ -322,6 +330,7 @@ def _compare_records(
                 previous_rate_pct=previous.advertised_rate_pct,
                 current_rate_pct=current.advertised_rate_pct,
                 previous_observed_at=previous.captured_at_utc,
+                suspicious=record_suspicious,
                 detail=promotion_diff,
             )
         )
