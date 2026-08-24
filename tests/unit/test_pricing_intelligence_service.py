@@ -704,6 +704,10 @@ def test_a_suspicious_observation_with_a_rate_category_flip_still_falls_back(mak
     assert {c.change_type for c in outcome.changes} == {ChangeType.NEW_PRODUCT}, (
         "the predecessor's withdrawal must be suppressed, not merely its effect papered over"
     )
+    assert all(c.suspicious for c in outcome.changes), (
+        "the new-product event itself must carry the suspicious flag through to "
+        "market activity and changes --alerts, not just quarantine the snapshot"
+    )
     assert snapshot.term(12).rate_for("ANZ") == 4.79
 
 

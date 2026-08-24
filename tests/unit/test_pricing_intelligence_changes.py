@@ -63,6 +63,39 @@ def test_new_product_is_detected(make_record):
     assert changes[0].current_rate_pct == 4.89
 
 
+def test_new_product_is_not_suspicious_by_default(make_record):
+    changes = detect_changes(
+        [make_record(bank="ANZ")],
+        [make_record(bank="ANZ"), make_record(bank="Kiwibank", rate_pct=4.89)],
+    )
+
+    new_product = next(c for c in changes if c.change_type is ChangeType.NEW_PRODUCT)
+    assert new_product.suspicious is False
+
+
+def test_a_warning_tagged_new_product_is_flagged_suspicious(make_record):
+    """A record already flagged suspicious upstream (e.g. a category flip
+    alongside an implausible rate that this method's own resolve_pairing()
+    can't match to any predecessor -- rate_category is real identity in
+    both observation_key() and eligibility_group_key()) must not surface
+    unflagged as a genuine new product in market activity, the dashboard,
+    or changes --alerts."""
+    changes = detect_changes(
+        [make_record(bank="ANZ", rate_category="special", rate_pct=5.00)],
+        [
+            make_record(
+                bank="ANZ",
+                rate_category="standard",
+                rate_pct=8.00,
+                validation_status="warning",
+            )
+        ],
+    )
+
+    new_product = next(c for c in changes if c.change_type is ChangeType.NEW_PRODUCT)
+    assert new_product.suspicious is True
+
+
 def test_removed_product_is_detected(make_record):
     changes = detect_changes(
         [make_record(bank="ANZ"), make_record(bank="ASB", rate_pct=5.05)],

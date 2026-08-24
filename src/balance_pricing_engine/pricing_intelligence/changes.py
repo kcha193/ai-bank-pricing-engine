@@ -196,6 +196,18 @@ def detect_changes(
     for key, current_record in current_by_key.items():
         previous_record = pairs.get(key)
         if previous_record is None:
+            # A record already flagged suspicious upstream (validate_observations())
+            # is unmatched here for the same reason: rate_category is real
+            # identity in both observation_key() and eligibility_group_key(),
+            # so a category flip alongside an implausible rate leaves nothing
+            # for this method's own resolve_pairing() to pair it to. Without
+            # this, the event this branch builds is a NEW_PRODUCT with no
+            # suspicious kwarg at all (unlike the RATE_INCREASE/DECREASE path
+            # below, which computes it from the movement) -- so an unverified
+            # parser artefact such as 5.00% special misread as 8.00% standard
+            # would surface in market activity and change alerts as a
+            # genuine new product.
+            suspicious = current_record.validation_status == "warning"
             changes.append(
                 _build(
                     current_record,
@@ -203,7 +215,13 @@ def detect_changes(
                     detected_at,
                     run_id,
                     current_rate_pct=current_record.advertised_rate_pct,
-                    detail=f"first observed at {current_record.advertised_rate_pct:.2f}%",
+                    suspicious=suspicious,
+                    detail=(
+                        "flagged suspicious upstream; verify against the source "
+                        "page before treating as a genuine new product"
+                        if suspicious
+                        else f"first observed at {current_record.advertised_rate_pct:.2f}%"
+                    ),
                 )
             )
             continue
