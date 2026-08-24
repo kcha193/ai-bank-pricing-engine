@@ -499,6 +499,49 @@ def test_a_spike_that_reverts_is_not_confirmed_as_a_genuine_movement(make_record
     assert activity.changes == 0, "the market view never left the original confirmed 5.00%"
 
 
+def test_a_spike_that_reverts_across_an_eligibility_key_change_is_not_confirmed(make_record):
+    """Same bug as the sibling test above, but the spike also changes
+    eligibility identity (key A -> key B): the last confirmed state is filed
+    under A while the whole warning chain lives under B, so an exact-key
+    lookup for "was this reconfirmed?" always misses it and treats the
+    missing key as proof of a genuine move."""
+    day_four = DAY_ONE + timedelta(days=3)
+    confirmed = make_record(bank="ANZ", rate_pct=5.00, max_lvr=0.80, min_equity=0.20)
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", [confirmed])],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    spike = make_record(
+        bank="ANZ", rate_pct=8.00, max_lvr=0.75, min_equity=0.25, observed_at=DAY_TWO
+    )
+    service._collectors = [_StubCollector("ANZ", [spike])]
+    service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)  # flagged suspicious
+
+    revert = make_record(
+        bank="ANZ", rate_pct=5.00, max_lvr=0.75, min_equity=0.25, observed_at=DAY_THREE
+    )
+    service._collectors = [_StubCollector("ANZ", [revert])]
+    service.collect(captured_at_utc=DAY_THREE, persist_snapshot=False)  # also flagged suspicious
+
+    repeat = make_record(
+        bank="ANZ", rate_pct=5.00, max_lvr=0.75, min_equity=0.25, observed_at=day_four
+    )
+    service._collectors = [_StubCollector("ANZ", [repeat])]
+    service.collect(captured_at_utc=day_four, persist_snapshot=False)  # clean re-observation
+
+    changes = service.get_changes(days=30, now=day_four)
+    activity = service.get_market_activity(days=30, now=day_four)
+
+    reversal = next(c for c in changes if c.previous_rate_pct == 8.00 and c.current_rate_pct == 5.00)
+    assert reversal.suspicious is True, "the bogus reversal must stay excluded from market activity"
+    assert activity.changes == 0, "the market view never left the original confirmed 5.00%"
+
+
 def test_a_suspicious_observation_falls_back_to_its_last_confirmed_rate(fixture_fetcher):
     """An unconfirmed parser artefact must not feed market-derived pricing --
     but the bank/term must fall back to its last confirmed rate, not vanish."""

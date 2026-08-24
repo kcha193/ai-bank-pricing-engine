@@ -392,12 +392,9 @@ class PricingIntelligenceService:
         # check below: the last state that was actually confirmed (not just the
         # immediately-preceding baseline record, which can itself still be an
         # unconfirmed warning-tagged reading).
-        last_confirmed_before_run = {
-            record.observation_key(): record
-            for record in self.store.get_last_confirmed_observations(
-                product_type=ProductType.HOME_LOAN
-            )
-        }
+        last_confirmed_before_run = self.store.get_last_confirmed_observations(
+            product_type=ProductType.HOME_LOAN
+        )
         validation = validate_observations(
             report.records, thresholds=self.config.validation, previous=baseline
         )
@@ -502,6 +499,14 @@ class PricingIntelligenceService:
         if persist:
             pairs = resolve_pairing(baseline, accepted)
             accepted_by_key = {record.observation_key(): record for record in accepted}
+            # Matched via resolve_pairing() (exact key, falling back to an
+            # eligibility-group match), not a plain dict lookup by exact key:
+            # a spike that also changes eligibility identity stores the
+            # warning chain under a different key than the one the last
+            # confirmed state is filed under, so an exact-key lookup would
+            # always miss it and treat the missing key as proof of a genuine
+            # move -- see the confirmed_keys comment below.
+            last_confirmed_pairs = resolve_pairing(last_confirmed_before_run, accepted)
             confirmed_keys = [
                 key
                 for key, previous_record in pairs.items()
@@ -516,8 +521,8 @@ class PricingIntelligenceService:
                 # state -- i.e. a real new value, not a round trip back to
                 # where the chain of unconfirmed readings began.
                 and (
-                    key not in last_confirmed_before_run
-                    or last_confirmed_before_run[key].advertised_rate_pct
+                    key not in last_confirmed_pairs
+                    or last_confirmed_pairs[key].advertised_rate_pct
                     != accepted_by_key[key].advertised_rate_pct
                 )
             ]

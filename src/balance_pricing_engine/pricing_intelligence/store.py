@@ -763,8 +763,11 @@ class ObservationStore:
         now = now or datetime.now(timezone.utc)
         if since is None and days is not None:
             since = now - timedelta(days=days)
-        clauses: list[str] = []
-        params: list[object] = []
+        # Bounds the upper edge too: a historical now= must not surface a
+        # change detected after that point, the same as the lower (since)
+        # edge already does.
+        clauses: list[str] = ["detected_at <= ?"]
+        params: list[object] = [_iso(now)]
         if since is not None:
             clauses.append("detected_at >= ?")
             params.append(_iso(since))

@@ -636,6 +636,21 @@ def test_changes_are_persisted_and_queried_by_window(store, make_record):
     assert store.get_changes_since(days=1, now=DAY_ONE + timedelta(days=10)) == []
 
 
+def test_changes_since_excludes_events_detected_after_now(store, make_record):
+    """A historical now= must not surface a change detected after that point --
+    only the lower (since) edge of the window was bounded."""
+    store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)
+    changes = detect_changes(
+        [make_record(rate_pct=4.99)],
+        [make_record(rate_pct=4.79, observed_at=DAY_THREE)],
+        detected_at=DAY_THREE,
+    )
+    store.record_changes(changes)
+
+    assert store.get_changes_since(days=7, now=DAY_TWO) == []
+    assert len(store.get_changes_since(days=7, now=DAY_THREE)) == 1
+
+
 def test_recording_the_same_change_twice_is_idempotent(store, make_record):
     changes = detect_changes(
         [make_record(rate_pct=4.99)],
