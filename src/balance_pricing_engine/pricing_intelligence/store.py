@@ -438,7 +438,8 @@ class ObservationStore:
         self, confirmations: Mapping[str, Optional[CompetitorRateRecord]]
     ) -> None:
         """Clear the suspicious flag on the most recent change event for each
-        key, rebased onto the last verified predecessor where one is known.
+        key (and every companion event from the same run), rebasing the rate
+        event onto the last verified predecessor where one is known.
 
         A suspicious-but-accepted movement stays permanently excluded from
         market activity / market-state (both default to skipping suspicious
@@ -447,30 +448,46 @@ class ObservationStore:
         fault. Called once ``_upsert_observation``'s own confirmation check
         (a repeated value no longer flagged this run) identifies the key.
 
+        An over-threshold rate change that also modifies eligibility or
+        promotion data produces companion ``ELIGIBILITY_CHANGE``/
+        ``PROMOTION_CHANGE`` events sharing this ``observation_key`` and
+        ``detected_at`` with the rate event, all three suspicious together.
+        Confirming only the rate event -- the most recent row picked by a
+        plain "latest suspicious" lookup, since ``detect_changes()`` sorts
+        rate events after their companions -- would leave the companions
+        suspicious forever even though the service has already accepted the
+        transition. Every suspicious sibling from that same run is cleared
+        here too, not just the rate row.
+
         A suspicious chain can partially revert (confirmed 5.00% -> warning
-        8.00% -> warning 7.00% -> clean 7.00%): the latest stored event
+        8.00% -> warning 7.00% -> clean 7.00%): the latest stored rate event
         (8.00% -> 7.00%) is an artefact of the intermediate misread, not the
         real movement. When the caller supplies the last verified
-        predecessor for a key, ``previous_rate_pct``/``change_bps``/
-        ``previous_observed_at``/``change_type`` are rewritten to reflect
-        the movement from *that* rate (5.00% -> 7.00%, +200 bps) rather than
-        merely un-suspicious-ing the stale intermediate hop. ``None``
-        (no known prior confirmed state for this key) just clears the flag,
-        as before.
+        predecessor for a key, the rate row's ``previous_rate_pct``/
+        ``change_bps``/``previous_observed_at``/``change_type`` are
+        rewritten to reflect the movement from *that* rate (5.00% -> 7.00%,
+        +200 bps) rather than merely un-suspicious-ing the stale
+        intermediate hop. ``None`` (no known prior confirmed state for this
+        key) just clears the flags, as before.
         """
+        rate_types = (ChangeType.RATE_INCREASE.value, ChangeType.RATE_DECREASE.value)
         with self._transaction() as connection:
             for key, last_verified in confirmations.items():
                 row = connection.execute(
-                    "SELECT id, current_rate_pct FROM rate_changes WHERE observation_key = ? "
-                    "AND suspicious = 1 ORDER BY detected_at DESC, id DESC LIMIT 1",
-                    (key,),
+                    "SELECT id, current_rate_pct, detected_at, change_type FROM rate_changes "
+                    "WHERE observation_key = ? AND suspicious = 1 ORDER BY "
+                    "CASE WHEN change_type IN (?, ?) THEN 0 ELSE 1 END, "
+                    "detected_at DESC, id DESC LIMIT 1",
+                    (key, *rate_types),
                 ).fetchone()
                 if row is None:
                     continue
-                if last_verified is None:
-                    connection.execute(
-                        "UPDATE rate_changes SET suspicious = 0 WHERE id = ?", (row["id"],)
-                    )
+                connection.execute(
+                    "UPDATE rate_changes SET suspicious = 0 WHERE observation_key = ? "
+                    "AND suspicious = 1 AND detected_at = ?",
+                    (key, row["detected_at"]),
+                )
+                if last_verified is None or row["change_type"] not in rate_types:
                     continue
                 change_bps = rate_change_bps(
                     last_verified.advertised_rate_pct, row["current_rate_pct"]
@@ -479,7 +496,7 @@ class ObservationStore:
                     ChangeType.RATE_INCREASE if change_bps > 0 else ChangeType.RATE_DECREASE
                 )
                 connection.execute(
-                    "UPDATE rate_changes SET suspicious = 0, previous_rate_pct = ?, "
+                    "UPDATE rate_changes SET previous_rate_pct = ?, "
                     "change_bps = ?, previous_observed_at = ?, change_type = ? WHERE id = ?",
                     (
                         last_verified.advertised_rate_pct,

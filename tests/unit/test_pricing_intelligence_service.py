@@ -441,6 +441,49 @@ def test_get_changes_scope_to_market_filters_by_selected_banks_and_terms():
     assert [change.bank for change in changes] == ["ANZ"]
 
 
+def test_confirming_a_suspicious_movement_also_clears_its_companion_eligibility_event(
+    make_record,
+):
+    """An over-threshold rate change bundled with an eligibility change
+    produces two suspicious events sharing the same observation_key and
+    detected_at (RATE_INCREASE/DECREASE + ELIGIBILITY_CHANGE). Reconfirming
+    the same reading must clear both, not just the rate event a plain
+    "most recent suspicious" lookup happens to pick (detect_changes() sorts
+    rate events after their companions, so the rate row gets the higher id)."""
+    confirmed = make_record(bank="ANZ", rate_pct=5.00, max_lvr=0.80, min_equity=0.20)
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", [confirmed])],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    spike = make_record(
+        bank="ANZ", rate_pct=8.00, max_lvr=0.75, min_equity=0.25, observed_at=DAY_TWO
+    )
+    service._collectors = [_StubCollector("ANZ", [spike])]
+    outcome_two = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+    assert {c.change_type for c in outcome_two.changes} == {
+        ChangeType.RATE_INCREASE,
+        ChangeType.ELIGIBILITY_CHANGE,
+    }
+    assert all(c.suspicious for c in outcome_two.changes), "sanity check: both flagged"
+
+    repeat = make_record(
+        bank="ANZ", rate_pct=8.00, max_lvr=0.75, min_equity=0.25, observed_at=DAY_THREE
+    )
+    service._collectors = [_StubCollector("ANZ", [repeat])]
+    service.collect(captured_at_utc=DAY_THREE, persist_snapshot=False)  # clean re-observation
+
+    changes = service.get_changes(days=30, now=DAY_THREE)
+    assert len(changes) == 2
+    assert all(not c.suspicious for c in changes), (
+        "the companion eligibility event must be confirmed alongside the rate event"
+    )
+
+
 def test_a_confirmed_large_movement_counts_as_market_activity(fixture_fetcher):
     """A repeated 'suspicious' value is confirmed genuine, not permanently discounted."""
 
