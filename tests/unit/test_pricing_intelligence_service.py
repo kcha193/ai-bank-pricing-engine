@@ -819,6 +819,60 @@ def test_a_suspicious_observation_with_a_rate_category_flip_still_falls_back(mak
     assert snapshot.term(12).rate_for("ANZ") == 4.79
 
 
+def test_a_clean_category_flip_with_no_rate_movement_still_withdraws_its_predecessor(
+    make_record,
+):
+    """A category relabelling with no out-of-threshold rate movement (e.g.
+    "4.79% special" -> "4.79% standard") is never flagged suspicious in the
+    first place -- validate_observations() only compares movement against a
+    resolve_pairing() match, and a category flip has none to compare
+    against. _last_confirmed_predecessors() still category-agnostically
+    matches the old "special" line as this run's best-effort predecessor
+    (it is used for confirmation rebasing too), but that must not by itself
+    suppress the old key's withdrawal: this run's record was never
+    quarantined, so there is no confirmation to protect. Suppressing it
+    anyway would leave a stale "special" observation feeding the special-rate
+    market snapshot forever, or launder a category-only parser fault as a
+    verified market event -- exactly what AGENTS.md's "a parser fault cannot
+    fake a repricing round" invariant rules out.
+    """
+    # Two tracked products: term 12 flips category below, term 24 stays
+    # exactly matched -- giving ANZ 1/2 known-key coverage, enough to stay
+    # in scope for withdrawal detection under the default 0.5 ratio (a
+    # single-product bank would otherwise have its category flip look
+    # identical to a partial-parse regression to _reliably_collected_banks,
+    # a different, unrelated suppression mechanism).
+    baseline = [
+        make_record(bank="ANZ", term_months=12, rate_category="special", rate_pct=4.79),
+        make_record(bank="ANZ", term_months=24, rate_category="special", rate_pct=4.99),
+    ]
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", baseline)],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    relabelled = make_record(
+        bank="ANZ", term_months=12, rate_category="standard", rate_pct=4.79, observed_at=DAY_TWO
+    )
+    unchanged = make_record(
+        bank="ANZ", term_months=24, rate_category="special", rate_pct=4.99, observed_at=DAY_TWO
+    )
+    service._collectors = [_StubCollector("ANZ", [relabelled, unchanged])]
+    outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    assert not outcome.validation.suspicious_keys, (
+        "sanity check: a category flip with no rate movement is never flagged suspicious"
+    )
+    assert ChangeType.REMOVED_PRODUCT in {c.change_type for c in outcome.changes}, (
+        "the old special-category line was never quarantined, so its withdrawal must not "
+        "be suppressed by the confirmation-protection path"
+    )
+
+
 def test_a_suspicious_category_flip_that_stays_suspicious_still_protects_the_confirmed_key(
     make_record,
 ):

@@ -493,6 +493,25 @@ class PricingIntelligenceService:
             last_confirmed_pairs = _last_confirmed_predecessors(
                 last_confirmed_before_run, accepted
             )
+            # The plain (exact-or-eligibility-group) predecessor pairing,
+            # computed once and reused below for both the rejected_keys
+            # union and the confirmation check further down. Identifies
+            # which accepted records are actually confirming a previously
+            # quarantined warning -- not every category flip resolved via
+            # last_confirmed_pairs's category-agnostic fallback descends
+            # from one: a category relabelling with no out-of-threshold rate
+            # movement (e.g. "4.79% special" -> "4.79% standard") is never
+            # flagged suspicious in the first place, so its predecessor must
+            # not get the same withdrawal protection as a genuine quarantine
+            # confirmation -- that would hide a real REMOVED_PRODUCT behind
+            # an unrelated NEW_PRODUCT, or launder a category-only parser
+            # fault as a verified market event.
+            plain_pairs = resolve_pairing(baseline, accepted)
+            confirming_keys = {
+                key
+                for key, previous_record in plain_pairs.items()
+                if previous_record.validation_status == "warning" and key not in suspicious_keys
+            }
             changes = detect_changes(
                 previous=baseline,
                 current=accepted,
@@ -525,7 +544,12 @@ class PricingIntelligenceService:
                 # via last_confirmed_pairs, even on the clean run where the
                 # record is no longer itself in suspicious_keys -- the verified
                 # special line must not be withdrawn just because the record
-                # confirming it isn't flagged suspicious *this* run.
+                # confirming it isn't flagged suspicious *this* run. Restricted
+                # to confirming_keys (plain predecessor was itself flagged
+                # "warning"): a category flip with no suspicious history behind
+                # it -- e.g. a clean rebrand from "special" to "standard" at the
+                # same rate -- does not get this protection, so a genuine
+                # withdrawal of the old category is still reported.
                 rejected_keys=(
                     {
                         previous_record.observation_key()
@@ -535,7 +559,11 @@ class PricingIntelligenceService:
                     }
                     | _rejected_predecessor_keys(baseline, validation.rejected)
                     | _suspicious_predecessor_keys(baseline, accepted, suspicious_keys)
-                    | {p.observation_key() for p in last_confirmed_pairs.values()}
+                    | {
+                        last_confirmed_pairs[key].observation_key()
+                        for key in confirming_keys
+                        if key in last_confirmed_pairs
+                    }
                 ),
             )
             # A bank's first-ever successful collection would otherwise report
@@ -571,10 +599,9 @@ class PricingIntelligenceService:
             # cleared here: a 0 bps re-observation produces no new change event
             # for detect_changes() to mark confirmed instead.
             if persist:
-                pairs = resolve_pairing(baseline, accepted)
                 accepted_by_key = {record.observation_key(): record for record in accepted}
-                # last_confirmed_pairs was already computed above, before
-                # detect_changes(), and is reused here unchanged.
+                # plain_pairs and confirming_keys were already computed above,
+                # before detect_changes(), and are reused here unchanged.
                 # Rebased onto the last verified predecessor (or None when there
                 # isn't one) rather than passed as bare keys: a suspicious chain
                 # can partially revert (confirmed 5.00% -> warning 8.00% ->
@@ -584,9 +611,7 @@ class PricingIntelligenceService:
                 # rewrites the event to reflect the true movement.
                 confirmations = {
                     key: last_confirmed_pairs.get(key)
-                    for key, previous_record in pairs.items()
-                    if previous_record.validation_status == "warning"
-                    and key not in suspicious_keys
+                    for key in confirming_keys
                     # A parser spike that reverts exactly (confirmed 5.00% ->
                     # warning 8.00% -> warning 5.00% -> clean 5.00%) must not
                     # confirm the latest suspicious event as a genuine -300 bps
@@ -595,7 +620,7 @@ class PricingIntelligenceService:
                     # run's value differs from the last genuinely confirmed
                     # state -- i.e. a real new value, not a round trip back to
                     # where the chain of unconfirmed readings began.
-                    and (
+                    if (
                         key not in last_confirmed_pairs
                         or last_confirmed_pairs[key].advertised_rate_pct
                         != accepted_by_key[key].advertised_rate_pct
