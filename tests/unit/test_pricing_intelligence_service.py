@@ -603,6 +603,17 @@ def test_a_spike_that_reverts_across_a_category_flip_is_not_confirmed(make_recor
     reversal = next(c for c in changes if c.previous_rate_pct == 8.00 and c.current_rate_pct == 5.00)
     assert reversal.suspicious is True, "the bogus reversal must stay excluded from market activity"
     assert activity.changes == 0, "the verified rate never actually changed"
+    # The category never reverted (it stays "standard" throughout), so the
+    # confirmed "special" predecessor is never matched by anything in any
+    # run's accepted records -- and by day_four the record reporting it
+    # isn't itself in suspicious_keys either, so only _suspicious_predecessor_keys()
+    # alone would no longer protect it.
+    assert ChangeType.REMOVED_PRODUCT not in {c.change_type for c in changes}, (
+        "the verified special line must not be withdrawn just because this run's "
+        "record isn't itself flagged suspicious"
+    )
+    snapshot = service.get_market_snapshot(now=day_four)
+    assert snapshot.term(12).rate_for("ANZ") == 5.00
 
 
 def test_a_spike_that_reverts_is_not_confirmed_as_a_genuine_movement(make_record):

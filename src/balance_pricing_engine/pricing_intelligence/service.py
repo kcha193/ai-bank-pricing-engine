@@ -480,6 +480,19 @@ class PricingIntelligenceService:
                 if persist
                 else None
             )
+            # Matched via _last_confirmed_predecessors() (exact key, then an
+            # eligibility-group match, then a category-agnostic match), not a
+            # plain dict lookup by exact key: computed here (before
+            # detect_changes()) because a category flip that has since
+            # settled onto a new key -- even after the record reporting it is
+            # no longer itself flagged suspicious this run -- still needs its
+            # pre-flip predecessor protected from withdrawal below, the same
+            # protection _suspicious_predecessor_keys() only gives while the
+            # record is suspicious *this* run. Reused for the confirmation
+            # check further down.
+            last_confirmed_pairs = _last_confirmed_predecessors(
+                last_confirmed_before_run, accepted
+            )
             changes = detect_changes(
                 previous=baseline,
                 current=accepted,
@@ -506,6 +519,13 @@ class PricingIntelligenceService:
                 # category-agnostic fallback in _rejected_predecessor_keys(). A
                 # suspicious (accepted-but-flagged) record's predecessor gets the
                 # analogous treatment via _suspicious_predecessor_keys().
+                # A category flip that reverted its rate but not its category
+                # (5.00% special -> 8.00% standard warning -> 5.00% standard
+                # warning -> 5.00% standard clean) stays protected here too,
+                # via last_confirmed_pairs, even on the clean run where the
+                # record is no longer itself in suspicious_keys -- the verified
+                # special line must not be withdrawn just because the record
+                # confirming it isn't flagged suspicious *this* run.
                 rejected_keys=(
                     {
                         previous_record.observation_key()
@@ -515,6 +535,7 @@ class PricingIntelligenceService:
                     }
                     | _rejected_predecessor_keys(baseline, validation.rejected)
                     | _suspicious_predecessor_keys(baseline, accepted, suspicious_keys)
+                    | {p.observation_key() for p in last_confirmed_pairs.values()}
                 ),
             )
             # A bank's first-ever successful collection would otherwise report
@@ -552,17 +573,8 @@ class PricingIntelligenceService:
             if persist:
                 pairs = resolve_pairing(baseline, accepted)
                 accepted_by_key = {record.observation_key(): record for record in accepted}
-                # Matched via _last_confirmed_predecessors() (exact key, then an
-                # eligibility-group match, then a category-agnostic match), not
-                # a plain dict lookup by exact key: a spike that also changes
-                # eligibility identity -- or rate_category itself -- stores the
-                # warning chain under a different key than the one the last
-                # confirmed state is filed under, so an exact-key lookup would
-                # always miss it and treat the missing key as proof of a genuine
-                # move -- see the confirmed_keys comment below.
-                last_confirmed_pairs = _last_confirmed_predecessors(
-                    last_confirmed_before_run, accepted
-                )
+                # last_confirmed_pairs was already computed above, before
+                # detect_changes(), and is reused here unchanged.
                 # Rebased onto the last verified predecessor (or None when there
                 # isn't one) rather than passed as bare keys: a suspicious chain
                 # can partially revert (confirmed 5.00% -> warning 8.00% ->

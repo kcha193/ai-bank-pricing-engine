@@ -335,11 +335,22 @@ class BankPricingCollector(abc.ABC):
         context = record.raw_text_context
         lowered = context.lower()
 
+        # Only overridden when the generic extractor's own per-cell category
+        # ("special"/"standard", checked against the literal words) fell
+        # through to a generic fallback -- e.g. BNZ brands its special rate
+        # "Classic", which _rate_category() doesn't recognise on its own.
+        # raw_text_context is the whole row (shared by every rate this row
+        # split into), so re-deriving unconditionally from it would clobber
+        # an already-specific per-cell category with whichever bank-specific
+        # marker the row happens to also contain -- typically "special",
+        # checked first here, mislabelling a real "standard" rate that sits
+        # in the same row.
         category = record.rate_category
-        if any(marker in lowered for marker in self.special_product_markers):
-            category = "special"
-        elif any(marker in lowered for marker in self.standard_product_markers):
-            category = "standard"
+        if category in ("fixed", "home_loan"):
+            if any(marker in lowered for marker in self.special_product_markers):
+                category = "special"
+            elif any(marker in lowered for marker in self.standard_product_markers):
+                category = "standard"
 
         max_lvr, min_equity = normalise_lvr_values(context)
         implies_min_equity = any(

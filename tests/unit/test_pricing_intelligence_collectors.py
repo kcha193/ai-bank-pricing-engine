@@ -104,6 +104,28 @@ def test_bank_specific_product_naming_maps_to_canonical_category(fixture_fetcher
     assert "special" in categories, "BNZ Classic must map to the canonical special category"
 
 
+def test_enrichment_preserves_per_cell_categories_from_a_multi_rate_row():
+    """enrich_mortgage_record() re-derives rate_category from raw_text_context
+    (the whole row -- shared by every rate the row split into) only to catch
+    a bank-specific marker the generic parser missed on its own (e.g. BNZ's
+    "Classic"). It must not clobber a category the row-level split already
+    resolved correctly: raw_text_context contains both "Special" and
+    "Standard" for a two-cell row, and re-deriving unconditionally from it
+    would relabel both records "special" (checked first)."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Special</th><th>Standard</th></tr>
+      <tr><td>1 year</td><td>Special 4.79%</td><td>Standard 5.39%</td></tr>
+    </table></body></html>
+    """
+    collector = ANZCollector()
+
+    records = collector.parse_mortgage_html(html, captured_at_utc=OBSERVED_AT)
+
+    by_category = {record.rate_category: record.advertised_rate_pct for record in records}
+    assert by_category == {"special": 4.79, "standard": 5.39}
+
+
 def test_fetch_failure_is_returned_not_raised(fixture_fetcher):
     collector = ANZCollector(fetcher=fixture_fetcher(failing_banks=["ANZ"]))
     result = collector.collect_mortgage_rates(persist_snapshot=False)
