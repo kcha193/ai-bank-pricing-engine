@@ -241,6 +241,41 @@ def _rejected_predecessor_keys(
     return suppressed
 
 
+def _last_confirmed_predecessors(
+    last_confirmed: Sequence[CompetitorRateRecord],
+    accepted: Sequence[CompetitorRateRecord],
+) -> dict[str, CompetitorRateRecord]:
+    """The best-matching last-confirmed predecessor for each accepted
+    record, used by ``collect()``'s suspicious-confirmation rebase.
+
+    Falls back from an exact-or-eligibility-group match (via
+    :func:`~.changes.resolve_pairing`) to an unambiguous
+    :meth:`~.models.CompetitorRateRecord.category_agnostic_group_key` match
+    when the chain of suspicious readings also flipped ``rate_category``:
+    neither ``observation_key()`` nor ``eligibility_group_key()`` can cross
+    that boundary, since ``rate_category`` is real identity in both, so
+    ``resolve_pairing()`` alone leaves such a record with no last-confirmed
+    match at all -- and an unmatched record is treated as having no prior
+    confirmed state to compare against, confirming an artificial movement
+    from the latest (still unconfirmed) warning-chain hop instead.
+    """
+    pairs = dict(resolve_pairing(last_confirmed, accepted))
+    claimed_keys = {p.observation_key() for p in pairs.values()}
+    unclaimed: dict[str, list[CompetitorRateRecord]] = {}
+    for p in last_confirmed:
+        if p.observation_key() not in claimed_keys:
+            unclaimed.setdefault(p.category_agnostic_group_key(), []).append(p)
+
+    for record in accepted:
+        key = record.observation_key()
+        if key in pairs:
+            continue
+        candidates = unclaimed.get(record.category_agnostic_group_key(), [])
+        if len(candidates) == 1:
+            pairs[key] = candidates[0]
+    return pairs
+
+
 def _exclude_stale(
     records: Sequence[CompetitorRateRecord], now: datetime, max_age_hours: float
 ) -> list[CompetitorRateRecord]:
@@ -510,14 +545,17 @@ class PricingIntelligenceService:
         if persist:
             pairs = resolve_pairing(baseline, accepted)
             accepted_by_key = {record.observation_key(): record for record in accepted}
-            # Matched via resolve_pairing() (exact key, falling back to an
-            # eligibility-group match), not a plain dict lookup by exact key:
-            # a spike that also changes eligibility identity stores the
+            # Matched via _last_confirmed_predecessors() (exact key, then an
+            # eligibility-group match, then a category-agnostic match), not
+            # a plain dict lookup by exact key: a spike that also changes
+            # eligibility identity -- or rate_category itself -- stores the
             # warning chain under a different key than the one the last
             # confirmed state is filed under, so an exact-key lookup would
             # always miss it and treat the missing key as proof of a genuine
             # move -- see the confirmed_keys comment below.
-            last_confirmed_pairs = resolve_pairing(last_confirmed_before_run, accepted)
+            last_confirmed_pairs = _last_confirmed_predecessors(
+                last_confirmed_before_run, accepted
+            )
             # Rebased onto the last verified predecessor (or None when there
             # isn't one) rather than passed as bare keys: a suspicious chain
             # can partially revert (confirmed 5.00% -> warning 8.00% ->

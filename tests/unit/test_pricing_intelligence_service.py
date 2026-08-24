@@ -463,6 +463,51 @@ def test_a_confirmed_large_movement_counts_as_market_activity(fixture_fetcher):
     assert activity.changes >= 1
 
 
+def test_a_spike_that_reverts_across_a_category_flip_is_not_confirmed(make_record):
+    """Same bug as the sibling exact-reversion test, but the spike also
+    flips rate_category (5.00% special -> warning 8.00% standard -> warning
+    5.00% standard -> clean 5.00% standard). resolve_pairing() can't match
+    the last confirmed special record to the standard warning chain at all
+    -- rate_category is real identity in both observation_key() and
+    eligibility_group_key() -- so it must fall back to the category-agnostic
+    match, the same way _suspicious_predecessor_keys() already does."""
+    day_four = DAY_ONE + timedelta(days=3)
+    confirmed = make_record(bank="ANZ", rate_category="special", rate_pct=5.00)
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", [confirmed])],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    spike = make_record(
+        bank="ANZ", rate_category="standard", rate_pct=8.00, observed_at=DAY_TWO
+    )
+    service._collectors = [_StubCollector("ANZ", [spike])]
+    service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)  # flagged suspicious
+
+    revert = make_record(
+        bank="ANZ", rate_category="standard", rate_pct=5.00, observed_at=DAY_THREE
+    )
+    service._collectors = [_StubCollector("ANZ", [revert])]
+    service.collect(captured_at_utc=DAY_THREE, persist_snapshot=False)  # also flagged suspicious
+
+    repeat = make_record(
+        bank="ANZ", rate_category="standard", rate_pct=5.00, observed_at=day_four
+    )
+    service._collectors = [_StubCollector("ANZ", [repeat])]
+    service.collect(captured_at_utc=day_four, persist_snapshot=False)  # clean re-observation
+
+    changes = service.get_changes(days=30, now=day_four)
+    activity = service.get_market_activity(days=30, now=day_four)
+
+    reversal = next(c for c in changes if c.previous_rate_pct == 8.00 and c.current_rate_pct == 5.00)
+    assert reversal.suspicious is True, "the bogus reversal must stay excluded from market activity"
+    assert activity.changes == 0, "the verified rate never actually changed"
+
+
 def test_a_spike_that_reverts_is_not_confirmed_as_a_genuine_movement(make_record):
     """confirmed 5.00% -> warning 8.00% -> warning 5.00% -> clean 5.00% must
     not confirm the latest suspicious event (8.00% -> 5.00%) as a genuine
