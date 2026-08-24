@@ -307,19 +307,24 @@ def _is_header_row(row: list[str]) -> bool:
 
 
 _PROMOTIONAL_PERCENTAGE_MARKERS = ("cashback", "cash back", "discount", "bonus", "rebate")
+_PROMOTIONAL_MARKER_ALTERNATION = "|".join(
+    marker.replace(" ", r"\s+") for marker in _PROMOTIONAL_PERCENTAGE_MARKERS
+)
 _PROMOTIONAL_PERCENTAGE_PATTERN = re.compile(
-    r"(?<![\d.])\d{1,2}(?:\.\d{1,3})?\s*%\s*"
-    r"(?:" + "|".join(marker.replace(" ", r"\s+") for marker in _PROMOTIONAL_PERCENTAGE_MARKERS) + r")",
+    r"(?<![\d.])\d{1,2}(?:\.\d{1,3})?\s*%\s*(?:" + _PROMOTIONAL_MARKER_ALTERNATION + r")"
+    r"|(?:" + _PROMOTIONAL_MARKER_ALTERNATION + r")[^%]{0,20}\d{1,2}(?:\.\d{1,3})?\s*%",
     re.I,
 )
 
 
 def _strip_promotional_percentages(text: str) -> str:
-    """Remove "<rate>% <promo marker>" spans (e.g. "1% cashback") so a
-    promotional percentage sharing a cell or row with a genuine rate isn't
-    mistaken for it. Only the marker-adjacent percentage is removed --
-    rejecting the whole cell/row would also discard a genuine rate advertised
-    alongside a cashback offer (e.g. "Special 5.00% with 1% cashback").
+    """Remove a promotional percentage's span (e.g. "1% cashback" or,
+    reversed, "cashback of 1%") so it isn't mistaken for a genuine rate
+    sharing its cell or row. Only the marker-adjacent percentage is removed
+    -- rejecting the whole cell/row would also discard a genuine rate
+    advertised alongside a cashback offer (e.g. "Special 5.00% with 1%
+    cashback"). Both grammatical orders are stripped: the marker can follow
+    its percentage ("1% cashback") or precede it ("cashback of 1%").
     """
     return _PROMOTIONAL_PERCENTAGE_PATTERN.sub("", text)
 

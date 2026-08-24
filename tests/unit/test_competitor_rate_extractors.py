@@ -287,6 +287,31 @@ def test_parse_html_rates_extracts_the_rate_when_cashback_shares_its_cell():
     assert records[0].advertised_rate_pct == 5.00
 
 
+def test_parse_html_rates_extracts_the_rate_when_promo_marker_precedes_its_percentage():
+    """The promotional-percentage strip must handle both grammatical orders:
+    "1% cashback" (percentage then marker) and, reversed, "cashback of 1%"
+    (marker then percentage). The prior fix only stripped the first order,
+    so "Special 5.00% with cashback of 1%" still retained "1%" and picked
+    it as the rate instead of the genuine 5.00%."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Rate</th></tr>
+      <tr><td>1 year</td><td>Special 5.00% with cashback of 1%</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.00
+
+
 def test_fetch_source_writes_snapshot_for_successful_http_response(tmp_path, monkeypatch):
     source = RateSource("ANZ", ProductType.HOME_LOAN, "https://example.test/home")
 
