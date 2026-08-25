@@ -370,8 +370,13 @@ _ELIGIBILITY_MARKER_ALTERNATION = "|".join(_ELIGIBILITY_PERCENTAGE_MARKERS)
 # separate eligibility clause in the same cell).
 _ELIGIBILITY_QUALIFIERS = ("low", "minimum", "min")
 _ELIGIBILITY_QUALIFIER_ALTERNATION = "|".join(_ELIGIBILITY_QUALIFIERS)
+# An eligibility margin is sometimes itself labelled with the "p.a." rate
+# unit before its qualifier/marker ("0.75% p.a. low equity margin"), unlike
+# "0.75% low equity margin" -- tolerated as an optional prefix so it doesn't
+# break the qualifier-then-marker match that follows.
 _ELIGIBILITY_PERCENTAGE_PATTERN = re.compile(
     r"(?<![\d.])\d{1,2}(?:\.\d{1,3})?\s*%\s*"
+    r"(?:p\.?a\.?\s+)?"
     r"(?:(?:" + _ELIGIBILITY_QUALIFIER_ALTERNATION + r")[\s-]+)?"
     r"(?:" + _ELIGIBILITY_MARKER_ALTERNATION + r")"
     + _NOT_A_RATE_LABEL

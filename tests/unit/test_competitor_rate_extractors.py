@@ -444,6 +444,32 @@ def test_parse_html_rates_excludes_a_hyphenated_low_equity_margin_percentage():
     assert records[0].advertised_rate_pct == 5.49
 
 
+def test_parse_html_rates_excludes_a_low_equity_margin_labelled_with_pa():
+    """A low-equity margin percentage sometimes carries its own "p.a." rate
+    unit before the qualifier ("0.75% p.a. low equity margin"), unlike
+    "0.75% low equity margin". Without tolerating the intervening unit, the
+    percentage-then-marker strip requires the qualifier/marker immediately
+    after the percentage and leaves the margin percentage untouched."""
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>Term</th><th>Rate</th></tr>
+      <tr><td>Special</td><td>1 year</td>
+          <td>5.49% plus 0.75% p.a. low equity margin</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.49
+
+
 def test_parse_html_rates_ignores_deposit_eligibility_percentage_for_home_loans():
     """A low deposit-requirement percentage sharing a row with a genuine
     home-loan rate (e.g. "5.49%" and, in another cell, "5% deposit
