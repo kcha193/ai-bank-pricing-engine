@@ -240,23 +240,20 @@ def parse_html_rates(
         min_balance, max_balance = (
             normalise_balance(context) if product == ProductType.TERM_DEPOSIT else (None, None)
         )
-        # Retained on the record verbatim (not just used transiently above)
-        # so a bank-specific category alias that lives only in the column
-        # header -- e.g. BNZ's "Classic" -- reaches
-        # BankPricingCollector.enrich_mortgage_record() too: enrichment reads
-        # raw_text_context, which is otherwise built from the data row alone
-        # and never sees a header-only word. Not folded into `context` itself
-        # (used above for lvr_condition/special_conditions/balance/frequency
-        # at parse time): a header cell is normally just a short category
-        # label, but there is no guarantee it can never coincide with one of
-        # those other parsers' trigger words, so the blast radius is kept to
-        # exactly what reads raw_text_context afterwards.
-        raw_text_context = (
-            _clean_text(context + " | " + " | ".join(current_header_row))
-            if current_header_row
-            else context
-        )
-        for rate, category in rate_categories:
+        for rate, category, own_header in rate_categories:
+            # Extends only *this* record's own stored context with its own
+            # aligned header cell (not folded into `context` itself, used
+            # above for lvr_condition/special_conditions/balance/frequency at
+            # parse time) -- so a bank-specific category alias living only in
+            # the header (e.g. BNZ's "Classic") reaches
+            # BankPricingCollector.enrich_mortgage_record() later, which reads
+            # raw_text_context. Using each record's own column's header only,
+            # not the whole header row, keeps a sibling column's marker (e.g.
+            # a "Special" header's min-equity implication) out of a record
+            # that was never actually under that column.
+            raw_text_context = (
+                _clean_text(context + " | " + own_header) if own_header else context
+            )
             records.append(
                 CompetitorRateRecord(
                     bank=bank,
@@ -322,13 +319,25 @@ def _is_header_row(row: list[str]) -> bool:
     return "rate" in text and not re.search(r"\d+(?:\.\d+)?\s*%", text)
 
 
+# Bounds the gap a marker-then-percentage match may span: the percentage
+# must be the marker's *own* value, not merely the nearest one that happens
+# to follow within 20 characters. Excludes crossing ";"/"." (a new clause)
+# and, specifically, the word "rate" -- the one noun in this domain that
+# reliably introduces a genuine, unrelated value (e.g. "Cashback offer;
+# rate 5.00%", where "cashback" has no percentage of its own at all, and the
+# only "%" in the text is the real rate in a separate clause). Without this,
+# the marker-then-percentage match would strip that genuine rate outright,
+# leaving the row with no plausible rate and silently dropping it.
+_MARKER_TO_PERCENTAGE_GAP = r"(?:(?!rate)[^%;.]){0,20}"
+
 _PROMOTIONAL_PERCENTAGE_MARKERS = ("cashback", "cash back", "discount", "bonus", "rebate")
 _PROMOTIONAL_MARKER_ALTERNATION = "|".join(
     marker.replace(" ", r"\s+") for marker in _PROMOTIONAL_PERCENTAGE_MARKERS
 )
 _PROMOTIONAL_PERCENTAGE_PATTERN = re.compile(
     r"(?<![\d.])\d{1,2}(?:\.\d{1,3})?\s*%\s*(?:" + _PROMOTIONAL_MARKER_ALTERNATION + r")"
-    r"|(?:" + _PROMOTIONAL_MARKER_ALTERNATION + r")[^%]{0,20}\d{1,2}(?:\.\d{1,3})?\s*%",
+    r"|(?:" + _PROMOTIONAL_MARKER_ALTERNATION + r")" + _MARKER_TO_PERCENTAGE_GAP
+    + r"\d{1,2}(?:\.\d{1,3})?\s*%",
     re.I,
 )
 
@@ -340,7 +349,8 @@ _ELIGIBILITY_PERCENTAGE_MARKERS = ("deposit", "equity")
 _ELIGIBILITY_MARKER_ALTERNATION = "|".join(_ELIGIBILITY_PERCENTAGE_MARKERS)
 _ELIGIBILITY_PERCENTAGE_PATTERN = re.compile(
     r"(?<![\d.])\d{1,2}(?:\.\d{1,3})?\s*%\s*(?:" + _ELIGIBILITY_MARKER_ALTERNATION + r")"
-    r"|(?:" + _ELIGIBILITY_MARKER_ALTERNATION + r")[^%]{0,20}\d{1,2}(?:\.\d{1,3})?\s*%",
+    r"|(?:" + _ELIGIBILITY_MARKER_ALTERNATION + r")" + _MARKER_TO_PERCENTAGE_GAP
+    + r"\d{1,2}(?:\.\d{1,3})?\s*%",
     re.I,
 )
 
@@ -395,8 +405,9 @@ def _extract_rates_with_categories(
     product: ProductType,
     special_label: str | None,
     header_row: list[str] | None = None,
-) -> list[tuple[float, str]]:
-    """One ``(rate, category)`` pair per rate-bearing cell in the row.
+) -> list[tuple[float, str, str | None]]:
+    """One ``(rate, category, own_header_cell)`` triple per rate-bearing
+    cell in the row.
 
     Most rows advertise a single rate, handled the existing way: the last
     plausible percentage anywhere in the row, categorised from the row's
@@ -417,6 +428,17 @@ def _extract_rates_with_categories(
     overwrites the other. The same header fallback applies when only one
     cell carries a rate: a single "Special rate" header over a bare data
     cell must still resolve to "special", not the generic default.
+
+    The third element is that same aligned header cell (or ``None`` when
+    there is no ``header_row`` or the index is out of range), returned
+    *per record* rather than folded into a shared context here: callers use
+    it to extend only that record's own stored context, e.g. so a
+    bank-specific alias living only in the header (BNZ's "Classic") reaches
+    later enrichment. Returning the *whole* header row instead would leak a
+    sibling column's marker into every record from the row -- e.g. a
+    "Special" header's min-equity marker wrongly applied to the "Standard"
+    record sharing that row, since eligibility enrichment has no per-cell
+    boundary of its own to filter it back out.
     """
     cell_rates = [
         (idx, cell, _extract_plausible_rate(cell, product)) for idx, cell in enumerate(row)
@@ -427,25 +449,27 @@ def _extract_rates_with_categories(
         rate = _extract_rate(context, product)
         if rate is None:
             return []
-        return [(rate, _rate_category(product, context, special_label))]
+        return [(rate, _rate_category(product, context, special_label), None)]
 
     if len(plausible_cells) == 1:
         idx, cell, rate = plausible_cells[0]
+        own_header = header_row[idx] if header_row is not None and idx < len(header_row) else None
         hint = _rate_category_hint(product, cell, special_label)
-        if hint is None and header_row is not None and idx < len(header_row):
-            hint = _rate_category_hint(product, header_row[idx], special_label)
+        if hint is None and own_header is not None:
+            hint = _rate_category_hint(product, own_header, special_label)
         if hint is None:
             hint = _rate_category(product, context, special_label)
-        return [(rate, hint)]
+        return [(rate, hint, own_header)]
 
-    results: list[tuple[float, str]] = []
+    results: list[tuple[float, str, str | None]] = []
     for idx, cell, rate in plausible_cells:
+        own_header = header_row[idx] if header_row is not None and idx < len(header_row) else None
         hint = _rate_category_hint(product, cell, special_label)
-        if hint is None and header_row is not None and idx < len(header_row):
-            hint = _rate_category_hint(product, header_row[idx], special_label)
+        if hint is None and own_header is not None:
+            hint = _rate_category_hint(product, own_header, special_label)
         if hint is None:
             hint = _rate_category(product, "", special_label)
-        results.append((rate, hint))
+        results.append((rate, hint, own_header))
     return results
 
 

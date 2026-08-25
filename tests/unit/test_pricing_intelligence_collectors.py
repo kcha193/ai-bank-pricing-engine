@@ -152,6 +152,31 @@ def test_enrichment_catches_a_bank_specific_header_only_alias():
     assert by_category == {"special": 4.79, "standard": 5.39}
 
 
+def test_header_only_categorisation_does_not_leak_a_sibling_columns_eligibility():
+    """A "Special rate"/"Standard rate" header pair over bare data cells
+    must not leak the Special column's min-equity implication onto the
+    Standard record: ANZ's min_equity_product_markers = ("special",) is
+    checked against raw_text_context, so if the whole header row were
+    folded into every record from it, the Standard record's raw_text_context
+    would also contain "Special" and wrongly inherit its 80% max_lvr / 20%
+    min_equity eligibility condition. Each record must see only its own
+    column's header cell."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Special rate</th><th>Standard rate</th></tr>
+      <tr><td>1 year</td><td>4.79%</td><td>5.39%</td></tr>
+    </table></body></html>
+    """
+    collector = ANZCollector()
+
+    records = collector.parse_mortgage_html(html, captured_at_utc=OBSERVED_AT)
+
+    by_category = {record.rate_category: record for record in records}
+    assert by_category["special"].min_equity == 0.20
+    assert by_category["standard"].min_equity is None
+    assert by_category["standard"].max_lvr is None
+
+
 def test_fetch_failure_is_returned_not_raised(fixture_fetcher):
     collector = ANZCollector(fetcher=fixture_fetcher(failing_banks=["ANZ"]))
     result = collector.collect_mortgage_rates(persist_snapshot=False)

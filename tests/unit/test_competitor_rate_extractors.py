@@ -312,6 +312,32 @@ def test_parse_html_rates_extracts_the_rate_when_promo_marker_precedes_its_perce
     assert records[0].advertised_rate_pct == 5.00
 
 
+def test_parse_html_rates_does_not_consume_an_unrelated_rate_after_a_promo_marker():
+    """A promotional marker with no percentage of its own (e.g. "Cashback
+    offer") must not swallow a genuine, unrelated rate that merely happens
+    to appear within a few characters afterwards (e.g. "; rate 5.00%").
+    The marker-then-percentage strip must require the percentage to
+    actually belong to the promotion, not just be nearby -- otherwise the
+    row loses its only rate and is silently dropped instead of parsed."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Rate</th></tr>
+      <tr><td>1 year</td><td>Cashback offer; rate 5.00%</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.00
+
+
 def test_parse_html_rates_ignores_deposit_eligibility_percentage_for_home_loans():
     """A low deposit-requirement percentage sharing a row with a genuine
     home-loan rate (e.g. "5.49%" and, in another cell, "5% deposit
