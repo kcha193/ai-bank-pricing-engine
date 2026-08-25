@@ -240,6 +240,16 @@ class BankPricingCollector(abc.ABC):
     #: right for banks that label both tiers in-row.
     default_fixed_category: ClassVar[Optional[str]] = None
 
+    #: Whether an unmarked row defaulted to ``default_fixed_category`` also
+    #: carries this bank's 20% minimum-equity condition.
+    #:
+    #: True only for banks whose unmarked row *is* the conditional/special
+    #: tier (ASB, BNZ) -- the row that would otherwise have matched
+    #: ``min_equity_product_markers`` if it had carried the marker word.
+    #: False for banks like Westpac, whose unmarked row defaults to the
+    #: unconditional standard tier.
+    default_fixed_category_implies_min_equity: ClassVar[bool] = False
+
     #: Products that are advertised mortgage rates but are not comparable
     #: front-book fixed lending: subsidised green/top-up lending, and products
     #: closed to new applications. They are kept for audit under the
@@ -370,6 +380,7 @@ class BankPricingCollector(abc.ABC):
         # checked first here, mislabelling a real "standard" rate that sits
         # in the same row.
         category = record.rate_category
+        defaulted_to_fixed_category = False
         if any(marker in lowered for marker in self.excluded_product_markers):
             # Retained with full provenance, but fenced out of every market
             # statistic. Checked before any other categorisation so a
@@ -386,11 +397,12 @@ class BankPricingCollector(abc.ABC):
                 # comparison entirely and the market median is computed over
                 # three banks while reporting five.
                 category = self.default_fixed_category
+                defaulted_to_fixed_category = True
 
         max_lvr, min_equity = normalise_lvr_values(context)
         implies_min_equity = any(
             marker in lowered for marker in self.min_equity_product_markers
-        )
+        ) or (defaulted_to_fixed_category and self.default_fixed_category_implies_min_equity)
         if max_lvr is None and (
             record.lvr_condition == "min_20_percent_equity" or implies_min_equity
         ):

@@ -31,3 +31,6 @@ class BNZCollector(BankPricingCollector):
     # n/a | n/a | n/a" -- the "Classic" heading never reaches the row text, so
     # the marker above cannot fire and an unmarked row is a Classic special.
     default_fixed_category: ClassVar[str] = "special"
+    # BNZ's unmarked row *is* the Classic tier, so it carries the same 20%
+    # equity condition "classic" would have implied via min_equity_product_markers.
+    default_fixed_category_implies_min_equity: ClassVar[bool] = True

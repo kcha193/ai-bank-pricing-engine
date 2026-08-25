@@ -33,6 +33,9 @@ class ASBCollector(BankPricingCollector):
     # "6 month | 4.79% p.a. | Interest Rate" with no tier word, and those rates
     # sit at the special tier (4.79 at 6m against ANZ's 5.39 carded).
     default_fixed_category: ClassVar[str] = "special"
+    # ASB's unmarked row *is* the special tier, so it carries the same 20%
+    # equity condition "special" would have implied via min_equity_product_markers.
+    default_fixed_category_implies_min_equity: ClassVar[bool] = True
     excluded_product_markers: ClassVar[tuple[str, ...]] = (
         "top up",
         "top-up",

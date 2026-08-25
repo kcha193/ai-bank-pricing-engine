@@ -69,6 +69,26 @@ def test_unmarked_westpac_rows_are_carded_not_special():
     assert by_category["standard"][12] == 5.59
 
 
+def test_unmarked_asb_and_bnz_specials_carry_the_min_equity_condition():
+    """A bare row defaulted to the special/Classic tier is still that tier --
+    it must not present as unrestricted lending in eligibility metadata."""
+    asb_specials = [
+        r for r in collect(ASBCollector, "asb_home_loans_unmarked.html")
+        if r.rate_category == "special"
+    ]
+    bnz_specials = [
+        r for r in collect(BNZCollector, "bnz_home_loans.html")
+        if r.rate_category == "special"
+    ]
+
+    assert asb_specials, "fixture must exercise the unmarked-special default"
+    assert bnz_specials, "fixture must exercise the unmarked-special default"
+    for record in asb_specials + bnz_specials:
+        assert record.lvr_condition == "min_20_percent_equity"
+        assert record.max_lvr == 0.80
+        assert record.min_equity == 0.20
+
+
 @pytest.mark.parametrize(
     ("marker_text", "collector_class", "fixture"),
     [("Better Homes Top Up", ASBCollector, "asb_home_loans_unmarked.html")],
@@ -100,6 +120,16 @@ def test_closed_products_are_retained_but_fenced_out():
 def test_non_comparable_products_are_excluded_from_the_market_snapshot():
     records = collect(ASBCollector, "asb_home_loans_unmarked.html")
     snapshot = build_market_snapshot(records, rate_category="special")
+
+    for term_market in snapshot.terms.values():
+        assert all(entry.rate_pct >= 4.0 for entry in term_market.entries)
+
+
+def test_non_comparable_products_are_excluded_from_an_unfiltered_snapshot():
+    """rate_category=None ("all categories") must not let a subsidised/closed
+    product become the bank representative, market leader, or median input."""
+    records = collect(ASBCollector, "asb_home_loans_unmarked.html")
+    snapshot = build_market_snapshot(records, rate_category=None)
 
     for term_market in snapshot.terms.values():
         assert all(entry.rate_pct >= 4.0 for entry in term_market.entries)

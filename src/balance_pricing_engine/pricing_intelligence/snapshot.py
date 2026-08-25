@@ -216,6 +216,13 @@ def build_market_snapshot(
     for record in records:
         if ProductType(record.product_type) is not product:
             continue
+        if record.rate_category == "non_comparable":
+            # Retained for audit on the record itself, but never a market
+            # statistic -- excluded unconditionally so an unfiltered
+            # (``rate_category=None``) snapshot can't let a subsidised or
+            # closed product become the bank representative, market leader,
+            # or median input. See ``BankPricingCollector.excluded_product_markers``.
+            continue
         if record.term_months_normalised is None:
             continue
         if rate_category is not None and record.rate_category != rate_category:
