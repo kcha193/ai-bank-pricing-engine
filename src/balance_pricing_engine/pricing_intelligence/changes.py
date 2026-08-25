@@ -107,6 +107,19 @@ _ELIGIBILITY_FIELDS = (
 # noise -- blanking every percentage in the text (as an earlier version of
 # this function did) would also erase a genuine condition-percentage change
 # that happens to leave the rate itself unchanged.
+#
+# Blanking every occurrence *equal in value* to the rate (a later, still
+# imprecise version of this function) has its own failure mode: a condition
+# percentage that coincidentally equals the rate (e.g. "Special 5.00% | 5%
+# deposit required") gets blanked too, and if only the rate later moves
+# (5.00% -> 5.10%) that condition percentage stops matching the new rate and
+# survives normalisation on one side only -- an unrelated, unchanged
+# condition then reads as a false ELIGIBILITY_CHANGE. Blanking only the
+# *first* value-matching occurrence avoids this: the rate is conventionally
+# the first percentage mentioned in the row, so this is a closer proxy for
+# "the rate's own token" than "every same-valued percentage" without needing
+# cell-boundary information that isn't available on an already-stored,
+# flattened special_conditions string.
 _PERCENTAGE_PATTERN = re.compile(r"(\d{1,2}(?:\.\d{1,3})?)\s*%")
 
 
@@ -114,10 +127,16 @@ def _normalized_special_conditions(text: Optional[str], rate_pct: float) -> Opti
     if text is None:
         return None
 
-    def _blank_if_rate(match: re.Match) -> str:
-        return "%" if abs(float(match.group(1)) - rate_pct) < 1e-6 else match.group(0)
+    blanked = False
 
-    return _PERCENTAGE_PATTERN.sub(_blank_if_rate, text)
+    def _blank_first_rate_occurrence(match: re.Match) -> str:
+        nonlocal blanked
+        if not blanked and abs(float(match.group(1)) - rate_pct) < 1e-6:
+            blanked = True
+            return "%"
+        return match.group(0)
+
+    return _PERCENTAGE_PATTERN.sub(_blank_first_rate_occurrence, text)
 
 
 _PROMOTION_FIELDS = ("cashback_text", "promotion_text")

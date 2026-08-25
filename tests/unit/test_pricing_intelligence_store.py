@@ -339,6 +339,28 @@ def test_observations_as_of_dates_records_from_their_first_observation(store, ma
     assert reconstructed[0].captured_at_utc == DAY_ONE
 
 
+def test_observations_as_of_does_not_return_evidence_from_a_later_touch(store, make_record):
+    """The touch path refreshes source_text/content_hash/parser_version on
+    the collapsed row in place, so by the time a state has been reconfirmed
+    since day one, the row's evidence columns reflect day two's snapshot --
+    not what was actually seen on day one. Returning day two's evidence
+    under a day-one reconstruction would be evidence "from the future"
+    relative to the reconstructed point, worse than merely stale, so the
+    historical read must not surface it as if it were accurate."""
+    store.record_observations(
+        [make_record(rate_pct=4.99, raw_text_context="day one snapshot")],
+        observed_at=DAY_ONE,
+    )
+    store.record_observations(
+        [make_record(rate_pct=4.99, raw_text_context="day two snapshot")],  # unchanged
+        observed_at=DAY_TWO,
+    )
+
+    reconstructed = store.get_observations_as_of(as_of=DAY_ONE)
+
+    assert reconstructed[0].raw_text_context != "day two snapshot"
+
+
 def _withdraw_bnz_on_day_two(store, make_record):
     """Shared setup: ANZ+BNZ on day one, BNZ withdrawn (and recorded) on day two."""
     store.record_observations(

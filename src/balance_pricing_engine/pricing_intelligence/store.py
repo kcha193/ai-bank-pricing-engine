@@ -1033,6 +1033,19 @@ def record_first_observed_at(row: sqlite3.Row) -> datetime:
     return _parse_iso(row["first_observed_at"])
 
 
+# Placeholder used by _row_to_history_record() in place of a stale-or-wrong
+# evidence hash it cannot honestly reconstruct -- 64 zero characters passes
+# CompetitorRateRecord's raw_html_sha256 length validation (a real SHA-256
+# is never all zeros) while being unmistakably a sentinel to a reader, not a
+# real digest that happens to look suspicious.
+_NO_HISTORICAL_EVIDENCE_HASH = "0" * 64
+_NO_HISTORICAL_EVIDENCE_TEXT = (
+    "(evidence unavailable: this state's stored evidence has since been "
+    "refreshed by a later, materially-unchanged collection and no longer "
+    "reflects this point in time)"
+)
+
+
 def _row_to_history_record(row: sqlite3.Row) -> CompetitorRateRecord:
     """Like :func:`_row_to_record`, but dates the state from when it began.
 
@@ -1040,7 +1053,26 @@ def _row_to_history_record(row: sqlite3.Row) -> CompetitorRateRecord:
     last reconfirmed: an unchanged state's ``last_seen_at`` creeps forward on
     every identical collection, which would otherwise make the dashboard lose
     a state's true start date.
+
+    ``raw_text_context``/``raw_html_sha256``/``parser_version`` are replaced
+    with placeholders for the same underlying reason: an unchanged reading's
+    touch (see ``record_observations()``) refreshes those columns on the
+    collapsed row in place, so by the time a later touch happens they reflect
+    evidence from whichever collection most recently confirmed the state --
+    not what was actually seen back when this reconstruction's point in time
+    was current. Returning that evidence under a historical timestamp would
+    be actively misleading (evidence *from the future* relative to the
+    reconstructed point), not merely stale, so a clearly-labelled placeholder
+    is returned instead of a claim this store cannot actually stand behind.
+    ``source_url``/``source_bank_page_title`` are left as the current values:
+    unlike page content, a bank's URL rarely changes, and the still-current
+    canonical link is more useful here than a placeholder.
     """
     return _row_to_record(row).model_copy(
-        update={"captured_at_utc": record_first_observed_at(row)}
+        update={
+            "captured_at_utc": record_first_observed_at(row),
+            "raw_text_context": _NO_HISTORICAL_EVIDENCE_TEXT,
+            "raw_html_sha256": _NO_HISTORICAL_EVIDENCE_HASH,
+            "parser_version": "unavailable",
+        }
     )

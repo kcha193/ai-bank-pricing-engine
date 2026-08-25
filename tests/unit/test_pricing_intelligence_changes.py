@@ -283,6 +283,37 @@ def test_a_condition_percentage_change_is_detected_even_with_the_rate_unchanged(
     assert "special_conditions" in changes[0].detail
 
 
+def test_a_rate_move_does_not_spuriously_flag_a_coincidentally_equal_condition_percentage(
+    make_record,
+):
+    """Blanking every percentage *equal in value* to the rate (not just the
+    rate's own occurrence) has its own failure mode: "Special 5.00% | 5%
+    deposit required" -> "Special 5.10% | 5% deposit required" is a pure
+    rate move with an unrelated, unchanged "5% deposit required" condition
+    that coincidentally shared the old rate's value. Blanking every 5%
+    occurrence in the previous record (since it equalled 5.00%) but not in
+    the current record (since 5% no longer equals the new rate 5.10%) would
+    make the two normalised strings differ and fire a false
+    ELIGIBILITY_CHANGE alongside the genuine RATE_INCREASE."""
+    changes = detect_changes(
+        [
+            make_record(
+                rate_pct=5.00,
+                special_conditions="Special 5.00% | 5% deposit required",
+            )
+        ],
+        [
+            make_record(
+                rate_pct=5.10,
+                special_conditions="Special 5.10% | 5% deposit required",
+                observed_at=DAY_TWO,
+            )
+        ],
+    )
+
+    assert [change.change_type for change in changes] == [ChangeType.RATE_INCREASE]
+
+
 def test_promotion_change_is_detected(make_record):
     changes = detect_changes(
         [make_record(cashback_text=None)],
