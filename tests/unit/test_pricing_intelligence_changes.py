@@ -214,6 +214,47 @@ def test_eligibility_change_is_detected_without_a_rate_move(make_record):
     assert "max_lvr" in changes[0].detail
 
 
+def test_a_special_conditions_only_edit_is_detected_as_an_eligibility_change(make_record):
+    """special_conditions is material in store.py's _MATERIAL_FIELDS (as
+    "eligibility_text"), so a change confined to it alone still creates a
+    genuinely new stored observation state -- it must fire an
+    ELIGIBILITY_CHANGE too, or that new state has no explanatory event in
+    the audit trail, dashboard, or alerts."""
+    changes = detect_changes(
+        [make_record(special_conditions="Owner occupier only, 20% equity required")],
+        [
+            make_record(
+                special_conditions="Investor lending, 20% equity required",
+                observed_at=DAY_TWO,
+            )
+        ],
+    )
+
+    assert [change.change_type for change in changes] == [ChangeType.ELIGIBILITY_CHANGE]
+    assert "special_conditions" in changes[0].detail
+
+
+def test_a_rate_move_alone_does_not_spuriously_trigger_an_eligibility_change(make_record):
+    """extractors._special_conditions() echoes the row's whole raw context
+    verbatim, which embeds the advertised rate percentage itself -- so an
+    ordinary rate move that leaves the eligibility wording untouched must
+    not also fire a companion ELIGIBILITY_CHANGE just because the
+    percentage substring inside special_conditions changed along with the
+    rate."""
+    changes = detect_changes(
+        [make_record(rate_pct=4.79, special_conditions="Special 4.79% with 20% equity")],
+        [
+            make_record(
+                rate_pct=4.59,
+                special_conditions="Special 4.59% with 20% equity",
+                observed_at=DAY_TWO,
+            )
+        ],
+    )
+
+    assert [change.change_type for change in changes] == [ChangeType.RATE_DECREASE]
+
+
 def test_promotion_change_is_detected(make_record):
     changes = detect_changes(
         [make_record(cashback_text=None)],

@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+import re
 from typing import Iterable, Optional, Sequence
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
@@ -84,7 +85,9 @@ class RateChange:
         return f"{self.bank} {term} {self.rate_category}: {self.change_type.value.lower()}"
 
 
-# Fields compared for a non-price eligibility change.
+# Fields compared for a non-price eligibility change. special_conditions is
+# deliberately excluded here despite being material in store.py's
+# _MATERIAL_FIELDS (as "eligibility_text") -- see _special_conditions_changed().
 _ELIGIBILITY_FIELDS = (
     "lvr_condition",
     "max_lvr",
@@ -92,6 +95,20 @@ _ELIGIBILITY_FIELDS = (
     "new_business_only",
     "package_requirement",
 )
+
+# extractors._special_conditions() returns the row's whole raw context
+# verbatim, which embeds the advertised rate percentage itself -- comparing
+# special_conditions directly would fire a spurious ELIGIBILITY_CHANGE on
+# every ordinary rate movement, since that percentage substring always
+# differs. Normalising it out isolates genuine eligibility-wording changes
+# (e.g. "owner-occupier only" -> "investor lending") from mere rate noise.
+_RATE_PERCENTAGE_PATTERN = re.compile(r"\d{1,2}(?:\.\d{1,3})?\s*%")
+
+
+def _normalized_special_conditions(text: Optional[str]) -> Optional[str]:
+    if text is None:
+        return None
+    return _RATE_PERCENTAGE_PATTERN.sub("%", text)
 _PROMOTION_FIELDS = ("cashback_text", "promotion_text")
 
 
@@ -304,7 +321,14 @@ def _compare_records(
     record_suspicious = current.validation_status == "warning"
 
     eligibility_diff = _diff_fields(previous, current, _ELIGIBILITY_FIELDS)
-    if eligibility_diff:
+    special_conditions_diff = None
+    if _normalized_special_conditions(previous.special_conditions) != _normalized_special_conditions(
+        current.special_conditions
+    ):
+        special_conditions_diff = (
+            f"special_conditions: {previous.special_conditions!r} -> {current.special_conditions!r}"
+        )
+    if eligibility_diff or special_conditions_diff:
         changes.append(
             _build(
                 current,
@@ -315,7 +339,7 @@ def _compare_records(
                 current_rate_pct=current.advertised_rate_pct,
                 previous_observed_at=previous.captured_at_utc,
                 suspicious=record_suspicious,
-                detail=eligibility_diff,
+                detail="; ".join(filter(None, (eligibility_diff, special_conditions_diff))),
             )
         )
 

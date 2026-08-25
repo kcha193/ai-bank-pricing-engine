@@ -185,6 +185,35 @@ def test_parse_html_rates_splits_a_row_with_two_rate_bearing_cells():
     assert by_category == {"special": 4.79, "standard": 5.39}
 
 
+def test_parse_html_rates_scopes_lvr_condition_and_special_conditions_per_cell():
+    """A sibling cell's eligibility text must not leak into
+    lvr_condition/special_conditions either -- these are derived at parse
+    time, separately from raw_text_context, and round 46's fix only scoped
+    the latter. "Special 4.79% with 20% equity" next to "Standard 5.39%" in
+    one row must not give the Standard record the Special cell's
+    min_20_percent_equity condition or its special_conditions text."""
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>Term</th><th>Rate</th></tr>
+      <tr><td>Special 4.79% with 20% equity</td><td>1 year</td>
+          <td>Standard 5.39%</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    by_category = {record.rate_category: record for record in records}
+    assert by_category["special"].lvr_condition == "min_20_percent_equity"
+    assert by_category["standard"].lvr_condition != "min_20_percent_equity"
+    assert by_category["standard"].special_conditions is None
+
+
 def test_parse_html_rates_uses_column_headers_for_bare_multi_rate_cells():
     """When the category label lives only in the column header -- not the
     data cell itself -- a row with two bare rate cells ("4.79%", "5.39%",

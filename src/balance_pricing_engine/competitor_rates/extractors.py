@@ -237,22 +237,28 @@ def parse_html_rates(
         )
         if not rate_categories:
             continue
-        min_balance, max_balance = (
-            normalise_balance(context) if product == ProductType.TERM_DEPOSIT else (None, None)
-        )
         for rate, category, own_header, own_context in rate_categories:
             # own_context (this record's row text with sibling rate-bearing
-            # cells excluded) plus own_header, not the shared `context` used
-            # above for lvr_condition/special_conditions/balance/frequency at
-            # parse time -- so a bank-specific category alias living only in
-            # the header (e.g. BNZ's "Classic") reaches
+            # cells excluded) plus own_header, not the shared `context` --
+            # so a bank-specific category alias living only in the header
+            # (e.g. BNZ's "Classic") reaches
             # BankPricingCollector.enrich_mortgage_record() later, which reads
             # raw_text_context, while a sibling cell's own eligibility/promo
             # text (e.g. "Special 4.79% with 1% cashback" next to "Standard
             # 5.39%") does not leak into a record that was never under that
-            # cell.
+            # cell. Every other context-derived field below is likewise
+            # derived from this same scoped raw_text_context, not the shared
+            # `context` -- otherwise a sibling's eligibility condition (e.g.
+            # "Special 4.79% with 20% equity" next to "Standard 5.39%")
+            # would still leak into lvr_condition/special_conditions even
+            # though only raw_text_context itself was fixed.
             raw_text_context = (
                 _clean_text(own_context + " | " + own_header) if own_header else own_context
+            )
+            min_balance, max_balance = (
+                normalise_balance(raw_text_context)
+                if product == ProductType.TERM_DEPOSIT
+                else (None, None)
             )
             records.append(
                 CompetitorRateRecord(
@@ -265,18 +271,18 @@ def parse_html_rates(
                     term_days_raw=term.days,
                     advertised_rate_pct=rate,
                     interest_payment_frequency=(
-                        normalise_frequency(context)
+                        normalise_frequency(raw_text_context)
                         if product == ProductType.TERM_DEPOSIT
                         else "unknown"
                     ),
                     min_balance_or_deposit=min_balance,
                     max_balance_or_deposit=max_balance,
                     lvr_condition=(
-                        normalise_lvr_condition(context)
+                        normalise_lvr_condition(raw_text_context)
                         if product == ProductType.HOME_LOAN
                         else None
                     ),
-                    special_conditions=_special_conditions(context),
+                    special_conditions=_special_conditions(raw_text_context),
                     source_url=source_url,
                     source_bank_page_title=parser.title,
                     captured_at_utc=captured_at_utc,
