@@ -48,3 +48,14 @@ def test_market_intelligence_example_states_its_limitations():
 
     assert "not negotiated customer rates" in script
     assert "does not replace internal pricing governance" in script
+
+
+def test_market_intelligence_example_prerequisite_actually_works():
+    """Every tracked bank's collector now requires --render-javascript
+    (collectors/base.py); the docstring's own setup command must show the
+    working invocation, not the static HTTP one that returns ParserError
+    for every bank."""
+    script = Path("examples/run_market_intelligence_scenarios.py").read_text(encoding="utf-8")
+
+    assert "pricing_intelligence collect --render-javascript" in script
+    assert "playwright" in script

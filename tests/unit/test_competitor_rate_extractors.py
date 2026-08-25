@@ -393,6 +393,57 @@ def test_parse_html_rates_excludes_a_low_equity_margin_percentage():
     assert records[0].advertised_rate_pct == 5.49
 
 
+def test_parse_html_rates_excludes_a_minimum_deposit_percentage():
+    """A "minimum deposit" eligibility percentage (e.g. "5.49% with 5%
+    minimum deposit required") must not be treated as a second rate.
+    "minimum" is not "low" -- the previous fix's qualifier list was scoped
+    to only the one demonstrated word, and this domain's own
+    normalise.py._EQUITY_PATTERN already recognises "minimum" as an
+    equity/deposit qualifier too."""
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>Term</th><th>Rate</th></tr>
+      <tr><td>Special</td><td>1 year</td>
+          <td>5.49% with 5% minimum deposit required</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.49
+
+
+def test_parse_html_rates_excludes_a_hyphenated_low_equity_margin_percentage():
+    """The "low equity" qualifier must also be recognised when hyphenated
+    ("0.75% low-equity margin"), a common written variant the
+    whitespace-only qualifier gap missed."""
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>Term</th><th>Rate</th></tr>
+      <tr><td>Special</td><td>1 year</td>
+          <td>Special 5.49% plus a 0.75% low-equity margin</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.49
+
+
 def test_parse_html_rates_ignores_deposit_eligibility_percentage_for_home_loans():
     """A low deposit-requirement percentage sharing a row with a genuine
     home-loan rate (e.g. "5.49%" and, in another cell, "5% deposit

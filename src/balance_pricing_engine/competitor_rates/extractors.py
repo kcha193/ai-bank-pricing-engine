@@ -357,17 +357,23 @@ _PROMOTIONAL_PERCENTAGE_PATTERN = re.compile(
 # genuine rate -- stripping it there would discard real rates wholesale.
 _ELIGIBILITY_PERCENTAGE_MARKERS = ("deposit", "equity")
 _ELIGIBILITY_MARKER_ALTERNATION = "|".join(_ELIGIBILITY_PERCENTAGE_MARKERS)
-# "low" is the one qualifier this domain commonly inserts between the
-# percentage and its marker ("0.75% low equity margin"), unlike a bare
-# "0.75% equity" -- without it, the percentage-then-marker alternative
-# requires the marker immediately after the percentage and misses this
-# margin percentage entirely, leaving it as a second plausible rate
-# alongside the genuine one. Scoped to this single demonstrated word rather
-# than a broader gap allowance: an open-ended gap here risks stripping a
-# genuine rate that happens to be followed by an unrelated later mention of
-# "equity" (e.g. a separate eligibility clause in the same cell).
+# The qualifiers this domain commonly inserts between the percentage and
+# its marker ("0.75% low equity margin", "5% minimum deposit required",
+# hyphenated as "0.75% low-equity margin") -- unlike a bare "0.75% equity",
+# without tolerating them the percentage-then-marker alternative requires
+# the marker immediately after the percentage and misses the eligibility
+# percentage entirely, leaving it as a second plausible rate alongside the
+# genuine one. "minimum" matches normalise.py's own _EQUITY_PATTERN
+# vocabulary. Scoped to these demonstrated qualifiers rather than a broader
+# gap allowance: an open-ended gap here risks stripping a genuine rate that
+# happens to be followed by an unrelated later mention of "equity" (e.g. a
+# separate eligibility clause in the same cell).
+_ELIGIBILITY_QUALIFIERS = ("low", "minimum", "min")
+_ELIGIBILITY_QUALIFIER_ALTERNATION = "|".join(_ELIGIBILITY_QUALIFIERS)
 _ELIGIBILITY_PERCENTAGE_PATTERN = re.compile(
-    r"(?<![\d.])\d{1,2}(?:\.\d{1,3})?\s*%\s*(?:low\s+)?(?:" + _ELIGIBILITY_MARKER_ALTERNATION + r")"
+    r"(?<![\d.])\d{1,2}(?:\.\d{1,3})?\s*%\s*"
+    r"(?:(?:" + _ELIGIBILITY_QUALIFIER_ALTERNATION + r")[\s-]+)?"
+    r"(?:" + _ELIGIBILITY_MARKER_ALTERNATION + r")"
     + _NOT_A_RATE_LABEL
     + r"|(?:" + _ELIGIBILITY_MARKER_ALTERNATION + r")" + _MARKER_TO_PERCENTAGE_GAP
     + r"\d{1,2}(?:\.\d{1,3})?\s*%",

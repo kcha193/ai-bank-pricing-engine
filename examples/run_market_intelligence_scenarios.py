@@ -13,9 +13,11 @@ scenario only changes *how the competitor rate is sourced* and then calls
                                        market-median assumption, which is
                                        Scenario B's recommended rate
 
-Requires a populated observation store:
+Requires a populated observation store. Every tracked bank now builds its
+rate table client-side, so collection needs the optional browser extra:
 
-    python3 -m balance_pricing_engine.pricing_intelligence collect
+    pip install -e '.[browser]' && python3 -m playwright install chromium
+    python3 -m balance_pricing_engine.pricing_intelligence collect --render-javascript
 """
 
 from __future__ import annotations
@@ -68,7 +70,9 @@ def main() -> None:
         if not snapshot.terms:
             raise SystemExit(
                 "No market data. Run: python3 -m balance_pricing_engine."
-                "pricing_intelligence collect"
+                "pricing_intelligence collect --render-javascript "
+                "(needs pip install -e '.[browser]' && "
+                "python3 -m playwright install chromium)"
             )
 
         print("NZ Market Intelligence")
