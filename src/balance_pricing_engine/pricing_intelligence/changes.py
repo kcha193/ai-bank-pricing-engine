@@ -100,15 +100,26 @@ _ELIGIBILITY_FIELDS = (
 # verbatim, which embeds the advertised rate percentage itself -- comparing
 # special_conditions directly would fire a spurious ELIGIBILITY_CHANGE on
 # every ordinary rate movement, since that percentage substring always
-# differs. Normalising it out isolates genuine eligibility-wording changes
-# (e.g. "owner-occupier only" -> "investor lending") from mere rate noise.
-_RATE_PERCENTAGE_PATTERN = re.compile(r"\d{1,2}(?:\.\d{1,3})?\s*%")
+# differs. Normalising *only the advertised-rate occurrence* out isolates
+# genuine eligibility-wording changes (e.g. "owner-occupier only" ->
+# "investor lending", or a condition's own percentage such as "extra
+# repayments capped at 10% annually" -> "...20% annually") from mere rate
+# noise -- blanking every percentage in the text (as an earlier version of
+# this function did) would also erase a genuine condition-percentage change
+# that happens to leave the rate itself unchanged.
+_PERCENTAGE_PATTERN = re.compile(r"(\d{1,2}(?:\.\d{1,3})?)\s*%")
 
 
-def _normalized_special_conditions(text: Optional[str]) -> Optional[str]:
+def _normalized_special_conditions(text: Optional[str], rate_pct: float) -> Optional[str]:
     if text is None:
         return None
-    return _RATE_PERCENTAGE_PATTERN.sub("%", text)
+
+    def _blank_if_rate(match: re.Match) -> str:
+        return "%" if abs(float(match.group(1)) - rate_pct) < 1e-6 else match.group(0)
+
+    return _PERCENTAGE_PATTERN.sub(_blank_if_rate, text)
+
+
 _PROMOTION_FIELDS = ("cashback_text", "promotion_text")
 
 
@@ -322,9 +333,9 @@ def _compare_records(
 
     eligibility_diff = _diff_fields(previous, current, _ELIGIBILITY_FIELDS)
     special_conditions_diff = None
-    if _normalized_special_conditions(previous.special_conditions) != _normalized_special_conditions(
-        current.special_conditions
-    ):
+    if _normalized_special_conditions(
+        previous.special_conditions, previous.advertised_rate_pct
+    ) != _normalized_special_conditions(current.special_conditions, current.advertised_rate_pct):
         special_conditions_diff = (
             f"special_conditions: {previous.special_conditions!r} -> {current.special_conditions!r}"
         )

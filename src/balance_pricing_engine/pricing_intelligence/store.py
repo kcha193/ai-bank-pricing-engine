@@ -417,10 +417,30 @@ class ObservationStore:
             and not confirming_a_suspicious_state
             and _is_unchanged(current, payload)
         ):
+            # A materially unchanged reading still touches its provenance:
+            # without refreshing source_url/source_page_title/source_text/
+            # content_hash/parser_version too, this row would keep echoing
+            # whichever page snapshot happened to be current on its *first*
+            # observation, even as last_seen_at advances run after run --
+            # an audit of "what does the current reading's evidence look
+            # like" would be reading stale HTML/context, not what the most
+            # recent collection actually saw.
             connection.execute(
                 "UPDATE observations SET last_seen_at = ?, last_seen_run_id = ?, "
-                "observation_count = observation_count + 1 WHERE id = ?",
-                (timestamp, run_id, current["id"]),
+                "observation_count = observation_count + 1, "
+                "source_url = ?, source_page_title = ?, source_text = ?, "
+                "content_hash = ?, parser_version = ? "
+                "WHERE id = ?",
+                (
+                    timestamp,
+                    run_id,
+                    payload["source_url"],
+                    payload["source_page_title"],
+                    payload["source_text"],
+                    payload["content_hash"],
+                    payload["parser_version"],
+                    current["id"],
+                ),
             )
             return False
 

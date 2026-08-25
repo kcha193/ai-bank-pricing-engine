@@ -255,6 +255,34 @@ def test_a_rate_move_alone_does_not_spuriously_trigger_an_eligibility_change(mak
     assert [change.change_type for change in changes] == [ChangeType.RATE_DECREASE]
 
 
+def test_a_condition_percentage_change_is_detected_even_with_the_rate_unchanged(make_record):
+    """Normalising special_conditions must blank out only the advertised
+    rate's own percentage occurrence, not every percentage in the text.
+    "extra repayments capped at 10% annually" -> "...20% annually" is a
+    genuine condition change and must still fire an ELIGIBILITY_CHANGE even
+    though the rate itself (5.00%) stays the same -- blanking every
+    percentage indiscriminately would make both strings look identical and
+    silently swallow the transition."""
+    changes = detect_changes(
+        [
+            make_record(
+                rate_pct=5.00,
+                special_conditions="Special 5.00% | extra repayments capped at 10% annually",
+            )
+        ],
+        [
+            make_record(
+                rate_pct=5.00,
+                special_conditions="Special 5.00% | extra repayments capped at 20% annually",
+                observed_at=DAY_TWO,
+            )
+        ],
+    )
+
+    assert [change.change_type for change in changes] == [ChangeType.ELIGIBILITY_CHANGE]
+    assert "special_conditions" in changes[0].detail
+
+
 def test_promotion_change_is_detected(make_record):
     changes = detect_changes(
         [make_record(cashback_text=None)],

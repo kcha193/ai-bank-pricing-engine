@@ -61,6 +61,46 @@ def test_an_unchanged_re_collection_creates_no_new_state(store, make_record):
     assert len(store.get_rate_history(bank="ANZ")) == 1
 
 
+def test_an_unchanged_re_collection_still_refreshes_its_provenance(store, make_record):
+    """A materially unchanged reading must not leave its stored evidence
+    frozen at whatever the *first* observation happened to capture: as
+    last_seen_at advances run after run, source_text/content_hash/
+    parser_version/source metadata must advance with it too, or an audit of
+    "what does the current reading's evidence look like" reads stale
+    HTML/context that no longer matches the most recent collection."""
+    store.record_observations(
+        [
+            make_record(
+                bank="ANZ",
+                rate_pct=4.79,
+                raw_text_context="1 year | 4.79% (first snapshot)",
+                raw_html_sha256="a" * 64,
+                parser_version="v1",
+            )
+        ],
+        observed_at=DAY_ONE,
+    )
+    result = store.record_observations(
+        [
+            make_record(
+                bank="ANZ",
+                rate_pct=4.79,
+                raw_text_context="1 year | 4.79% (second snapshot)",
+                raw_html_sha256="b" * 64,
+                parser_version="v2",
+            )
+        ],
+        observed_at=DAY_TWO,
+    )
+
+    assert result.unchanged == 1
+    current = store.get_current_observations()
+    assert len(current) == 1
+    assert current[0].raw_text_context == "1 year | 4.79% (second snapshot)"
+    assert current[0].raw_html_sha256 == "b" * 64
+    assert current[0].parser_version == "v2"
+
+
 def test_a_changed_rate_creates_a_new_state(store, make_record):
     store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)
     result = store.record_observations([make_record(rate_pct=4.79)], observed_at=DAY_TWO)
