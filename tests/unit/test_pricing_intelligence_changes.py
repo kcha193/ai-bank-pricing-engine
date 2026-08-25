@@ -323,6 +323,35 @@ def test_promotion_change_is_detected(make_record):
     assert [change.change_type for change in changes] == [ChangeType.PROMOTION_CHANGE]
 
 
+def test_a_promotion_only_edit_does_not_also_fire_a_spurious_eligibility_change(make_record):
+    """extractors._special_conditions() returns the row's whole raw context,
+    which also embeds cashback_text verbatim (both are extracted from the
+    same source text) -- so "Special 5.00% with 1% cashback" -> "...2%
+    cashback" changes special_conditions too, even though only the
+    promotion moved. The correct PROMOTION_CHANGE must fire alone, not
+    alongside a second, spurious ELIGIBILITY_CHANGE describing the exact
+    same underlying edit under the wrong event type."""
+    changes = detect_changes(
+        [
+            make_record(
+                rate_pct=5.00,
+                cashback_text="1% cashback",
+                special_conditions="Special 5.00% with 1% cashback",
+            )
+        ],
+        [
+            make_record(
+                rate_pct=5.00,
+                cashback_text="2% cashback",
+                special_conditions="Special 5.00% with 2% cashback",
+                observed_at=DAY_TWO,
+            )
+        ],
+    )
+
+    assert [change.change_type for change in changes] == [ChangeType.PROMOTION_CHANGE]
+
+
 def test_a_warning_tagged_companion_eligibility_change_is_flagged_suspicious(make_record):
     """A parser fault that corrupts both the rate and an eligibility field in
     the same observation must not quarantine only the rate event -- the

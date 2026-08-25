@@ -490,7 +490,10 @@ class ObservationStore:
         return written
 
     def confirm_suspicious_changes(
-        self, confirmations: Mapping[str, Optional[CompetitorRateRecord]]
+        self,
+        confirmations: Mapping[
+            str, tuple[Optional[CompetitorRateRecord], CompetitorRateRecord]
+        ],
     ) -> None:
         """Clear the suspicious flag on the most recent change event for each
         key (and every companion event from the same run), rebasing the rate
@@ -533,10 +536,25 @@ class ObservationStore:
         0.75 -> 0.70" from the unverified B -> C hop, not the accepted
         A -> C transition) and is left quarantined rather than being
         misleadingly presented as confirmed.
+
+        The confirmed event's *current* endpoint is always this run's actual
+        accepted rate (``confirmations``' second element), never the stored
+        suspicious row's own ``current_rate_pct``: a parser correction
+        between the warning run and this one (confirmed 5.00 -> warning
+        6.00 -> clean 5.50, the 6.00 -> 5.50 move itself not suspicious
+        since it is within threshold of the warning baseline) never repeats
+        6.00 exactly, so using the stale stored value would confirm a
+        5.00 -> 6.00 movement that was never actually the final state. That
+        intermediate 6.00 -> 5.50 hop already has its own ordinary
+        (non-suspicious) rate-change event recorded this run, before this
+        method ever runs -- once the confirmed event is rebased to cover
+        the true 5.00 -> 5.50 movement, that event describes a hop the
+        market never took as a standalone move and is deleted so the same
+        reprice is not double-counted as two events.
         """
         rate_types = (ChangeType.RATE_INCREASE.value, ChangeType.RATE_DECREASE.value)
         with self._transaction() as connection:
-            for key, last_verified in confirmations.items():
+            for key, (last_verified, current) in confirmations.items():
                 row = connection.execute(
                     "SELECT id, current_rate_pct, previous_rate_pct, detected_at, change_type "
                     "FROM rate_changes WHERE observation_key = ? AND suspicious = 1 ORDER BY "
@@ -564,23 +582,32 @@ class ObservationStore:
                     )
                 if last_verified is None or not is_rate_row:
                     continue
+                stale_current_rate_pct = row["current_rate_pct"]
                 change_bps = rate_change_bps(
-                    last_verified.advertised_rate_pct, row["current_rate_pct"]
+                    last_verified.advertised_rate_pct, current.advertised_rate_pct
                 )
                 change_type = (
                     ChangeType.RATE_INCREASE if change_bps > 0 else ChangeType.RATE_DECREASE
                 )
                 connection.execute(
-                    "UPDATE rate_changes SET previous_rate_pct = ?, "
+                    "UPDATE rate_changes SET previous_rate_pct = ?, current_rate_pct = ?, "
                     "change_bps = ?, previous_observed_at = ?, change_type = ? WHERE id = ?",
                     (
                         last_verified.advertised_rate_pct,
+                        current.advertised_rate_pct,
                         change_bps,
                         _iso(last_verified.captured_at_utc),
                         change_type.value,
                         row["id"],
                     ),
                 )
+                if stale_current_rate_pct != current.advertised_rate_pct:
+                    connection.execute(
+                        "DELETE FROM rate_changes WHERE observation_key = ? AND suspicious = 0 "
+                        "AND change_type IN (?, ?) AND previous_rate_pct = ? "
+                        "AND current_rate_pct = ?",
+                        (key, *rate_types, stale_current_rate_pct, current.advertised_rate_pct),
+                    )
 
     # ----------------------------------------------------------------- reads
 

@@ -123,7 +123,25 @@ _ELIGIBILITY_FIELDS = (
 _PERCENTAGE_PATTERN = re.compile(r"(\d{1,2}(?:\.\d{1,3})?)\s*%")
 
 
-def _normalized_special_conditions(text: Optional[str], rate_pct: float) -> Optional[str]:
+def _normalized_special_conditions(
+    text: Optional[str], rate_pct: float, promotion_texts: Iterable[Optional[str]] = ()
+) -> Optional[str]:
+    """Isolate genuine eligibility wording from rate noise and promotion text.
+
+    ``extractors._special_conditions()`` returns the *whole* row's raw
+    context whenever it contains a condition term, and that same context is
+    also where ``cashback_text``/``promotion_text`` get extracted from (see
+    ``BankPricingCollector.enrich_mortgage_record()``) -- so a promotional
+    phrase embedded in the row (e.g. "Special 5.00% with 1% cashback") is
+    *also* embedded in ``special_conditions`` verbatim. A change confined to
+    that promotional phrase (1% -> 2% cashback) already fires the correct
+    ``PROMOTION_CHANGE`` via ``_PROMOTION_FIELDS``; comparing
+    ``special_conditions`` without stripping it too would fire a second,
+    spurious ``ELIGIBILITY_CHANGE`` for the exact same underlying edit.
+    ``promotion_texts`` are removed as literal substrings (each field is
+    itself a verbatim span of the same source text, not a paraphrase), same
+    as the rate token above is normalised rather than blanket-stripped.
+    """
     if text is None:
         return None
 
@@ -136,7 +154,11 @@ def _normalized_special_conditions(text: Optional[str], rate_pct: float) -> Opti
             return "%"
         return match.group(0)
 
-    return _PERCENTAGE_PATTERN.sub(_blank_first_rate_occurrence, text)
+    normalized = _PERCENTAGE_PATTERN.sub(_blank_first_rate_occurrence, text)
+    for promotion_text in promotion_texts:
+        if promotion_text:
+            normalized = normalized.replace(promotion_text, "")
+    return normalized
 
 
 _PROMOTION_FIELDS = ("cashback_text", "promotion_text")
@@ -353,8 +375,14 @@ def _compare_records(
     eligibility_diff = _diff_fields(previous, current, _ELIGIBILITY_FIELDS)
     special_conditions_diff = None
     if _normalized_special_conditions(
-        previous.special_conditions, previous.advertised_rate_pct
-    ) != _normalized_special_conditions(current.special_conditions, current.advertised_rate_pct):
+        previous.special_conditions,
+        previous.advertised_rate_pct,
+        (previous.cashback_text, previous.promotion_text),
+    ) != _normalized_special_conditions(
+        current.special_conditions,
+        current.advertised_rate_pct,
+        (current.cashback_text, current.promotion_text),
+    ):
         special_conditions_diff = (
             f"special_conditions: {previous.special_conditions!r} -> {current.special_conditions!r}"
         )

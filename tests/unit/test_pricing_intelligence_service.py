@@ -914,6 +914,47 @@ def test_a_suspicious_category_flip_that_stays_suspicious_still_protects_the_con
     assert snapshot.term(12).rate_for("ANZ") == 5.00
 
 
+def test_a_partial_correction_confirms_as_one_event_not_two(make_record):
+    """A third reading that differs from the warning value it confirms
+    (5.00% confirmed -> 6.00% warning -> 5.50% clean, the 6.00% -> 5.50%
+    move itself not suspicious since it's within threshold of the warning
+    baseline) must produce exactly one change event describing the true
+    5.00% -> 5.50% movement -- not the stale 5.00% -> 6.00% event confirmed
+    as-is plus a separate clean 6.00% -> 5.50% event, which would
+    double-count one real reprice as two and skew market-activity
+    statistics (mean/count of movements)."""
+    confirmed = make_record(bank="ANZ", rate_pct=5.00)
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", [confirmed])],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    spike = make_record(bank="ANZ", rate_pct=6.00, observed_at=DAY_TWO)
+    service._collectors = [_StubCollector("ANZ", [spike])]
+    outcome_two = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+    assert outcome_two.validation.suspicious_keys, "sanity check: run 2 flagged suspicious"
+
+    correction = make_record(bank="ANZ", rate_pct=5.50, observed_at=DAY_THREE)
+    service._collectors = [_StubCollector("ANZ", [correction])]
+    outcome_three = service.collect(captured_at_utc=DAY_THREE, persist_snapshot=False)
+    assert not outcome_three.validation.suspicious_keys, (
+        "sanity check: run 3's move from the warning baseline is within threshold"
+    )
+
+    changes = service.get_changes(days=30, now=DAY_THREE)
+    rate_moves = [c for c in changes if c.is_rate_move]
+
+    assert len(rate_moves) == 1
+    assert rate_moves[0].previous_rate_pct == 5.00
+    assert rate_moves[0].current_rate_pct == 5.50
+    assert rate_moves[0].change_bps == 50.0
+    assert rate_moves[0].suspicious is False
+
+
 def test_a_rate_category_flip_still_falls_back_when_product_name_changes_too(make_record):
     """The generic extractor derives product_name by searching the row for the
     category text (extractors._product_name), so a real category flip usually

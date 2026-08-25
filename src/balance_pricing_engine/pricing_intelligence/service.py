@@ -610,7 +610,7 @@ class PricingIntelligenceService:
                 # real movement (5.00% -> 7.00%). confirm_suspicious_changes()
                 # rewrites the event to reflect the true movement.
                 confirmations = {
-                    key: last_confirmed_pairs.get(key)
+                    key: (last_confirmed_pairs.get(key), accepted_by_key[key])
                     for key in confirming_keys
                     # A parser spike that reverts exactly (confirmed 5.00% ->
                     # warning 8.00% -> warning 5.00% -> clean 5.00%) must not
