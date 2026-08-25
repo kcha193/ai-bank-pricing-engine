@@ -345,7 +345,14 @@ _MARKER_TO_PERCENTAGE_GAP = r"(?:(?!rate)[^%;.]){0,20}"
 # survives instead of being stripped down to nothing.
 _NOT_A_RATE_LABEL = r"(?!\w*\s+rate\b)"
 
-_PROMOTIONAL_PERCENTAGE_MARKERS = ("cashback", "cash back", "discount", "bonus", "rebate")
+_PROMOTIONAL_PERCENTAGE_MARKERS = (
+    "cashback",
+    "cash back",
+    "cash contribution",
+    "discount",
+    "bonus",
+    "rebate",
+)
 _PROMOTIONAL_MARKER_ALTERNATION = "|".join(
     marker.replace(" ", r"\s+") for marker in _PROMOTIONAL_PERCENTAGE_MARKERS
 )

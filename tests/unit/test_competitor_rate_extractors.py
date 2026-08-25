@@ -291,6 +291,31 @@ def test_parse_html_rates_rejects_promotional_percentage_alongside_a_real_rate()
     assert records[0].advertised_rate_pct == 5.00
 
 
+def test_parse_html_rates_rejects_cash_contribution_percentage():
+    """"cash contribution" is a promotional-percentage marker synonymous
+    with cashback -- normalise.py's own _CASHBACK_PATTERN already treats it
+    that way -- but the extractor's marker list omitted it, so "Special
+    5.49% with 1% cash contribution" picked the trailing 1% as the rate."""
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>Term</th><th>Rate</th></tr>
+      <tr><td>Special</td><td>1 year</td>
+          <td>Special 5.49% with 1% cash contribution</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.49
+
+
 def test_parse_html_rates_extracts_the_rate_when_cashback_shares_its_cell():
     """A genuine rate and a promotional percentage sharing one cell (e.g.
     "Special 5.00% with 1% cashback") must still yield the real rate.
