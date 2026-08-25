@@ -240,19 +240,19 @@ def parse_html_rates(
         min_balance, max_balance = (
             normalise_balance(context) if product == ProductType.TERM_DEPOSIT else (None, None)
         )
-        for rate, category, own_header in rate_categories:
-            # Extends only *this* record's own stored context with its own
-            # aligned header cell (not folded into `context` itself, used
+        for rate, category, own_header, own_context in rate_categories:
+            # own_context (this record's row text with sibling rate-bearing
+            # cells excluded) plus own_header, not the shared `context` used
             # above for lvr_condition/special_conditions/balance/frequency at
-            # parse time) -- so a bank-specific category alias living only in
+            # parse time -- so a bank-specific category alias living only in
             # the header (e.g. BNZ's "Classic") reaches
             # BankPricingCollector.enrich_mortgage_record() later, which reads
-            # raw_text_context. Using each record's own column's header only,
-            # not the whole header row, keeps a sibling column's marker (e.g.
-            # a "Special" header's min-equity implication) out of a record
-            # that was never actually under that column.
+            # raw_text_context, while a sibling cell's own eligibility/promo
+            # text (e.g. "Special 4.79% with 1% cashback" next to "Standard
+            # 5.39%") does not leak into a record that was never under that
+            # cell.
             raw_text_context = (
-                _clean_text(context + " | " + own_header) if own_header else context
+                _clean_text(own_context + " | " + own_header) if own_header else own_context
             )
             records.append(
                 CompetitorRateRecord(
@@ -436,9 +436,9 @@ def _extract_rates_with_categories(
     product: ProductType,
     special_label: str | None,
     header_row: list[str] | None = None,
-) -> list[tuple[float, str, str | None]]:
-    """One ``(rate, category, own_header_cell)`` triple per rate-bearing
-    cell in the row.
+) -> list[tuple[float, str, str | None, str]]:
+    """One ``(rate, category, own_header_cell, own_context)`` quadruple per
+    rate-bearing cell in the row.
 
     Most rows advertise a single rate, handled the existing way: the last
     plausible percentage anywhere in the row, categorised from the row's
@@ -470,6 +470,17 @@ def _extract_rates_with_categories(
     "Special" header's min-equity marker wrongly applied to the "Standard"
     record sharing that row, since eligibility enrichment has no per-cell
     boundary of its own to filter it back out.
+
+    The fourth element, ``own_context``, is the same idea applied to the row
+    itself: when several cells each carry their own rate (e.g. "Special
+    4.79% with 1% cashback" and "Standard 5.39%" as two cells), a record's
+    context must exclude *other* rate-bearing cells' text, not just the
+    header -- otherwise the "Standard" record's stored context still
+    contains "cashback" and "Special" from its sibling cell, and later
+    enrichment reads eligibility/promotion fields straight off that leaked
+    text. Cells that are not themselves one of the row's other plausible
+    rates (e.g. a shared "Term" column) are kept for every record, since
+    they genuinely apply to the whole row.
     """
     cell_rates = [
         (idx, cell, _extract_plausible_rate(cell, product)) for idx, cell in enumerate(row)
@@ -480,7 +491,7 @@ def _extract_rates_with_categories(
         rate = _extract_rate(context, product)
         if rate is None:
             return []
-        return [(rate, _rate_category(product, context, special_label), None)]
+        return [(rate, _rate_category(product, context, special_label), None, context)]
 
     if len(plausible_cells) == 1:
         idx, cell, rate = plausible_cells[0]
@@ -490,9 +501,10 @@ def _extract_rates_with_categories(
             hint = _rate_category_hint(product, own_header, special_label)
         if hint is None:
             hint = _rate_category(product, context, special_label)
-        return [(rate, hint, own_header)]
+        return [(rate, hint, own_header, context)]
 
-    results: list[tuple[float, str, str | None]] = []
+    plausible_indices = {idx for idx, _, _ in plausible_cells}
+    results: list[tuple[float, str, str | None, str]] = []
     for idx, cell, rate in plausible_cells:
         own_header = header_row[idx] if header_row is not None and idx < len(header_row) else None
         hint = _rate_category_hint(product, cell, special_label)
@@ -500,7 +512,14 @@ def _extract_rates_with_categories(
             hint = _rate_category_hint(product, own_header, special_label)
         if hint is None:
             hint = _rate_category(product, "", special_label)
-        results.append((rate, hint, own_header))
+        own_context = _clean_text(
+            " | ".join(
+                other_cell
+                for other_idx, other_cell in enumerate(row)
+                if other_idx == idx or other_idx not in plausible_indices
+            )
+        )
+        results.append((rate, hint, own_header, own_context))
     return results
 
 

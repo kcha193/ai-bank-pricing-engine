@@ -177,6 +177,32 @@ def test_header_only_categorisation_does_not_leak_a_sibling_columns_eligibility(
     assert by_category["standard"].max_lvr is None
 
 
+def test_sibling_rate_cells_do_not_leak_into_each_others_enrichment_context():
+    """Mirrors the header-leak case above, but for category words living in
+    the data cells themselves rather than the header. Two separate
+    rate-bearing cells in one row -- "Special 4.79% with 1% cashback" and
+    "Standard 5.39%" -- must each keep their own eligibility/promotion
+    evidence: the Standard record must not inherit the Special cell's
+    min-equity condition or cashback text just because they came from the
+    same row."""
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>Term</th><th>Rate</th></tr>
+      <tr><td>Special 4.79% with 1% cashback</td><td>1 year</td>
+          <td>Standard 5.39%</td></tr>
+    </table></body></html>
+    """
+    collector = ANZCollector()
+
+    records = collector.parse_mortgage_html(html, captured_at_utc=OBSERVED_AT)
+
+    by_category = {record.rate_category: record for record in records}
+    assert by_category["special"].min_equity == 0.20
+    assert by_category["special"].cashback_text is not None
+    assert by_category["standard"].min_equity is None
+    assert by_category["standard"].cashback_text is None
+
+
 def test_fetch_failure_is_returned_not_raised(fixture_fetcher):
     collector = ANZCollector(fetcher=fixture_fetcher(failing_banks=["ANZ"]))
     result = collector.collect_mortgage_rates(persist_snapshot=False)
