@@ -119,6 +119,12 @@ def _filter_mortgage_records(
         record
         for record in records
         if ProductType(record.product_type) == ProductType.HOME_LOAN
+        # Subsidised/closed products are retained on the record for audit but
+        # must never enter a market statistic -- excluded unconditionally,
+        # not just when include_specials/require_min_20_percent_equity happen
+        # to filter them out, so a 1.00% top-up can't reach market_average,
+        # market_min, or market_median and skew competitor_loan_rate.
+        and record.rate_category != "non_comparable"
         and record.bank in competitor_config.selected_banks
         and (
             mortgage_config.term_months is None
