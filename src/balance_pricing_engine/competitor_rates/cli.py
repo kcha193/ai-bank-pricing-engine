@@ -13,11 +13,17 @@ from balance_pricing_engine.competitor_rates.apply import (
     apply_competitor_rates_to_config,
     load_and_resolve_competitor_rates,
 )
+from balance_pricing_engine.competitor_rates.collectors import (
+    COLLECTORS_BY_BANK,
+    BankPricingCollector,
+)
 from balance_pricing_engine.competitor_rates.extractors import extract_all_sources
 from balance_pricing_engine.competitor_rates.interest_co_nz import fetch_interest_co_nz_rates
 from balance_pricing_engine.competitor_rates.models import (
+    CompetitorRateRecord,
     CompetitorRateRun,
     CompetitorRatesConfig,
+    ProductType,
     ValidationSummary,
 )
 from balance_pricing_engine.competitor_rates.sources import OFFICIAL_SOURCES
@@ -99,6 +105,37 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _apply_bank_categorisation(
+    records: list[CompetitorRateRecord],
+) -> list[CompetitorRateRecord]:
+    """Route each home-loan record through its bank's collector categorisation.
+
+    ``extract_all_sources()`` calls only the generic ``parse_html_rates()`` --
+    it has no per-bank knowledge of what an unmarked row means, so every
+    home-loan row lands generically "fixed"/"home_loan" with no special,
+    standard, or non_comparable tiering and no eligibility implication.
+    ``BankPricingCollector.enrich_mortgage_record()`` is the same
+    post-processing step ``collect_mortgage_rates()`` already applies; running
+    every CLI-fetched record through it here closes that gap so a subsidised
+    or closed product can't reach ``market_average``/``market_min``/
+    ``market_median`` via the ``competitor_rates apply`` path. A collector is
+    reused per bank -- constructing one has no I/O, it only builds the
+    (unused) default fetcher closure.
+    """
+    collectors: dict[str, BankPricingCollector] = {}
+    enriched = []
+    for record in records:
+        if (
+            ProductType(record.product_type) != ProductType.HOME_LOAN
+            or record.bank not in COLLECTORS_BY_BANK
+        ):
+            enriched.append(record)
+            continue
+        collector = collectors.setdefault(record.bank, COLLECTORS_BY_BANK[record.bank]())
+        enriched.append(collector.enrich_mortgage_record(record))
+    return enriched
+
+
 def _fetch(args: argparse.Namespace) -> int:
     strict = _parse_bool(args.strict)
     captured_at = datetime.now(timezone.utc)
@@ -108,6 +145,7 @@ def _fetch(args: argparse.Namespace) -> int:
         captured_at_utc=captured_at,
         use_browser_fallback=args.browser_fallback,
     )
+    records = _apply_bank_categorisation(records)
     run = _build_run(records=records, attempts=attempts, captured_at_utc=captured_at)
     summary = validate_rate_run(run, strict=strict)
     run = run.model_copy(update={"validation_summary": summary})
