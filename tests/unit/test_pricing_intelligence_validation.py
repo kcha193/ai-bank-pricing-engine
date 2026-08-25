@@ -23,6 +23,37 @@ def test_an_implausible_rate_is_rejected(make_record, rate):
     assert outcome.errors[0].code == "rate_out_of_range"
 
 
+def test_conflicting_rates_for_the_same_identity_within_one_batch_are_rejected(make_record):
+    """Two records claiming the same observation_key() with different rates
+    in the same collection (e.g. a genuine 4.79% alongside a misparsed
+    1.00% for the same bank/category/term) must not both pass. Each is only
+    validated against its own predecessor, never against each other -- and
+    on a bank's first-ever collection there is no predecessor at all, so
+    the movement check can't catch this either. Without an explicit
+    within-batch check, both would reach storage, where insertion order
+    (not plausibility) decides which becomes "current"."""
+    genuine = make_record(rate_pct=4.79)
+    misparsed = make_record(rate_pct=1.00)
+
+    outcome = validate_observations([genuine, misparsed])
+
+    assert outcome.accepted == []
+    assert len(outcome.rejected) == 2
+    assert {issue.code for issue in outcome.errors} == {"conflicting_observation"}
+
+
+def test_repeating_the_same_rate_within_one_batch_is_not_a_conflict(make_record):
+    """An exact duplicate reading (same key, same rate) is not ambiguous --
+    only *different* rates for the same identity are a conflict."""
+    first = make_record(rate_pct=4.79)
+    second = make_record(rate_pct=4.79)
+
+    outcome = validate_observations([first, second])
+
+    assert len(outcome.accepted) == 2
+    assert outcome.rejected == []
+
+
 def test_rate_bounds_are_configurable(make_record):
     thresholds = ValidationThresholds(min_mortgage_rate_pct=4.0, max_mortgage_rate_pct=6.0)
 

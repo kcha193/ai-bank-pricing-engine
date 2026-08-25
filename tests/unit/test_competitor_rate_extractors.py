@@ -338,6 +338,32 @@ def test_parse_html_rates_does_not_consume_an_unrelated_rate_after_a_promo_marke
     assert records[0].advertised_rate_pct == 5.00
 
 
+def test_parse_html_rates_preserves_a_rate_described_as_discounted_or_bonus():
+    """A marker word immediately followed by "rate" (e.g. "5.00% discounted
+    rate", "5.00% bonus rate") names the *type* of rate being advertised,
+    not a separate promotional quantity on top of it. The
+    percentage-then-marker strip must not treat "discount"/"bonus" here as
+    a promotion marker for the rate's own percentage -- doing so drops the
+    rate to no observation at all, which can later read as a withdrawal."""
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>Term</th><th>Rate</th></tr>
+      <tr><td>Special fixed</td><td>1 year</td><td>5.00% discounted rate</td></tr>
+      <tr><td>Standard</td><td>2 years</td><td>5.99% bonus rate</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert [record.advertised_rate_pct for record in records] == [5.00, 5.99]
+
+
 def test_parse_html_rates_ignores_deposit_eligibility_percentage_for_home_loans():
     """A low deposit-requirement percentage sharing a row with a genuine
     home-loan rate (e.g. "5.49%" and, in another cell, "5% deposit

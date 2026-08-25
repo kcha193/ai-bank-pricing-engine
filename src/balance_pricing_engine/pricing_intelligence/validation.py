@@ -106,11 +106,31 @@ def validate_observations(
     for p in unclaimed_previous:
         category_agnostic_candidates.setdefault(p.category_agnostic_group_key(), []).append(p)
 
+    conflicting_rates_by_key = _conflicting_rates_within_batch(records)
+
     outcome = ValidationOutcome()
 
     for record in records:
         key = record.observation_key()
         issues = _validate_record(record, thresholds, key)
+
+        conflicting_rates = conflicting_rates_by_key.get(key)
+        if conflicting_rates is not None:
+            issues.append(
+                ObservationIssue(
+                    severity="error",
+                    code="conflicting_observation",
+                    message=(
+                        f"{len(conflicting_rates)} different rates "
+                        f"({', '.join(f'{rate:.3f}%' for rate in sorted(conflicting_rates))}) "
+                        f"were parsed for the same identity ({key}) in this collection; "
+                        "rejecting all of them rather than letting insertion order into "
+                        "storage silently pick a winner"
+                    ),
+                    bank=record.bank or "?",
+                    observation_key=key,
+                )
+            )
 
         baseline = pairs.get(key)
         if baseline is None:
@@ -129,6 +149,30 @@ def validate_observations(
             outcome.accepted.append(record)
 
     return outcome
+
+
+def _conflicting_rates_within_batch(
+    records: Sequence[CompetitorRateRecord],
+) -> dict[str, set[float]]:
+    """Observation keys claimed by two or more records in this same batch
+    with *different* advertised rates.
+
+    A collector or parser bug can emit two conflicting readings for what
+    should be one identity within a single collection -- e.g. a genuine
+    4.79% alongside a misparsed 1.00% for the same bank/category/term. Each
+    is validated only against its own predecessor via ``resolve_pairing``,
+    never against each other, so without this check both would
+    independently pass and reach storage, where insertion order -- not
+    plausibility -- decides which becomes "current". On a bank's first-ever
+    collection there is no predecessor at all, so the movement check in
+    :func:`_validate_movement` cannot catch this either. Only keys with more
+    than one *distinct* rate are returned -- an exact repeat of the same
+    reading is not a conflict.
+    """
+    rates_by_key: dict[str, set[float]] = {}
+    for record in records:
+        rates_by_key.setdefault(record.observation_key(), set()).add(record.advertised_rate_pct)
+    return {key: rates for key, rates in rates_by_key.items() if len(rates) > 1}
 
 
 def _validate_record(

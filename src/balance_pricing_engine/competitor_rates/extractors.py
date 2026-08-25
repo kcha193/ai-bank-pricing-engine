@@ -330,13 +330,23 @@ def _is_header_row(row: list[str]) -> bool:
 # leaving the row with no plausible rate and silently dropping it.
 _MARKER_TO_PERCENTAGE_GAP = r"(?:(?!rate)[^%;.]){0,20}"
 
+# A marker word immediately followed by "rate" (allowing an inflection --
+# "discounted rate", "cashback rate") names the *type* of rate being
+# advertised, not a separate promotional quantity: "5.00% discounted rate"
+# and "5.00% bonus rate" both mean the rate itself is 5.00%, not that a
+# further discount/bonus of 5.00% applies on top of some other rate.
+# Excluded from the percentage-then-marker alternative so that genuine rate
+# survives instead of being stripped down to nothing.
+_NOT_A_RATE_LABEL = r"(?!\w*\s+rate\b)"
+
 _PROMOTIONAL_PERCENTAGE_MARKERS = ("cashback", "cash back", "discount", "bonus", "rebate")
 _PROMOTIONAL_MARKER_ALTERNATION = "|".join(
     marker.replace(" ", r"\s+") for marker in _PROMOTIONAL_PERCENTAGE_MARKERS
 )
 _PROMOTIONAL_PERCENTAGE_PATTERN = re.compile(
     r"(?<![\d.])\d{1,2}(?:\.\d{1,3})?\s*%\s*(?:" + _PROMOTIONAL_MARKER_ALTERNATION + r")"
-    r"|(?:" + _PROMOTIONAL_MARKER_ALTERNATION + r")" + _MARKER_TO_PERCENTAGE_GAP
+    + _NOT_A_RATE_LABEL
+    + r"|(?:" + _PROMOTIONAL_MARKER_ALTERNATION + r")" + _MARKER_TO_PERCENTAGE_GAP
     + r"\d{1,2}(?:\.\d{1,3})?\s*%",
     re.I,
 )
@@ -349,7 +359,8 @@ _ELIGIBILITY_PERCENTAGE_MARKERS = ("deposit", "equity")
 _ELIGIBILITY_MARKER_ALTERNATION = "|".join(_ELIGIBILITY_PERCENTAGE_MARKERS)
 _ELIGIBILITY_PERCENTAGE_PATTERN = re.compile(
     r"(?<![\d.])\d{1,2}(?:\.\d{1,3})?\s*%\s*(?:" + _ELIGIBILITY_MARKER_ALTERNATION + r")"
-    r"|(?:" + _ELIGIBILITY_MARKER_ALTERNATION + r")" + _MARKER_TO_PERCENTAGE_GAP
+    + _NOT_A_RATE_LABEL
+    + r"|(?:" + _ELIGIBILITY_MARKER_ALTERNATION + r")" + _MARKER_TO_PERCENTAGE_GAP
     + r"\d{1,2}(?:\.\d{1,3})?\s*%",
     re.I,
 )
