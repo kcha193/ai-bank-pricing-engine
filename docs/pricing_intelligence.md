@@ -264,6 +264,35 @@ scenario, config file, and test is unaffected. This is asserted directly by
 Only the loan side is overlaid. Term-deposit intelligence is phase 2, so
 `market.competitor_deposit_rate` keeps whatever the config holds.
 
+## Bank coverage
+
+Verified live on 2026-08-25 with `--render-javascript`. Rate counts are total
+records parsed, across all categories.
+
+| Bank | Collector | Live verified | Rates | Unmarked fixed row means |
+| --- | --- | --- | --- | --- |
+| ANZ | `collectors/anz.py` | 2026-08-25 | 15 | labelled in-row (no default) |
+| ASB | `collectors/asb.py` | 2026-08-25 | 11 | `special` |
+| BNZ | `collectors/bnz.py` | 2026-08-25 | 9 | `special` |
+| Westpac | `collectors/westpac.py` | 2026-08-25 | 17 | `standard` |
+| Kiwibank | `collectors/kiwibank.py` | 2026-08-25 | 14 | labelled in-row (no default) |
+
+Observed market at that time (advertised specials):
+
+```text
+Bank               6M       1Y      18M       2Y       3Y       4Y       5Y
+---------------------------------------------------------------------------
+ANZ              4.79     4.99     5.45     5.49     5.59        -        -
+ASB              4.79     4.99     5.35     5.45     5.45     5.49     5.59
+BNZ              4.79     4.99     5.29     5.45     5.45     5.45     5.49
+Kiwibank         4.75     4.95        -     5.39     5.49     5.59     5.69
+Westpac          4.75     4.99     5.35     5.45     5.39     5.39     5.49
+---------------------------------------------------------------------------
+Median           4.79     4.99     5.35     5.45     5.45     5.47     5.54
+Best             4.75     4.95     5.29     5.39     5.39     5.39     5.49
+Spread bps          4        4       16       10       20       20       20
+```
+
 ## Adding a sixth bank
 
 1. Create `competitor_rates/collectors/<bank>.py` with a subclass of
@@ -329,12 +358,27 @@ git-ignored. They are diagnostic material, not a permanent archive.
 - **Advertised rates are not negotiated rates.** Every NZ bank discounts off
   carded rates for individual customers. Nothing here observes what customers
   actually pay.
-- **Collectors are fixture-verified, not live-verified.** All five parse their
-  saved fixtures correctly. Against live pages they currently return
-  `ParserError`: the pages fetch successfully, but every tracked bank builds its
-  rate table client-side, so the static HTML contains no rates. Live collection
-  requires `--render-javascript` with the `browser` extra, and the resulting
-  output has not yet been checked against the live pages field by field.
+- **Collectors are live-verified as of 2026-08-25, and require JavaScript
+  rendering.** All five were run against the live official pages with
+  `--render-javascript` and their parsed values checked field by field. The
+  static-HTML path returns `ParserError` for every bank: the rate tables are
+  built client-side, so live collection needs the `browser` extra. A live run is
+  a point-in-time check, not a standing guarantee -- re-verify after any bank
+  redesign.
+- **Rate-tier categorisation is per-bank knowledge.** Live pages put "Special"
+  in the table *heading*, not in each row, so rows arrive as bare
+  `6 month | 4.79% p.a.` with no tier word. What an unmarked row means differs
+  by bank -- for ASB and BNZ it is the special tier, for Westpac it is the
+  carded rate -- so each collector declares `default_fixed_category`. This
+  cannot be inferred generically, and getting it wrong silently drops banks from
+  the market comparison.
+- **Not all advertised mortgage rates are comparable.** Subsidised green/top-up
+  lending (ANZ Good Energy, ASB Better Homes, both at 1.00%), bridging finance
+  (ANZ Tideover), and products closed to new applications (ASB Back My Build)
+  are advertised rates but not front-book fixed lending. They are captured under
+  the `non_comparable` category -- retained for audit, fenced out of every
+  market statistic, since a subsidised 1.00% rate would wreck any median it
+  reached.
 - **Bank pages change.** A collector will eventually break. It will report
   `FAILED`, not invent numbers.
 - **Promotional eligibility matters.** A market-leading rate may require 20%

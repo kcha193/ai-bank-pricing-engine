@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import URLError
 
+import pytest
+
 from balance_pricing_engine.competitor_rates import extractors
 from balance_pricing_engine.competitor_rates.extractors import (
     extract_all_sources,
@@ -732,6 +734,19 @@ def test_extract_source_rates_reports_empty_rendered_page(monkeypatch):
 
 
 def test_fetch_source_with_playwright_reports_missing_optional_dependency():
+    """The guidance shown when the optional browser extra is absent.
+
+    Skipped where playwright *is* installed: since live collection now requires
+    the browser path, this assertion is environment-dependent rather than a
+    property of the code.
+    """
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        pytest.skip("playwright is installed; the missing-dependency path cannot run")
+
     source = RateSource("ANZ", ProductType.HOME_LOAN, "https://example.test/home")
 
     html, attempt = fetch_source_with_playwright(source)

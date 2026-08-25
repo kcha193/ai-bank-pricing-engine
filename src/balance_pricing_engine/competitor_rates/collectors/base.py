@@ -228,6 +228,30 @@ class BankPricingCollector(abc.ABC):
     #: when the row itself does not restate it.
     min_equity_product_markers: ClassVar[tuple[str, ...]] = ()
 
+    #: What an *unmarked* fixed row means for this bank.
+    #:
+    #: Live pages put "Special" in the table heading, not in each row, so a row
+    #: often arrives as bare `6 month | 4.79% p.a.` with no marker to match.
+    #: Whether that unmarked row is a special or a carded rate is bank-specific
+    #: and cannot be inferred generically: ASB and BNZ publish their headline
+    #: (special-tier) rates in an unmarked table, while Westpac marks its
+    #: specials explicitly, so an unmarked Westpac row is a carded rate.
+    #: ``None`` means "leave the extractor's fallback category alone", which is
+    #: right for banks that label both tiers in-row.
+    default_fixed_category: ClassVar[Optional[str]] = None
+
+    #: Products that are advertised mortgage rates but are not comparable
+    #: front-book fixed lending: subsidised green/top-up lending, and products
+    #: closed to new applications. They are kept for audit under the
+    #: ``non_comparable`` category rather than dropped, but must never enter a
+    #: market statistic -- a subsidised 1.00% top-up rate would wreck any
+    #: median, spread, or market-leader calculation it reached.
+    excluded_product_markers: ClassVar[tuple[str, ...]] = (
+        "top up",
+        "top-up",
+        "closed to new application",
+    )
+
     def __init__(
         self,
         config: Optional[CollectionConfig] = None,
@@ -346,11 +370,22 @@ class BankPricingCollector(abc.ABC):
         # checked first here, mislabelling a real "standard" rate that sits
         # in the same row.
         category = record.rate_category
-        if category in ("fixed", "home_loan"):
+        if any(marker in lowered for marker in self.excluded_product_markers):
+            # Retained with full provenance, but fenced out of every market
+            # statistic. Checked before any other categorisation so a
+            # subsidised product can never be promoted into a comparable tier.
+            category = "non_comparable"
+        elif category in ("fixed", "home_loan"):
             if any(marker in lowered for marker in self.special_product_markers):
                 category = "special"
             elif any(marker in lowered for marker in self.standard_product_markers):
                 category = "standard"
+            elif self.default_fixed_category is not None:
+                # No marker in the row: fall back to what an unmarked fixed row
+                # means for this bank. Without this, ASB and BNZ drop out of the
+                # comparison entirely and the market median is computed over
+                # three banks while reporting five.
+                category = self.default_fixed_category
 
         max_lvr, min_equity = normalise_lvr_values(context)
         implies_min_equity = any(

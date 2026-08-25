@@ -22,8 +22,21 @@ class ASBCollector(BankPricingCollector):
     term_deposit_url: ClassVar[str] = (
         "https://www.asb.co.nz/term-investments/term-investment-rates.html"
     )
-    live_verified: ClassVar[bool] = False
+    #: Verified live 2026-08-25: 11 rates, specials 4.79/4.99/5.35 at 6/12/18m.
+    #: Requires --render-javascript; the rate table is client-rendered.
+    live_verified: ClassVar[bool] = True
 
     special_product_markers: ClassVar[tuple[str, ...]] = ("special",)
     standard_product_markers: ClassVar[tuple[str, ...]] = ("standard",)
     min_equity_product_markers: ClassVar[tuple[str, ...]] = ("special",)
+    # Verified live 2026-08-25: ASB's fixed table emits bare rows such as
+    # "6 month | 4.79% p.a. | Interest Rate" with no tier word, and those rates
+    # sit at the special tier (4.79 at 6m against ANZ's 5.39 carded).
+    default_fixed_category: ClassVar[str] = "special"
+    excluded_product_markers: ClassVar[tuple[str, ...]] = (
+        "top up",
+        "top-up",
+        "closed to new application",
+        "back my build",
+        "better homes",
+    )

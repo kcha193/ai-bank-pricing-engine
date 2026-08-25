@@ -21,7 +21,9 @@ class KiwibankCollector(BankPricingCollector):
     term_deposit_url: ClassVar[str] = (
         "https://www.kiwibank.co.nz/personal-banking/investments/rates-and-charges/"
     )
-    live_verified: ClassVar[bool] = False
+    #: Verified live 2026-08-25: 14 rates, specials 4.75/4.95 at 6/12m.
+    #: Requires --render-javascript; the rate table is client-rendered.
+    live_verified: ClassVar[bool] = True
 
     special_product_markers: ClassVar[tuple[str, ...]] = ("special",)
     standard_product_markers: ClassVar[tuple[str, ...]] = ("standard",)
