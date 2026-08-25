@@ -24,13 +24,15 @@ def term_market(make_record):
     return build_market_snapshot(records)[12]
 
 
-def make_change(bank, term, previous, current, days_ago, suspicious=False):
+def make_change(
+    bank, term, previous, current, days_ago, suspicious=False, rate_category="special"
+):
     return RateChange(
-        observation_key=f"{bank}|home_loan|special|{term}||unknown",
+        observation_key=f"{bank}|home_loan|{rate_category}|{term}||unknown",
         bank=bank,
         product_type=ProductType.HOME_LOAN,
         product_name="Fixed Special",
-        rate_category="special",
+        rate_category=rate_category,
         term_months=term,
         change_type=(
             ChangeType.RATE_DECREASE if current < previous else ChangeType.RATE_INCREASE
@@ -165,6 +167,21 @@ def test_activity_excludes_suspicious_changes_by_default():
     assert default.mean_change_bps == -20.0
     assert raw.changes == 2
     assert raw.mean_change_bps > 100
+
+
+def test_activity_excludes_non_comparable_changes_unconditionally():
+    """A green top-up repricing is not a market repricing event and must not
+    push the market-state classification -- see BankPricingCollector's
+    excluded_product_markers docstring."""
+    changes = [
+        make_change("ANZ", 12, 4.99, 4.79, 1),
+        make_change("ASB", 36, 1.00, 3.50, 1, rate_category="non_comparable"),
+    ]
+
+    activity = compute_market_activity(changes, now=NOW, include_suspicious=True)
+
+    assert activity.changes == 1
+    assert activity.mean_change_bps == rate_change_bps(4.99, 4.79)
 
 
 def test_activity_ignores_non_price_events():
