@@ -105,6 +105,474 @@ def test_parse_html_rates_deduplicates_identical_rows_and_marks_special_deposits
     assert records[0].special_conditions is not None
 
 
+def test_parse_html_rates_preserves_simultaneous_tiers_at_the_same_rate():
+    """Two distinct LVR tiers happening to share a rate must not collapse to one."""
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>Term</th><th>Rate</th></tr>
+      <tr><td>Fixed Special</td><td>1 year</td><td>4.79%</td></tr>
+      <tr><td>Fixed Special (requires 20% equity)</td><td>1 year</td><td>4.79%</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 2
+    assert {record.lvr_condition for record in records} == {
+        "standard",
+        "min_20_percent_equity",
+    }
+
+
+def test_parse_html_rates_preserves_simultaneous_numeric_lvr_tiers():
+    """Two numeric LVR tiers ("70% LVR", "80% LVR") both normalise to the same
+    coarse lvr_condition bucket ("standard" -- neither matches the "under 80%"
+    wording normalise_lvr_condition looks for), so lvr_condition alone can't
+    tell them apart at dedup time, before enrichment has populated max_lvr.
+    Deduping on lvr_condition alone would collapse a real, distinct tier and
+    lose its later changes entirely.
+    """
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>LVR</th><th>Term</th><th>Rate</th></tr>
+      <tr><td>Fixed Special</td><td>70% LVR</td><td>1 year</td><td>4.79%</td></tr>
+      <tr><td>Fixed Special</td><td>80% LVR</td><td>1 year</td><td>4.79%</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 2
+    assert {record.lvr_condition for record in records} == {"standard"}
+
+
+def test_parse_html_rates_splits_a_row_with_two_rate_bearing_cells():
+    """A row that carries "Special 4.79%" and "Standard 5.39%" as two
+    separate cells for one term must produce two records, each with its own
+    rate paired to its own category -- not one record for the last cell's
+    rate mislabelled with whichever category word appears anywhere in the
+    row (here "special", checked first, would otherwise be paired with
+    5.39% while 4.79% is silently dropped)."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Special</th><th>Standard</th></tr>
+      <tr><td>1 year</td><td>Special 4.79%</td><td>Standard 5.39%</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 2
+    by_category = {record.rate_category: record.advertised_rate_pct for record in records}
+    assert by_category == {"special": 4.79, "standard": 5.39}
+
+
+def test_parse_html_rates_scopes_lvr_condition_and_special_conditions_per_cell():
+    """A sibling cell's eligibility text must not leak into
+    lvr_condition/special_conditions either -- these are derived at parse
+    time, separately from raw_text_context, and round 46's fix only scoped
+    the latter. "Special 4.79% with 20% equity" next to "Standard 5.39%" in
+    one row must not give the Standard record the Special cell's
+    min_20_percent_equity condition or its special_conditions text."""
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>Term</th><th>Rate</th></tr>
+      <tr><td>Special 4.79% with 20% equity</td><td>1 year</td>
+          <td>Standard 5.39%</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    by_category = {record.rate_category: record for record in records}
+    assert by_category["special"].lvr_condition == "min_20_percent_equity"
+    assert by_category["standard"].lvr_condition != "min_20_percent_equity"
+    assert by_category["standard"].special_conditions is None
+
+
+def test_parse_html_rates_uses_column_headers_for_bare_multi_rate_cells():
+    """When the category label lives only in the column header -- not the
+    data cell itself -- a row with two bare rate cells ("4.79%", "5.39%",
+    neither containing "Special"/"Standard") must still split into two
+    records, one per header column, instead of both cells falling through to
+    the generic "home_loan" category and colliding on the same
+    observation_key (silently dropping one rate)."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Special</th><th>Standard</th></tr>
+      <tr><td>1 year</td><td>4.79%</td><td>5.39%</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 2
+    by_category = {record.rate_category: record.advertised_rate_pct for record in records}
+    assert by_category == {"special": 4.79, "standard": 5.39}
+
+
+def test_parse_html_rates_uses_column_header_for_bare_single_rate_cell():
+    """The header fallback used for multi-rate rows must also apply when
+    only one cell in the row carries a plausible rate: a single "Special
+    rate" header over a bare "4.79%" data cell must resolve to "special",
+    not the generic "home_loan" default that ignores the header entirely."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Special rate</th></tr>
+      <tr><td>1 year</td><td>4.79%</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].rate_category == "special"
+    assert records[0].advertised_rate_pct == 4.79
+
+
+def test_parse_html_rates_rejects_promotional_percentage_alongside_a_real_rate():
+    """A row carrying a genuine rate cell plus an unrelated promotional
+    percentage in another cell (e.g. "1% cashback") must emit only the real
+    rate. Treating both cells as plausible rates would emit a second, bogus
+    observation that -- after enrichment -- can collide on identity with the
+    real rate and silently overwrite it in storage."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Rate</th><th>Cashback</th></tr>
+      <tr><td>1 year</td><td>5.00%</td><td>1% cashback</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.00
+
+
+def test_parse_html_rates_rejects_cash_contribution_percentage():
+    """"cash contribution" is a promotional-percentage marker synonymous
+    with cashback -- normalise.py's own _CASHBACK_PATTERN already treats it
+    that way -- but the extractor's marker list omitted it, so "Special
+    5.49% with 1% cash contribution" picked the trailing 1% as the rate."""
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>Term</th><th>Rate</th></tr>
+      <tr><td>Special</td><td>1 year</td>
+          <td>Special 5.49% with 1% cash contribution</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.49
+
+
+def test_parse_html_rates_extracts_the_rate_when_cashback_shares_its_cell():
+    """A genuine rate and a promotional percentage sharing one cell (e.g.
+    "Special 5.00% with 1% cashback") must still yield the real rate.
+    Rejecting the whole cell because it contains "cashback" would discard
+    the genuine rate too, and the row-wide fallback would then pick the
+    cashback percentage itself as "the rate" instead."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Rate</th></tr>
+      <tr><td>1 year</td><td>Special 5.00% with 1% cashback</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.00
+
+
+def test_parse_html_rates_extracts_the_rate_when_promo_marker_precedes_its_percentage():
+    """The promotional-percentage strip must handle both grammatical orders:
+    "1% cashback" (percentage then marker) and, reversed, "cashback of 1%"
+    (marker then percentage). The prior fix only stripped the first order,
+    so "Special 5.00% with cashback of 1%" still retained "1%" and picked
+    it as the rate instead of the genuine 5.00%."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Rate</th></tr>
+      <tr><td>1 year</td><td>Special 5.00% with cashback of 1%</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.00
+
+
+def test_parse_html_rates_does_not_consume_an_unrelated_rate_after_a_promo_marker():
+    """A promotional marker with no percentage of its own (e.g. "Cashback
+    offer") must not swallow a genuine, unrelated rate that merely happens
+    to appear within a few characters afterwards (e.g. "; rate 5.00%").
+    The marker-then-percentage strip must require the percentage to
+    actually belong to the promotion, not just be nearby -- otherwise the
+    row loses its only rate and is silently dropped instead of parsed."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Rate</th></tr>
+      <tr><td>1 year</td><td>Cashback offer; rate 5.00%</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.00
+
+
+def test_parse_html_rates_preserves_a_rate_described_as_discounted_or_bonus():
+    """A marker word immediately followed by "rate" (e.g. "5.00% discounted
+    rate", "5.00% bonus rate") names the *type* of rate being advertised,
+    not a separate promotional quantity on top of it. The
+    percentage-then-marker strip must not treat "discount"/"bonus" here as
+    a promotion marker for the rate's own percentage -- doing so drops the
+    rate to no observation at all, which can later read as a withdrawal."""
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>Term</th><th>Rate</th></tr>
+      <tr><td>Special fixed</td><td>1 year</td><td>5.00% discounted rate</td></tr>
+      <tr><td>Standard</td><td>2 years</td><td>5.99% bonus rate</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert [record.advertised_rate_pct for record in records] == [5.00, 5.99]
+
+
+def test_parse_html_rates_excludes_a_low_equity_margin_percentage():
+    """A low-equity margin percentage sharing a cell with the genuine rate
+    (e.g. "Special 5.49% plus a 0.75% low equity margin") must not be
+    treated as a second rate. Unlike a bare "0.75% equity", the "low"
+    qualifier sits between the percentage and its marker -- without
+    tolerating it, the percentage-then-marker strip requires the marker
+    immediately after the percentage and leaves the margin percentage
+    untouched, colliding with the genuine rate as a second plausible
+    reading."""
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>Term</th><th>Rate</th></tr>
+      <tr><td>Special</td><td>1 year</td>
+          <td>Special 5.49% plus a 0.75% low equity margin</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.49
+
+
+def test_parse_html_rates_excludes_a_minimum_deposit_percentage():
+    """A "minimum deposit" eligibility percentage (e.g. "5.49% with 5%
+    minimum deposit required") must not be treated as a second rate.
+    "minimum" is not "low" -- the previous fix's qualifier list was scoped
+    to only the one demonstrated word, and this domain's own
+    normalise.py._EQUITY_PATTERN already recognises "minimum" as an
+    equity/deposit qualifier too."""
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>Term</th><th>Rate</th></tr>
+      <tr><td>Special</td><td>1 year</td>
+          <td>5.49% with 5% minimum deposit required</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.49
+
+
+def test_parse_html_rates_excludes_a_hyphenated_low_equity_margin_percentage():
+    """The "low equity" qualifier must also be recognised when hyphenated
+    ("0.75% low-equity margin"), a common written variant the
+    whitespace-only qualifier gap missed."""
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>Term</th><th>Rate</th></tr>
+      <tr><td>Special</td><td>1 year</td>
+          <td>Special 5.49% plus a 0.75% low-equity margin</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.49
+
+
+def test_parse_html_rates_excludes_a_low_equity_margin_labelled_with_pa():
+    """A low-equity margin percentage sometimes carries its own "p.a." rate
+    unit before the qualifier ("0.75% p.a. low equity margin"), unlike
+    "0.75% low equity margin". Without tolerating the intervening unit, the
+    percentage-then-marker strip requires the qualifier/marker immediately
+    after the percentage and leaves the margin percentage untouched."""
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>Term</th><th>Rate</th></tr>
+      <tr><td>Special</td><td>1 year</td>
+          <td>5.49% plus 0.75% p.a. low equity margin</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.49
+
+
+def test_parse_html_rates_ignores_deposit_eligibility_percentage_for_home_loans():
+    """A low deposit-requirement percentage sharing a row with a genuine
+    home-loan rate (e.g. "5.49%" and, in another cell, "5% deposit
+    required") must not be treated as a second rate: unlike an LVR/equity
+    percentage, a deposit requirement can fall within the plausible 0-15%
+    range, so the numeric-range filter alone doesn't exclude it."""
+    html = """
+    <html><body><table>
+      <tr><th>Type</th><th>Term</th><th>Rate</th><th>Eligibility</th></tr>
+      <tr><td>Special fixed</td><td>1 year</td><td>5.49%</td><td>5% deposit required</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 5.49
+
+
+def test_parse_html_rates_keeps_a_low_term_deposit_rate_next_to_the_word_deposit():
+    """The home-loan-only deposit/equity exclusion must not reach term
+    deposits, where "deposit" is the product name itself and appears next
+    to every genuine rate -- excluding it there would discard real rates
+    wholesale, not just eligibility percentages."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Deposit</th><th>Frequency</th><th>Rate</th></tr>
+      <tr><td>6 months</td><td>$10,000+</td><td>At maturity</td><td>4.50%</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="term_deposit",
+        source_url="https://example.test/td",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].advertised_rate_pct == 4.50
+
+
 def test_fetch_source_writes_snapshot_for_successful_http_response(tmp_path, monkeypatch):
     source = RateSource("ANZ", ProductType.HOME_LOAN, "https://example.test/home")
 

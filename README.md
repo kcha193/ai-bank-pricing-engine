@@ -19,6 +19,11 @@ python3 examples/run_baseline.py               # core grid-search + diagnostics
 python3 examples/run_governed_scenario.py      # governed PricingService path (decision + gates)
 python3 -m balance_pricing_engine.competitor_rates.cli fetch --output-dir data/processed/competitor_rates
 python3 examples/run_with_competitor_rates.py  # with live competitor rate ingestion
+
+# NZ public-market pricing intelligence
+python3 -m balance_pricing_engine.pricing_intelligence collect --render-javascript
+python3 -m balance_pricing_engine.pricing_intelligence snapshot
+python3 examples/run_market_intelligence_scenarios.py
 python3 examples/run_llm_diagnostics.py        # LLM scenario narration (requires ANTHROPIC_API_KEY)
 python3 examples/run_multiperiod.py            # multi-period scenario
 python3 examples/train_response_models.py      # diagnostic ML layer
@@ -35,6 +40,7 @@ For model-risk and architecture notes, see:
 - [docs/model_governance.md](docs/model_governance.md)
 - [docs/architecture.md](docs/architecture.md)
 - [docs/competitor_rate_ingestion.md](docs/competitor_rate_ingestion.md)
+- [docs/pricing_intelligence.md](docs/pricing_intelligence.md)
 - [docs/deployment.md](docs/deployment.md) — local and Docker deployment, health/readiness,
   production boundaries
 - [docs/adr/](docs/adr/) — architecture decision records for the modular-monolith design

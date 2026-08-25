@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRatesConfig
 from balance_pricing_engine.market import bps_to_rate
+from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
 
 
 class GridConfig(BaseModel):
@@ -154,6 +155,7 @@ class EngineConfig(BaseModel):
     pricing_strategy: Optional[PricingStrategyConfig] = None
     segmented_pricing: Optional[SegmentedPricingConfig] = None
     competitor_rates: Optional[CompetitorRatesConfig] = None
+    pricing_intelligence: Optional[PricingIntelligenceConfig] = None
     balance_sheet: BalanceSheetConfig
     response: ResponseConfig
     multiperiod: Optional[MultiPeriodConfig] = None

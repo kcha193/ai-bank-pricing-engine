@@ -12,6 +12,15 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 PARSER_VERSION = "competitor-rates-v1"
 
 
+def _numeric_band(value: Optional[float]) -> str:
+    """Format an optional eligibility number for stable identity comparison.
+
+    Fixed precision avoids a float round-trip (e.g. through storage) turning
+    an unchanged band into a different key.
+    """
+    return "" if value is None else f"{value:.4f}"
+
+
 class ProductType(str, Enum):
     HOME_LOAN = "home_loan"
     TERM_DEPOSIT = "term_deposit"
@@ -45,6 +54,18 @@ class CompetitorRateRecord(BaseModel):
     max_balance_or_deposit: Optional[float] = Field(default=None, ge=0)
     lvr_condition: Optional[str] = None
     special_conditions: Optional[str] = None
+    # --- Optional mortgage promotion/eligibility detail -------------------------
+    # All nullable: a bank page that does not publish a field leaves it None
+    # rather than having a value invented for it. `rate_category` already
+    # separates standard from special advertised lines (one record per
+    # advertised rate), so there is deliberately no standard_rate/special_rate
+    # pair on a single record.
+    max_lvr: Optional[float] = Field(default=None, gt=0, le=1)
+    min_equity: Optional[float] = Field(default=None, ge=0, lt=1)
+    new_business_only: Optional[bool] = None
+    cashback_text: Optional[str] = None
+    promotion_text: Optional[str] = None
+    package_requirement: Optional[str] = None
     source_url: str
     source_bank_page_title: Optional[str] = None
     captured_at_utc: datetime
@@ -81,10 +102,107 @@ class CompetitorRateRecord(BaseModel):
             raise ValueError("raw_html_sha256 must be a SHA-256 hex digest")
         return value.lower()
 
+    def observation_key(self) -> str:
+        """Stable identity for this advertised rate line across collection runs.
+
+        Change detection compares like with like: two observations share a key
+        when they describe the same bank/product/term/condition combination, so
+        a rate movement is detected rather than being read as one product
+        disappearing and another appearing. Deliberately excludes the rate
+        itself and every provenance field.
+
+        Includes the eligibility condition (``lvr_condition``/``max_lvr``/
+        ``min_equity``) as well as :meth:`eligibility_group_key`'s fields:
+        a bank can simultaneously advertise the same named/category/term
+        product at multiple LVR tiers, and those rows would otherwise collide
+        onto one key. A bank re-describing (or tightening/loosening) the
+        eligibility condition on what is otherwise the same, singly-advertised
+        product changes this key too -- change detection pairs that case back
+        to an :class:`.ChangeType` ``ELIGIBILITY_CHANGE`` via a secondary
+        match on :meth:`eligibility_group_key` rather than by including the
+        condition in the primary identity.
+        """
+        return "|".join(
+            [
+                self.eligibility_group_key(),
+                self.lvr_condition or "",
+                _numeric_band(self.max_lvr),
+                _numeric_band(self.min_equity),
+            ]
+        )
+
+    def eligibility_group_key(self) -> str:
+        """Identity ignoring the eligibility condition.
+
+        Used by change detection as a fallback match when
+        :meth:`observation_key` finds no exact pairing: if exactly one
+        previously-known key in the same group is otherwise unclaimed, the
+        two are paired as an eligibility edit on the same product rather than
+        read as one product disappearing and a new one appearing. Also the
+        collision guard for simultaneous products: two products sharing
+        bank/category/term/frequency can otherwise differ only by name or by
+        a numeric balance tier, which would collide onto the same group.
+        """
+        parts = [
+            self.bank,
+            str(self.product_type),
+            self.rate_category,
+            str(self.term_months_normalised)
+            if self.term_months_normalised is not None
+            else self.term_label_raw.lower(),
+            self.interest_payment_frequency,
+            self.product_name.strip().lower(),
+            _numeric_band(self.min_balance_or_deposit),
+            _numeric_band(self.max_balance_or_deposit),
+        ]
+        return "|".join(parts)
+
+    def category_agnostic_group_key(self) -> str:
+        """:meth:`eligibility_group_key`, further ignoring ``rate_category``
+        *and* ``product_name``.
+
+        ``rate_category`` is real identity everywhere else -- a bank
+        typically advertises "standard" and "special" simultaneously, so
+        change detection must not collapse them. But that also means a
+        parser fault that flips a row's category *and* produces an
+        implausible rate change has no predecessor under
+        ``eligibility_group_key()`` either, so validation's suspicious-
+        movement check would find no baseline to compare against and let
+        the movement through unflagged. Used only as a last-resort,
+        validation-only lookup (never for change detection's identity
+        pairing) when the normal fallback finds nothing.
+
+        ``product_name`` is dropped too: the generic extractor derives it by
+        searching the row for the category text itself (see
+        ``competitor_rates.extractors._product_name``), so a genuine category
+        flip commonly changes ``product_name`` right along with it (e.g.
+        "Fixed Standard" -> "Fixed Special") -- keeping it here would defeat
+        the very fallback this key exists for. The remaining fields are
+        deliberately coarse; ambiguity is handled by every caller's
+        "exactly one unclaimed candidate" guard, not by this key.
+        """
+        parts = [
+            self.bank,
+            str(self.product_type),
+            str(self.term_months_normalised)
+            if self.term_months_normalised is not None
+            else self.term_label_raw.lower(),
+            self.interest_payment_frequency,
+            _numeric_band(self.min_balance_or_deposit),
+            _numeric_band(self.max_balance_or_deposit),
+        ]
+        return "|".join(parts)
+
     @model_validator(mode="after")
     def validate_identity_and_range(self) -> "CompetitorRateRecord":
         if not self.term_label_raw and not self.product_name:
             raise ValueError("term_label_raw or product_name is required")
+        if (
+            self.max_lvr is not None
+            and self.min_equity is not None
+            and abs((self.max_lvr + self.min_equity) - 1.0) > 1e-9
+        ):
+            raise ValueError("max_lvr and min_equity must sum to 1.0 when both are provided")
         if (
             self.max_balance_or_deposit is not None
             and self.min_balance_or_deposit is not None

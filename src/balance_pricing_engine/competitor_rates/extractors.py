@@ -20,6 +20,7 @@ from balance_pricing_engine.competitor_rates.normalise import (
     normalise_balance,
     normalise_frequency,
     normalise_lvr_condition,
+    normalise_lvr_values,
     normalise_term,
 )
 from balance_pricing_engine.competitor_rates.sources import RateSource
@@ -220,52 +221,76 @@ def parse_html_rates(
     parser.feed(html)
     raw_hash = hashlib.sha256(html.encode("utf-8")).hexdigest()
     records: list[CompetitorRateRecord] = []
+    current_header_row: list[str] | None = None
     for row in parser.rows:
         if _is_header_row(row):
+            current_header_row = row
             continue
         context = _clean_text(" | ".join(row))
-        rate = _extract_rate(context)
-        if rate is None:
-            continue
         term_label = _find_term_label(row, product)
         if term_label is None:
+            current_header_row = row
             continue
         term = normalise_term(term_label)
-        category = _rate_category(product, context, term.special_label)
-        min_balance, max_balance = (
-            normalise_balance(context) if product == ProductType.TERM_DEPOSIT else (None, None)
+        rate_categories = _extract_rates_with_categories(
+            row, context, product, term.special_label, header_row=current_header_row
         )
-        records.append(
-            CompetitorRateRecord(
-                bank=bank,
-                product_type=product,
-                product_name=_product_name(product, row, category),
-                rate_category=category,
-                term_label_raw=term.raw_label,
-                term_months_normalised=term.months,
-                term_days_raw=term.days,
-                advertised_rate_pct=rate,
-                interest_payment_frequency=(
-                    normalise_frequency(context)
-                    if product == ProductType.TERM_DEPOSIT
-                    else "unknown"
-                ),
-                min_balance_or_deposit=min_balance,
-                max_balance_or_deposit=max_balance,
-                lvr_condition=(
-                    normalise_lvr_condition(context)
-                    if product == ProductType.HOME_LOAN
-                    else None
-                ),
-                special_conditions=_special_conditions(context),
-                source_url=source_url,
-                source_bank_page_title=parser.title,
-                captured_at_utc=captured_at_utc,
-                raw_text_context=context,
-                raw_html_sha256=raw_hash,
-                parser_version=PARSER_VERSION,
+        if not rate_categories:
+            continue
+        for rate, category, own_header, own_context in rate_categories:
+            # own_context (this record's row text with sibling rate-bearing
+            # cells excluded) plus own_header, not the shared `context` --
+            # so a bank-specific category alias living only in the header
+            # (e.g. BNZ's "Classic") reaches
+            # BankPricingCollector.enrich_mortgage_record() later, which reads
+            # raw_text_context, while a sibling cell's own eligibility/promo
+            # text (e.g. "Special 4.79% with 1% cashback" next to "Standard
+            # 5.39%") does not leak into a record that was never under that
+            # cell. Every other context-derived field below is likewise
+            # derived from this same scoped raw_text_context, not the shared
+            # `context` -- otherwise a sibling's eligibility condition (e.g.
+            # "Special 4.79% with 20% equity" next to "Standard 5.39%")
+            # would still leak into lvr_condition/special_conditions even
+            # though only raw_text_context itself was fixed.
+            raw_text_context = (
+                _clean_text(own_context + " | " + own_header) if own_header else own_context
             )
-        )
+            min_balance, max_balance = (
+                normalise_balance(raw_text_context)
+                if product == ProductType.TERM_DEPOSIT
+                else (None, None)
+            )
+            records.append(
+                CompetitorRateRecord(
+                    bank=bank,
+                    product_type=product,
+                    product_name=_product_name(product, row, category),
+                    rate_category=category,
+                    term_label_raw=term.raw_label,
+                    term_months_normalised=term.months,
+                    term_days_raw=term.days,
+                    advertised_rate_pct=rate,
+                    interest_payment_frequency=(
+                        normalise_frequency(raw_text_context)
+                        if product == ProductType.TERM_DEPOSIT
+                        else "unknown"
+                    ),
+                    min_balance_or_deposit=min_balance,
+                    max_balance_or_deposit=max_balance,
+                    lvr_condition=(
+                        normalise_lvr_condition(raw_text_context)
+                        if product == ProductType.HOME_LOAN
+                        else None
+                    ),
+                    special_conditions=_special_conditions(raw_text_context),
+                    source_url=source_url,
+                    source_bank_page_title=parser.title,
+                    captured_at_utc=captured_at_utc,
+                    raw_text_context=raw_text_context,
+                    raw_html_sha256=raw_hash,
+                    parser_version=PARSER_VERSION,
+                )
+            )
     return _dedupe_records(records)
 
 
@@ -300,15 +325,215 @@ def _is_header_row(row: list[str]) -> bool:
     return "rate" in text and not re.search(r"\d+(?:\.\d+)?\s*%", text)
 
 
-def _extract_rate(context: str) -> float | None:
+# Bounds the gap a marker-then-percentage match may span: the percentage
+# must be the marker's *own* value, not merely the nearest one that happens
+# to follow within 20 characters. Excludes crossing ";"/"." (a new clause)
+# and, specifically, the word "rate" -- the one noun in this domain that
+# reliably introduces a genuine, unrelated value (e.g. "Cashback offer;
+# rate 5.00%", where "cashback" has no percentage of its own at all, and the
+# only "%" in the text is the real rate in a separate clause). Without this,
+# the marker-then-percentage match would strip that genuine rate outright,
+# leaving the row with no plausible rate and silently dropping it.
+_MARKER_TO_PERCENTAGE_GAP = r"(?:(?!rate)[^%;.]){0,20}"
+
+# A marker word immediately followed by "rate" (allowing an inflection --
+# "discounted rate", "cashback rate") names the *type* of rate being
+# advertised, not a separate promotional quantity: "5.00% discounted rate"
+# and "5.00% bonus rate" both mean the rate itself is 5.00%, not that a
+# further discount/bonus of 5.00% applies on top of some other rate.
+# Excluded from the percentage-then-marker alternative so that genuine rate
+# survives instead of being stripped down to nothing.
+_NOT_A_RATE_LABEL = r"(?!\w*\s+rate\b)"
+
+_PROMOTIONAL_PERCENTAGE_MARKERS = (
+    "cashback",
+    "cash back",
+    "cash contribution",
+    "discount",
+    "bonus",
+    "rebate",
+)
+_PROMOTIONAL_MARKER_ALTERNATION = "|".join(
+    marker.replace(" ", r"\s+") for marker in _PROMOTIONAL_PERCENTAGE_MARKERS
+)
+_PROMOTIONAL_PERCENTAGE_PATTERN = re.compile(
+    r"(?<![\d.])\d{1,2}(?:\.\d{1,3})?\s*%\s*(?:" + _PROMOTIONAL_MARKER_ALTERNATION + r")"
+    + _NOT_A_RATE_LABEL
+    + r"|(?:" + _PROMOTIONAL_MARKER_ALTERNATION + r")" + _MARKER_TO_PERCENTAGE_GAP
+    + r"\d{1,2}(?:\.\d{1,3})?\s*%",
+    re.I,
+)
+
+# Home-loan-only: "deposit"/"equity" describe a borrower's eligibility
+# position (e.g. "5% deposit required"), unlike in TERM_DEPOSIT context,
+# where "deposit" is the product name itself and appears next to every
+# genuine rate -- stripping it there would discard real rates wholesale.
+_ELIGIBILITY_PERCENTAGE_MARKERS = ("deposit", "equity")
+_ELIGIBILITY_MARKER_ALTERNATION = "|".join(_ELIGIBILITY_PERCENTAGE_MARKERS)
+# The qualifiers this domain commonly inserts between the percentage and
+# its marker ("0.75% low equity margin", "5% minimum deposit required",
+# hyphenated as "0.75% low-equity margin") -- unlike a bare "0.75% equity",
+# without tolerating them the percentage-then-marker alternative requires
+# the marker immediately after the percentage and misses the eligibility
+# percentage entirely, leaving it as a second plausible rate alongside the
+# genuine one. "minimum" matches normalise.py's own _EQUITY_PATTERN
+# vocabulary. Scoped to these demonstrated qualifiers rather than a broader
+# gap allowance: an open-ended gap here risks stripping a genuine rate that
+# happens to be followed by an unrelated later mention of "equity" (e.g. a
+# separate eligibility clause in the same cell).
+_ELIGIBILITY_QUALIFIERS = ("low", "minimum", "min")
+_ELIGIBILITY_QUALIFIER_ALTERNATION = "|".join(_ELIGIBILITY_QUALIFIERS)
+# An eligibility margin is sometimes itself labelled with the "p.a." rate
+# unit before its qualifier/marker ("0.75% p.a. low equity margin"), unlike
+# "0.75% low equity margin" -- tolerated as an optional prefix so it doesn't
+# break the qualifier-then-marker match that follows.
+_ELIGIBILITY_PERCENTAGE_PATTERN = re.compile(
+    r"(?<![\d.])\d{1,2}(?:\.\d{1,3})?\s*%\s*"
+    r"(?:p\.?a\.?\s+)?"
+    r"(?:(?:" + _ELIGIBILITY_QUALIFIER_ALTERNATION + r")[\s-]+)?"
+    r"(?:" + _ELIGIBILITY_MARKER_ALTERNATION + r")"
+    + _NOT_A_RATE_LABEL
+    + r"|(?:" + _ELIGIBILITY_MARKER_ALTERNATION + r")" + _MARKER_TO_PERCENTAGE_GAP
+    + r"\d{1,2}(?:\.\d{1,3})?\s*%",
+    re.I,
+)
+
+
+def _strip_non_rate_percentages(text: str, product: ProductType) -> str:
+    """Remove a non-rate percentage's span (e.g. "1% cashback", reversed
+    "cashback of 1%", or -- for home loans only -- "5% deposit required")
+    so it isn't mistaken for a genuine rate sharing its cell or row. Only
+    the marker-adjacent percentage is removed -- rejecting the whole
+    cell/row would also discard a genuine rate advertised alongside it
+    (e.g. "Special 5.00% with 1% cashback"). Both grammatical orders are
+    stripped: the marker can follow its percentage or precede it.
+    """
+    stripped = _PROMOTIONAL_PERCENTAGE_PATTERN.sub("", text)
+    if product == ProductType.HOME_LOAN:
+        stripped = _ELIGIBILITY_PERCENTAGE_PATTERN.sub("", stripped)
+    return stripped
+
+
+def _extract_rate(context: str, product: ProductType) -> float | None:
     rates = [
         float(match.group(1))
-        for match in re.finditer(r"(?<![\d.])(\d{1,2}(?:\.\d{1,3})?)\s*%", context)
+        for match in re.finditer(
+            r"(?<![\d.])(\d{1,2}(?:\.\d{1,3})?)\s*%", _strip_non_rate_percentages(context, product)
+        )
     ]
     if not rates:
         return None
     plausible = [rate for rate in rates if 0 <= rate <= 15]
     return plausible[-1] if plausible else rates[-1]
+
+
+def _extract_plausible_rate(text: str, product: ProductType) -> float | None:
+    """Like :func:`_extract_rate`, but never falls back to an implausible
+    reading -- used per-cell below, where a non-rate percentage (e.g. "70%
+    LVR" or "80% equity") must not be mistaken for a rate just because it is
+    the only percentage in that particular cell.
+    """
+    rates = [
+        float(match.group(1))
+        for match in re.finditer(
+            r"(?<![\d.])(\d{1,2}(?:\.\d{1,3})?)\s*%", _strip_non_rate_percentages(text, product)
+        )
+    ]
+    plausible = [rate for rate in rates if 0 <= rate <= 15]
+    return plausible[-1] if plausible else None
+
+
+def _extract_rates_with_categories(
+    row: list[str],
+    context: str,
+    product: ProductType,
+    special_label: str | None,
+    header_row: list[str] | None = None,
+) -> list[tuple[float, str, str | None, str]]:
+    """One ``(rate, category, own_header_cell, own_context)`` quadruple per
+    rate-bearing cell in the row.
+
+    Most rows advertise a single rate, handled the existing way: the last
+    plausible percentage anywhere in the row, categorised from the row's
+    full joined text. A row with *several* rate-bearing cells -- e.g.
+    adjacent "Special 4.79%" and "Standard 5.39%" cells for one term --
+    needs each rate categorised from its own cell instead: categorising from
+    the row-wide context finds whichever category word appears anywhere in
+    the row (typically "special", checked first) and pairs it with
+    whichever rate ``_extract_rate`` happened to pick last, silently
+    dropping the other rate and mislabelling the one that is kept.
+
+    Some tables carry the category only in the column header (e.g. a
+    "Special" / "Standard" header pair over bare "4.79%" / "5.39%" data
+    cells), so a data cell with no category word of its own falls back to
+    ``header_row``'s cell at the same column index before giving up to the
+    generic category -- otherwise both bare cells collide on the same
+    generic category and the same ``observation_key()``, and one silently
+    overwrites the other. The same header fallback applies when only one
+    cell carries a rate: a single "Special rate" header over a bare data
+    cell must still resolve to "special", not the generic default.
+
+    The third element is that same aligned header cell (or ``None`` when
+    there is no ``header_row`` or the index is out of range), returned
+    *per record* rather than folded into a shared context here: callers use
+    it to extend only that record's own stored context, e.g. so a
+    bank-specific alias living only in the header (BNZ's "Classic") reaches
+    later enrichment. Returning the *whole* header row instead would leak a
+    sibling column's marker into every record from the row -- e.g. a
+    "Special" header's min-equity marker wrongly applied to the "Standard"
+    record sharing that row, since eligibility enrichment has no per-cell
+    boundary of its own to filter it back out.
+
+    The fourth element, ``own_context``, is the same idea applied to the row
+    itself: when several cells each carry their own rate (e.g. "Special
+    4.79% with 1% cashback" and "Standard 5.39%" as two cells), a record's
+    context must exclude *other* rate-bearing cells' text, not just the
+    header -- otherwise the "Standard" record's stored context still
+    contains "cashback" and "Special" from its sibling cell, and later
+    enrichment reads eligibility/promotion fields straight off that leaked
+    text. Cells that are not themselves one of the row's other plausible
+    rates (e.g. a shared "Term" column) are kept for every record, since
+    they genuinely apply to the whole row.
+    """
+    cell_rates = [
+        (idx, cell, _extract_plausible_rate(cell, product)) for idx, cell in enumerate(row)
+    ]
+    plausible_cells = [(idx, cell, rate) for idx, cell, rate in cell_rates if rate is not None]
+
+    if not plausible_cells:
+        rate = _extract_rate(context, product)
+        if rate is None:
+            return []
+        return [(rate, _rate_category(product, context, special_label), None, context)]
+
+    if len(plausible_cells) == 1:
+        idx, cell, rate = plausible_cells[0]
+        own_header = header_row[idx] if header_row is not None and idx < len(header_row) else None
+        hint = _rate_category_hint(product, cell, special_label)
+        if hint is None and own_header is not None:
+            hint = _rate_category_hint(product, own_header, special_label)
+        if hint is None:
+            hint = _rate_category(product, context, special_label)
+        return [(rate, hint, own_header, context)]
+
+    plausible_indices = {idx for idx, _, _ in plausible_cells}
+    results: list[tuple[float, str, str | None, str]] = []
+    for idx, cell, rate in plausible_cells:
+        own_header = header_row[idx] if header_row is not None and idx < len(header_row) else None
+        hint = _rate_category_hint(product, cell, special_label)
+        if hint is None and own_header is not None:
+            hint = _rate_category_hint(product, own_header, special_label)
+        if hint is None:
+            hint = _rate_category(product, "", special_label)
+        own_context = _clean_text(
+            " | ".join(
+                other_cell
+                for other_idx, other_cell in enumerate(row)
+                if other_idx == idx or other_idx not in plausible_indices
+            )
+        )
+        results.append((rate, hint, own_header, own_context))
+    return results
 
 
 def _find_term_label(row: list[str], product: ProductType) -> str | None:
@@ -331,23 +556,37 @@ def _strip_product_prefix(cell: str) -> str:
     return re.sub(r"^(?:pie|term deposit|fixed|special|standard)\s+", "", cell.strip(), flags=re.I)
 
 
-def _rate_category(product: ProductType, context: str, special_label: str | None) -> str:
-    text = context.lower()
+def _rate_category_hint(product: ProductType, text: str, special_label: str | None) -> str | None:
+    """Category implied by ``text`` alone, or ``None`` if it carries no
+    recognisable category word -- distinct from :func:`_rate_category`, which
+    always returns *some* category by falling back to a generic default.
+    Callers that have another source of category information (e.g. a column
+    header) to try before giving up need to tell "no hint" apart from "the
+    generic fallback", which a function that never returns ``None`` can't do.
+    """
+    lowered = text.lower()
     if product == ProductType.TERM_DEPOSIT:
-        if "pie" in text:
+        if "pie" in lowered:
             return "pie_term_deposit"
-        if "special" in text:
+        if "special" in lowered:
             return "special"
-        return "term_deposit"
+        return None
     if special_label in {"floating", "variable"}:
         return special_label
-    if "special" in text:
+    if "special" in lowered:
         return "special"
-    if "standard" in text:
+    if "standard" in lowered:
         return "standard"
-    if "fixed" in text:
+    if "fixed" in lowered:
         return "fixed"
-    return "home_loan"
+    return None
+
+
+def _rate_category(product: ProductType, context: str, special_label: str | None) -> str:
+    hint = _rate_category_hint(product, context, special_label)
+    if hint is not None:
+        return hint
+    return "term_deposit" if product == ProductType.TERM_DEPOSIT else "home_loan"
 
 
 def _product_name(product: ProductType, row: list[str], category: str) -> str:
@@ -367,9 +606,25 @@ def _special_conditions(context: str) -> str | None:
 
 
 def _dedupe_records(records: list[CompetitorRateRecord]) -> list[CompetitorRateRecord]:
-    seen: set[tuple[str, str, str, str, str, float]] = set()
+    """Drop an exact repeat row, without collapsing two distinct simultaneous
+    tiers (e.g. different LVR conditions or product names at the same rate).
+
+    Runs before mortgage eligibility enrichment, so ``max_lvr``/``min_equity``
+    are not yet populated *on the record* and can't be read from it directly.
+    ``lvr_condition`` alone is too coarse to stand in for them here: it only
+    distinguishes three buckets ("standard", "min_20_percent_equity",
+    "low_equity_margin_applies"), so two simultaneous tiers like "70% LVR" and
+    "80% LVR" both normalise to "standard" and would otherwise collide onto
+    the same key. The numeric LVR is instead re-derived straight from
+    ``raw_text_context`` via :func:`~.normalise.normalise_lvr_values` -- the
+    same extraction :meth:`.collectors.base.BankPricingCollector.enrich_mortgage_record`
+    applies later from the same field -- purely as an extra key discriminator;
+    the record's own ``max_lvr``/``min_equity`` are left for enrichment to set.
+    """
+    seen: set[tuple] = set()
     deduped: list[CompetitorRateRecord] = []
     for record in records:
+        numeric_lvr, _ = normalise_lvr_values(record.raw_text_context)
         key = (
             record.bank,
             str(record.product_type),
@@ -377,6 +632,11 @@ def _dedupe_records(records: list[CompetitorRateRecord]) -> list[CompetitorRateR
             record.rate_category,
             record.interest_payment_frequency,
             record.advertised_rate_pct,
+            record.product_name.strip().lower(),
+            record.lvr_condition or "",
+            numeric_lvr,
+            record.min_balance_or_deposit,
+            record.max_balance_or_deposit,
         )
         if key not in seen:
             seen.add(key)

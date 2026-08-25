@@ -34,6 +34,7 @@ dashboard = ["streamlit>=1.30", "matplotlib>=3.8"]
 llm = ["anthropic>=0.30"]
 ml = ["lightgbm>=4.0", "xgboost>=2.0", "lifelines>=0.28"]
 kafka = ["kafka-python>=2.0"]
+browser = ["playwright>=1.40"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

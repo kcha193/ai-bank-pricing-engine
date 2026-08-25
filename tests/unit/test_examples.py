@@ -24,3 +24,38 @@ def test_competitor_rate_example_reports_reference_metadata():
     assert "Competitor rate inputs" in script
     assert "Mortgage competitor reference" in script
     assert "Term deposit competitor reference" in script
+
+
+def test_market_intelligence_example_reuses_the_existing_optimiser():
+    script = Path("examples/run_market_intelligence_scenarios.py").read_text(encoding="utf-8")
+
+    assert "run_baseline_diagnostics" in script
+    assert "apply_market_strategy_to_config" in script
+    assert "MARKET_MEDIAN" in script
+    assert "MARKET_LEADER" in script
+    assert "MANUAL" in script
+
+
+def test_market_intelligence_example_uses_the_configured_pricing_intelligence_settings():
+    """--config's pricing_intelligence block must not be discarded for fresh defaults."""
+    script = Path("examples/run_market_intelligence_scenarios.py").read_text(encoding="utf-8")
+
+    assert "base_config.pricing_intelligence" in script
+
+
+def test_market_intelligence_example_states_its_limitations():
+    script = Path("examples/run_market_intelligence_scenarios.py").read_text(encoding="utf-8")
+
+    assert "not negotiated customer rates" in script
+    assert "does not replace internal pricing governance" in script
+
+
+def test_market_intelligence_example_prerequisite_actually_works():
+    """Every tracked bank's collector now requires --render-javascript
+    (collectors/base.py); the docstring's own setup command must show the
+    working invocation, not the static HTTP one that returns ParserError
+    for every bank."""
+    script = Path("examples/run_market_intelligence_scenarios.py").read_text(encoding="utf-8")
+
+    assert "pricing_intelligence collect --render-javascript" in script
+    assert "playwright" in script

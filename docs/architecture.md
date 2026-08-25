@@ -216,3 +216,28 @@ UTC timestamp for both the directory name and `metadata.json`, then writes:
 Artifact filenames inside a ledger directory remain fixed. Reusing an output directory can overwrite
 prior files, so run ledger directory creation is atomic and appends a numeric suffix if a same-timestamp
 directory already exists.
+
+## NZ pricing intelligence
+
+Public NZ bank pricing enters the engine through a separate intelligence layer
+that answers "what is the market doing?" and hands the optimiser a competitor
+assumption. It never prices anything itself.
+
+```text
+Official NZ bank websites
+   -> competitor_rates/collectors/{anz,asb,bnz,westpac,kiwibank}.py
+   -> CompetitorRateRecord (canonical model + provenance)
+   -> pricing_intelligence/validation.py
+   -> pricing_intelligence/store.py            (SQLite historical observations)
+   -> pricing_intelligence/changes.py          (RateChange events)
+   -> pricing_intelligence/snapshot.py         (per-term ranking + dispersion)
+   -> pricing_intelligence/strategy.py         <-- the only seam into pricing
+   -> EngineConfig.market.competitor_loan_rate
+   -> scenarios/runner.py -> optimization/grid_search.py
+```
+
+`strategy.apply_market_strategy_to_config()` supports `MANUAL` (default,
+config returned unchanged), `MARKET_MEDIAN`, `MARKET_LEADER`,
+`MARKET_SECOND_LOWEST`, and `MARKET_MEAN`, with an `offset_bps` shift.
+
+Full detail: [pricing_intelligence.md](pricing_intelligence.md).
