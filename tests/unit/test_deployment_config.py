@@ -3,6 +3,8 @@
 import plistlib
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -98,6 +100,27 @@ def test_scheduling_recipes_pass_config_flag():
         REPO_ROOT / "deploy" / "scheduling" / "crontab.example"
     ).read_text(encoding="utf-8")
     assert "--config" in crontab_example
+
+
+def test_collector_canary_cron_targets_nz_weekdays():
+    """GitHub evaluates schedule cron in UTC only, with no IANA timezone
+    support. NZST (UTC+12) puts NZ local Monday 07:30 at UTC Sunday 19:30 --
+    the previous UTC calendar day -- so the UTC day-of-week field must be
+    Sun-Thu (0-4) to land on NZ local Mon-Fri. Mon-Fri (1-5) in UTC actually
+    runs NZ local Tue-Sat, skipping the Monday-morning canary entirely."""
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github" / "workflows" / "collector-canary.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    # PyYAML implements YAML 1.1, where the bare `on:` trigger key parses as
+    # the boolean True rather than the string "on" -- check both so this
+    # isn't tied to that quirk.
+    triggers = workflow.get("on", workflow.get(True))
+
+    cron = triggers["schedule"][0]["cron"]
+
+    assert cron == "30 19 * * 0-4"
 
 
 def test_deployment_doc_covers_required_topics():

@@ -12,8 +12,17 @@ name: Collector canary
 
 on:
   schedule:
-    # 19:30 UTC = 07:30 NZST. Weekdays only; banks rarely reprice at weekends.
-    - cron: "30 19 * * 1-5"
+    # GitHub evaluates schedule cron in UTC only -- it has no IANA timezone
+    # support, so this cannot track NZ daylight saving. 19:30 UTC is 07:30
+    # NZST (UTC+12); during NZDT (UTC+13, roughly late Sep-early Apr) it
+    # drifts to 08:30 local. Accepted for a non-gating canary.
+    #
+    # The weekday field is evaluated in UTC too: NZST is 12h ahead, so a
+    # local Monday 07:30 falls on UTC Sunday 19:30 -- the *previous* UTC
+    # calendar day. To land on NZ local Mon-Fri, the UTC cron day-of-week
+    # must be Sun-Thu (0-4), not Mon-Fri (1-5) -- 1-5 here previously ran
+    # NZ local Tue-Sat, skipping the Monday-morning canary entirely.
+    - cron: "30 19 * * 0-4"
   workflow_dispatch:
 
 # Never run more than one canary at a time.
