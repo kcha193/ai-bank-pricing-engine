@@ -136,6 +136,78 @@ Kiwibank  SUCCESS  4 rates
 One bank failing never stops the others, and never writes partial nonsense: a
 failed bank simply contributes no records that run.
 
+### Scheduled collection
+
+Observation history **cannot be backfilled** -- a day not collected is gone --
+and everything time-based (change detection, market state, the 7d/30d features,
+history charts) is inert until collections accumulate. A single snapshot reports
+`LOW - no rate changes detected` regardless of what the market is doing.
+
+[`scripts/collect_market_rates_workflow.py`](../scripts/collect_market_rates_workflow.py)
+is the unattended entry point. It adds what a scheduler needs and an interactive
+session does not: a single-instance lock (an overrunning browser-rendered
+collection must not interleave with the next schedule and write two runs at
+once), JSON logging via `observability.logging`, a machine-readable run summary,
+and exit codes worth alerting on.
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Every bank fetched, and every accepted row passed validation with adequate coverage |
+| 1 | Nothing usable was stored -- either no bank could be fetched, or every fetched row was rejected by validation (`rate_count == 0`) |
+| 2 | Partial: at least one bank failed to fetch, at least one row was rejected by validation (`validation.rejected`), or a bank matched too few of its previously known rate lines to trust (`low_coverage_banks`, below `min_bank_coverage_ratio`) |
+| 3 | Skipped, another collection was already running |
+
+Exit codes are not solely about fetch success: a bank whose page fetches and
+parses cleanly can still push the run to exit 1 or 2 if what it returned fails
+validation or covers too little of its known range -- see
+`exit_code_for()` and `build_summary()`'s `banks_failed`/`failures` fields in
+[`scripts/collect_market_rates_workflow.py`](../scripts/collect_market_rates_workflow.py)
+for exactly which case applied. Exit 2 is deliberately distinct from 0: an
+incomplete or unreliable market view produces a median over fewer (or less
+trustworthy) banks than it reports, which is exactly the failure mode live
+verification uncovered.
+
+```bash
+python3 scripts/collect_market_rates_workflow.py \
+    --config configs/base.yaml \
+    --render-javascript \
+    --summary-file data/processed/pricing_intelligence/last_run.json
+```
+
+`--config` loads the `pricing_intelligence` block (selected banks, validation
+thresholds, collection delays, database path) from an EngineConfig YAML, same
+as the interactive CLI. Without it, this falls back to
+`PricingIntelligenceConfig()` defaults and silently ignores anything
+configured there.
+
+Ready-made schedules are in [`deploy/scheduling/`](../deploy/scheduling/):
+
+- `nz.pricing-intelligence.collect.plist` -- macOS launchd agent, daily at 07:30
+  local, with `RunAtLoad` so a machine asleep at the scheduled time collects on
+  next wake rather than skipping the day.
+- `crontab.example` -- the equivalent cron entry.
+
+Both need their `REPLACE_ME` / `/path/to` paths edited before use.
+
+### Where history lives
+
+**Durable observation history is local**, in the SQLite store the scheduled job
+writes to. It is deliberately not committed: `data/processed/pricing_intelligence/`
+and `*.db` are git-ignored, and a binary database in git would churn badly and
+diff meaninglessly.
+
+The [collector canary](../.github/workflows/collector-canary.yml) workflow is a
+*different thing* and is easy to confuse with a history store. It runs on a
+schedule, collects into a throwaway database, and reports only whether each
+collector still parses its live page. Its purpose is to notice a bank redesign
+breaking a parser -- because live verification is point-in-time, not a standing
+guarantee. It is kept out of `ci.yml` on purpose: it reaches live bank websites,
+so it must never gate a pull request.
+
+If durable history ever needs to live somewhere shared, that is a real design
+decision (a committed text export, an object store, or a hosted database) and
+should be made explicitly rather than by letting CI accrete state.
+
 ### Inspect the market
 
 ```bash
@@ -199,16 +271,29 @@ python3 examples/run_market_intelligence_scenarios.py --term 12
 ```text
    Scenario                  Competitor   Our rate       Objective        vs A
 ------------------------------------------------------------------------------
-A  No change (manual)             6.75%      8.10%     $10,149,221          $0
-B  Match market median            4.85%      7.50%      $6,283,084 $-3,866,137
-C  Match market leader            4.79%      7.54%      $6,179,713 $-3,969,508
-D  Market leader -5 bps           4.74%      7.49%      $6,097,472 $-4,051,749
+A  No change (manual)             4.99%      6.59%      $2,392,880          $0
+B  Match market median            4.99%      6.59%      $2,392,880          $0
+C  Match market leader            4.95%      6.55%      $2,358,178    $-34,703
+D  Market leader -5 bps           4.90%      6.55%      $2,321,822    $-71,058
 ```
 
 Scenario E -- the economically optimal price -- is the `Our rate` column: the
 existing optimiser's own recommendation under each competitor assumption. The
 script calls `run_baseline_diagnostics` once per scenario and reimplements no
 pricing logic.
+
+A and B coincide here because `configs/base.yaml` was recalibrated on
+2026-08-26 so its manual competitor default *is* the verified market median.
+Before that recalibration the manual default was 6.75% -- 176 bps above the real
+market -- and A diverged wildly from every market-derived scenario. That the two
+now agree is the point: the manual assumption is no longer silently stale.
+
+The recommended rate sits above the market because the optimiser maximises
+unconstrained risk-adjusted profit. It models no competitive reaction and no
+market-share or volume constraint, so a premium over market is a coherent
+optimum *for the model*. Real banks price nearer the market because of
+strategic constraints this engine does not represent. See
+[modelling_assumptions.md](modelling_assumptions.md).
 
 ### Dashboard
 

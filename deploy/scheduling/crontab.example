@@ -1,0 +1,26 @@
+# NZ market-rate collection, once daily at 07:30 local.
+#
+#   crontab -e   # then paste, adjusting the two paths
+#
+# The workflow script takes its own single-instance lock, so an overrunning
+# browser-rendered collection cannot interleave with the next schedule.
+#
+# Exit codes:
+#   0  all five banks collected
+#   1  no bank collected -- the run produced nothing
+#   2  partial: at least one bank failed, market view incomplete
+#   3  skipped, another collection was already running
+#
+# The subshell below logs a nonzero exit to collect.err.log for visibility,
+# then re-exits with that same code -- replace the echo with whatever
+# alerting you use. A plain `cmd || echo ...` would not do: echo itself
+# always succeeds, so the overall cron command would exit 0 even when the
+# collector failed, and both cron's own failure mail and any wrapper or
+# monitoring that inspects the job's exit status would see a clean run.
+#
+# --config configs/base.yaml is passed explicitly: without it, the workflow
+# falls back to PricingIntelligenceConfig() defaults and silently ignores any
+# pricing_intelligence block (selected banks, validation thresholds,
+# collection delays, database path) configured there.
+
+30 7 * * * cd /path/to/ai-bank-pricing-engine && mkdir -p data/processed/pricing_intelligence && ( .venv/bin/python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --render-javascript --quiet --summary-file data/processed/pricing_intelligence/last_run.json >> data/processed/pricing_intelligence/collect.log 2>&1; code=$?; [ "$code" -eq 0 ] || echo "NZ rate collection exited $code $(date)" >> data/processed/pricing_intelligence/collect.err.log; exit "$code" )

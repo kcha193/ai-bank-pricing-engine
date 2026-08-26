@@ -117,8 +117,13 @@ class MultiPeriodConfig(BaseModel):
 
 
 class LoanResponseCoefficientsConfig(BaseModel):
-    intercept: float = 1.10
-    rate_anchor: float = 0.065
+    # Recalibrated 2026-08-26 against the live-verified NZ market (1y median
+    # 4.99%). rate_anchor is the reference price at which the own-rate term
+    # vanishes, so it must track the market being priced into: left at 6.5% it
+    # told the model a 6.5% loan was neutrally priced against a 4.99% market.
+    # See docs/modelling_assumptions.md.
+    intercept: float = 2.39
+    rate_anchor: float = 0.0499
     risk_score_coef: float = -1.20
     credit_score_coef: float = 0.35
     lvr_coef: float = -0.25

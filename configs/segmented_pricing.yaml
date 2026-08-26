@@ -5,9 +5,9 @@ simulation:
 market:
   cash_rate: 0.0425
   wholesale_funding_spread: 0.012
-  competitor_loan_rate: 0.0675
+  competitor_loan_rate: 0.0499
   competitor_deposit_rate: 0.045
-  home_loan_reference_rate: 0.0525
+  home_loan_reference_rate: 0.0499
   term_deposit_reference_rate: 0.0400
 segmented_pricing:
   loan_tiers:
@@ -59,14 +59,14 @@ balance_sheet:
   loan_rwa_weight: 0.35
   capital_hurdle_rate: 0.12
 response:
-  loan_rate_elasticity: -85.0
-  loan_competitor_gap_elasticity: -65.0
+  loan_rate_elasticity: -170.0
+  loan_competitor_gap_elasticity: -130.0
   deposit_rate_elasticity: 95.0
   deposit_competitor_gap_elasticity: 75.0
   coefficients:
     loan:
-      intercept: 1.10
-      rate_anchor: 0.065
+      intercept: 2.39
+      rate_anchor: 0.0499
       risk_score_coef: -1.20
       credit_score_coef: 0.35
       lvr_coef: -0.25

@@ -1,6 +1,9 @@
 """Validates the deployment configuration files without requiring a Docker daemon."""
 
+import plistlib
 from pathlib import Path
+
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -66,6 +69,58 @@ def test_deployment_doc_lists_both_secrets_read_by_the_service():
     assert "ANTHROPIC_API_KEY" in deployment_doc
     assert "PRICING_ENGINE_API_KEYS" in deployment_doc
     assert "SecretsProvider" in deployment_doc
+
+
+def test_launchd_plist_is_well_formed_xml():
+    """A stray "--" anywhere inside an XML comment makes the whole file
+    unparseable (XML forbids double hyphens in comment content), so macOS
+    rejects it before launchd can even install the scheduled collector --
+    plutil is lenient about this, but plistlib (and launchd itself) is not."""
+    plist_path = REPO_ROOT / "deploy" / "scheduling" / "nz.pricing-intelligence.collect.plist"
+
+    with plist_path.open("rb") as handle:
+        data = plistlib.load(handle)
+
+    assert data["Label"] == "nz.pricing-intelligence.collect"
+
+
+def test_scheduling_recipes_pass_config_flag():
+    """Without --config, collect_market_rates_workflow.py falls back to
+    PricingIntelligenceConfig() defaults and silently ignores any
+    pricing_intelligence block (selected banks, validation thresholds,
+    collection delays, database path) an operator configured in
+    configs/base.yaml -- the ready-made recipes must actually wire it up,
+    not just support it."""
+    plist_path = REPO_ROOT / "deploy" / "scheduling" / "nz.pricing-intelligence.collect.plist"
+    with plist_path.open("rb") as handle:
+        program_arguments = plistlib.load(handle)["ProgramArguments"]
+    assert "--config" in program_arguments
+
+    crontab_example = (
+        REPO_ROOT / "deploy" / "scheduling" / "crontab.example"
+    ).read_text(encoding="utf-8")
+    assert "--config" in crontab_example
+
+
+def test_collector_canary_cron_targets_nz_weekdays():
+    """GitHub evaluates schedule cron in UTC only, with no IANA timezone
+    support. NZST (UTC+12) puts NZ local Monday 07:30 at UTC Sunday 19:30 --
+    the previous UTC calendar day -- so the UTC day-of-week field must be
+    Sun-Thu (0-4) to land on NZ local Mon-Fri. Mon-Fri (1-5) in UTC actually
+    runs NZ local Tue-Sat, skipping the Monday-morning canary entirely."""
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github" / "workflows" / "collector-canary.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    # PyYAML implements YAML 1.1, where the bare `on:` trigger key parses as
+    # the boolean True rather than the string "on" -- check both so this
+    # isn't tied to that quirk.
+    triggers = workflow.get("on", workflow.get(True))
+
+    cron = triggers["schedule"][0]["cron"]
+
+    assert cron == "30 19 * * 0-4"
 
 
 def test_deployment_doc_covers_required_topics():
