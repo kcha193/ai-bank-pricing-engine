@@ -2,10 +2,12 @@ import pytest
 
 from balance_pricing_engine.competitor_rates.apply import (
     CompetitorRateResolutionError,
+    _filter_mortgage_records,
     _resolve_strategy,
     apply_competitor_rates_to_config,
     load_and_resolve_competitor_rates,
 )
+from balance_pricing_engine.competitor_rates.models import CompetitorRatesConfig
 from balance_pricing_engine.competitor_rates.store import load_rate_run
 from balance_pricing_engine.config import EngineConfig
 from balance_pricing_engine.scenarios.runner import run_baseline_scenario
@@ -211,6 +213,28 @@ def test_mortgage_filter_can_exclude_special_rates():
 
     assert [record.bank for record in resolved.mortgage_records] == ["Westpac"]
     assert resolved.mortgage_reference_rate == pytest.approx(0.059)
+
+
+def test_mortgage_filter_excludes_non_comparable_records_unconditionally(make_record):
+    """A subsidised 1.00% top-up must never reach market_average/min/median and
+    skew competitor_loan_rate, regardless of include_specials/equity filters."""
+    records = [
+        make_record(bank="ASB", rate_pct=1.00, rate_category="non_comparable"),
+        make_record(bank="Westpac", rate_pct=5.59, rate_category="standard"),
+    ]
+    config = CompetitorRatesConfig.model_validate(
+        {
+            "mortgage": {
+                "include_specials": True,
+                "require_min_20_percent_equity": False,
+                "term_months": None,
+            },
+        }
+    )
+
+    filtered = _filter_mortgage_records(records, config)
+
+    assert [record.bank for record in filtered] == ["Westpac"]
 
 
 def _base_config(enabled: bool = True) -> dict:

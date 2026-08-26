@@ -144,6 +144,11 @@ def compute_market_activity(
     would otherwise dominate the mean and push the market state to ELEVATED --
     a broken parser must not be able to fake a repricing round. Pass
     ``include_suspicious=True`` to see raw activity including unverified moves.
+
+    ``non_comparable`` changes (subsidised/closed products, see
+    ``BankPricingCollector.excluded_product_markers``) are always excluded,
+    unconditionally: a green top-up repricing is not a market repricing event
+    and must not be able to push the market-state classification.
     """
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(days=lookback_days)
@@ -154,6 +159,7 @@ def compute_market_activity(
         and change.change_bps is not None
         and cutoff <= change.detected_at <= now
         and (include_suspicious or not change.suspicious)
+        and change.rate_category != "non_comparable"
     ]
 
     if not moves:

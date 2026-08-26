@@ -1,7 +1,11 @@
+from datetime import datetime, timezone
+from pathlib import Path
+
 import pytest
 import yaml
 
 from balance_pricing_engine.competitor_rates import cli
+from balance_pricing_engine.competitor_rates.extractors import parse_html_rates
 from balance_pricing_engine.competitor_rates.models import (
     CompetitorRateRun,
     SourceAttempt,
@@ -11,6 +15,7 @@ from balance_pricing_engine.competitor_rates.store import load_rate_run
 
 
 FIXTURE = "tests/fixtures/competitor_rates/latest.json"
+PRICING_INTELLIGENCE_FIXTURES = Path("tests/fixtures/pricing_intelligence")
 
 
 def test_validate_command_reports_fixture_status(capsys):
@@ -249,6 +254,32 @@ def test_report_command_prints_validation_issues(tmp_path, capsys):
     captured = capsys.readouterr()
     assert exit_code == 0
     assert "WARNING: check me" in captured.out
+
+
+def test_fetch_categorisation_fences_a_subsidised_product_extracted_via_the_generic_parser():
+    """extract_all_sources() -> parse_html_rates() alone leaves every home-loan
+    row generically "fixed", with no per-bank knowledge of what an unmarked
+    row means. _apply_bank_categorisation() must route each record through
+    its bank's collector so a subsidised top-up can't reach the CLI's stored
+    run as a comparable "fixed" rate -- see ASBCollector's
+    excluded_product_markers/enrich_mortgage_record."""
+    html = (PRICING_INTELLIGENCE_FIXTURES / "asb_home_loans_unmarked.html").read_text(
+        encoding="utf-8"
+    )
+    raw_records = parse_html_rates(
+        bank="ASB",
+        product_type="home_loan",
+        source_url="https://www.asb.co.nz/home-loans-mortgages/interest-rates-fees.html",
+        html=html,
+        captured_at_utc=datetime(2026, 8, 25, tzinfo=timezone.utc),
+    )
+    top_up = next(r for r in raw_records if "Top Up" in r.raw_text_context)
+    assert top_up.rate_category == "fixed", "generic parser has no per-bank tiering yet"
+
+    categorised = cli._apply_bank_categorisation(raw_records)
+
+    top_up_categorised = next(r for r in categorised if "Top Up" in r.raw_text_context)
+    assert top_up_categorised.rate_category == "non_comparable"
 
 
 def test_configured_competitor_rates_enables_explicit_source_file():
