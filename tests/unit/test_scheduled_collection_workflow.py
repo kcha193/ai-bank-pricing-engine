@@ -6,6 +6,7 @@ testable without reaching a live bank site.
 
 import importlib.util
 import json
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -394,6 +395,47 @@ def test_run_collection_writes_a_summary_file(workflow, fixture_fetcher, tmp_pat
 
     assert code == workflow.EXIT_OK
     assert json.loads(summary_path.read_text())["rates_accepted"] == summary["rates_accepted"]
+
+
+def test_run_collection_logs_partial_failure_at_warning(
+    workflow, fixture_fetcher, tmp_path, monkeypatch
+):
+    """In the launchd deployment, this log line is the only structured health
+    event -- alerting that filters on warning/error severity must not miss an
+    incomplete market view just because exit_code_for() treats it as a
+    failure while the completion event was logged at INFO.
+
+    A directly-attached handler is used instead of caplog: configure_json_logging()
+    (called by an earlier test's workflow.main() in this same process) sets
+    ``propagate = False`` on the balance_pricing_engine logger hierarchy,
+    which stops records from reaching caplog's root-based capture.
+    """
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    monkeypatch.setattr(
+        workflow,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"],
+            store=kwargs["store"],
+            fetcher=fixture_fetcher(failing_banks=["Westpac"]),
+        ),
+    )
+
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    workflow.logger.addHandler(handler)
+    try:
+        code, _ = workflow.run_collection(config, render_javascript=False)
+    finally:
+        workflow.logger.removeHandler(handler)
+
+    assert code == workflow.EXIT_PARTIAL_FAILURE
+    finished_record = next(r for r in records if r.getMessage() == "market collection finished")
+    assert finished_record.levelname == "WARNING"
 
 
 def test_config_flag_loads_pricing_intelligence_settings(

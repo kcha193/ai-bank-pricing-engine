@@ -273,10 +273,22 @@ def run_collection(
     summary = build_summary(outcome)
     code = exit_code_for(outcome)
 
+    if code == EXIT_TOTAL_FAILURE:
+        completion_level = logging.ERROR
+    elif code == EXIT_PARTIAL_FAILURE:
+        # In the launchd deployment this is the only structured health event,
+        # so alerting that filters on warning/error severity must still see
+        # an incomplete market view -- INFO would let it slip through
+        # unnoticed even though exit_code_for() already treats it as a
+        # failure.
+        completion_level = logging.WARNING
+    else:
+        completion_level = logging.INFO
+
     log_event(
         logger,
         "market collection finished",
-        level=logging.ERROR if code == EXIT_TOTAL_FAILURE else logging.INFO,
+        level=completion_level,
         exit_code=code,
         **{
             key: summary[key]
