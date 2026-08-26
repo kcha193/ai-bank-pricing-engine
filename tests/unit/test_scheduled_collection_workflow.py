@@ -193,6 +193,33 @@ def test_partial_rejection_within_a_bank_is_a_partial_failure(workflow, fixture_
     assert workflow.exit_code_for(outcome) == workflow.EXIT_PARTIAL_FAILURE
 
 
+def test_summary_reflects_partial_rejection_within_a_bank(workflow, fixture_fetcher, tmp_path):
+    """A summary consumer must be able to identify which bank had a rejected row.
+
+    ANZ has plenty of accepted rates here, so neither the zero-accepted-rows
+    nor the low-coverage bank-scoped check flags it -- yet exit_code_for()
+    already reports this run as a partial failure via validation.rejected.
+    Without _partial_rejection_failures(), the summary simultaneously showed
+    rates_rejected > 0 while listing ANZ under banks_succeeded with no
+    bank-specific failures entry to point an operator at.
+    """
+
+    def blow_out_one_row(bank, html):
+        if bank != "ANZ":
+            return html
+        return html.replace("<td>1 year</td><td>4.79%", "<td>1 year</td><td>99.99%")
+
+    outcome = collect_outcome(fixture_fetcher(mutate=blow_out_one_row), tmp_path)
+    summary = workflow.build_summary(outcome)
+
+    assert summary["rates_rejected"] > 0
+    assert "ANZ" not in summary["banks_succeeded"]
+    assert "ANZ" in summary["banks_failed"]
+    anz_failures = [f for f in summary["failures"] if f["bank"] == "ANZ"]
+    assert len(anz_failures) == 1
+    assert anz_failures[0]["error_type"] == "validation_rejected"
+
+
 def test_low_coverage_bank_is_a_partial_failure(workflow, make_record, tmp_path):
     """A page-layout regression that leaves one row parseable while silently
     dropping the rest of a bank's table.

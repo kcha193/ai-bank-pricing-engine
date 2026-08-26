@@ -157,9 +157,55 @@ def _low_coverage_failures(outcome: CollectionOutcome) -> list[dict]:
     ]
 
 
+def _partial_rejection_failures(outcome: CollectionOutcome, already_flagged: set[str]) -> list[dict]:
+    """Banks with at least one rejected row, not already flagged more specifically.
+
+    exit_code_for() already treats any rejected observation as a partial
+    failure (a term-specific parser regression can corrupt a single row
+    while the bank's other rows still collect cleanly), but a bank in that
+    state has some accepted rows and adequate coverage, so neither
+    _validation_only_failures() nor _low_coverage_failures() catches it --
+    the summary would report rates_rejected > 0 while listing the affected
+    bank as succeeded with no bank-specific entry to point at.
+    """
+    rejected_banks = {record.bank for record in outcome.validation.rejected}
+    failures = []
+    for bank in sorted(rejected_banks - already_flagged):
+        codes = sorted(
+            {
+                issue.code
+                for issue in outcome.validation.issues
+                if issue.bank == bank and issue.severity == "error"
+            }
+        )
+        rejected_count = sum(1 for record in outcome.validation.rejected if record.bank == bank)
+        failures.append(
+            {
+                "bank": bank,
+                "error_type": "validation_rejected",
+                "error": (
+                    f"{rejected_count} row(s) rejected by validation ("
+                    f"{', '.join(codes) if codes else 'unknown reason'})"
+                ),
+            }
+        )
+    return failures
+
+
 def _bank_scoped_failures(outcome: CollectionOutcome) -> list[dict]:
-    """Every bank-scoped failure not already visible in report.failed."""
-    return _validation_only_failures(outcome) + _low_coverage_failures(outcome)
+    """Every bank-scoped failure not already visible in report.failed.
+
+    Checked in order of specificity so a bank is reported once, under its
+    most informative category: zero accepted rows, then coverage below
+    threshold, then any remaining bank with at least one rejected row.
+    """
+    zero_accepted_failures = _validation_only_failures(outcome)
+    low_coverage_failures = _low_coverage_failures(outcome)
+    already_flagged = {failure["bank"] for failure in zero_accepted_failures} | {
+        failure["bank"] for failure in low_coverage_failures
+    }
+    partial_rejection_failures = _partial_rejection_failures(outcome, already_flagged)
+    return zero_accepted_failures + low_coverage_failures + partial_rejection_failures
 
 
 def build_summary(outcome: CollectionOutcome) -> dict:

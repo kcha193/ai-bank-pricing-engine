@@ -7,7 +7,9 @@ import yaml
 from fastapi.testclient import TestClient
 
 from balance_pricing_engine.api import app
+from balance_pricing_engine.api.schemas import _EXAMPLE_CONFIG_YAML
 from balance_pricing_engine.application.pricing_service import PricingService
+from balance_pricing_engine.config import EngineConfig
 from balance_pricing_engine.optimization.response_fn import GovernanceError
 
 api_module = importlib.import_module("balance_pricing_engine.api.app")
@@ -52,6 +54,38 @@ def test_v1_pricing_scenarios_returns_governed_decision():
     assert set(payload["feature_lineage"]) == {"loan", "deposit"}
     assert "X-Correlation-ID" in response.headers
     assert payload["correlation_id"] == response.headers["X-Correlation-ID"]
+
+
+def test_example_config_yaml_matches_recalibrated_defaults():
+    """The OpenAPI example for config_yaml must not silently mix pre- and
+    post-recalibration values.
+
+    _EXAMPLE_CONFIG_YAML omits response.coefficients, so a caller who copies
+    it verbatim inherits whatever LoanResponseCoefficientsConfig defaults to
+    (rate_anchor 0.0499, the post-2026-08-26-recalibration market anchor --
+    see docs/modelling_assumptions.md). Its explicitly-set market rate and
+    elasticities must track that same calibration, or a copy-pasted request
+    silently prices against an unintended hybrid of old and new assumptions.
+    """
+    example_config = EngineConfig.model_validate(yaml.safe_load(_EXAMPLE_CONFIG_YAML))
+    canonical_config = EngineConfig.model_validate(yaml.safe_load(CONFIG_YAML))
+
+    # rate_anchor is the reference price at which the loan response's
+    # own-rate term vanishes -- it must track the market rate being priced
+    # into, or the model treats the wrong rate as "neutral".
+    assert (
+        example_config.response.coefficients.loan.rate_anchor
+        == example_config.market.competitor_loan_rate
+        == example_config.market.home_loan_reference_rate
+    )
+    assert (
+        example_config.response.loan_rate_elasticity
+        == canonical_config.response.loan_rate_elasticity
+    )
+    assert (
+        example_config.response.loan_competitor_gap_elasticity
+        == canonical_config.response.loan_competitor_gap_elasticity
+    )
 
 
 def test_v1_pricing_scenarios_echoes_caller_supplied_correlation_id():
