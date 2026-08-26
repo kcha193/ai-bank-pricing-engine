@@ -82,6 +82,24 @@ def test_launchd_plist_is_well_formed_xml():
     assert data["Label"] == "nz.pricing-intelligence.collect"
 
 
+def test_scheduling_recipes_pass_config_flag():
+    """Without --config, collect_market_rates_workflow.py falls back to
+    PricingIntelligenceConfig() defaults and silently ignores any
+    pricing_intelligence block (selected banks, validation thresholds,
+    collection delays, database path) an operator configured in
+    configs/base.yaml -- the ready-made recipes must actually wire it up,
+    not just support it."""
+    plist_path = REPO_ROOT / "deploy" / "scheduling" / "nz.pricing-intelligence.collect.plist"
+    with plist_path.open("rb") as handle:
+        program_arguments = plistlib.load(handle)["ProgramArguments"]
+    assert "--config" in program_arguments
+
+    crontab_example = (
+        REPO_ROOT / "deploy" / "scheduling" / "crontab.example"
+    ).read_text(encoding="utf-8")
+    assert "--config" in crontab_example
+
+
 def test_deployment_doc_covers_required_topics():
     deployment_doc = (REPO_ROOT / "docs" / "deployment.md").read_text(encoding="utf-8")
 

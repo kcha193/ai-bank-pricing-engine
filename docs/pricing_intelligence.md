@@ -163,9 +163,16 @@ verification uncovered.
 
 ```bash
 python3 scripts/collect_market_rates_workflow.py \
+    --config configs/base.yaml \
     --render-javascript \
     --summary-file data/processed/pricing_intelligence/last_run.json
 ```
+
+`--config` loads the `pricing_intelligence` block (selected banks, validation
+thresholds, collection delays, database path) from an EngineConfig YAML, same
+as the interactive CLI. Without it, this falls back to
+`PricingIntelligenceConfig()` defaults and silently ignores anything
+configured there.
 
 Ready-made schedules are in [`deploy/scheduling/`](../deploy/scheduling/):
 

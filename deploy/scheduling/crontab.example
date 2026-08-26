@@ -13,5 +13,10 @@
 #
 # The `|| echo` below keeps a partial run visible rather than silent; replace it
 # with whatever alerting you use.
+#
+# --config configs/base.yaml is passed explicitly: without it, the workflow
+# falls back to PricingIntelligenceConfig() defaults and silently ignores any
+# pricing_intelligence block (selected banks, validation thresholds,
+# collection delays, database path) configured there.
 
-30 7 * * * cd /path/to/ai-bank-pricing-engine && mkdir -p data/processed/pricing_intelligence && .venv/bin/python3 scripts/collect_market_rates_workflow.py --render-javascript --quiet --summary-file data/processed/pricing_intelligence/last_run.json >> data/processed/pricing_intelligence/collect.log 2>&1 || echo "NZ rate collection exited $? $(date)" >> data/processed/pricing_intelligence/collect.err.log
+30 7 * * * cd /path/to/ai-bank-pricing-engine && mkdir -p data/processed/pricing_intelligence && .venv/bin/python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --render-javascript --quiet --summary-file data/processed/pricing_intelligence/last_run.json >> data/processed/pricing_intelligence/collect.log 2>&1 || echo "NZ rate collection exited $? $(date)" >> data/processed/pricing_intelligence/collect.err.log

@@ -20,6 +20,12 @@
   changes in the morning, and RunAtLoad plus StartCalendarInterval means a
   machine asleep at 07:30 collects on next wake rather than skipping the day
   (history cannot be backfilled).
+
+  The config flag below (configs/base.yaml) is passed explicitly: without
+  it, the workflow falls back to PricingIntelligenceConfig() defaults and
+  silently ignores any pricing_intelligence block (selected banks,
+  validation thresholds, collection delays, database path) configured
+  there.
 -->
 <plist version="1.0">
 <dict>
@@ -33,6 +39,8 @@
     <array>
         <string>REPLACE_ME/ai-bank-pricing-engine/.venv/bin/python3</string>
         <string>scripts/collect_market_rates_workflow.py</string>
+        <string>--config</string>
+        <string>configs/base.yaml</string>
         <string>--render-javascript</string>
         <string>--quiet</string>
         <string>--summary-file</string>
