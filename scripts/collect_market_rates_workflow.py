@@ -163,7 +163,12 @@ def exit_code_for(outcome: CollectionOutcome) -> int:
     # usable was stored, and a scheduler must not treat that as success.
     if not outcome.report.any_success or outcome.rate_count == 0:
         return EXIT_TOTAL_FAILURE
-    if outcome.report.failed or _validation_only_failures(outcome):
+    # Any rejected observation -- not just a bank where every row was
+    # rejected -- means the collection is incomplete: a term-specific parser
+    # regression can silently drop one product from an otherwise-healthy
+    # bank. Warnings (e.g. a suspicious but plausible movement) stay
+    # non-fatal; only rejected (error-severity) records count here.
+    if outcome.report.failed or outcome.validation.rejected:
         return EXIT_PARTIAL_FAILURE
     return EXIT_OK
 

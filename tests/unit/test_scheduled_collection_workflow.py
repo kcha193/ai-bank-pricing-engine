@@ -143,6 +143,31 @@ def test_bank_wide_rejection_is_a_partial_failure(workflow, fixture_fetcher, tmp
     assert workflow.exit_code_for(outcome) == workflow.EXIT_PARTIAL_FAILURE
 
 
+def test_partial_rejection_within_a_bank_is_a_partial_failure(workflow, fixture_fetcher, tmp_path):
+    """One rejected row alongside otherwise-valid rows for the same bank.
+
+    ANZ still has plenty of accepted rates here, so the bank-wide guard
+    (every row rejected) does not catch this -- a term-specific parser
+    regression that corrupts a single row must still surface as a partial
+    failure, not a clean exit, even though the bank as a whole "succeeded".
+    """
+
+    def blow_out_one_row(bank, html):
+        if bank != "ANZ":
+            return html
+        return html.replace("<td>1 year</td><td>4.79%", "<td>1 year</td><td>99.99%")
+
+    outcome = collect_outcome(fixture_fetcher(mutate=blow_out_one_row), tmp_path)
+
+    assert not outcome.report.failed
+    assert outcome.rate_count > 0
+    assert outcome.validation.rejected
+    # The bank-wide-only guard from the prior round would miss this: ANZ still
+    # has accepted rows, so it never appears in _validation_only_failures().
+    assert not workflow._validation_only_failures(outcome)
+    assert workflow.exit_code_for(outcome) == workflow.EXIT_PARTIAL_FAILURE
+
+
 def test_summary_reflects_bank_wide_validation_rejection(workflow, fixture_fetcher, tmp_path):
     """A validation-only failure must be visible in the summary, not just the exit code.
 
