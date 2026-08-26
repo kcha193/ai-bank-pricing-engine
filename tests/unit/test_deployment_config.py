@@ -1,5 +1,6 @@
 """Validates the deployment configuration files without requiring a Docker daemon."""
 
+import plistlib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -66,6 +67,19 @@ def test_deployment_doc_lists_both_secrets_read_by_the_service():
     assert "ANTHROPIC_API_KEY" in deployment_doc
     assert "PRICING_ENGINE_API_KEYS" in deployment_doc
     assert "SecretsProvider" in deployment_doc
+
+
+def test_launchd_plist_is_well_formed_xml():
+    """A stray "--" anywhere inside an XML comment makes the whole file
+    unparseable (XML forbids double hyphens in comment content), so macOS
+    rejects it before launchd can even install the scheduled collector --
+    plutil is lenient about this, but plistlib (and launchd itself) is not."""
+    plist_path = REPO_ROOT / "deploy" / "scheduling" / "nz.pricing-intelligence.collect.plist"
+
+    with plist_path.open("rb") as handle:
+        data = plistlib.load(handle)
+
+    assert data["Label"] == "nz.pricing-intelligence.collect"
 
 
 def test_deployment_doc_covers_required_topics():
