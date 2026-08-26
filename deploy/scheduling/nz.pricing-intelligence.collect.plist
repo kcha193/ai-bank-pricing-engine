@@ -25,14 +25,15 @@
     <key>WorkingDirectory</key>
     <string>REPLACE_ME/ai-bank-pricing-engine</string>
 
+    <!-- launchd opens StandardOutPath/StandardErrorPath before this program
+         starts, and the target directory is git-ignored so it may not exist
+         yet on a fresh checkout; mkdir it first via a shell wrapper rather
+         than relying on the Python process (which starts too late to help). -->
     <key>ProgramArguments</key>
     <array>
-        <string>REPLACE_ME/ai-bank-pricing-engine/.venv/bin/python3</string>
-        <string>scripts/collect_market_rates_workflow.py</string>
-        <string>--render-javascript</string>
-        <string>--quiet</string>
-        <string>--summary-file</string>
-        <string>data/processed/pricing_intelligence/last_run.json</string>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>mkdir -p data/processed/pricing_intelligence &amp;&amp; exec REPLACE_ME/ai-bank-pricing-engine/.venv/bin/python3 scripts/collect_market_rates_workflow.py --render-javascript --quiet --summary-file data/processed/pricing_intelligence/last_run.json</string>
     </array>
 
     <key>StartCalendarInterval</key>

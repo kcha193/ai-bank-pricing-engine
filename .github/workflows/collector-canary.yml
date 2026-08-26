@@ -75,7 +75,9 @@ jobs:
             3) echo "::error::Lock held unexpectedly in a fresh runner." ;;
             *) echo "::error::Unexpected exit code $CODE" ;;
           esac
-          # Only a total failure fails the job; a single bank changing its page
-          # is a warning to act on, not a red build every morning.
-          [ "$CODE" = "1" ] && exit 1
-          exit 0
+          # A single bank changing its page (code 2) is a warning to act on,
+          # not a red build every morning -- but any other nonzero code means
+          # no valid health check completed, and must fail the job.
+          [ "$CODE" = "2" ] && exit 0
+          [ "$CODE" = "0" ] && exit 0
+          exit 1

@@ -6,6 +6,7 @@ testable without reaching a live bank site.
 
 import importlib.util
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -64,6 +65,27 @@ def test_total_failure_exits_nonzero(workflow, fixture_fetcher, tmp_path):
     banks = ["ANZ", "ASB", "BNZ", "Westpac", "Kiwibank"]
     outcome = collect_outcome(fixture_fetcher(failing_banks=banks), tmp_path)
 
+    assert workflow.exit_code_for(outcome) == workflow.EXIT_TOTAL_FAILURE
+
+
+def test_all_rates_rejected_is_a_total_failure(workflow, fixture_fetcher, tmp_path):
+    """A shared parser regression producing implausible rates must not exit clean.
+
+    Every bank fetches and parses without error here (any_success=True,
+    report.failed is empty), but validation rejects every record as
+    out-of-band. Mirrors the equivalent check in the pricing_intelligence
+    CLI (``rate_count == 0``) -- without it, a scheduler would report success
+    while history silently stops accumulating.
+    """
+
+    def blow_out_rates(bank, html):
+        return re.sub(r"\d+\.\d+%", "99.99%", html)
+
+    outcome = collect_outcome(fixture_fetcher(mutate=blow_out_rates), tmp_path)
+
+    assert outcome.report.any_success
+    assert not outcome.report.failed
+    assert outcome.rate_count == 0
     assert workflow.exit_code_for(outcome) == workflow.EXIT_TOTAL_FAILURE
 
 

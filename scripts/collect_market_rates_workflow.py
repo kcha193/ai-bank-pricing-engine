@@ -114,7 +114,10 @@ def build_summary(outcome: CollectionOutcome) -> dict:
 
 
 def exit_code_for(outcome: CollectionOutcome) -> int:
-    if not outcome.report.any_success:
+    # A run where every bank failed to fetch is a failure, and so is one where
+    # pages parsed but validation rejected every record -- either way nothing
+    # usable was stored, and a scheduler must not treat that as success.
+    if not outcome.report.any_success or outcome.rate_count == 0:
         return EXIT_TOTAL_FAILURE
     if outcome.report.failed:
         return EXIT_PARTIAL_FAILURE
