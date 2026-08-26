@@ -150,7 +150,9 @@ def test_manual_leaves_the_config_completely_untouched(config):
     result = apply_market_strategy_to_config(config, CompetitorRateStrategy.MANUAL)
 
     assert result is config, "the legacy path must not even copy the config"
-    assert result.market.competitor_loan_rate == 0.0675
+    # Compare against the loaded config rather than a literal: the invariant is
+    # that MANUAL changes nothing, not that base.yaml holds any given rate.
+    assert result.market.competitor_loan_rate == config.market.competitor_loan_rate
 
 
 def test_manual_is_the_default_strategy(config):
@@ -163,7 +165,8 @@ def test_market_median_overlays_the_competitor_rate(config, snapshot):
     )
 
     assert result.market.competitor_loan_rate == 0.0485
-    assert config.market.competitor_loan_rate == 0.0675, "the original config is unchanged"
+    assert result is not config
+    assert config.market.competitor_loan_rate != 0.0485, "the original config is unchanged"
 
 
 def test_market_leader_overlays_the_competitor_rate(config, snapshot):

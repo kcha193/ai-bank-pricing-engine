@@ -258,16 +258,29 @@ python3 examples/run_market_intelligence_scenarios.py --term 12
 ```text
    Scenario                  Competitor   Our rate       Objective        vs A
 ------------------------------------------------------------------------------
-A  No change (manual)             6.75%      8.10%     $10,149,221          $0
-B  Match market median            4.85%      7.50%      $6,283,084 $-3,866,137
-C  Match market leader            4.79%      7.54%      $6,179,713 $-3,969,508
-D  Market leader -5 bps           4.74%      7.49%      $6,097,472 $-4,051,749
+A  No change (manual)             4.99%      6.59%      $2,392,880          $0
+B  Match market median            4.99%      6.59%      $2,392,880          $0
+C  Match market leader            4.95%      6.55%      $2,358,178    $-34,703
+D  Market leader -5 bps           4.90%      6.55%      $2,321,822    $-71,058
 ```
 
 Scenario E -- the economically optimal price -- is the `Our rate` column: the
 existing optimiser's own recommendation under each competitor assumption. The
 script calls `run_baseline_diagnostics` once per scenario and reimplements no
 pricing logic.
+
+A and B coincide here because `configs/base.yaml` was recalibrated on
+2026-08-26 so its manual competitor default *is* the verified market median.
+Before that recalibration the manual default was 6.75% -- 176 bps above the real
+market -- and A diverged wildly from every market-derived scenario. That the two
+now agree is the point: the manual assumption is no longer silently stale.
+
+The recommended rate sits above the market because the optimiser maximises
+unconstrained risk-adjusted profit. It models no competitive reaction and no
+market-share or volume constraint, so a premium over market is a coherent
+optimum *for the model*. Real banks price nearer the market because of
+strategic constraints this engine does not represent. See
+[modelling_assumptions.md](modelling_assumptions.md).
 
 ### Dashboard
 
