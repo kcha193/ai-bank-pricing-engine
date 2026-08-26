@@ -1,0 +1,17 @@
+# NZ market-rate collection, once daily at 07:30 local.
+#
+#   crontab -e   # then paste, adjusting the two paths
+#
+# The workflow script takes its own single-instance lock, so an overrunning
+# browser-rendered collection cannot interleave with the next schedule.
+#
+# Exit codes:
+#   0  all five banks collected
+#   1  no bank collected -- the run produced nothing
+#   2  partial: at least one bank failed, market view incomplete
+#   3  skipped, another collection was already running
+#
+# The `|| echo` below keeps a partial run visible rather than silent; replace it
+# with whatever alerting you use.
+
+30 7 * * * cd /path/to/ai-bank-pricing-engine && .venv/bin/python3 scripts/collect_market_rates_workflow.py --render-javascript --quiet --summary-file data/processed/pricing_intelligence/last_run.json >> data/processed/pricing_intelligence/collect.log 2>&1 || echo "NZ rate collection exited $? $(date)" >> data/processed/pricing_intelligence/collect.err.log

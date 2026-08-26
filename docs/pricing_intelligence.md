@@ -136,6 +136,65 @@ Kiwibank  SUCCESS  4 rates
 One bank failing never stops the others, and never writes partial nonsense: a
 failed bank simply contributes no records that run.
 
+### Scheduled collection
+
+Observation history **cannot be backfilled** -- a day not collected is gone --
+and everything time-based (change detection, market state, the 7d/30d features,
+history charts) is inert until collections accumulate. A single snapshot reports
+`LOW - no rate changes detected` regardless of what the market is doing.
+
+[`scripts/collect_market_rates_workflow.py`](../scripts/collect_market_rates_workflow.py)
+is the unattended entry point. It adds what a scheduler needs and an interactive
+session does not: a single-instance lock (an overrunning browser-rendered
+collection must not interleave with the next schedule and write two runs at
+once), JSON logging via `observability.logging`, a machine-readable run summary,
+and exit codes worth alerting on.
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | All five banks collected and stored |
+| 1 | No bank collected -- the run produced nothing |
+| 2 | Partial: at least one bank failed, market view incomplete |
+| 3 | Skipped, another collection was already running |
+
+Exit 2 is deliberately distinct from 0: an incomplete market view produces a
+median over fewer banks than it reports, which is exactly the failure mode live
+verification uncovered.
+
+```bash
+python3 scripts/collect_market_rates_workflow.py \
+    --render-javascript \
+    --summary-file data/processed/pricing_intelligence/last_run.json
+```
+
+Ready-made schedules are in [`deploy/scheduling/`](../deploy/scheduling/):
+
+- `nz.pricing-intelligence.collect.plist` -- macOS launchd agent, daily at 07:30
+  local, with `RunAtLoad` so a machine asleep at the scheduled time collects on
+  next wake rather than skipping the day.
+- `crontab.example` -- the equivalent cron entry.
+
+Both need their `REPLACE_ME` / `/path/to` paths edited before use.
+
+### Where history lives
+
+**Durable observation history is local**, in the SQLite store the scheduled job
+writes to. It is deliberately not committed: `data/processed/pricing_intelligence/`
+and `*.db` are git-ignored, and a binary database in git would churn badly and
+diff meaninglessly.
+
+The [collector canary](../.github/workflows/collector-canary.yml) workflow is a
+*different thing* and is easy to confuse with a history store. It runs on a
+schedule, collects into a throwaway database, and reports only whether each
+collector still parses its live page. Its purpose is to notice a bank redesign
+breaking a parser -- because live verification is point-in-time, not a standing
+guarantee. It is kept out of `ci.yml` on purpose: it reaches live bank websites,
+so it must never gate a pull request.
+
+If durable history ever needs to live somewhere shared, that is a real design
+decision (a committed text export, an object store, or a hosted database) and
+should be made explicitly rather than by letting CI accrete state.
+
 ### Inspect the market
 
 ```bash

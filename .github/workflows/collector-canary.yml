@@ -1,0 +1,81 @@
+name: Collector canary
+
+# Live verification is point-in-time: these five bank pages will change, and a
+# broken collector reports FAILED rather than wrong numbers -- but only if
+# something is actually running it. This job exists to notice breakage.
+#
+# Deliberately NOT part of CI: it reaches live bank websites, so it must never
+# gate a pull request. It is also not a history store -- durable observation
+# history accrues locally via deploy/scheduling/ (see docs/pricing_intelligence.md).
+# This job collects into a throwaway database and reports only whether each
+# collector still parses its page.
+
+on:
+  schedule:
+    # 19:30 UTC = 07:30 NZST. Weekdays only; banks rarely reprice at weekends.
+    - cron: "30 19 * * 1-5"
+  workflow_dispatch:
+
+# Never run more than one canary at a time.
+concurrency:
+  group: collector-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install package with browser extra
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -e ".[browser]"
+
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Collect live rates
+        id: collect
+        # Exit 2 (partial failure) must not be swallowed, but we still want the
+        # summary uploaded, so the code is captured rather than failing here.
+        run: |
+          set +e
+          python scripts/collect_market_rates_workflow.py \
+            --render-javascript \
+            --database "${RUNNER_TEMP}/canary.db" \
+            --lock-file "${RUNNER_TEMP}/canary.lock" \
+            --summary-file "${RUNNER_TEMP}/summary.json"
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Upload run summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: collection-summary
+          path: ${{ runner.temp }}/summary.json
+          if-no-files-found: warn
+
+      - name: Report collector health
+        run: |
+          CODE="${{ steps.collect.outputs.exit_code }}"
+          case "$CODE" in
+            0) echo "All five collectors parsed their live pages." ;;
+            2) echo "::warning::At least one collector failed - a bank page may have changed." ;;
+            1) echo "::error::No collector succeeded. Live collection is broken." ;;
+            3) echo "::error::Lock held unexpectedly in a fresh runner." ;;
+            *) echo "::error::Unexpected exit code $CODE" ;;
+          esac
+          # Only a total failure fails the job; a single bank changing its page
+          # is a warning to act on, not a red build every morning.
+          [ "$CODE" = "1" ] && exit 1
+          exit 0

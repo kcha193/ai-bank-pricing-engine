@@ -83,6 +83,9 @@ python3 -m balance_pricing_engine.pricing_intelligence changes --days 7
 python3 -m balance_pricing_engine.pricing_intelligence market-state
 python3 examples/run_market_intelligence_scenarios.py
 
+# Unattended/scheduled collection (see deploy/scheduling/):
+python3 scripts/collect_market_rates_workflow.py --render-javascript --summary-file data/processed/pricing_intelligence/last_run.json
+
 # Competitor-rate CLI (separate subcommand surface):
 python3 -m balance_pricing_engine.competitor_rates.cli fetch    --output-dir data/processed/competitor_rates
 python3 -m balance_pricing_engine.competitor_rates.cli validate --run-file <path>
@@ -143,6 +146,8 @@ The boundary fields distinguish "needed expansion" from "still hitting boundary 
 - Rate-tier categorisation is **per-bank**: live pages carry the tier word in the table heading, not the row, so each collector declares `default_fixed_category` for what an unmarked fixed row means (`special` for ASB/BNZ, `standard` for Westpac, `None` where the bank labels both tiers in-row). Don't try to infer this generically — getting it wrong silently drops banks from the market comparison.
 - `excluded_product_markers` fences subsidised/green/top-up lending, bridging finance, and closed products into the `non_comparable` category. They stay recorded for audit but must never reach a market statistic — a subsidised 1.00% rate would wreck any median it entered.
 - Live collection requires `--render-javascript` (the `[browser]` extra). Every tracked bank builds its rate table client-side; the static-HTML path returns `ParserError` for all five.
+- Scheduled collection goes through `scripts/collect_market_rates_workflow.py`, which holds a single-instance lock and returns distinct exit codes (0 ok, 1 total failure, 2 **partial** failure, 3 already running). Don't collapse 2 into 0 — an incomplete market view computes a median over fewer banks than it reports.
+- `.github/workflows/collector-canary.yml` reaches live bank sites and must stay out of `ci.yml`; it is a breakage canary, not a history store. Durable observation history is local and git-ignored by design.
 - Prefer `application.PricingService` over calling `run_baseline_diagnostics()` directly from new callers (API endpoints, CLI commands). It wraps, not replaces, the domain math — do not duplicate governance/lineage/event logic at a new call site instead of going through it.
 - `GovernanceError` must keep propagating out of `PricingService.run_scenario()` unchanged — never catch it there and turn it into a `BLOCKED` `PricingDecision`. Only a delivery layer (e.g. the `/v1/pricing/scenarios` FastAPI handler) may translate it into a transport-appropriate error response.
 - `governance.gates.evaluate_gates()` policy is intentionally conservative but not maximal (any `BLOCK` → `BLOCKED`; otherwise any `WARN` → `REVIEW_REQUIRED`; else `RECOMMENDED`) — don't add a new gate that blocks on a mere warning-level condition without updating this documented policy.

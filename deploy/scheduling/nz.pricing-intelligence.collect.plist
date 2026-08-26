@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS launchd agent: collect NZ market rates once a day.
+
+  Install:
+    cp deploy/scheduling/nz.pricing-intelligence.collect.plist ~/Library/LaunchAgents/
+    # Edit the two REPLACE_ME paths below first.
+    launchctl load ~/Library/LaunchAgents/nz.pricing-intelligence.collect.plist
+
+  Check / run now / remove:
+    launchctl list | grep pricing-intelligence
+    launchctl start nz.pricing-intelligence.collect
+    launchctl unload ~/Library/LaunchAgents/nz.pricing-intelligence.collect.plist
+
+  Collection is scheduled for 07:30 local. NZ banks typically publish rate
+  changes in the morning, and RunAtLoad plus StartCalendarInterval means a
+  machine asleep at 07:30 collects on next wake rather than skipping the day --
+  history cannot be backfilled.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>nz.pricing-intelligence.collect</string>
+
+    <key>WorkingDirectory</key>
+    <string>REPLACE_ME/ai-bank-pricing-engine</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>REPLACE_ME/ai-bank-pricing-engine/.venv/bin/python3</string>
+        <string>scripts/collect_market_rates_workflow.py</string>
+        <string>--render-javascript</string>
+        <string>--quiet</string>
+        <string>--summary-file</string>
+        <string>data/processed/pricing_intelligence/last_run.json</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>7</integer>
+        <key>Minute</key><integer>30</integer>
+    </dict>
+
+    <!-- Catch up if the machine was asleep at the scheduled time. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>REPLACE_ME/ai-bank-pricing-engine/data/processed/pricing_intelligence/collect.log</string>
+    <key>StandardErrorPath</key>
+    <string>REPLACE_ME/ai-bank-pricing-engine/data/processed/pricing_intelligence/collect.err.log</string>
+</dict>
+</plist>
