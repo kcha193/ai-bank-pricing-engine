@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+import yaml
 
 from balance_pricing_engine.pricing_intelligence.config import (
     CollectionConfig,
@@ -20,6 +21,37 @@ from balance_pricing_engine.pricing_intelligence.service import PricingIntellige
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 
 DAY_ONE = datetime(2026, 8, 25, tzinfo=timezone.utc)
+
+
+def _minimal_engine_config(**pricing_intelligence_overrides):
+    """A minimal EngineConfig YAML body, mirroring test_pricing_intelligence_cli.py."""
+    return {
+        "random_seed": 1,
+        "simulation": {"n_loan_customers": 100, "n_deposit_customers": 100},
+        "market": {
+            "cash_rate": 0.04,
+            "wholesale_funding_spread": 0.01,
+            "competitor_loan_rate": 0.06,
+            "competitor_deposit_rate": 0.04,
+            "home_loan_reference_rate": 0.0525,
+            "term_deposit_reference_rate": 0.0400,
+        },
+        "pricing_strategy": {
+            "home_loan_spread_bps": {"min": -50, "max": 50, "step": 5},
+            "term_deposit_spread_bps": {"min": -40, "max": 40, "step": 5},
+        },
+        "balance_sheet": {
+            "required_deposit_funding_ratio": 0.65,
+            "funding_shortfall_penalty_rate": 0.02,
+        },
+        "response": {
+            "loan_rate_elasticity": -85.0,
+            "loan_competitor_gap_elasticity": -65.0,
+            "deposit_rate_elasticity": 95.0,
+            "deposit_competitor_gap_elasticity": 75.0,
+        },
+        "pricing_intelligence": pricing_intelligence_overrides,
+    }
 
 
 def load_script():
@@ -109,6 +141,29 @@ def test_bank_wide_rejection_is_a_partial_failure(workflow, fixture_fetcher, tmp
     assert not outcome.report.failed
     assert outcome.rate_count > 0
     assert workflow.exit_code_for(outcome) == workflow.EXIT_PARTIAL_FAILURE
+
+
+def test_summary_reflects_bank_wide_validation_rejection(workflow, fixture_fetcher, tmp_path):
+    """A validation-only failure must be visible in the summary, not just the exit code.
+
+    ANZ's fetch succeeds (report.failed is empty), so without this it stays
+    listed under banks_succeeded and never appears in banks_failed or
+    failures -- a scheduler reading the summary alone would call it healthy.
+    """
+
+    def blow_out_one_bank(bank, html):
+        if bank != "ANZ":
+            return html
+        return re.sub(r"\d+\.\d+%", "99.99%", html)
+
+    outcome = collect_outcome(fixture_fetcher(mutate=blow_out_one_bank), tmp_path)
+    summary = workflow.build_summary(outcome)
+
+    assert "ANZ" not in summary["banks_succeeded"]
+    assert "ANZ" in summary["banks_failed"]
+    anz_failures = [f for f in summary["failures"] if f["bank"] == "ANZ"]
+    assert len(anz_failures) == 1
+    assert anz_failures[0]["error_type"] == "validation_rejected"
 
 
 def test_summary_reports_what_a_scheduler_needs(workflow, fixture_fetcher, tmp_path):
@@ -216,3 +271,54 @@ def test_run_collection_writes_a_summary_file(workflow, fixture_fetcher, tmp_pat
 
     assert code == workflow.EXIT_OK
     assert json.loads(summary_path.read_text())["rates_accepted"] == summary["rates_accepted"]
+
+
+def test_config_flag_loads_pricing_intelligence_settings(
+    workflow, fixture_fetcher, tmp_path, monkeypatch
+):
+    """configs/base.yaml's pricing_intelligence block must take effect here too.
+
+    Unlike the interactive CLI (fixed earlier), this scheduler entry point had
+    no --config option at all and always constructed default settings --
+    selected banks, validation thresholds, collection delays, and the
+    database path configured for a scheduled run would be silently ignored.
+    """
+    monkeypatch.chdir(tmp_path)
+    custom_db = tmp_path / "from_config.db"
+    monkeypatch.setattr(
+        workflow,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"],
+            store=kwargs["store"],
+            fetcher=fixture_fetcher(),
+        ),
+    )
+
+    engine_config_path = tmp_path / "engine.yaml"
+    engine_config_path.write_text(yaml.dump(_minimal_engine_config(database_path=str(custom_db))))
+
+    code = workflow.main(
+        [
+            "--config",
+            str(engine_config_path),
+            "--lock-file",
+            str(tmp_path / "collection.lock"),
+            "--quiet",
+        ]
+    )
+
+    assert code == workflow.EXIT_OK
+    assert custom_db.exists()
+    assert not (tmp_path / "data" / "processed" / "pricing_intelligence").exists()
+
+
+def test_logger_is_under_the_configured_json_logging_hierarchy(workflow):
+    """configure_json_logging() only attaches its handler to "balance_pricing_engine".
+
+    A logger outside that hierarchy silently drops INFO events (no handler)
+    and sends WARNING/ERROR through logging's unformatted last-resort
+    handler instead of the promised JSON -- structured log ingestion and
+    monitoring would miss every scheduled-collection event.
+    """
+    assert workflow.logger.name.startswith("balance_pricing_engine.")

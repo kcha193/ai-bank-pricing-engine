@@ -27,6 +27,7 @@ from pathlib import Path
 import sys
 from typing import Optional
 
+from balance_pricing_engine.config import load_config
 from balance_pricing_engine.observability.logging import configure_json_logging, log_event
 from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
 from balance_pricing_engine.pricing_intelligence.service import (
@@ -35,7 +36,11 @@ from balance_pricing_engine.pricing_intelligence.service import (
 )
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 
-logger = logging.getLogger("pricing_intelligence.scheduled_collection")
+# Under the `balance_pricing_engine` hierarchy so configure_json_logging()'s
+# handler actually applies; a bare "pricing_intelligence.*" name falls
+# outside that hierarchy and silently drops INFO events while WARNING/ERROR
+# fall through to logging's unformatted last-resort handler instead of JSON.
+logger = logging.getLogger("balance_pricing_engine.pricing_intelligence.scheduled_collection")
 
 #: Every bank collected and stored.
 EXIT_OK = 0
@@ -87,12 +92,50 @@ class AlreadyRunningError(RuntimeError):
     """A collection is already in progress."""
 
 
+def _validation_only_failures(outcome: CollectionOutcome) -> list[dict]:
+    """Banks that fetched successfully but contributed zero accepted rows.
+
+    A bank can fetch and parse cleanly (so it never reaches report.failed)
+    while every one of its rows still gets rejected by validation -- e.g. a
+    bank-scoped parser regression. Without this, such a bank stays listed as
+    succeeded everywhere a scheduler or summary consumer looks, even though
+    nothing usable was actually stored for it.
+    """
+    accepted_banks = {record.bank for record in outcome.validation.accepted}
+    failures = []
+    for bank in outcome.succeeded_banks:
+        if bank in accepted_banks:
+            continue
+        codes = sorted(
+            {
+                issue.code
+                for issue in outcome.validation.issues
+                if issue.bank == bank and issue.severity == "error"
+            }
+        )
+        failures.append(
+            {
+                "bank": bank,
+                "error_type": "validation_rejected",
+                "error": (
+                    "every row was rejected by validation ("
+                    f"{', '.join(codes) if codes else 'no accepted rows'})"
+                ),
+            }
+        )
+    return failures
+
+
 def build_summary(outcome: CollectionOutcome) -> dict:
     """Machine-readable summary of one collection run."""
+    validation_failures = _validation_only_failures(outcome)
+    validation_failed_banks = {failure["bank"] for failure in validation_failures}
     return {
         "collected_at_utc": outcome.report.captured_at_utc.isoformat(),
-        "banks_succeeded": list(outcome.succeeded_banks),
-        "banks_failed": list(outcome.failed_banks),
+        "banks_succeeded": [
+            bank for bank in outcome.succeeded_banks if bank not in validation_failed_banks
+        ],
+        "banks_failed": list(outcome.failed_banks) + sorted(validation_failed_banks),
         "rates_accepted": outcome.rate_count,
         "rates_rejected": len(outcome.validation.rejected),
         "validation_errors": len(outcome.validation.errors),
@@ -109,7 +152,8 @@ def build_summary(outcome: CollectionOutcome) -> dict:
         "failures": [
             {"bank": result.bank, "error_type": result.error_type, "error": result.error}
             for result in outcome.report.failed
-        ],
+        ]
+        + validation_failures,
     }
 
 
@@ -119,16 +163,7 @@ def exit_code_for(outcome: CollectionOutcome) -> int:
     # usable was stored, and a scheduler must not treat that as success.
     if not outcome.report.any_success or outcome.rate_count == 0:
         return EXIT_TOTAL_FAILURE
-    # A bank can fetch and parse cleanly (so it never reaches report.failed)
-    # while every one of its rows still gets rejected by validation -- a
-    # bank-scoped parser regression. That bank contributed nothing, so it
-    # must be judged the same as an outright fetch failure, not silently
-    # folded into the aggregate rate_count from the other banks.
-    accepted_banks = {record.bank for record in outcome.validation.accepted}
-    banks_without_accepted_rates = [
-        bank for bank in outcome.succeeded_banks if bank not in accepted_banks
-    ]
-    if outcome.report.failed or banks_without_accepted_rates:
+    if outcome.report.failed or _validation_only_failures(outcome):
         return EXIT_PARTIAL_FAILURE
     return EXIT_OK
 
@@ -186,6 +221,16 @@ def run_collection(
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--config",
+        default=None,
+        help=(
+            "Path to an EngineConfig YAML (e.g. configs/base.yaml) to load "
+            "pricing_intelligence settings (selected banks, validation "
+            "thresholds, collection delays, database path) from; --database "
+            "still overrides just the database path"
+        ),
+    )
     parser.add_argument("--database", default=None, help="Observation store path")
     parser.add_argument(
         "--render-javascript",
@@ -206,6 +251,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     configure_json_logging()
 
     config = PricingIntelligenceConfig()
+    if args.config:
+        # configs/base.yaml's pricing_intelligence block would otherwise be
+        # silently ignored -- scheduled production runs could then contact
+        # excluded banks and validate/store observations under different
+        # policy from interactive runs, per the same pattern already fixed
+        # in the pricing_intelligence CLI.
+        engine_config = load_config(args.config)
+        if engine_config.pricing_intelligence is not None:
+            config = engine_config.pricing_intelligence
     if args.database:
         config = config.model_copy(update={"database_path": args.database})
 
