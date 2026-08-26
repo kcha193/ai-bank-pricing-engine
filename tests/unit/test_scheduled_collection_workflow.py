@@ -89,6 +89,28 @@ def test_all_rates_rejected_is_a_total_failure(workflow, fixture_fetcher, tmp_pa
     assert workflow.exit_code_for(outcome) == workflow.EXIT_TOTAL_FAILURE
 
 
+def test_bank_wide_rejection_is_a_partial_failure(workflow, fixture_fetcher, tmp_path):
+    """One bank's rows are all implausible while the rest collect normally.
+
+    ANZ's fetch still succeeds here (it never reaches report.failed), and the
+    aggregate rate_count stays positive because the other four banks are
+    unaffected -- so the plain rate_count == 0 guard alone misses this. A
+    bank contributing zero accepted rows must be judged the same as an
+    outright fetch failure, per-bank, not folded into the aggregate count.
+    """
+
+    def blow_out_one_bank(bank, html):
+        if bank != "ANZ":
+            return html
+        return re.sub(r"\d+\.\d+%", "99.99%", html)
+
+    outcome = collect_outcome(fixture_fetcher(mutate=blow_out_one_bank), tmp_path)
+
+    assert not outcome.report.failed
+    assert outcome.rate_count > 0
+    assert workflow.exit_code_for(outcome) == workflow.EXIT_PARTIAL_FAILURE
+
+
 def test_summary_reports_what_a_scheduler_needs(workflow, fixture_fetcher, tmp_path):
     outcome = collect_outcome(fixture_fetcher(failing_banks=["Westpac"]), tmp_path)
     summary = workflow.build_summary(outcome)

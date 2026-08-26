@@ -119,7 +119,16 @@ def exit_code_for(outcome: CollectionOutcome) -> int:
     # usable was stored, and a scheduler must not treat that as success.
     if not outcome.report.any_success or outcome.rate_count == 0:
         return EXIT_TOTAL_FAILURE
-    if outcome.report.failed:
+    # A bank can fetch and parse cleanly (so it never reaches report.failed)
+    # while every one of its rows still gets rejected by validation -- a
+    # bank-scoped parser regression. That bank contributed nothing, so it
+    # must be judged the same as an outright fetch failure, not silently
+    # folded into the aggregate rate_count from the other banks.
+    accepted_banks = {record.bank for record in outcome.validation.accepted}
+    banks_without_accepted_rates = [
+        bank for bank in outcome.succeeded_banks if bank not in accepted_banks
+    ]
+    if outcome.report.failed or banks_without_accepted_rates:
         return EXIT_PARTIAL_FAILURE
     return EXIT_OK
 
