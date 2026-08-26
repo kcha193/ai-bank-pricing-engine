@@ -152,13 +152,19 @@ and exit codes worth alerting on.
 
 | Exit | Meaning |
 | --- | --- |
-| 0 | All five banks collected and stored |
-| 1 | No bank collected -- the run produced nothing |
-| 2 | Partial: at least one bank failed, market view incomplete |
+| 0 | Every bank fetched, and every accepted row passed validation with adequate coverage |
+| 1 | Nothing usable was stored -- either no bank could be fetched, or every fetched row was rejected by validation (`rate_count == 0`) |
+| 2 | Partial: at least one bank failed to fetch, at least one row was rejected by validation (`validation.rejected`), or a bank matched too few of its previously known rate lines to trust (`low_coverage_banks`, below `min_bank_coverage_ratio`) |
 | 3 | Skipped, another collection was already running |
 
-Exit 2 is deliberately distinct from 0: an incomplete market view produces a
-median over fewer banks than it reports, which is exactly the failure mode live
+Exit codes are not solely about fetch success: a bank whose page fetches and
+parses cleanly can still push the run to exit 1 or 2 if what it returned fails
+validation or covers too little of its known range -- see
+`exit_code_for()` and `build_summary()`'s `banks_failed`/`failures` fields in
+[`scripts/collect_market_rates_workflow.py`](../scripts/collect_market_rates_workflow.py)
+for exactly which case applied. Exit 2 is deliberately distinct from 0: an
+incomplete or unreliable market view produces a median over fewer (or less
+trustworthy) banks than it reports, which is exactly the failure mode live
 verification uncovered.
 
 ```bash
