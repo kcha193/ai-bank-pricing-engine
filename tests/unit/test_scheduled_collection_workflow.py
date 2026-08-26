@@ -7,12 +7,14 @@ testable without reaching a live bank site.
 import importlib.util
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 import yaml
 
+from balance_pricing_engine.competitor_rates.collectors import BankCollectionResult, CollectionStatus
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.config import (
     CollectionConfig,
     PricingIntelligenceConfig,
@@ -21,6 +23,29 @@ from balance_pricing_engine.pricing_intelligence.service import PricingIntellige
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 
 DAY_ONE = datetime(2026, 8, 25, tzinfo=timezone.utc)
+DAY_TWO = DAY_ONE + timedelta(days=1)
+
+
+class _StubCollector:
+    """Returns pre-built records instead of parsing HTML.
+
+    Mirrors the helper of the same name in test_pricing_intelligence_service.py
+    -- lets a coverage-drop scenario be built directly from records rather than
+    fragile HTML-fixture surgery.
+    """
+
+    def __init__(self, bank, records):
+        self.bank = bank
+        self._records = records
+
+    def collect_mortgage_rates(self, captured_at_utc=None, persist_snapshot=True):
+        return BankCollectionResult(
+            bank=self.bank,
+            product_type=ProductType.HOME_LOAN,
+            status=CollectionStatus.SUCCESS,
+            source_url=f"https://www.example-bank.co.nz/{self.bank.lower()}/rates",
+            records=tuple(self._records),
+        )
 
 
 def _minimal_engine_config(**pricing_intelligence_overrides):
@@ -166,6 +191,52 @@ def test_partial_rejection_within_a_bank_is_a_partial_failure(workflow, fixture_
     # has accepted rows, so it never appears in _validation_only_failures().
     assert not workflow._validation_only_failures(outcome)
     assert workflow.exit_code_for(outcome) == workflow.EXIT_PARTIAL_FAILURE
+
+
+def test_low_coverage_bank_is_a_partial_failure(workflow, make_record, tmp_path):
+    """A page-layout regression that leaves one row parseable while silently
+    dropping the rest of a bank's table.
+
+    ANZ's fetch succeeds and produces one accepted, unrejected rate here --
+    neither report.failed nor validation.rejected catches this, since the
+    missing rows were never parsed at all rather than parsed-and-rejected.
+    Only the coverage check (matched vs. previously known key count) can,
+    which the service already computes for withdrawal-suppression purposes
+    (CollectionOutcome.low_coverage_banks) but the workflow did not consume.
+    """
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    baseline_records = [
+        make_record(bank="ANZ", term_months=months, rate_pct=4.79 + months / 100)
+        for months in (12, 24, 36, 60)
+    ]
+    with PricingIntelligenceService(
+        config=config,
+        store=ObservationStore(config.database_path),
+        collectors=[_StubCollector("ANZ", baseline_records)],
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+        # Second run: only 1 of the 4 previously known terms is present --
+        # 25% coverage, below the default 50% min_bank_coverage_ratio.
+        surviving_row = baseline_records[0].model_copy(update={"captured_at_utc": DAY_TWO})
+        service._collectors = [_StubCollector("ANZ", [surviving_row])]
+        outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    assert not outcome.report.failed
+    assert not outcome.validation.rejected
+    assert outcome.rate_count > 0
+    assert "ANZ" in outcome.low_coverage_banks
+    assert workflow.exit_code_for(outcome) == workflow.EXIT_PARTIAL_FAILURE
+
+    summary = workflow.build_summary(outcome)
+    assert "ANZ" not in summary["banks_succeeded"]
+    assert "ANZ" in summary["banks_failed"]
+    anz_failures = [f for f in summary["failures"] if f["bank"] == "ANZ"]
+    assert len(anz_failures) == 1
+    assert anz_failures[0]["error_type"] == "low_coverage"
 
 
 def test_summary_reflects_bank_wide_validation_rejection(workflow, fixture_fetcher, tmp_path):

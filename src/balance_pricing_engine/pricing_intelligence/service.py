@@ -340,6 +340,14 @@ class CollectionOutcome:
     validation: ValidationOutcome
     write_result: Optional[WriteResult]
     changes: tuple[RateChange, ...]
+    #: Banks that fetched successfully but matched too few of their previously
+    #: known rate lines (below ``min_bank_coverage_ratio``) -- the same signal
+    #: _reliably_collected_banks() computes to suppress false withdrawal
+    #: events, surfaced here so a caller judging collection health (e.g. the
+    #: scheduled-collection workflow) doesn't have to recompute it. A bank
+    #: with no known baseline (first-ever collection) is never included, same
+    #: as in the withdrawal-suppression use: an empty range isn't "missing".
+    low_coverage_banks: tuple[str, ...] = ()
 
     @property
     def succeeded_banks(self) -> tuple[str, ...]:
@@ -512,6 +520,13 @@ class PricingIntelligenceService:
                 for key, previous_record in plain_pairs.items()
                 if previous_record.validation_status == "warning" and key not in suspicious_keys
             }
+            # Computed once and reused below both for change detection's
+            # withdrawal-suppression scope and for CollectionOutcome's own
+            # low_coverage_banks, so a caller judging collection health does
+            # not have to recompute the same coverage check independently.
+            reliably_collected_banks = _reliably_collected_banks(
+                report, accepted, baseline, self.config.validation.min_bank_coverage_ratio
+            )
             changes = detect_changes(
                 previous=baseline,
                 current=accepted,
@@ -522,9 +537,7 @@ class PricingIntelligenceService:
                 # plausibly matches their known range, so neither an unreachable
                 # bank nor a partial-parse regression is read as withdrawing its
                 # whole range.
-                banks_collected=_reliably_collected_banks(
-                    report, accepted, baseline, self.config.validation.min_bank_coverage_ratio
-                ),
+                banks_collected=reliably_collected_banks,
                 # A record rejected by validation this run is unknown, not
                 # withdrawn -- a single implausible line must not read as a
                 # market event. Suppressed by the *previous* record's key, not
@@ -629,11 +642,17 @@ class PricingIntelligenceService:
                 if confirmations:
                     self.store.confirm_suspicious_changes(confirmations)
 
+        low_coverage_banks = tuple(
+            sorted(
+                {result.bank for result in report.succeeded} - set(reliably_collected_banks)
+            )
+        )
         return CollectionOutcome(
             report=report,
             validation=validation,
             write_result=write_result,
             changes=tuple(changes),
+            low_coverage_banks=low_coverage_banks,
         )
 
     # ------------------------------------------------------------ market view

@@ -92,6 +92,11 @@ class AlreadyRunningError(RuntimeError):
     """A collection is already in progress."""
 
 
+def _banks_with_zero_accepted_rates(outcome: CollectionOutcome) -> set[str]:
+    accepted_banks = {record.bank for record in outcome.validation.accepted}
+    return {bank for bank in outcome.succeeded_banks if bank not in accepted_banks}
+
+
 def _validation_only_failures(outcome: CollectionOutcome) -> list[dict]:
     """Banks that fetched successfully but contributed zero accepted rows.
 
@@ -101,11 +106,8 @@ def _validation_only_failures(outcome: CollectionOutcome) -> list[dict]:
     succeeded everywhere a scheduler or summary consumer looks, even though
     nothing usable was actually stored for it.
     """
-    accepted_banks = {record.bank for record in outcome.validation.accepted}
     failures = []
-    for bank in outcome.succeeded_banks:
-        if bank in accepted_banks:
-            continue
+    for bank in sorted(_banks_with_zero_accepted_rates(outcome)):
         codes = sorted(
             {
                 issue.code
@@ -126,16 +128,50 @@ def _validation_only_failures(outcome: CollectionOutcome) -> list[dict]:
     return failures
 
 
+def _low_coverage_failures(outcome: CollectionOutcome) -> list[dict]:
+    """Banks that matched too few of their previously known rate lines.
+
+    A page-layout regression can leave one row parseable while silently
+    dropping the rest of a bank's table: the fetch succeeds, at least one row
+    is accepted, and nothing is rejected by validation either (the missing
+    rows were never parsed at all, so there is nothing to reject) -- so
+    neither report.failed nor validation.rejected catches it. The service
+    already computes this via its withdrawal-suppression coverage check
+    (CollectionOutcome.low_coverage_banks); this surfaces the same signal
+    here. Banks with zero accepted rows are reported by
+    _validation_only_failures() instead, so they are excluded to avoid a
+    duplicate entry.
+    """
+    zero_accepted = _banks_with_zero_accepted_rates(outcome)
+    return [
+        {
+            "bank": bank,
+            "error_type": "low_coverage",
+            "error": (
+                "matched fewer of this bank's known rate lines than the "
+                "configured coverage threshold"
+            ),
+        }
+        for bank in outcome.low_coverage_banks
+        if bank not in zero_accepted
+    ]
+
+
+def _bank_scoped_failures(outcome: CollectionOutcome) -> list[dict]:
+    """Every bank-scoped failure not already visible in report.failed."""
+    return _validation_only_failures(outcome) + _low_coverage_failures(outcome)
+
+
 def build_summary(outcome: CollectionOutcome) -> dict:
     """Machine-readable summary of one collection run."""
-    validation_failures = _validation_only_failures(outcome)
-    validation_failed_banks = {failure["bank"] for failure in validation_failures}
+    bank_scoped_failures = _bank_scoped_failures(outcome)
+    bank_scoped_failed_banks = {failure["bank"] for failure in bank_scoped_failures}
     return {
         "collected_at_utc": outcome.report.captured_at_utc.isoformat(),
         "banks_succeeded": [
-            bank for bank in outcome.succeeded_banks if bank not in validation_failed_banks
+            bank for bank in outcome.succeeded_banks if bank not in bank_scoped_failed_banks
         ],
-        "banks_failed": list(outcome.failed_banks) + sorted(validation_failed_banks),
+        "banks_failed": list(outcome.failed_banks) + sorted(bank_scoped_failed_banks),
         "rates_accepted": outcome.rate_count,
         "rates_rejected": len(outcome.validation.rejected),
         "validation_errors": len(outcome.validation.errors),
@@ -153,7 +189,7 @@ def build_summary(outcome: CollectionOutcome) -> dict:
             {"bank": result.bank, "error_type": result.error_type, "error": result.error}
             for result in outcome.report.failed
         ]
-        + validation_failures,
+        + bank_scoped_failures,
     }
 
 
@@ -166,9 +202,11 @@ def exit_code_for(outcome: CollectionOutcome) -> int:
     # Any rejected observation -- not just a bank where every row was
     # rejected -- means the collection is incomplete: a term-specific parser
     # regression can silently drop one product from an otherwise-healthy
-    # bank. Warnings (e.g. a suspicious but plausible movement) stay
-    # non-fatal; only rejected (error-severity) records count here.
-    if outcome.report.failed or outcome.validation.rejected:
+    # bank. A low-coverage bank catches the case validation can't: rows that
+    # were never parsed at all (not rejected -- simply missing) because a
+    # page-layout regression silently dropped most of a bank's table.
+    # Warnings (e.g. a suspicious but plausible movement) stay non-fatal.
+    if outcome.report.failed or outcome.validation.rejected or outcome.low_coverage_banks:
         return EXIT_PARTIAL_FAILURE
     return EXIT_OK
 
