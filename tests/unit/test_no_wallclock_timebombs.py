@@ -1,0 +1,69 @@
+"""Guard against tests that expire as real time passes.
+
+On 2026-08-27 seven CLI tests began failing without a code change. They pinned
+their collection data to a fixed calendar date, while market snapshots exclude
+observations older than ``max_observation_age_hours`` (168h) measured against
+the wall clock. The tests passed when written, passed in CI at merge, and
+started failing once real time crossed the window.
+
+Test data that feeds a wall-clock-relative code path must therefore be dated
+relative to now.
+"""
+
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+import re
+
+import pytest
+
+from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
+
+#: Test modules whose collection timestamps feed a staleness-checked path.
+CLOCK_SENSITIVE_MODULES = (
+    "tests/unit/test_pricing_intelligence_cli.py",
+    "tests/unit/test_dashboard_market_intelligence.py",
+    "tests/unit/test_pricing_intelligence_service.py",
+    "tests/unit/test_scheduled_collection_workflow.py",
+)
+
+_FIXED_DATE_ANCHOR = re.compile(
+    r"^(DAY_ONE|DAY_TWO)\s*=\s*datetime\(\d{4},", re.MULTILINE
+)
+
+
+@pytest.mark.parametrize("module_path", CLOCK_SENSITIVE_MODULES)
+def test_collection_anchors_are_relative_to_now(module_path):
+    """A fixed calendar anchor here is a test that expires."""
+    source = Path(module_path).read_text(encoding="utf-8")
+    offenders = _FIXED_DATE_ANCHOR.findall(source)
+
+    assert offenders == [], (
+        f"{module_path} pins {offenders} to a fixed date. Market snapshots drop "
+        "observations older than max_observation_age_hours, so this test will "
+        "start failing once real time crosses that window. Use "
+        "datetime.now(timezone.utc) - timedelta(...) instead."
+    )
+
+
+def test_the_staleness_window_is_wide_enough_for_relative_anchors():
+    """The relative offsets used by those modules must sit inside the window."""
+    window_hours = PricingIntelligenceConfig().max_observation_age_hours
+    widest_offset_used_by_tests = timedelta(hours=2)
+
+    assert widest_offset_used_by_tests < timedelta(hours=window_hours)
+
+
+def test_a_fixed_anchor_would_actually_expire():
+    """Documents the failure mode, so the guard above is not cargo-culted.
+
+    An observation dated one hour beyond the window is excluded; the same
+    observation dated relative to now is not.
+    """
+    window_hours = PricingIntelligenceConfig().max_observation_age_hours
+    now = datetime.now(timezone.utc)
+
+    expired = now - timedelta(hours=window_hours + 1)
+    fresh = now - timedelta(hours=2)
+
+    assert (now - expired) > timedelta(hours=window_hours)
+    assert (now - fresh) < timedelta(hours=window_hours)

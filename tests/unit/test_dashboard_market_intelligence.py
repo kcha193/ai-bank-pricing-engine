@@ -17,8 +17,13 @@ from balance_pricing_engine.pricing_intelligence.config import (
 from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 
-DAY_ONE = datetime(2026, 8, 20, tzinfo=timezone.utc)
-DAY_TWO = DAY_ONE + timedelta(days=1)
+# Collection timestamps are dated relative to "now", not pinned to a calendar
+# date. Market snapshots exclude observations older than
+# max_observation_age_hours (168h by default), so a fixed date here passes when
+# written and starts failing silently once real time crosses that window --
+# which is exactly what happened on 2026-08-27.
+DAY_ONE = datetime.now(timezone.utc) - timedelta(hours=2)
+DAY_TWO = datetime.now(timezone.utc) - timedelta(hours=1)
 
 
 class FakeContext:
