@@ -115,6 +115,16 @@ def validate_observations(
         issues = _validate_record(record, thresholds, key)
 
         conflicting_rates = conflicting_rates_by_key.get(key)
+        # The conflict guard protects market statistics from an ambiguous
+        # identity silently resolving by insertion order. Records already fenced
+        # out as non-comparable never reach a statistic, and they collide by
+        # construction: heterogeneous rows (fund returns, PIE effective-rate
+        # columns) are deliberately lumped into one category, so their identity
+        # is not meaningful. Applying the guard there rejected 121 of 224 live
+        # deposit records and would drown a scheduled run's logs in errors for
+        # rows we intend to keep only as audit evidence.
+        if record.rate_category == "non_comparable":
+            conflicting_rates = None
         if conflicting_rates is not None:
             issues.append(
                 ObservationIssue(

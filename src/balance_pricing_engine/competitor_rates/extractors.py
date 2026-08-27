@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import logging
 from html.parser import HTMLParser
 from pathlib import Path
 import re
 from typing import Iterable
 from urllib.request import Request, urlopen
+
+from pydantic import ValidationError
 
 from balance_pricing_engine.competitor_rates.models import (
     PARSER_VERSION,
@@ -24,6 +27,9 @@ from balance_pricing_engine.competitor_rates.normalise import (
     normalise_term,
 )
 from balance_pricing_engine.competitor_rates.sources import RateSource
+
+
+logger = logging.getLogger(__name__)
 
 
 class _TableTextParser(HTMLParser):
@@ -260,8 +266,8 @@ def parse_html_rates(
                 if product == ProductType.TERM_DEPOSIT
                 else (None, None)
             )
-            records.append(
-                CompetitorRateRecord(
+            try:
+                record = CompetitorRateRecord(
                     bank=bank,
                     product_type=product,
                     product_name=_product_name(product, row, category),
@@ -290,7 +296,22 @@ def parse_html_rates(
                     raw_html_sha256=raw_hash,
                     parser_version=PARSER_VERSION,
                 )
-            )
+            except ValidationError as exc:
+                # One unparseable row must not cost the whole bank. Kiwibank's
+                # term-deposit page produced a single invalid record and
+                # returned zero rates instead of its other 36 -- the same
+                # failure-isolation principle already applied per bank, missing
+                # here per row. Logged rather than silently dropped, so a parser
+                # regression is still visible.
+                logger.warning(
+                    "%s %s: skipping unparseable row (%s): %s",
+                    bank,
+                    product.value,
+                    exc.error_count() if hasattr(exc, "error_count") else "invalid",
+                    raw_text_context[:160],
+                )
+                continue
+            records.append(record)
     return _dedupe_records(records)
 
 

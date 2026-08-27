@@ -173,14 +173,20 @@ def apply_market_strategy_to_config(
     term_months: int = 12,
     offset_bps: float = 0.0,
     set_reference_rate: bool = True,
+    deposit_snapshot: Optional[MarketSnapshot] = None,
+    deposit_strategy: Optional[CompetitorRateStrategy | str] = None,
+    deposit_term_months: Optional[int] = None,
+    deposit_offset_bps: float = 0.0,
 ):
     """Return ``config`` with its loan-side competitor assumption resolved.
 
     Under ``MANUAL`` the config is returned unchanged -- byte-for-byte the
     existing behaviour, so manual scenarios are unaffected by this layer.
 
-    Only the loan side is overlaid. Term-deposit intelligence is phase 2, so
-    ``market.competitor_deposit_rate`` keeps whatever the config already holds.
+    Pass ``deposit_snapshot`` to overlay the deposit side too. Each side is
+    resolved independently: a market-derived loan rate with a manual deposit
+    assumption is a legitimate scenario, and omitting a deposit snapshot leaves
+    ``market.competitor_deposit_rate`` exactly as the config holds it.
 
     When ``set_reference_rate`` is true the market-relative spread anchor
     (``home_loan_reference_rate``) is moved with the competitor rate, so
@@ -195,12 +201,37 @@ def apply_market_strategy_to_config(
         manual_rate=config.market.competitor_loan_rate,
         offset_bps=offset_bps,
     )
-    if resolved.strategy is CompetitorRateStrategy.MANUAL:
-        return config
 
-    updates = {"competitor_loan_rate": resolved.competitor_loan_rate}
-    if set_reference_rate and config.market.home_loan_reference_rate is not None:
-        updates["home_loan_reference_rate"] = resolved.competitor_loan_rate
+    updates: dict = {}
+    if resolved.strategy is not CompetitorRateStrategy.MANUAL:
+        updates["competitor_loan_rate"] = resolved.competitor_loan_rate
+        if set_reference_rate and config.market.home_loan_reference_rate is not None:
+            updates["home_loan_reference_rate"] = resolved.competitor_loan_rate
+
+    if deposit_snapshot is not None:
+        resolved_deposit = resolve_competitor_rate(
+            strategy=deposit_strategy if deposit_strategy is not None else strategy,
+            snapshot=deposit_snapshot,
+            term_months=(
+                deposit_term_months if deposit_term_months is not None else term_months
+            ),
+            manual_rate=config.market.competitor_deposit_rate,
+            offset_bps=deposit_offset_bps,
+        )
+        if resolved_deposit.strategy is not CompetitorRateStrategy.MANUAL:
+            updates["competitor_deposit_rate"] = resolved_deposit.competitor_loan_rate
+            if (
+                set_reference_rate
+                and config.market.term_deposit_reference_rate is not None
+            ):
+                updates["term_deposit_reference_rate"] = (
+                    resolved_deposit.competitor_loan_rate
+                )
+
+    # No side resolved to a market rate: MANUAL must return the very same
+    # object, not a copy, so existing scenarios are untouched.
+    if not updates:
+        return config
 
     updated_config = config.model_copy(
         update={"market": config.market.model_copy(update=updates)}

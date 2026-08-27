@@ -93,7 +93,20 @@ def normalise_lvr_condition(label: str | None) -> str:
 
 
 def normalise_balance(label: str | None) -> tuple[float | None, float | None]:
-    """Extract min/max currency amounts from a displayed balance tier."""
+    """Extract min/max currency amounts from a displayed balance tier.
+
+    Two dollar figures in one string are not necessarily a range. A term-deposit
+    row often carries its own minimum *and* the product-wide minimum inherited
+    from the table heading, e.g.::
+
+        "30 days Minimum balance $5,000 | 1.90% p.a. | Term Deposit Minimum balance $1,000"
+
+    Reading those in document order gives min=5,000/max=1,000 -- an invalid
+    record that the model rejects, which previously aborted the whole bank's
+    parse. Amounts are therefore only treated as a range when they ascend;
+    otherwise the first (most specific, row-level) figure is the minimum and the
+    maximum is left unknown rather than invented.
+    """
     if not label:
         return None, None
     amounts = [
@@ -104,7 +117,9 @@ def normalise_balance(label: str | None) -> tuple[float | None, float | None]:
         return None, None
     if len(amounts) == 1:
         return amounts[0], None
-    return amounts[0], amounts[1]
+    if amounts[1] > amounts[0]:
+        return amounts[0], amounts[1]
+    return amounts[0], None
 
 
 _LVR_PATTERN = re.compile(r"(\d{2,3}(?:\.\d+)?)\s*%\s*(?:or\s+less\s+)?lvr", re.I)

@@ -23,7 +23,7 @@ from balance_pricing_engine.competitor_rates.collectors import (
     CollectionReport,
     Fetcher,
     build_collectors,
-    collect_all_mortgage_rates,
+    collect_all_rates,
 )
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
 from balance_pricing_engine.pricing_intelligence.changes import (
@@ -411,6 +411,7 @@ class PricingIntelligenceService:
         captured_at_utc: Optional[datetime] = None,
         persist: bool = True,
         persist_snapshot: bool = True,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
     ) -> CollectionOutcome:
         """Run a full collection: fetch, validate, store, and detect changes.
 
@@ -418,10 +419,16 @@ class PricingIntelligenceService:
         continues and the remaining banks are still stored. Records failing
         validation are rejected before storage, so a parser fault cannot enter
         the history.
+
+        ``product_type`` selects home loans (the default) or term deposits.
+        Each product keeps its own baseline, change history, and bootstrap
+        state, so collecting one is never read as the other being withdrawn.
         """
+        product_type = ProductType(product_type)
         captured_at_utc = captured_at_utc or datetime.now(timezone.utc)
-        report = collect_all_mortgage_rates(
+        report = collect_all_rates(
             self.collectors,
+            product_type=product_type,
             captured_at_utc=captured_at_utc,
             persist_snapshot=persist_snapshot,
             inter_request_delay_seconds=self.config.collection.inter_request_delay_seconds,
@@ -435,19 +442,19 @@ class PricingIntelligenceService:
         # whether some other bank already has a long history, so a bank that
         # failed every prior run and only now recovers is still treated as
         # bootstrapping, not a burst of genuine new products.
-        previously_seen_banks = set(self.store.get_banks(product_type=ProductType.HOME_LOAN))
+        previously_seen_banks = set(self.store.get_banks(product_type=product_type))
 
         # The last known state per key, not scoped to the latest completed
         # run: a bank that failed a prior run would otherwise fall out of the
         # baseline entirely, making its next (unchanged) collection look like
         # every advertised line is new.
-        baseline = self.store.get_current_observations(product_type=ProductType.HOME_LOAN)
+        baseline = self.store.get_current_observations(product_type=product_type)
         # Also captured before this run's write, for the suspicious-confirmation
         # check below: the last state that was actually confirmed (not just the
         # immediately-preceding baseline record, which can itself still be an
         # unconfirmed warning-tagged reading).
         last_confirmed_before_run = self.store.get_last_confirmed_observations(
-            product_type=ProductType.HOME_LOAN
+            product_type=product_type
         )
         validation = validate_observations(
             report.records, thresholds=self.config.validation, previous=baseline

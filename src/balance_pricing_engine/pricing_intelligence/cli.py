@@ -19,6 +19,7 @@ import logging
 from typing import Optional
 
 from balance_pricing_engine.config import load_config
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.alerts import (
     ConsoleAlertSink,
     dispatch_alerts,
@@ -90,6 +91,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--database", default=None, help="Path to the observation store")
     parser.add_argument("--verbose", action="store_true", help="Verbose logging")
+    parser.add_argument(
+        "--product",
+        default=ProductType.HOME_LOAN.value,
+        choices=[ProductType.HOME_LOAN.value, ProductType.TERM_DEPOSIT.value],
+        help="Which market to act on (default: home_loan)",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     collect = subparsers.add_parser(
@@ -153,9 +160,29 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _product(args: argparse.Namespace) -> ProductType:
+    return ProductType(getattr(args, "product", ProductType.HOME_LOAN.value))
+
+
+def _default_category(args: argparse.Namespace) -> str:
+    """Comparable category for the selected market.
+
+    Mortgages are compared on advertised specials (where front-book competition
+    happens); deposits on the plain term-deposit tier, excluding PIE variants.
+    """
+    supplied = getattr(args, "category", None)
+    if supplied not in (None, "special"):
+        return supplied
+    if _product(args) is ProductType.TERM_DEPOSIT:
+        return "term_deposit"
+    return "special"
+
+
 def _collect(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
     outcome = service.collect(
-        persist=not args.no_persist, persist_snapshot=not args.no_snapshot
+        persist=not args.no_persist,
+        persist_snapshot=not args.no_snapshot,
+        product_type=_product(args),
     )
     print(outcome.render())
 
@@ -200,13 +227,16 @@ def _collect(service: PricingIntelligenceService, args: argparse.Namespace) -> i
 
 
 def _snapshot(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
-    snapshot = service.get_market_snapshot(rate_category=args.category)
+    snapshot = service.get_market_snapshot(
+        product_type=_product(args), rate_category=_default_category(args)
+    )
     if not snapshot.terms:
         print("No market data. Run 'collect' first.")
         return 1
 
     if args.term is None:
-        print(f"NZ MORTGAGE MARKET ({args.category}) as at {snapshot.as_of:%d %b %Y}")
+        label = "TERM DEPOSIT" if _product(args) is ProductType.TERM_DEPOSIT else "MORTGAGE"
+        print(f"NZ {label} MARKET ({_default_category(args)}) as at {snapshot.as_of:%d %b %Y}")
         print()
         print(snapshot.render())
         return 0

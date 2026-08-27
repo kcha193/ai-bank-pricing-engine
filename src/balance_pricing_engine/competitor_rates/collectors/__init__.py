@@ -25,6 +25,7 @@ from balance_pricing_engine.competitor_rates.collectors.base import (
     build_browser_fetcher,
     build_default_fetcher,
     collect_all_mortgage_rates,
+    collect_all_rates,
 )
 from balance_pricing_engine.competitor_rates.collectors.bnz import BNZCollector
 from balance_pricing_engine.competitor_rates.collectors.kiwibank import KiwibankCollector
@@ -94,4 +95,5 @@ __all__ = [
     "build_collectors",
     "build_default_fetcher",
     "collect_all_mortgage_rates",
+    "collect_all_rates",
 ]
