@@ -10,6 +10,7 @@ Test data that feeds a wall-clock-relative code path must therefore be dated
 relative to now.
 """
 
+import ast
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
@@ -26,12 +27,6 @@ CLOCK_SENSITIVE_MODULES = (
     "tests/unit/test_scheduled_collection_workflow.py",
 )
 
-# Matches any fixed-calendar-date `datetime(YYYY, ...)` construction, not just
-# ones assigned to a variable literally named DAY_ONE/DAY_TWO -- a differently
-# named or renamed anchor (DAY_THREE, NOW, ...) is exactly as capable of
-# recreating the expiry bug this guard exists to catch.
-_FIXED_DATE_ANCHOR = re.compile(r"datetime\(\d{4},")
-
 # Matches the base "relative to now" anchors themselves (e.g. DAY_ONE/DAY_TWO),
 # so the staleness-window check below is derived from what the fixtures
 # actually use rather than a hand-maintained constant that can drift out of
@@ -41,18 +36,35 @@ _RELATIVE_ANCHOR_OFFSET = re.compile(
 )
 
 
+def _fixed_date_constructors(source: str) -> list[str]:
+    """Find `datetime(YYYY, ...)` calls anywhere in ``source``.
+
+    Parsed structurally (not line-by-line regex) so a fixed-date call spread
+    across multiple lines -- or assigned to any variable name, not just
+    DAY_ONE/DAY_TWO -- is still caught.
+    """
+    offenders = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+        if name != "datetime" or not node.args:
+            continue
+        year = node.args[0]
+        if isinstance(year, ast.Constant) and isinstance(year.value, int):
+            offenders.append(f"line {node.lineno}: datetime({year.value}, ...)")
+    return offenders
+
+
 @pytest.mark.parametrize("module_path", CLOCK_SENSITIVE_MODULES)
 def test_collection_anchors_are_relative_to_now(module_path):
     """A fixed calendar anchor here is a test that expires."""
     source = Path(module_path).read_text(encoding="utf-8")
-    offending_lines = [
-        f"line {lineno}: {line.strip()}"
-        for lineno, line in enumerate(source.splitlines(), start=1)
-        if _FIXED_DATE_ANCHOR.search(line)
-    ]
+    offenders = _fixed_date_constructors(source)
 
-    assert offending_lines == [], (
-        f"{module_path} pins a fixed calendar date at {offending_lines}. Market "
+    assert offenders == [], (
+        f"{module_path} pins a fixed calendar date at {offenders}. Market "
         "snapshots drop observations older than max_observation_age_hours, so "
         "this test will start failing once real time crosses that window. Use "
         "datetime.now(timezone.utc) - timedelta(...) instead."
