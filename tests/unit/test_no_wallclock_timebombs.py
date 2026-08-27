@@ -32,6 +32,14 @@ CLOCK_SENSITIVE_MODULES = (
 # recreating the expiry bug this guard exists to catch.
 _FIXED_DATE_ANCHOR = re.compile(r"datetime\(\d{4},")
 
+# Matches the base "relative to now" anchors themselves (e.g. DAY_ONE/DAY_TWO),
+# so the staleness-window check below is derived from what the fixtures
+# actually use rather than a hand-maintained constant that can drift out of
+# sync with them.
+_RELATIVE_ANCHOR_OFFSET = re.compile(
+    r"datetime\.now\(timezone\.utc\)\s*-\s*timedelta\((hours|days)=(\d+)\)"
+)
+
 
 @pytest.mark.parametrize("module_path", CLOCK_SENSITIVE_MODULES)
 def test_collection_anchors_are_relative_to_now(module_path):
@@ -54,9 +62,21 @@ def test_collection_anchors_are_relative_to_now(module_path):
 def test_the_staleness_window_is_wide_enough_for_relative_anchors():
     """The relative offsets used by those modules must sit inside the window."""
     window_hours = PricingIntelligenceConfig().max_observation_age_hours
-    widest_offset_used_by_tests = timedelta(days=2)
 
-    assert widest_offset_used_by_tests < timedelta(hours=window_hours)
+    widest_offset_hours = 0
+    for module_path in CLOCK_SENSITIVE_MODULES:
+        source = Path(module_path).read_text(encoding="utf-8")
+        for unit, amount in _RELATIVE_ANCHOR_OFFSET.findall(source):
+            hours = int(amount) * (24 if unit == "days" else 1)
+            widest_offset_hours = max(widest_offset_hours, hours)
+
+    assert widest_offset_hours > 0, "expected at least one relative anchor to check"
+    assert widest_offset_hours < window_hours, (
+        f"a relative anchor uses a {widest_offset_hours}h offset, which is outside "
+        f"the {window_hours}h staleness window -- that anchor's observations would "
+        "already be dropped as stale, recreating the expiry bug this guard exists "
+        "to catch."
+    )
 
 
 def test_a_fixed_anchor_would_actually_expire():
