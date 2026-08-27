@@ -26,21 +26,27 @@ CLOCK_SENSITIVE_MODULES = (
     "tests/unit/test_scheduled_collection_workflow.py",
 )
 
-_FIXED_DATE_ANCHOR = re.compile(
-    r"^(DAY_ONE|DAY_TWO)\s*=\s*datetime\(\d{4},", re.MULTILINE
-)
+# Matches any fixed-calendar-date `datetime(YYYY, ...)` construction, not just
+# ones assigned to a variable literally named DAY_ONE/DAY_TWO -- a differently
+# named or renamed anchor (DAY_THREE, NOW, ...) is exactly as capable of
+# recreating the expiry bug this guard exists to catch.
+_FIXED_DATE_ANCHOR = re.compile(r"datetime\(\d{4},")
 
 
 @pytest.mark.parametrize("module_path", CLOCK_SENSITIVE_MODULES)
 def test_collection_anchors_are_relative_to_now(module_path):
     """A fixed calendar anchor here is a test that expires."""
     source = Path(module_path).read_text(encoding="utf-8")
-    offenders = _FIXED_DATE_ANCHOR.findall(source)
+    offending_lines = [
+        f"line {lineno}: {line.strip()}"
+        for lineno, line in enumerate(source.splitlines(), start=1)
+        if _FIXED_DATE_ANCHOR.search(line)
+    ]
 
-    assert offenders == [], (
-        f"{module_path} pins {offenders} to a fixed date. Market snapshots drop "
-        "observations older than max_observation_age_hours, so this test will "
-        "start failing once real time crosses that window. Use "
+    assert offending_lines == [], (
+        f"{module_path} pins a fixed calendar date at {offending_lines}. Market "
+        "snapshots drop observations older than max_observation_age_hours, so "
+        "this test will start failing once real time crosses that window. Use "
         "datetime.now(timezone.utc) - timedelta(...) instead."
     )
 
@@ -48,7 +54,7 @@ def test_collection_anchors_are_relative_to_now(module_path):
 def test_the_staleness_window_is_wide_enough_for_relative_anchors():
     """The relative offsets used by those modules must sit inside the window."""
     window_hours = PricingIntelligenceConfig().max_observation_age_hours
-    widest_offset_used_by_tests = timedelta(hours=2)
+    widest_offset_used_by_tests = timedelta(days=2)
 
     assert widest_offset_used_by_tests < timedelta(hours=window_hours)
 
