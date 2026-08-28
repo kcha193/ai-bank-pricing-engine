@@ -37,10 +37,26 @@ def _strip_advertised_rate_token(raw_text_context: str, advertised_rate_pct: flo
     "4.01%" is found and removed whether the source page rendered it as
     "4.01%", "4.010%", or "4.0100%" -- any other percentage in the text (a
     PIR/tax-band qualifier, an unrelated fee) is left untouched.
+
+    Only the *first* value-matching occurrence is removed, mirroring
+    :func:`~.changes._normalized_special_conditions`'s identical guard for
+    the same reason: a structural qualifier that coincidentally shares the
+    advertised rate's value (e.g. "Growth Fund | 4% allocation | 4% return")
+    would otherwise also be blanked, and once the two values diverge (the
+    return moves to 4.1%, the allocation stays 4%) the qualifier would
+    survive normalisation on one side only, changing the identity for a row
+    whose only genuine change was its rate. The rate is conventionally the
+    first percentage mentioned in a deposit row, so this is a closer proxy
+    for "the rate's own token" than "every same-valued percentage" without
+    needing cell-boundary information this already-flattened text doesn't
+    carry.
     """
+    replaced = False
 
     def _replace(match: "re.Match[str]") -> str:
-        if abs(float(match.group(1)) - advertised_rate_pct) < 1e-6:
+        nonlocal replaced
+        if not replaced and abs(float(match.group(1)) - advertised_rate_pct) < 1e-6:
+            replaced = True
             return ""
         return match.group(0)
 

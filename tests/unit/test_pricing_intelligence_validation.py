@@ -14,6 +14,22 @@ def test_a_plausible_observation_is_accepted(make_record):
     assert outcome.errors == []
 
 
+def test_strip_advertised_rate_token_removes_only_one_matching_occurrence():
+    """A structural percentage that coincidentally equals the advertised
+    rate (e.g. an allocation percentage) must survive -- stripping every
+    matching occurrence would erase that structural qualifier entirely
+    instead of just the rate's own token, the same failure mode
+    changes._normalized_special_conditions() already guards against for an
+    analogous case."""
+    from balance_pricing_engine.pricing_intelligence.validation import (
+        _strip_advertised_rate_token,
+    )
+
+    stripped = _strip_advertised_rate_token("Growth Fund | 4% allocation | 4% return", 4.0)
+
+    assert stripped.count("%") == 1
+
+
 @pytest.mark.parametrize("rate", [0.1, 19.99, -1.0, 0.0])
 def test_an_implausible_rate_is_rejected(make_record, rate):
     outcome = validate_observations([make_record(rate_pct=rate)])

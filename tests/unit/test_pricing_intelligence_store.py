@@ -420,6 +420,65 @@ def test_a_pre_column_database_infers_product_from_its_existing_history(store, m
     assert deposit_run != loan_run
 
 
+def test_a_legacy_run_that_mixed_both_products_stays_findable_under_either(store, make_record):
+    """Before record_observations() rejected a mixed batch, a database could
+    hold a legacy run whose single collection_runs row ends up labelled with
+    just one product even though its observations span both -- one run_id
+    can only store one product_type value. The stored column alone would
+    make that run invisible to latest_run_id() for whichever product lost
+    the tie-break; observations/rate_changes must still recover it."""
+    shared_run_id = "legacy-mixed-run"
+    store.record_observations(
+        [make_record(product_type=ProductType.HOME_LOAN)],
+        run_id=shared_run_id,
+        observed_at=DAY_ONE,
+    )
+    # INSERT OR REPLACE on the same run_id overwrites collection_runs'
+    # stored product_type to term_deposit here -- exactly the ambiguity a
+    # genuinely mixed legacy run leaves behind for the home-loan side.
+    store.record_observations(
+        [make_record(product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")],
+        run_id=shared_run_id,
+        observed_at=DAY_ONE,
+    )
+
+    assert store.latest_run_id(product_type=ProductType.HOME_LOAN) == shared_run_id
+    assert store.latest_run_id(product_type=ProductType.TERM_DEPOSIT) == shared_run_id
+
+
+def test_get_previous_run_started_at_finds_a_legacy_run_that_mixed_both_products(
+    store, make_record
+):
+    """Same ambiguity as latest_run_id(), for the "previous run" query: a
+    legacy run that mixed both products under one run_id must still be
+    resolvable as the predecessor for either product, not just whichever one
+    the stored column happened to end up labelled with. Deposit is written
+    first here so the stored value ends up "home_loan" (the second/last
+    write wins via INSERT OR REPLACE) -- the opposite of what this test asks
+    for, so it only passes if the EXISTS fallback is actually doing the work."""
+    shared_run_id = "legacy-mixed-run"
+    store.record_observations(
+        [make_record(product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")],
+        run_id=shared_run_id,
+        observed_at=DAY_ONE,
+    )
+    store.record_observations(
+        [make_record(product_type=ProductType.HOME_LOAN)],
+        run_id=shared_run_id,
+        observed_at=DAY_ONE,
+    )
+    store.record_observations(
+        [
+            make_record(
+                product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit", rate_pct=4.50
+            )
+        ],
+        observed_at=DAY_TWO,
+    )
+
+    assert store.get_previous_run_started_at(product_type=ProductType.TERM_DEPOSIT) == DAY_ONE
+
+
 def test_previous_run_rates_survive_unchanged_intermediate_collections(store, make_record):
     """An unchanged re-observation must not erase the previous run's membership."""
     store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)

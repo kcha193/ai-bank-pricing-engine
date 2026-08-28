@@ -703,16 +703,32 @@ class ObservationStore:
         product's run -- ``product_type`` is what lets a caller ask for "the
         latest run *for this market*" instead of "the latest run, whichever
         market it happened to be".
+
+        A scoped query matches a run whose stored ``product_type`` agrees
+        *or* whose ``observations``/``rate_changes`` rows show the requested
+        product, not the stored column alone: ``record_observations()``
+        rejects a mixed-product batch now, but a database from before that
+        guard existed can still hold a legacy run that mixed both products
+        under one ``run_id`` (one row, so the migration backfilling this
+        column could only pick one). The extra check keeps such a run
+        findable under *either* product instead of losing one of them --
+        which the stored value alone is still enough to resolve for the
+        overwhelmingly common case of a normal, single-product run.
         """
         if product_type is None:
             row = self._connection.execute(
                 "SELECT run_id FROM collection_runs ORDER BY started_at DESC, rowid DESC LIMIT 1"
             ).fetchone()
         else:
+            value = _product_value(product_type)
             row = self._connection.execute(
-                "SELECT run_id FROM collection_runs WHERE product_type = ? "
-                "ORDER BY started_at DESC, rowid DESC LIMIT 1",
-                (_product_value(product_type),),
+                "SELECT cr.run_id FROM collection_runs cr WHERE cr.product_type = ? "
+                "OR EXISTS (SELECT 1 FROM observations o "
+                "           WHERE o.last_seen_run_id = cr.run_id AND o.product_type = ?) "
+                "OR EXISTS (SELECT 1 FROM rate_changes rc "
+                "           WHERE rc.run_id = cr.run_id AND rc.product_type = ?) "
+                "ORDER BY cr.started_at DESC, cr.rowid DESC LIMIT 1",
+                (value, value, value),
             ).fetchone()
         return row["run_id"] if row else None
 
@@ -1004,10 +1020,21 @@ class ObservationStore:
                 (_iso(started_at),),
             ).fetchone()
         else:
+            # Same stored-value-or-EXISTS matching as latest_run_id(), for the
+            # same reason: a legacy run that mixed both products under one
+            # run_id (before record_observations() rejected that) must stay
+            # findable under either product, not just whichever one the
+            # migration's single-column backfill happened to pick.
+            value = _product_value(product_type)
             previous = self._connection.execute(
-                "SELECT started_at FROM collection_runs WHERE started_at < ? "
-                "AND product_type = ? ORDER BY started_at DESC, rowid DESC LIMIT 1",
-                (_iso(started_at), _product_value(product_type)),
+                "SELECT cr.started_at FROM collection_runs cr WHERE cr.started_at < ? "
+                "AND (cr.product_type = ? "
+                "     OR EXISTS (SELECT 1 FROM observations o "
+                "                WHERE o.last_seen_run_id = cr.run_id AND o.product_type = ?) "
+                "     OR EXISTS (SELECT 1 FROM rate_changes rc "
+                "                WHERE rc.run_id = cr.run_id AND rc.product_type = ?)) "
+                "ORDER BY cr.started_at DESC, cr.rowid DESC LIMIT 1",
+                (_iso(started_at), value, value, value),
             ).fetchone()
         return _parse_iso(previous["started_at"]) if previous is not None else None
 
