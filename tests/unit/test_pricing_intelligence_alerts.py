@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.alerts import (
     Alert,
     CollectingAlertSink,
@@ -101,6 +102,38 @@ def test_alert_omits_market_context_for_a_different_rate_category(make_record):
         standard_change, snapshot=special_snapshot, previous_snapshot=special_snapshot
     ).render()
 
+    assert "Market median" not in rendered
+    assert "Market rank" not in rendered
+
+
+def test_alert_omits_market_context_for_a_different_product_with_the_same_category(
+    make_record,
+):
+    """A deposit "special" change alongside a mortgage "special" snapshot must
+    not report a median/rank borrowed from the wrong market -- "special"
+    exists as a category on both sides, so the rate_category guard alone is
+    not enough identity."""
+    deposit_change = detect_changes(
+        [make_record(product_type=ProductType.TERM_DEPOSIT, rate_pct=4.00)],
+        [
+            make_record(
+                product_type=ProductType.TERM_DEPOSIT, rate_pct=4.20, observed_at=DAY_TWO
+            )
+        ],
+        detected_at=DAY_TWO,
+    )[0]
+    mortgage_snapshot = build_market_snapshot(
+        [
+            make_record(bank="ANZ", rate_pct=4.79),
+            make_record(bank="BNZ", rate_pct=4.85),
+        ]
+    )
+
+    rendered = format_alert(
+        deposit_change, snapshot=mortgage_snapshot, previous_snapshot=mortgage_snapshot
+    ).render()
+
+    assert "TERM DEPOSIT RATE CHANGE" in rendered
     assert "Market median" not in rendered
     assert "Market rank" not in rendered
 
