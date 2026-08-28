@@ -180,14 +180,34 @@ as the interactive CLI. Without it, this falls back to
 `PricingIntelligenceConfig()` defaults and silently ignores anything
 configured there.
 
+`--product` selects which market this invocation collects (default:
+`home_loan`). **Term deposits are a separate market and need their own
+scheduled invocation** with `--product term_deposit` -- one schedule alone
+never refreshes both. Give each invocation its own `--lock-file` and
+`--summary-file`: sharing either between the two products makes the second
+one either get skipped (`EXIT_ALREADY_RUNNING`) or silently overwrite the
+other product's summary.
+
+```bash
+python3 scripts/collect_market_rates_workflow.py \
+    --config configs/base.yaml \
+    --product term_deposit \
+    --render-javascript \
+    --lock-file data/processed/pricing_intelligence/collection-term-deposit.lock \
+    --summary-file data/processed/pricing_intelligence/last_run_term_deposit.json
+```
+
 Ready-made schedules are in [`deploy/scheduling/`](../deploy/scheduling/):
 
-- `nz.pricing-intelligence.collect.plist` -- macOS launchd agent, daily at 07:30
-  local, with `RunAtLoad` so a machine asleep at the scheduled time collects on
-  next wake rather than skipping the day.
-- `crontab.example` -- the equivalent cron entry.
+- `nz.pricing-intelligence.collect.plist` -- macOS launchd agent for home
+  loans, daily at 07:30 local, with `RunAtLoad` so a machine asleep at the
+  scheduled time collects on next wake rather than skipping the day.
+- `nz.pricing-intelligence.collect-term-deposit.plist` -- the sibling agent
+  for term deposits, daily at 07:35 local. Install both to keep either
+  market fresh.
+- `crontab.example` -- the equivalent cron entries for both products.
 
-Both need their `REPLACE_ME` / `/path/to` paths edited before use.
+All three need their `REPLACE_ME` / `/path/to` paths edited before use.
 
 ### Where history lives
 

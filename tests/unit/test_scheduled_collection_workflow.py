@@ -14,7 +14,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from balance_pricing_engine.competitor_rates.collectors import BankCollectionResult, CollectionStatus
+from balance_pricing_engine.competitor_rates.collectors import (
+    ANZCollector,
+    BankCollectionResult,
+    CollectionStatus,
+)
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.config import (
     CollectionConfig,
@@ -400,6 +404,42 @@ def test_run_collection_writes_a_summary_file(workflow, fixture_fetcher, tmp_pat
 
     assert code == workflow.EXIT_OK
     assert json.loads(summary_path.read_text())["rates_accepted"] == summary["rates_accepted"]
+
+
+def test_product_flag_lets_the_workflow_collect_term_deposits(
+    workflow, tmp_path, monkeypatch
+):
+    """Without --product, run_collection() always defaulted to home_loan, so
+    a scheduled deployment never refreshed term-deposit observations no
+    matter how it was configured. product_type must actually reach
+    service.collect() and produce a deposit-scoped summary."""
+    fixtures = Path("tests/fixtures/pricing_intelligence")
+    term_deposit_html = (fixtures / "anz_term_deposits.html").read_bytes()
+
+    def fetch(url: str) -> bytes:
+        assert url == ANZCollector.term_deposit_url
+        return term_deposit_html
+
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        selected_banks=["ANZ"],
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    monkeypatch.setattr(
+        workflow,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"], store=kwargs["store"], fetcher=fetch
+        ),
+    )
+
+    code, summary = workflow.run_collection(
+        config, render_javascript=False, product_type=ProductType.TERM_DEPOSIT
+    )
+
+    assert code == workflow.EXIT_OK
+    assert summary["product_type"] == "term_deposit"
+    assert summary["rates_accepted"] > 0
 
 
 def test_run_collection_logs_partial_failure_at_warning(

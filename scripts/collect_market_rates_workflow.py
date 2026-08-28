@@ -27,6 +27,7 @@ from pathlib import Path
 import sys
 from typing import Optional
 
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.observability.logging import configure_json_logging, log_event
 from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
@@ -208,11 +209,22 @@ def _bank_scoped_failures(outcome: CollectionOutcome) -> list[dict]:
     return zero_accepted_failures + low_coverage_failures + partial_rejection_failures
 
 
-def build_summary(outcome: CollectionOutcome) -> dict:
-    """Machine-readable summary of one collection run."""
+def build_summary(
+    outcome: CollectionOutcome,
+    product_type: ProductType | str = ProductType.HOME_LOAN,
+) -> dict:
+    """Machine-readable summary of one collection run.
+
+    ``product_type`` is embedded so a summary file can be told apart from
+    the other product's when both are scheduled -- see ``--product`` and
+    ``run_collection()``. Defaults to ``HOME_LOAN`` to match this module's
+    other single-product defaults; every existing caller collecting the
+    default product keeps working unchanged.
+    """
     bank_scoped_failures = _bank_scoped_failures(outcome)
     bank_scoped_failed_banks = {failure["bank"] for failure in bank_scoped_failures}
     return {
+        "product_type": ProductType(product_type).value,
         "collected_at_utc": outcome.report.captured_at_utc.isoformat(),
         "banks_succeeded": [
             bank for bank in outcome.succeeded_banks if bank not in bank_scoped_failed_banks
@@ -261,16 +273,25 @@ def run_collection(
     config: PricingIntelligenceConfig,
     render_javascript: bool,
     summary_path: Optional[Path] = None,
+    product_type: ProductType | str = ProductType.HOME_LOAN,
 ) -> tuple[int, dict]:
-    """Run one collection and return ``(exit_code, summary)``."""
+    """Run one collection and return ``(exit_code, summary)``.
+
+    ``product_type`` defaults to ``HOME_LOAN``, matching ``service.collect()``'s
+    own default, so an existing scheduled deployment collects exactly what it
+    always has. Collecting term deposits too needs a second scheduled
+    invocation with ``--product term_deposit`` (and its own ``--lock-file``/
+    ``--summary-file``, so it does not collide with the home-loan run) -- see
+    ``docs/pricing_intelligence.md``.
+    """
     with PricingIntelligenceService(
         config=config,
         store=ObservationStore(config.database_path),
         render_javascript=render_javascript,
     ) as service:
-        outcome = service.collect()
+        outcome = service.collect(product_type=product_type)
 
-    summary = build_summary(outcome)
+    summary = build_summary(outcome, product_type)
     code = exit_code_for(outcome)
 
     if code == EXIT_TOTAL_FAILURE:
@@ -334,6 +355,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument("--database", default=None, help="Observation store path")
     parser.add_argument(
+        "--product",
+        default=ProductType.HOME_LOAN.value,
+        choices=[ProductType.HOME_LOAN.value, ProductType.TERM_DEPOSIT.value],
+        help=(
+            "Which market to collect (default: home_loan). Term deposits need "
+            "a separate scheduled invocation with --product term_deposit and "
+            "its own --lock-file/--summary-file, so it does not collide with "
+            "the home-loan schedule -- see docs/pricing_intelligence.md."
+        ),
+    )
+    parser.add_argument(
         "--render-javascript",
         action="store_true",
         help="Render pages in a headless browser. Required for live collection.",
@@ -370,6 +402,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 config,
                 render_javascript=args.render_javascript,
                 summary_path=Path(args.summary_file) if args.summary_file else None,
+                product_type=args.product,
             )
     except AlreadyRunningError as exc:
         log_event(logger, "collection skipped", level=logging.WARNING, reason=str(exc))

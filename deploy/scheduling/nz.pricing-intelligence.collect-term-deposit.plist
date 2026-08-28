@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS launchd agent: collect NZ term-deposit market rates once a day.
+
+  Sibling of nz.pricing-intelligence.collect.plist (the home-loan schedule).
+  Term deposits are a separate market, selected via the product flag below
+  (term_deposit); this file's lock-file and summary-file paths are
+  deliberately distinct from the home-loan schedule's, so an overlapping run
+  of one product cannot make the workflow skip the other
+  (EXIT_ALREADY_RUNNING) or overwrite its summary file.
+
+  Install (in addition to the home-loan plist):
+    cp deploy/scheduling/nz.pricing-intelligence.collect-term-deposit.plist ~/Library/LaunchAgents/
+    # Edit the two REPLACE_ME paths below first.
+    # launchd opens StandardOutPath/StandardErrorPath itself before it even
+    # starts the program below, so on a fresh checkout (where this git-ignored
+    # directory does not exist yet) load fails silently unless it exists first:
+    mkdir -p /path/to/ai-bank-pricing-engine/data/processed/pricing_intelligence
+    launchctl load ~/Library/LaunchAgents/nz.pricing-intelligence.collect-term-deposit.plist
+
+  Check / run now / remove:
+    launchctl list | grep pricing-intelligence
+    launchctl start nz.pricing-intelligence.collect-term-deposit
+    launchctl unload ~/Library/LaunchAgents/nz.pricing-intelligence.collect-term-deposit.plist
+
+  Scheduled five minutes after the home-loan run (07:35 local) so the two
+  schedules don't start at the exact same instant. They use independent
+  lock files and could run concurrently regardless, but staggering keeps
+  their logs easier to read.
+
+  The config flag below (configs/base.yaml) is passed explicitly: without
+  it, the workflow falls back to PricingIntelligenceConfig() defaults and
+  silently ignores any pricing_intelligence block (selected banks,
+  validation thresholds, collection delays, database path) configured
+  there.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>nz.pricing-intelligence.collect-term-deposit</string>
+
+    <key>WorkingDirectory</key>
+    <string>REPLACE_ME/ai-bank-pricing-engine</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>REPLACE_ME/ai-bank-pricing-engine/.venv/bin/python3</string>
+        <string>scripts/collect_market_rates_workflow.py</string>
+        <string>--config</string>
+        <string>configs/base.yaml</string>
+        <string>--product</string>
+        <string>term_deposit</string>
+        <string>--render-javascript</string>
+        <string>--quiet</string>
+        <string>--lock-file</string>
+        <string>data/processed/pricing_intelligence/collection-term-deposit.lock</string>
+        <string>--summary-file</string>
+        <string>data/processed/pricing_intelligence/last_run_term_deposit.json</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>7</integer>
+        <key>Minute</key><integer>35</integer>
+    </dict>
+
+    <!-- Catch up if the machine was asleep at the scheduled time. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>REPLACE_ME/ai-bank-pricing-engine/data/processed/pricing_intelligence/collect.log</string>
+    <key>StandardErrorPath</key>
+    <string>REPLACE_ME/ai-bank-pricing-engine/data/processed/pricing_intelligence/collect.err.log</string>
+</dict>
+</plist>

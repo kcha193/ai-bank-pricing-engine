@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  macOS launchd agent: collect NZ market rates once a day.
+  macOS launchd agent: collect NZ home-loan market rates once a day.
+
+  This is the home-loan schedule (the product flag defaults to home_loan).
+  Term deposits are a separate market and need the sibling
+  nz.pricing-intelligence.collect-term-deposit.plist installed alongside
+  this one; its lock-file and summary-file paths are already distinct from
+  this file's, so the two schedules cannot collide.
 
   Install:
     cp deploy/scheduling/nz.pricing-intelligence.collect.plist ~/Library/LaunchAgents/
@@ -43,8 +49,10 @@
         <string>configs/base.yaml</string>
         <string>--render-javascript</string>
         <string>--quiet</string>
+        <string>--lock-file</string>
+        <string>data/processed/pricing_intelligence/collection-home-loan.lock</string>
         <string>--summary-file</string>
-        <string>data/processed/pricing_intelligence/last_run.json</string>
+        <string>data/processed/pricing_intelligence/last_run_home_loan.json</string>
     </array>
 
     <key>StartCalendarInterval</key>
