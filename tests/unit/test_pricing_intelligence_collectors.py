@@ -72,6 +72,27 @@ def test_collector_parses_rates_and_retains_provenance(fixture_fetcher):
     assert record.parser_version
 
 
+def test_a_two_argument_parse_mortgage_html_override_still_collects(fixture_fetcher):
+    """A collector overriding the documented two-argument
+    parse_mortgage_html(html, captured_at_utc) extension point from before
+    skipped_row_keys existed must keep working -- it simply does not
+    participate in skipped-row tracking -- instead of failing the whole bank
+    collection with a TypeError."""
+
+    class LegacyANZCollector(ANZCollector):
+        def parse_mortgage_html(self, html, captured_at_utc):
+            return super().parse_mortgage_html(html, captured_at_utc)
+
+    collector = LegacyANZCollector(fetcher=fixture_fetcher())
+    result = collector.collect_mortgage_rates(
+        captured_at_utc=OBSERVED_AT, persist_snapshot=False
+    )
+
+    assert result.status is CollectionStatus.SUCCESS
+    assert result.records
+    assert result.skipped_row_keys == ()
+
+
 def test_rate_parsing_strips_percentage_and_pa_suffix(fixture_fetcher):
     collector = ANZCollector(fetcher=fixture_fetcher())
     records = collector.collect_mortgage_rates(

@@ -205,8 +205,12 @@ def apply_market_strategy_to_config(
 
     Pass ``deposit_snapshot`` to overlay the deposit side too. Each side is
     resolved independently: a market-derived loan rate with a manual deposit
-    assumption is a legitimate scenario, and omitting a deposit snapshot leaves
-    ``market.competitor_deposit_rate`` exactly as the config holds it.
+    assumption is a legitimate scenario, and omitting both ``deposit_snapshot``
+    and ``deposit_strategy`` leaves ``market.competitor_deposit_rate`` exactly
+    as the config holds it. Passing ``deposit_strategy`` as a market strategy
+    without a ``deposit_snapshot`` raises, the same as the loan side raises
+    for ``strategy`` without ``snapshot`` -- a requested market strategy must
+    not silently fall back to the stale configured rate.
 
     When ``set_reference_rate`` is true the market-relative spread anchor
     (``home_loan_reference_rate``) is moved with the competitor rate, so
@@ -231,7 +235,14 @@ def apply_market_strategy_to_config(
         if set_reference_rate and config.market.home_loan_reference_rate is not None:
             updates["home_loan_reference_rate"] = resolved.competitor_loan_rate
 
-    if deposit_snapshot is not None:
+    # Attempted whenever the caller expressed any intent for the deposit
+    # side -- a snapshot, an explicit strategy, or both -- not only when a
+    # snapshot happens to be present. Otherwise an explicit deposit_strategy
+    # (e.g. MARKET_MEDIAN) with no deposit_snapshot would skip resolution
+    # silently instead of failing the way the loan side already does; the
+    # resolve_competitor_rate() call below is what raises "requires a market
+    # snapshot" for that case.
+    if deposit_snapshot is not None or deposit_strategy is not None:
         resolved_deposit = resolve_competitor_rate(
             strategy=deposit_strategy if deposit_strategy is not None else strategy,
             snapshot=deposit_snapshot,

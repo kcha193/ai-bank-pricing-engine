@@ -238,6 +238,23 @@ def test_a_market_loan_strategy_without_a_loan_snapshot_fails_loudly(engine_conf
         )
 
 
+def test_a_market_deposit_strategy_without_a_deposit_snapshot_fails_loudly(engine_config):
+    """Silently ignoring a requested deposit market strategy would be worse
+    than raising -- the same invariant the loan side already enforces."""
+    from balance_pricing_engine.pricing_intelligence.strategy import (
+        CompetitorRateStrategy,
+        MarketStrategyError,
+        apply_market_strategy_to_config,
+    )
+
+    with pytest.raises(MarketStrategyError, match="requires a market snapshot"):
+        apply_market_strategy_to_config(
+            engine_config,
+            strategy=CompetitorRateStrategy.MANUAL,
+            deposit_strategy=CompetitorRateStrategy.MARKET_MEDIAN,
+        )
+
+
 def test_a_home_loan_snapshot_cannot_be_used_as_the_deposit_overlay(engine_config):
     """A home-loan snapshot passed as deposit_snapshot must be rejected, not
     silently written into competitor_deposit_rate -- ranking direction comes

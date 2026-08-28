@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
+import inspect
 import logging
 from pathlib import Path
 import time
@@ -51,6 +52,26 @@ class FetchError(CollectorError):
 class CollectionStatus(str, Enum):
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
+
+
+def _accepts_skipped_row_keys(parser: Callable[..., list[CompetitorRateRecord]]) -> bool:
+    """Whether ``parser`` (a bound ``parse_mortgage_html``/``parse_term_deposit_html``)
+    will accept the ``skipped_row_keys`` keyword.
+
+    A bank collector outside this codebase may still override the documented
+    two-argument extension point (``html``, ``captured_at_utc``) from before
+    this parameter existed. Introspecting the bound method, rather than
+    always passing the keyword, keeps such an override working -- it simply
+    does not participate in skipped-row tracking -- instead of failing the
+    whole bank collection with a ``TypeError``.
+    """
+    try:
+        parameters = inspect.signature(parser).parameters
+    except (TypeError, ValueError):
+        return False
+    return "skipped_row_keys" in parameters or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    )
 
 
 @dataclass(frozen=True)
@@ -520,7 +541,10 @@ class BankPricingCollector(abc.ABC):
 
         skipped_row_keys: list[str] = []
         try:
-            records = parser(html, captured_at_utc, skipped_row_keys=skipped_row_keys)
+            if _accepts_skipped_row_keys(parser):
+                records = parser(html, captured_at_utc, skipped_row_keys=skipped_row_keys)
+            else:
+                records = parser(html, captured_at_utc)
         except Exception as exc:  # noqa: BLE001 - isolated into a FAILED result
             logger.warning("%s %s parse failed: %s", self.bank, product_type.value, exc)
             return BankCollectionResult(
