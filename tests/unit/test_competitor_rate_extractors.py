@@ -158,6 +158,36 @@ def test_parse_html_rates_does_not_infer_monthly_frequency_from_a_six_month_term
     assert all(r.interest_payment_frequency == "unknown" for r in records)
 
 
+def test_parse_html_rates_preserves_frequency_published_in_the_same_cell_as_the_term():
+    """_find_term_label() returns the whole cell it matched in, not just the
+    term substring, when a bank combines term and frequency in one cell
+    (e.g. "6 months, interest paid monthly"). Stripping that whole cell
+    before frequency normalisation -- rather than just the "6 months"
+    phrase within it -- would destroy the genuine "monthly" text along with
+    the term, storing the row as "unknown" even though it does publish a
+    frequency. interest_payment_frequency also participates in every
+    observation identity, so a later page change that moves the same
+    frequency into its own cell would then look like a false new/withdrawn
+    pair instead of an unchanged row."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Rate</th></tr>
+      <tr><td>6 months, interest paid monthly</td><td>3.55% p.a.</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="BNZ",
+        product_type="term_deposit",
+        source_url="https://example.test/td",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].interest_payment_frequency == "monthly"
+
+
 def test_parse_html_rates_skips_rows_without_rates_or_terms():
     html = """
     <html><head><title>Noisy rates</title></head><body><table>

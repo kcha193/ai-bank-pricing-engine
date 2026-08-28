@@ -280,21 +280,56 @@ class ObservationStore:
 
     def _migrate_collection_runs_product_type(self, connection: sqlite3.Connection) -> None:
         """Add ``collection_runs.product_type`` for a database created before
-        term-deposit support existed.
+        this column existed.
 
         ``CREATE TABLE IF NOT EXISTS`` in ``_SCHEMA`` is a no-op against an
         already-created table, so a database file from before this column
         existed needs an explicit migration, not just an updated ``CREATE
-        TABLE`` statement. Every row in such a database is necessarily a
-        home-loan run -- the only product this store ever collected before
-        term deposits -- so backfilling the new column to that value (the
-        column default) is exactly correct, not just a safe placeholder.
+        TABLE`` statement.
+
+        The ``ALTER TABLE`` below defaults every existing row to
+        ``home_loan``, but that default is only a starting point, not the
+        answer: the ``--product`` CLI flag has collected term deposits since
+        before this column existed, so a database can already hold genuine
+        deposit runs that must not be mislabelled. Both ``UPDATE``s below
+        correct that from data the pre-existing schema already recorded --
+        neither is itself new:
+
+        * ``rate_changes.run_id``/``product_type`` are permanent (one row
+          per detected change, never overwritten), so they can recover a
+          historical run's product even once ``observations`` has moved
+          past it -- as long as that run detected at least one change.
+        * ``observations.last_seen_run_id`` is overwritten forward on every
+          later re-observation (even an unchanged one), so it can only
+          answer for whichever run most recently touched each still-current
+          row -- typically each key's latest run, not every historical one.
+          Applied after ``rate_changes`` so it fills in a run with zero
+          detected changes (e.g. a bootstrapping first-ever collection,
+          which suppresses its own ``NEW_PRODUCT`` events) that the
+          ``rate_changes`` pass alone could not reach.
+
+        A truly ancient run with no trace in either table -- superseded in
+        ``observations`` and with zero recorded changes -- has no surviving
+        way to recover its product, and keeps the ``home_loan`` default.
         """
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(collection_runs)")}
-        if "product_type" not in columns:
-            connection.execute(
-                "ALTER TABLE collection_runs ADD COLUMN product_type TEXT NOT NULL DEFAULT 'home_loan'"
-            )
+        if "product_type" in columns:
+            return
+        connection.execute(
+            "ALTER TABLE collection_runs ADD COLUMN product_type TEXT NOT NULL DEFAULT 'home_loan'"
+        )
+        connection.execute(
+            "UPDATE collection_runs SET product_type = ("
+            "  SELECT rc.product_type FROM rate_changes rc "
+            "  WHERE rc.run_id = collection_runs.run_id LIMIT 1"
+            ") WHERE run_id IN (SELECT DISTINCT run_id FROM rate_changes)"
+        )
+        connection.execute(
+            "UPDATE collection_runs SET product_type = ("
+            "  SELECT o.product_type FROM observations o "
+            "  WHERE o.last_seen_run_id = collection_runs.run_id LIMIT 1"
+            ") WHERE run_id IN (SELECT DISTINCT last_seen_run_id FROM observations)"
+        )
 
     # ----------------------------------------------------------------- writes
 
@@ -311,23 +346,30 @@ class ObservationStore:
         re-observations, so a caller can tell a quiet day from a repricing day
         without querying further.
 
-        ``collection_runs.product_type`` is taken from the records themselves
-        (every record passed in one call belongs to the same collection --
+        ``collection_runs.product_type`` is taken from the records themselves,
+        defaulting to ``HOME_LOAN`` for an empty ``records`` so a run is still
+        recorded consistently with this store's pre-term-deposit history. This
+        is what lets :meth:`latest_run_id`/:meth:`get_previous_run_started_at`
+        resolve "the latest run" *for a given product* now that home-loan and
+        term-deposit collections share one ``collection_runs`` table -- which
+        only works if every record in one call belongs to the same product:
         :meth:`~.service.PricingIntelligenceService.collect` always calls this
-        with one product's ``accepted`` list), defaulting to ``HOME_LOAN`` for
-        an empty ``records`` so a run is still recorded consistently with
-        this store's pre-term-deposit history. This is what lets
-        :meth:`latest_run_id`/:meth:`get_previous_run_started_at` resolve
-        "the latest run" *for a given product* now that home-loan and
-        term-deposit collections share one ``collection_runs`` table.
+        with one product's own ``accepted`` list, and a caller seeding a store
+        directly must do the same, one call per product, rather than passing
+        a mixed batch that only one product's runs could ever be found under.
         """
         records = list(records)
         observed_at = observed_at or datetime.now(timezone.utc)
         run_id = run_id or str(uuid.uuid4())
         timestamp = _iso(observed_at)
-        product_type = (
-            ProductType(records[0].product_type) if records else ProductType.HOME_LOAN
-        )
+        product_types = {ProductType(record.product_type) for record in records}
+        if len(product_types) > 1:
+            raise ValueError(
+                "record_observations() received a mixed-product batch "
+                f"({sorted(p.value for p in product_types)}); one run must be a single "
+                "product's collection -- call it once per product instead."
+            )
+        product_type = next(iter(product_types), ProductType.HOME_LOAN)
 
         inserted = 0
         unchanged = 0

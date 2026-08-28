@@ -364,7 +364,7 @@ def _clean_text(value: str) -> str:
 
 
 def _strip_term_label(text: str, term_label: str) -> str:
-    """Remove the row's own term-label text before frequency normalisation.
+    """Remove the row's own term phrase before frequency normalisation.
 
     ``raw_text_context`` includes every cell in the row, including the term
     label itself (e.g. "6 months"). :func:`~.normalise.normalise_frequency`
@@ -377,8 +377,17 @@ def _strip_term_label(text: str, term_label: str) -> str:
     observation identity, so this inconsistency isn't just cosmetic: a page
     later adding a genuine "at maturity" label would change the key and read
     as a withdrawal-plus-new-product rather than an ordinary update.
+
+    Only the matched term phrase within ``term_label`` is removed, via
+    :data:`_TERM_PHRASE_PATTERN` -- not the whole string. ``term_label`` can
+    be a combined cell like "6 months, interest paid monthly" when a bank
+    publishes term and frequency together (:func:`_find_term_label` returns
+    the entire cell, not just the term substring); stripping the whole thing
+    would destroy that genuine frequency information along with the term.
     """
-    return re.sub(re.escape(term_label), "", text, flags=re.IGNORECASE)
+    match = _TERM_PHRASE_PATTERN.search(term_label)
+    phrase = match.group(0) if match else term_label
+    return re.sub(re.escape(phrase), "", text, flags=re.IGNORECASE)
 
 
 def _is_header_row(row: list[str]) -> bool:
@@ -597,18 +606,27 @@ def _extract_rates_with_categories(
     return results
 
 
+#: Matches just the term phrase itself (e.g. "6 months", "one year"), not a
+#: whole cell -- shared by _find_term_label() (which cell has a term at all)
+#: and _strip_term_label() (which narrower substring to remove before
+#: frequency normalisation). A bank publishing term and frequency in one
+#: combined cell, e.g. "6 months, interest paid monthly", means the cell
+#: _find_term_label() returns is not just the term: stripping the whole cell
+#: there would destroy the genuine frequency information along with it.
+_TERM_PHRASE_PATTERN = re.compile(
+    r"\b\d+\s*(?:day|days|month|months|year|years)\b"
+    r"|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+"
+    r"(?:month|months|year|years)\b",
+    re.IGNORECASE,
+)
+
+
 def _find_term_label(row: list[str], product: ProductType) -> str | None:
     for cell in row:
         text = cell.lower()
         if product == ProductType.HOME_LOAN and ("floating" in text or "variable" in text):
             return cell
-        if re.search(r"\b\d+\s*(?:day|days|month|months|year|years)\b", text):
-            return _strip_product_prefix(cell)
-        if re.search(
-            r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+"
-            r"(?:month|months|year|years)\b",
-            text,
-        ):
+        if _TERM_PHRASE_PATTERN.search(text):
             return _strip_product_prefix(cell)
     return None
 

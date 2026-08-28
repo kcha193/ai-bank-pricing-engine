@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from balance_pricing_engine.competitor_rates.models import ProductType
-from balance_pricing_engine.pricing_intelligence.changes import ChangeType, detect_changes
+from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange, detect_changes
 from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 
@@ -285,6 +285,22 @@ def test_previous_run_is_empty_for_an_unknown_run_id(store, make_record):
     assert store.get_previous_run_rates(before_run_id="does-not-exist") == []
 
 
+def test_record_observations_rejects_a_mixed_product_batch(store, make_record):
+    """One run must be a single product's collection: collection_runs.product_type
+    cannot represent more than one product for a single run_id, so a caller
+    passing a mixed home-loan/deposit batch in one call would otherwise
+    silently mislabel the whole run under just the first record's product --
+    making latest_run_id()/get_latest_rates() blind to the other product's
+    freshly-stored rows even though they were saved correctly."""
+    mixed = [
+        make_record(product_type=ProductType.HOME_LOAN),
+        make_record(product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit"),
+    ]
+
+    with pytest.raises(ValueError, match="mixed-product batch"):
+        store.record_observations(mixed, observed_at=DAY_ONE)
+
+
 def test_latest_run_id_is_scoped_per_product(store, make_record):
     """Home-loan and term-deposit collections share one collection_runs
     table, so an unscoped latest_run_id() can return either product's run --
@@ -331,12 +347,14 @@ def test_previous_market_snapshot_is_not_confused_by_the_other_products_run(stor
     assert store.get_previous_run_started_at(product_type=ProductType.TERM_DEPOSIT) == DAY_ONE
 
 
-def test_a_pre_term_deposit_database_migrates_the_product_type_column(tmp_path):
-    """A database file created before term-deposit support existed lacks
-    collection_runs.product_type -- CREATE TABLE IF NOT EXISTS is a no-op
-    against an already-created table, so opening it must not raise, and
-    every pre-existing row (necessarily home-loan, the only product this
-    store used to collect) must backfill to that value."""
+def test_a_database_with_no_surviving_trace_of_a_run_falls_back_to_home_loan(tmp_path):
+    """A database file created before collection_runs.product_type existed
+    lacks the column -- CREATE TABLE IF NOT EXISTS is a no-op against an
+    already-created table, so opening it must not raise. A run with no
+    surviving trace in observations or rate_changes (this legacy database
+    has neither table populated at all) has no way to recover its actual
+    product, so it keeps the home_loan default rather than the migration
+    failing outright."""
     import sqlite3
 
     db_path = tmp_path / "legacy.db"
@@ -359,6 +377,47 @@ def test_a_pre_term_deposit_database_migrates_the_product_type_column(tmp_path):
             "SELECT product_type FROM collection_runs WHERE run_id = 'legacy-run'"
         ).fetchone()
         assert row["product_type"] == "home_loan"
+
+
+def test_a_pre_column_database_infers_product_from_its_existing_history(store, make_record):
+    """The --product CLI flag has collected term deposits since before
+    collection_runs.product_type existed, so an upgrading database can
+    already hold genuine deposit runs -- the migration must not mislabel
+    them home_loan just because the column itself is new. Simulated here by
+    collecting normally (which populates observations/rate_changes exactly
+    as a pre-migration database would have) and then dropping the column to
+    force the migration to re-infer it from that history."""
+    deposit_record = make_record(product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")
+    deposit_write = store.record_observations([deposit_record], observed_at=DAY_ONE)
+    store.record_changes(
+        [
+            RateChange(
+                observation_key=deposit_record.observation_key(),
+                bank=deposit_record.bank,
+                product_type=ProductType.TERM_DEPOSIT,
+                product_name=deposit_record.product_name,
+                rate_category=deposit_record.rate_category,
+                term_months=deposit_record.term_months_normalised,
+                change_type=ChangeType.NEW_PRODUCT,
+                detected_at=DAY_ONE,
+                current_rate_pct=deposit_record.advertised_rate_pct,
+                run_id=deposit_write.run_id,
+            )
+        ]
+    )
+    store.record_observations([make_record(product_type=ProductType.HOME_LOAN)], observed_at=DAY_TWO)
+
+    # Simulate a database that predates the column: drop it, then reopen
+    # (re-running _create_schema()'s migration) as a fresh ObservationStore
+    # would when it first encounters that older file.
+    store._connection.execute("ALTER TABLE collection_runs DROP COLUMN product_type")
+    store._create_schema()
+
+    deposit_run = store.latest_run_id(product_type=ProductType.TERM_DEPOSIT)
+    loan_run = store.latest_run_id(product_type=ProductType.HOME_LOAN)
+    assert deposit_run is not None
+    assert loan_run is not None
+    assert deposit_run != loan_run
 
 
 def test_previous_run_rates_survive_unchanged_intermediate_collections(store, make_record):

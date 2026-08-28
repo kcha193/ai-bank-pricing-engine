@@ -102,7 +102,11 @@ def mixed_product_database(tmp_path, make_record):
         )
 
     with ObservationStore(path) as store:
-        store.record_observations([home_loan, deposit_a, deposit_b], observed_at=DAY_TWO)
+        # One record_observations() call is one product's collection run --
+        # collection_runs.product_type (used to scope "the latest run" per
+        # market) cannot represent more than one product for a single run_id.
+        store.record_observations([home_loan], observed_at=DAY_TWO)
+        store.record_observations([deposit_a, deposit_b], observed_at=DAY_TWO)
         store.record_changes([change_for(home_loan), change_for(deposit_a)])
     return str(path)
 
