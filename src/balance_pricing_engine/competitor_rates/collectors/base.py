@@ -16,6 +16,7 @@ import hashlib
 import inspect
 import logging
 from pathlib import Path
+import re
 import time
 from typing import Callable, ClassVar, Optional, Sequence
 from urllib.request import Request, urlopen
@@ -321,13 +322,17 @@ class BankPricingCollector(abc.ABC):
         "income tax rate",
         "after tax",
         "prescribed investor rate",
-        # Banks commonly abbreviate the phrase above to "PIR" on the page
-        # itself (e.g. "PIR 28%: 4.01%"), one row per tax band -- without
-        # this, an abbreviated row matches no marker, keeps the generic
-        # "term_deposit" category, and can outrank every genuinely advertised
-        # rate for MARKET_LEADER.
-        "pir",
     )
+
+    #: Word-boundary-matched counterpart to excluded_deposit_product_markers,
+    #: for a marker too short to check as a plain substring without risking a
+    #: false positive inside an unrelated word (e.g. bare "pir" also matching
+    #: "special rate ex-PIR-es 30 September"). Banks commonly abbreviate
+    #: "prescribed investor rate" to "PIR" on the page itself (e.g. "PIR 28%:
+    #: 4.01%"), one row per tax band -- without recognising it, an abbreviated
+    #: row matches no marker, keeps the generic "term_deposit" category, and
+    #: can outrank every genuinely advertised rate for MARKET_LEADER.
+    excluded_deposit_product_word_markers: ClassVar[tuple[str, ...]] = ("pir",)
 
     def __init__(
         self,
@@ -444,7 +449,13 @@ class BankPricingCollector(abc.ABC):
         mirroring the mortgage treatment of subsidised and closed products.
         """
         lowered = record.raw_text_context.lower()
-        if any(marker in lowered for marker in self.excluded_deposit_product_markers):
+        excluded = any(
+            marker in lowered for marker in self.excluded_deposit_product_markers
+        ) or any(
+            re.search(rf"\b{re.escape(marker)}\b", lowered)
+            for marker in self.excluded_deposit_product_word_markers
+        )
+        if excluded:
             return record.model_copy(update={"rate_category": "non_comparable"})
         return record
 

@@ -124,6 +124,23 @@ def test_pir_abbreviated_effective_rate_rows_are_excluded_from_comparison(make_r
     assert enriched.rate_category == "non_comparable"
 
 
+def test_pir_marker_does_not_match_inside_an_unrelated_word(make_record):
+    """A legitimate row mentioning e.g. "expires" must not be excluded just
+    because "pir" is a substring of that word -- the abbreviation must be
+    matched as a standalone token, not a plain substring."""
+    record = make_record(
+        bank="ANZ",
+        product_type="term_deposit",
+        rate_category="term_deposit",
+        rate_pct=4.50,
+        raw_text_context="1 year special rate expires 30 September 4.50%",
+    )
+
+    enriched = ANZCollector().enrich_term_deposit_record(record)
+
+    assert enriched.rate_category == "term_deposit"
+
+
 def test_excluded_deposit_products_are_retained_for_audit():
     records = collect(ANZCollector, "anz_term_deposits.html").records
     excluded = [r for r in records if r.rate_category == "non_comparable"]

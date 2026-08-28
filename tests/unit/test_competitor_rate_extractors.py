@@ -128,6 +128,36 @@ def test_parse_term_deposit_fixture_extracts_terms_tiers_and_frequency_variants(
     assert records[3].rate_category == "pie_term_deposit"
 
 
+def test_parse_html_rates_does_not_infer_monthly_frequency_from_a_six_month_term():
+    """The term label itself contains "months" (e.g. "6 months"), which must
+    not be read as an explicit "paid monthly" statement -- a comparable
+    "1 year" row with the same missing frequency information correctly
+    falls back to "unknown", so the same absence of information must be
+    reported consistently regardless of the term. interest_payment_frequency
+    also participates in every observation identity, so this isn't just
+    cosmetic: a page later adding a genuine explicit frequency label would
+    change the key and read as a withdrawal-plus-new-product rather than an
+    ordinary update."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Rate</th></tr>
+      <tr><td>6 months</td><td>3.55% p.a.</td></tr>
+      <tr><td>1 year</td><td>3.90% p.a.</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="BNZ",
+        product_type="term_deposit",
+        source_url="https://example.test/td",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert {r.term_label_raw for r in records} == {"6 months", "1 year"}
+    assert all(r.interest_payment_frequency == "unknown" for r in records)
+
+
 def test_parse_html_rates_skips_rows_without_rates_or_terms():
     html = """
     <html><head><title>Noisy rates</title></head><body><table>

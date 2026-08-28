@@ -375,13 +375,25 @@ def _reliably_collected_banks(
     plausible but wrongly-identified ones would otherwise satisfy the
     baseline count while matching none of the actual known keys, still
     reading every one of them as withdrawn.
+
+    ``non_comparable`` identities are excluded from both sides of the ratio:
+    they are audit-only (never a market statistic, see
+    :mod:`~.validation`'s disambiguation), and a bank can accumulate more of
+    them than genuinely comparable rows. Counting them here would let a page
+    that stops publishing (or a parser that stops extracting) just the
+    audit-only rows drag a bank below the coverage threshold even though
+    every comparable term-deposit rate collected cleanly -- and because that
+    then excludes the bank from withdrawal detection entirely, those stale
+    identities never get pruned either, so every later run stays low-coverage
+    too.
     """
+    comparable_baseline = [record for record in baseline if record.rate_category != "non_comparable"]
     baseline_keys: dict[str, set[str]] = {}
-    for record in baseline:
+    for record in comparable_baseline:
         baseline_keys.setdefault(record.bank, set()).add(record.observation_key())
 
     matched_keys: dict[str, set[str]] = {}
-    for predecessor in resolve_pairing(baseline, accepted).values():
+    for predecessor in resolve_pairing(comparable_baseline, accepted).values():
         matched_keys.setdefault(predecessor.bank, set()).add(predecessor.observation_key())
 
     reliable: list[str] = []

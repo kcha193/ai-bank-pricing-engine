@@ -276,7 +276,7 @@ def parse_html_rates(
                 else (None, None)
             )
             interest_frequency = (
-                normalise_frequency(raw_text_context)
+                normalise_frequency(_strip_term_label(raw_text_context, term.raw_label))
                 if product == ProductType.TERM_DEPOSIT
                 else "unknown"
             )
@@ -361,6 +361,24 @@ def extract_all_sources(
 
 def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace("\xa0", " ")).strip()
+
+
+def _strip_term_label(text: str, term_label: str) -> str:
+    """Remove the row's own term-label text before frequency normalisation.
+
+    ``raw_text_context`` includes every cell in the row, including the term
+    label itself (e.g. "6 months"). :func:`~.normalise.normalise_frequency`
+    checks for the word "month" anywhere in its input, so an unstripped term
+    label alone would misclassify a row that never actually published a
+    payment frequency as "monthly" -- while a "1 year"/"2 years" row (matching
+    none of its keywords by coincidence) correctly falls back to "unknown",
+    the same absence of information reported inconsistently depending on the
+    term. ``interest_payment_frequency`` also participates in every
+    observation identity, so this inconsistency isn't just cosmetic: a page
+    later adding a genuine "at maturity" label would change the key and read
+    as a withdrawal-plus-new-product rather than an ordinary update.
+    """
+    return re.sub(re.escape(term_label), "", text, flags=re.IGNORECASE)
 
 
 def _is_header_row(row: list[str]) -> bool:

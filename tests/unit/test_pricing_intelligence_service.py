@@ -325,6 +325,37 @@ def test_bogus_rows_matching_the_baseline_count_are_not_a_reliable_collection(ma
     assert anz_withdrawals == []
 
 
+def test_non_comparable_rows_do_not_count_against_coverage(make_record):
+    """A bank whose non_comparable (audit-only) rows fail to (re-)extract
+    must not be read as low-coverage from that alone: coverage is measured
+    over comparable rows only, or a bank whose non_comparable rows outnumber
+    its comparable ones would be permanently excluded from withdrawal
+    detection even though every comparable rate collected cleanly -- and
+    because that exclusion is permanent, those stale non_comparable rows
+    would never get pruned either."""
+    comparable = make_record(bank="ANZ", term_months=12, product_name="Fixed 12m")
+    non_comparable = [
+        make_record(bank="ANZ", rate_category="non_comparable", product_name=f"PIE Fund {i}")
+        for i in range(5)
+    ]
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", [comparable] + non_comparable)],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    # This run: only the comparable row is re-collected -- a stand-in for a
+    # parser fault (or a page change) that stops extracting just the
+    # audit-only rows while every genuine advertised rate collects cleanly.
+    service._collectors = [_StubCollector("ANZ", [comparable])]
+    outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    assert "ANZ" not in outcome.low_coverage_banks
+
+
 def test_a_validation_rejected_record_is_not_reported_as_a_withdrawal(fixture_fetcher):
     """A single implausible rate must not read as the bank withdrawing that line."""
 
