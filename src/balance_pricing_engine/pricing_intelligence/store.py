@@ -727,6 +727,15 @@ class ObservationStore:
         findable under *either* product instead of losing one of them --
         which the stored value alone is still enough to resolve for the
         overwhelmingly common case of a normal, single-product run.
+
+        Mirrors all three signals :meth:`_migrate_collection_runs_product_type`
+        backfills from, not just two of them: a mixed *bootstrap* run can have
+        zero ``rate_changes`` for *either* product, and once both products'
+        rows have since been reconfirmed unchanged, neither still shows this
+        run via ``last_seen_run_id`` either -- ``observations.first_observed_at``
+        (frozen at insertion, unlike ``last_seen_run_id``) is then the only
+        surviving trace for the product the migration's single-column
+        backfill didn't happen to pick.
         """
         if product_type is None:
             row = self._connection.execute(
@@ -740,8 +749,10 @@ class ObservationStore:
                 "           WHERE o.last_seen_run_id = cr.run_id AND o.product_type = ?) "
                 "OR EXISTS (SELECT 1 FROM rate_changes rc "
                 "           WHERE rc.run_id = cr.run_id AND rc.product_type = ?) "
+                "OR EXISTS (SELECT 1 FROM observations o2 "
+                "           WHERE o2.first_observed_at = cr.started_at AND o2.product_type = ?) "
                 "ORDER BY cr.started_at DESC, cr.rowid DESC LIMIT 1",
-                (value, value, value),
+                (value, value, value, value),
             ).fetchone()
         return row["run_id"] if row else None
 
@@ -1037,7 +1048,10 @@ class ObservationStore:
             # same reason: a legacy run that mixed both products under one
             # run_id (before record_observations() rejected that) must stay
             # findable under either product, not just whichever one the
-            # migration's single-column backfill happened to pick.
+            # migration's single-column backfill happened to pick -- all
+            # three signals _migrate_collection_runs_product_type() backfills
+            # from, including a mixed bootstrap run's only surviving trace,
+            # first_observed_at.
             value = _product_value(product_type)
             previous = self._connection.execute(
                 "SELECT cr.started_at FROM collection_runs cr WHERE cr.started_at < ? "
@@ -1045,9 +1059,11 @@ class ObservationStore:
                 "     OR EXISTS (SELECT 1 FROM observations o "
                 "                WHERE o.last_seen_run_id = cr.run_id AND o.product_type = ?) "
                 "     OR EXISTS (SELECT 1 FROM rate_changes rc "
-                "                WHERE rc.run_id = cr.run_id AND rc.product_type = ?)) "
+                "                WHERE rc.run_id = cr.run_id AND rc.product_type = ?) "
+                "     OR EXISTS (SELECT 1 FROM observations o2 "
+                "                WHERE o2.first_observed_at = cr.started_at AND o2.product_type = ?)) "
                 "ORDER BY cr.started_at DESC, cr.rowid DESC LIMIT 1",
-                (_iso(started_at), value, value, value),
+                (_iso(started_at), value, value, value, value),
             ).fetchone()
         return _parse_iso(previous["started_at"]) if previous is not None else None
 

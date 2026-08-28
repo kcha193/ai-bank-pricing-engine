@@ -476,6 +476,38 @@ def test_a_legacy_run_that_mixed_both_products_stays_findable_under_either(store
     assert store.latest_run_id(product_type=ProductType.TERM_DEPOSIT) == shared_run_id
 
 
+def test_a_mixed_bootstrap_run_is_findable_under_either_product_after_reconfirmation(
+    store, make_record
+):
+    """The mixed-run and bootstrap-run recovery mechanisms combined: a
+    legacy run that mixed both products *and* was a bootstrap (zero
+    rate_changes for either product, since a first-ever collection detects
+    nothing) leaves neither product's observations pointing back to it via
+    last_seen_run_id once both are later reconfirmed unchanged. Only
+    first_observed_at still does -- the scoped queries must check it too,
+    not just rely on it having been enough to label the stored column
+    during migration."""
+    shared_run_id = "legacy-mixed-bootstrap-run"
+    home_loan_record = make_record(product_type=ProductType.HOME_LOAN)
+    deposit_record = make_record(product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")
+    store.record_observations([home_loan_record], run_id=shared_run_id, observed_at=DAY_ONE)
+    # Overwrites collection_runs' stored product_type to term_deposit --
+    # the home-loan side now has nothing but first_observed_at pointing
+    # back to this run.
+    store.record_observations([deposit_record], run_id=shared_run_id, observed_at=DAY_ONE)
+    # No record_changes() call for shared_run_id at all: a genuine bootstrap
+    # detects nothing for either product.
+
+    # Separate, single-product reconfirmations (mixing them would itself hit
+    # the same guard record_observations() now enforces) advance
+    # last_seen_run_id for both products away from the bootstrap run.
+    store.record_observations([home_loan_record], observed_at=DAY_TWO)
+    store.record_observations([deposit_record], observed_at=DAY_TWO)
+
+    assert store.get_previous_run_started_at(product_type=ProductType.HOME_LOAN) == DAY_ONE
+    assert store.get_previous_run_started_at(product_type=ProductType.TERM_DEPOSIT) == DAY_ONE
+
+
 def test_get_previous_run_started_at_finds_a_legacy_run_that_mixed_both_products(
     store, make_record
 ):
