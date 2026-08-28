@@ -255,6 +255,47 @@ def test_a_market_deposit_strategy_without_a_deposit_snapshot_fails_loudly(engin
         )
 
 
+def test_manual_strategy_ignores_an_irrelevant_mismatched_snapshot(engine_config):
+    """MANUAL never consults its snapshot (resolve_competitor_rate() short-
+    circuits before touching it), so an irrelevant -- even wrong-product --
+    snapshot passed alongside it must not raise: the documented "MANUAL
+    returns the config unchanged" behaviour must hold regardless of what
+    snapshot happens to be in scope."""
+    from balance_pricing_engine.pricing_intelligence.strategy import (
+        CompetitorRateStrategy,
+        apply_market_strategy_to_config,
+    )
+
+    result = apply_market_strategy_to_config(
+        engine_config,
+        strategy=CompetitorRateStrategy.MANUAL,
+        snapshot=_deposit_snapshot(),
+    )
+
+    assert result is engine_config
+
+
+def test_manual_loan_strategy_does_not_block_a_valid_deposit_overlay(engine_config):
+    """A wrong-typed loan-side snapshot passed alongside MANUAL must not
+    block an otherwise-valid deposit-side market overlay -- validation is
+    conditioned on the side actually using a market-derived strategy."""
+    from balance_pricing_engine.pricing_intelligence.strategy import (
+        CompetitorRateStrategy,
+        apply_market_strategy_to_config,
+    )
+
+    result = apply_market_strategy_to_config(
+        engine_config,
+        strategy=CompetitorRateStrategy.MANUAL,
+        snapshot=_deposit_snapshot(),
+        deposit_snapshot=_deposit_snapshot(),
+        deposit_strategy=CompetitorRateStrategy.MARKET_LEADER,
+    )
+
+    assert result.market.competitor_deposit_rate == 0.0405, "BNZ leads at 4.05%"
+    assert result.market.competitor_loan_rate == engine_config.market.competitor_loan_rate
+
+
 def test_a_home_loan_snapshot_cannot_be_used_as_the_deposit_overlay(engine_config):
     """A home-loan snapshot passed as deposit_snapshot must be rejected, not
     silently written into competitor_deposit_rate -- ranking direction comes

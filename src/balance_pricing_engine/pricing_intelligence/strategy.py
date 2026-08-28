@@ -218,8 +218,22 @@ def apply_market_strategy_to_config(
     mirrors :func:`competitor_rates.apply.apply_competitor_rates_to_config`.
     Set it false to keep spreads anchored to an independent benchmark.
     """
-    _require_snapshot_product(snapshot, ProductType.HOME_LOAN, "loan-side")
-    _require_snapshot_product(deposit_snapshot, ProductType.TERM_DEPOSIT, "deposit-side")
+    resolved_strategy = CompetitorRateStrategy(strategy)
+    resolved_deposit_strategy = (
+        CompetitorRateStrategy(deposit_strategy)
+        if deposit_strategy is not None
+        else resolved_strategy
+    )
+    # Only a side that will actually be resolved from its snapshot needs that
+    # snapshot validated: MANUAL never consults it (resolve_competitor_rate()
+    # short-circuits before touching snapshot), so an irrelevant or even
+    # wrong-typed snapshot passed alongside MANUAL must not block the
+    # documented "MANUAL returns the config unchanged" behaviour -- or, on the
+    # deposit side, an otherwise-valid market overlay on the other side.
+    if resolved_strategy is not CompetitorRateStrategy.MANUAL:
+        _require_snapshot_product(snapshot, ProductType.HOME_LOAN, "loan-side")
+    if resolved_deposit_strategy is not CompetitorRateStrategy.MANUAL:
+        _require_snapshot_product(deposit_snapshot, ProductType.TERM_DEPOSIT, "deposit-side")
 
     resolved = resolve_competitor_rate(
         strategy=strategy,
