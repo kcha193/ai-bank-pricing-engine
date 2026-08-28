@@ -30,6 +30,22 @@ def test_strip_advertised_rate_token_removes_only_one_matching_occurrence():
     assert stripped.count("%") == 1
 
 
+def test_strip_advertised_rate_token_removes_the_last_matching_occurrence():
+    """extractors._extract_rate()/_extract_plausible_rate() pick
+    advertised_rate_pct as the *last* plausible percentage in the row
+    (plausible[-1]), not the first -- stripping the first value-matching
+    occurrence instead would remove the structural "allocation" qualifier
+    here and leave the genuine rate token ("return") in the text, so a
+    later rate change would still leave the structural text unstable."""
+    from balance_pricing_engine.pricing_intelligence.validation import (
+        _strip_advertised_rate_token,
+    )
+
+    stripped = _strip_advertised_rate_token("Growth Fund | 4% allocation | 4% return", 4.0)
+
+    assert stripped == "Growth Fund | 4% allocation |  return"
+
+
 @pytest.mark.parametrize("rate", [0.1, 19.99, -1.0, 0.0])
 def test_an_implausible_rate_is_rejected(make_record, rate):
     outcome = validate_observations([make_record(rate_pct=rate)])

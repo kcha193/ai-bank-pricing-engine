@@ -291,9 +291,9 @@ class ObservationStore:
         ``home_loan``, but that default is only a starting point, not the
         answer: the ``--product`` CLI flag has collected term deposits since
         before this column existed, so a database can already hold genuine
-        deposit runs that must not be mislabelled. Both ``UPDATE``s below
-        correct that from data the pre-existing schema already recorded --
-        neither is itself new:
+        deposit runs that must not be mislabelled. All three ``UPDATE``s
+        below correct that from data the pre-existing schema already
+        recorded -- none of it is itself new:
 
         * ``rate_changes.run_id``/``product_type`` are permanent (one row
           per detected change, never overwritten), so they can recover a
@@ -303,14 +303,21 @@ class ObservationStore:
           later re-observation (even an unchanged one), so it can only
           answer for whichever run most recently touched each still-current
           row -- typically each key's latest run, not every historical one.
-          Applied after ``rate_changes`` so it fills in a run with zero
-          detected changes (e.g. a bootstrapping first-ever collection,
-          which suppresses its own ``NEW_PRODUCT`` events) that the
-          ``rate_changes`` pass alone could not reach.
+        * ``observations.first_observed_at``, unlike ``last_seen_run_id``, is
+          frozen at insertion and never advanced forward -- it still equals
+          the introducing run's own ``started_at`` even once ``last_seen_run_id``
+          has moved past that run via later reconfirmations. This is what
+          recovers a bootstrapping first-ever collection (which, via
+          detect_changes()'s own bootstrap suppression, produced zero
+          ``NEW_PRODUCT`` events for the ``rate_changes`` pass to find) once
+          its rows have since been reconfirmed by a later run: the second
+          pass can no longer find it via ``last_seen_run_id``, but the third
+          still can via ``first_observed_at``.
 
-        A truly ancient run with no trace in either table -- superseded in
-        ``observations`` and with zero recorded changes -- has no surviving
-        way to recover its product, and keeps the ``home_loan`` default.
+        A truly ancient run with no trace in any of the three -- superseded
+        in ``observations`` on both timestamps and with zero recorded
+        changes -- has no surviving way to recover its product, and keeps
+        the ``home_loan`` default.
         """
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(collection_runs)")}
         if "product_type" in columns:
@@ -329,6 +336,12 @@ class ObservationStore:
             "  SELECT o.product_type FROM observations o "
             "  WHERE o.last_seen_run_id = collection_runs.run_id LIMIT 1"
             ") WHERE run_id IN (SELECT DISTINCT last_seen_run_id FROM observations)"
+        )
+        connection.execute(
+            "UPDATE collection_runs SET product_type = ("
+            "  SELECT o.product_type FROM observations o "
+            "  WHERE o.first_observed_at = collection_runs.started_at LIMIT 1"
+            ") WHERE started_at IN (SELECT DISTINCT first_observed_at FROM observations)"
         )
 
     # ----------------------------------------------------------------- writes

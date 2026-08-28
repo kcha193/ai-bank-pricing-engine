@@ -47,6 +47,24 @@ def test_normalise_frequency_maps_common_labels(label, expected):
 
 
 @pytest.mark.parametrize(
+    "label",
+    [
+        "Monthly or at maturity",
+        "Quarterly or at maturity",
+        "Monthly or quarterly",
+    ],
+)
+def test_normalise_frequency_does_not_pick_one_option_from_a_choice(label):
+    """interest_payment_frequency is identity-bearing, so confidently
+    picking one keyword out of a genuine multi-option label (e.g. always
+    preferring "at maturity" over "monthly") would collapse two rows
+    offering different option sets onto the same identity -- a rate
+    difference between them would then read as a conflicting observation
+    and reject both."""
+    assert normalise_frequency(label) == "unknown"
+
+
+@pytest.mark.parametrize(
     ("label", "expected"),
     [
         ("minimum 20% equity required", "min_20_percent_equity"),

@@ -38,29 +38,27 @@ def _strip_advertised_rate_token(raw_text_context: str, advertised_rate_pct: flo
     "4.01%", "4.010%", or "4.0100%" -- any other percentage in the text (a
     PIR/tax-band qualifier, an unrelated fee) is left untouched.
 
-    Only the *first* value-matching occurrence is removed, mirroring
-    :func:`~.changes._normalized_special_conditions`'s identical guard for
-    the same reason: a structural qualifier that coincidentally shares the
-    advertised rate's value (e.g. "Growth Fund | 4% allocation | 4% return")
-    would otherwise also be blanked, and once the two values diverge (the
-    return moves to 4.1%, the allocation stays 4%) the qualifier would
-    survive normalisation on one side only, changing the identity for a row
-    whose only genuine change was its rate. The rate is conventionally the
-    first percentage mentioned in a deposit row, so this is a closer proxy
-    for "the rate's own token" than "every same-valued percentage" without
-    needing cell-boundary information this already-flattened text doesn't
-    carry.
+    Only the *last* value-matching occurrence is removed, mirroring
+    :func:`~.extractors._extract_rate`/:func:`~.extractors._extract_plausible_rate`,
+    which pick ``advertised_rate_pct`` itself as the *last* plausible
+    percentage in the row (``plausible[-1]``) -- not the first. A structural
+    qualifier that coincidentally shares the rate's value (e.g. "Growth Fund
+    | 4% allocation | 4% return", where "4% return" is the parsed rate) must
+    survive normalisation, or once the two values diverge (the return moves
+    to 4.1%, the allocation stays 4%) the qualifier would appear only on one
+    side, changing the identity for a row whose only genuine change was its
+    rate. Matching the extractor's own end of the row is a closer proxy for
+    "the rate's own token" than "every same-valued percentage" -- or than the
+    first occurrence, which is the *wrong* end here -- without needing
+    cell-boundary information this already-flattened text doesn't carry.
     """
-    replaced = False
-
-    def _replace(match: "re.Match[str]") -> str:
-        nonlocal replaced
-        if not replaced and abs(float(match.group(1)) - advertised_rate_pct) < 1e-6:
-            replaced = True
-            return ""
-        return match.group(0)
-
-    return _PERCENTAGE_TOKEN_PATTERN.sub(_replace, raw_text_context)
+    last_match: "re.Match[str] | None" = None
+    for match in _PERCENTAGE_TOKEN_PATTERN.finditer(raw_text_context):
+        if abs(float(match.group(1)) - advertised_rate_pct) < 1e-6:
+            last_match = match
+    if last_match is None:
+        return raw_text_context
+    return raw_text_context[: last_match.start()] + raw_text_context[last_match.end() :]
 
 
 @dataclass(frozen=True)

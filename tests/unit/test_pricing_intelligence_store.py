@@ -420,6 +420,36 @@ def test_a_pre_column_database_infers_product_from_its_existing_history(store, m
     assert deposit_run != loan_run
 
 
+def test_a_pre_column_migration_recovers_a_reconfirmed_bootstrap_run(store, make_record):
+    """A legacy deposit bootstrap run (the first-ever collection for that
+    product) records zero rate_changes -- detect_changes()'s own bootstrap
+    suppression means the rate_changes-based inference pass alone can't
+    reach it. If its rows are later reconfirmed unchanged, last_seen_run_id
+    also advances past it, so the observations-based pass can't reach it
+    either. Its first_observed_at, frozen at insertion, is the only
+    surviving trace -- the migration must still use it rather than falling
+    through to the home_loan default."""
+    bootstrap_record = make_record(product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")
+    bootstrap_write = store.record_observations([bootstrap_record], observed_at=DAY_ONE)
+    # No record_changes() call: a genuine bootstrap run detects nothing (see
+    # detect_changes()'s bootstrap suppression), so rate_changes stays empty
+    # for this run_id.
+
+    # A later, unchanged reconfirmation of the same row advances
+    # last_seen_run_id forward, away from the bootstrap run.
+    store.record_observations([bootstrap_record], observed_at=DAY_TWO)
+
+    # Simulate a database that predates the column: drop it, then reopen.
+    store._connection.execute("ALTER TABLE collection_runs DROP COLUMN product_type")
+    store._create_schema()
+
+    row = store._connection.execute(
+        "SELECT product_type FROM collection_runs WHERE run_id = ?",
+        (bootstrap_write.run_id,),
+    ).fetchone()
+    assert row["product_type"] == "term_deposit"
+
+
 def test_a_legacy_run_that_mixed_both_products_stays_findable_under_either(store, make_record):
     """Before record_observations() rejected a mixed batch, a database could
     hold a legacy run whose single collection_runs row ends up labelled with

@@ -63,18 +63,34 @@ def normalise_term(label: str) -> NormalisedTerm:
 
 
 def normalise_frequency(label: str | None) -> str:
-    """Map an advertised interest payment frequency to the canonical vocabulary."""
+    """Map an advertised interest payment frequency to the canonical vocabulary.
+
+    A row offering the depositor a choice between multiple payment options
+    (e.g. "Monthly or at maturity") is deliberately resolved to "unknown"
+    rather than confidently picking one of the mentioned keywords:
+    interest_payment_frequency is identity-bearing, so an unordered
+    if-chain that always prefers e.g. "maturity" over "month" would collapse
+    two rows offering genuinely different option sets (e.g. "Monthly or at
+    maturity" vs "Quarterly or at maturity") onto the same identity, and a
+    rate difference between them would then read as a conflicting
+    observation and reject both instead of keeping two valid comparable
+    rates. "unknown" is the same fallback already used for a row that
+    publishes no frequency at all.
+    """
     if not label:
         return "unknown"
     text = label.lower()
+    matches = set()
     if "maturity" in text:
-        return "at_maturity"
+        matches.add("at_maturity")
     if "month" in text:
-        return "monthly"
+        matches.add("monthly")
     if "quarter" in text:
-        return "quarterly"
+        matches.add("quarterly")
     if "annual" in text or "yearly" in text:
-        return "annually"
+        matches.add("annually")
+    if len(matches) == 1:
+        return matches.pop()
     return "unknown"
 
 
