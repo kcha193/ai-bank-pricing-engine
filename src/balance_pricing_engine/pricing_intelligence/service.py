@@ -819,7 +819,7 @@ class PricingIntelligenceService:
     ) -> Optional[MarketSnapshot]:
         """Return the snapshot from the run before the latest, if there is one."""
         rate_category = _resolve_rate_category(product_type, rate_category)
-        as_of = self.store.get_previous_run_started_at()
+        as_of = self.store.get_previous_run_started_at(product_type=product_type)
         if as_of is None:
             return None
         records = self.store.get_observations_as_of(as_of=as_of, product_type=product_type)

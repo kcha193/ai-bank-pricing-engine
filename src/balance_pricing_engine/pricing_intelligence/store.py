@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS collection_runs (
     run_id              TEXT PRIMARY KEY,
     started_at          TEXT NOT NULL,
     banks               TEXT NOT NULL,
+    product_type        TEXT NOT NULL DEFAULT 'home_loan',
     record_count        INTEGER NOT NULL DEFAULT 0,
     inserted_count      INTEGER NOT NULL DEFAULT 0,
     unchanged_count     INTEGER NOT NULL DEFAULT 0,
@@ -270,11 +271,30 @@ class ObservationStore:
     def _create_schema(self) -> None:
         with self._transaction() as connection:
             connection.executescript(_SCHEMA)
+            self._migrate_collection_runs_product_type(connection)
             row = connection.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
                 connection.execute(
                     "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
                 )
+
+    def _migrate_collection_runs_product_type(self, connection: sqlite3.Connection) -> None:
+        """Add ``collection_runs.product_type`` for a database created before
+        term-deposit support existed.
+
+        ``CREATE TABLE IF NOT EXISTS`` in ``_SCHEMA`` is a no-op against an
+        already-created table, so a database file from before this column
+        existed needs an explicit migration, not just an updated ``CREATE
+        TABLE`` statement. Every row in such a database is necessarily a
+        home-loan run -- the only product this store ever collected before
+        term deposits -- so backfilling the new column to that value (the
+        column default) is exactly correct, not just a safe placeholder.
+        """
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(collection_runs)")}
+        if "product_type" not in columns:
+            connection.execute(
+                "ALTER TABLE collection_runs ADD COLUMN product_type TEXT NOT NULL DEFAULT 'home_loan'"
+            )
 
     # ----------------------------------------------------------------- writes
 
@@ -290,11 +310,24 @@ class ObservationStore:
         Returns counts of newly-inserted advertised states versus unchanged
         re-observations, so a caller can tell a quiet day from a repricing day
         without querying further.
+
+        ``collection_runs.product_type`` is taken from the records themselves
+        (every record passed in one call belongs to the same collection --
+        :meth:`~.service.PricingIntelligenceService.collect` always calls this
+        with one product's ``accepted`` list), defaulting to ``HOME_LOAN`` for
+        an empty ``records`` so a run is still recorded consistently with
+        this store's pre-term-deposit history. This is what lets
+        :meth:`latest_run_id`/:meth:`get_previous_run_started_at` resolve
+        "the latest run" *for a given product* now that home-loan and
+        term-deposit collections share one ``collection_runs`` table.
         """
         records = list(records)
         observed_at = observed_at or datetime.now(timezone.utc)
         run_id = run_id or str(uuid.uuid4())
         timestamp = _iso(observed_at)
+        product_type = (
+            ProductType(records[0].product_type) if records else ProductType.HOME_LOAN
+        )
 
         inserted = 0
         unchanged = 0
@@ -303,9 +336,16 @@ class ObservationStore:
         with self._transaction() as connection:
             connection.execute(
                 "INSERT OR REPLACE INTO collection_runs "
-                "(run_id, started_at, banks, record_count, inserted_count, unchanged_count, "
-                "report_json) VALUES (?, ?, ?, ?, 0, 0, ?)",
-                (run_id, timestamp, json.dumps(banks), len(records), report_json),
+                "(run_id, started_at, banks, product_type, record_count, inserted_count, "
+                "unchanged_count, report_json) VALUES (?, ?, ?, ?, ?, 0, 0, ?)",
+                (
+                    run_id,
+                    timestamp,
+                    json.dumps(banks),
+                    product_type.value,
+                    len(records),
+                    report_json,
+                ),
             )
             for record in records:
                 if self._upsert_observation(connection, record, timestamp, run_id):
@@ -611,10 +651,27 @@ class ObservationStore:
 
     # ----------------------------------------------------------------- reads
 
-    def latest_run_id(self) -> Optional[str]:
-        row = self._connection.execute(
-            "SELECT run_id FROM collection_runs ORDER BY started_at DESC, rowid DESC LIMIT 1"
-        ).fetchone()
+    def latest_run_id(
+        self, product_type: Optional[ProductType | str] = None
+    ) -> Optional[str]:
+        """Resolve the most recent run, optionally scoped to one product.
+
+        Home-loan and term-deposit collections share this one
+        ``collection_runs`` table, so an unscoped call can return the other
+        product's run -- ``product_type`` is what lets a caller ask for "the
+        latest run *for this market*" instead of "the latest run, whichever
+        market it happened to be".
+        """
+        if product_type is None:
+            row = self._connection.execute(
+                "SELECT run_id FROM collection_runs ORDER BY started_at DESC, rowid DESC LIMIT 1"
+            ).fetchone()
+        else:
+            row = self._connection.execute(
+                "SELECT run_id FROM collection_runs WHERE product_type = ? "
+                "ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                (_product_value(product_type),),
+            ).fetchone()
         return row["run_id"] if row else None
 
     def get_run_started_at(self, run_id: str) -> Optional[datetime]:
@@ -639,7 +696,7 @@ class ObservationStore:
         Scoped to the latest run rather than to "most recent row per key", so a
         product a bank has withdrawn stops appearing.
         """
-        run_id = run_id or self.latest_run_id()
+        run_id = run_id or self.latest_run_id(product_type=product_type)
         if run_id is None:
             return []
         clauses = ["last_seen_run_id = ?", "product_type = ?"]
@@ -871,24 +928,45 @@ class ObservationStore:
         ).fetchall()
         return [_row_to_history_record(row) for row in rows]
 
-    def get_previous_run_started_at(self, before_run_id: Optional[str] = None) -> Optional[datetime]:
-        """Resolve the start time of the run before ``before_run_id`` (default: the latest run).
+    def get_previous_run_started_at(
+        self,
+        before_run_id: Optional[str] = None,
+        product_type: Optional[ProductType | str] = None,
+    ) -> Optional[datetime]:
+        """Resolve the start time of the run before ``before_run_id``
+        (default: the latest run), optionally scoped to one product.
+
+        Home-loan and term-deposit collections share this one
+        ``collection_runs`` table, so an unscoped call can resolve either
+        endpoint -- the default "latest run" or the "previous" run found from
+        it -- to the other product's run. ``product_type`` is what lets a
+        caller ask for the run before the latest *for this market*, e.g. so a
+        deposit run sandwiched between two mortgage runs is not skipped over
+        (or, without scoping ``before_run_id`` itself, mistaken for the
+        mortgage market's own previous state).
 
         Exposed separately from :meth:`get_previous_run_rates` so a caller can
         also pass this timestamp on as the snapshot's ``as_of``, rather than
         letting it be inferred from the reconstructed records themselves.
         """
-        before_run_id = before_run_id or self.latest_run_id()
+        before_run_id = before_run_id or self.latest_run_id(product_type=product_type)
         if before_run_id is None:
             return None
         started_at = self.get_run_started_at(before_run_id)
         if started_at is None:
             return None
-        previous = self._connection.execute(
-            "SELECT started_at FROM collection_runs WHERE started_at < ? "
-            "ORDER BY started_at DESC, rowid DESC LIMIT 1",
-            (_iso(started_at),),
-        ).fetchone()
+        if product_type is None:
+            previous = self._connection.execute(
+                "SELECT started_at FROM collection_runs WHERE started_at < ? "
+                "ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                (_iso(started_at),),
+            ).fetchone()
+        else:
+            previous = self._connection.execute(
+                "SELECT started_at FROM collection_runs WHERE started_at < ? "
+                "AND product_type = ? ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                (_iso(started_at), _product_value(product_type)),
+            ).fetchone()
         return _parse_iso(previous["started_at"]) if previous is not None else None
 
     def get_previous_run_rates(
@@ -897,7 +975,7 @@ class ObservationStore:
         before_run_id: Optional[str] = None,
     ) -> list[CompetitorRateRecord]:
         """Return the advertised rates from the run before ``before_run_id``."""
-        as_of = self.get_previous_run_started_at(before_run_id)
+        as_of = self.get_previous_run_started_at(before_run_id, product_type=product_type)
         if as_of is None:
             return []
         return self.get_observations_as_of(as_of=as_of, product_type=product_type)

@@ -285,6 +285,82 @@ def test_previous_run_is_empty_for_an_unknown_run_id(store, make_record):
     assert store.get_previous_run_rates(before_run_id="does-not-exist") == []
 
 
+def test_latest_run_id_is_scoped_per_product(store, make_record):
+    """Home-loan and term-deposit collections share one collection_runs
+    table, so an unscoped latest_run_id() can return either product's run --
+    it must resolve "the latest run for this market" instead."""
+    store.record_observations(
+        [make_record(product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")],
+        observed_at=DAY_ONE,
+    )
+    store.record_observations([make_record(product_type=ProductType.HOME_LOAN)], observed_at=DAY_TWO)
+
+    deposit_run = store.latest_run_id(product_type=ProductType.TERM_DEPOSIT)
+    loan_run = store.latest_run_id(product_type=ProductType.HOME_LOAN)
+
+    assert deposit_run != loan_run
+    assert store.get_run_started_at(deposit_run) == DAY_ONE
+    assert store.get_run_started_at(loan_run) == DAY_TWO
+
+
+def test_previous_market_snapshot_is_not_confused_by_the_other_products_run(store, make_record):
+    """The exact scenario a shared collection_runs table introduces: deposit
+    run D1 followed by a mortgage run M1 must not make
+    get_previous_run_started_at(product_type=TERM_DEPOSIT) resolve to D1's
+    own (current) state -- D1 is the only deposit run so far, so there is no
+    previous deposit snapshot yet."""
+    store.record_observations(
+        [make_record(product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")],
+        observed_at=DAY_ONE,
+    )
+    store.record_observations([make_record(product_type=ProductType.HOME_LOAN)], observed_at=DAY_TWO)
+
+    assert store.get_previous_run_started_at(product_type=ProductType.TERM_DEPOSIT) is None
+
+    # A second, genuinely later deposit run must now correctly resolve D1 as
+    # its predecessor, not the intervening mortgage run.
+    store.record_observations(
+        [
+            make_record(
+                product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit", rate_pct=4.20
+            )
+        ],
+        observed_at=DAY_THREE,
+    )
+
+    assert store.get_previous_run_started_at(product_type=ProductType.TERM_DEPOSIT) == DAY_ONE
+
+
+def test_a_pre_term_deposit_database_migrates_the_product_type_column(tmp_path):
+    """A database file created before term-deposit support existed lacks
+    collection_runs.product_type -- CREATE TABLE IF NOT EXISTS is a no-op
+    against an already-created table, so opening it must not raise, and
+    every pre-existing row (necessarily home-loan, the only product this
+    store used to collect) must backfill to that value."""
+    import sqlite3
+
+    db_path = tmp_path / "legacy.db"
+    connection = sqlite3.connect(str(db_path))
+    connection.execute(
+        "CREATE TABLE collection_runs ("
+        "run_id TEXT PRIMARY KEY, started_at TEXT NOT NULL, banks TEXT NOT NULL, "
+        "record_count INTEGER NOT NULL DEFAULT 0, inserted_count INTEGER NOT NULL DEFAULT 0, "
+        "unchanged_count INTEGER NOT NULL DEFAULT 0, report_json TEXT)"
+    )
+    connection.execute(
+        "INSERT INTO collection_runs (run_id, started_at, banks) VALUES (?, ?, ?)",
+        ("legacy-run", DAY_ONE.isoformat(), "[]"),
+    )
+    connection.commit()
+    connection.close()
+
+    with ObservationStore(str(db_path)) as store:
+        row = store._connection.execute(
+            "SELECT product_type FROM collection_runs WHERE run_id = 'legacy-run'"
+        ).fetchone()
+        assert row["product_type"] == "home_loan"
+
+
 def test_previous_run_rates_survive_unchanged_intermediate_collections(store, make_record):
     """An unchanged re-observation must not erase the previous run's membership."""
     store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)

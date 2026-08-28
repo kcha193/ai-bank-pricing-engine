@@ -1347,6 +1347,25 @@ def test_previous_market_snapshot_falls_back_to_the_confirmed_rate(service, make
     assert snapshot.term(12).rate_for("ANZ") == 4.79
 
 
+def test_previous_market_snapshot_is_scoped_to_its_own_product(service, make_record):
+    """Home-loan and term-deposit collections now share one collection_runs
+    table (the scheduled workflow can run both). A deposit run D1 followed
+    by an unrelated mortgage run M1 must not make
+    get_previous_market_snapshot(product_type=TERM_DEPOSIT) reconstruct
+    "as of D1" -- D1 is the only deposit run so far, so there is no previous
+    deposit snapshot yet, and the mortgage run in between must not be
+    mistaken for one."""
+    service.store.record_observations(
+        [make_record(product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")],
+        observed_at=DAY_ONE,
+    )
+    service.store.record_observations(
+        [make_record(product_type=ProductType.HOME_LOAN)], observed_at=DAY_TWO
+    )
+
+    assert service.get_previous_market_snapshot(product_type=ProductType.TERM_DEPOSIT) is None
+
+
 def test_history_is_queryable_after_a_reprice(fixture_fetcher):
     with build_service(fixture_fetcher()) as service:
         service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
