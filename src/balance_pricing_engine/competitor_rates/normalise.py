@@ -66,16 +66,21 @@ def normalise_frequency(label: str | None) -> str:
     """Map an advertised interest payment frequency to the canonical vocabulary.
 
     A row offering the depositor a choice between multiple payment options
-    (e.g. "Monthly or at maturity") is deliberately resolved to "unknown"
-    rather than confidently picking one of the mentioned keywords:
-    interest_payment_frequency is identity-bearing, so an unordered
-    if-chain that always prefers e.g. "maturity" over "month" would collapse
-    two rows offering genuinely different option sets (e.g. "Monthly or at
-    maturity" vs "Quarterly or at maturity") onto the same identity, and a
-    rate difference between them would then read as a conflicting
-    observation and reject both instead of keeping two valid comparable
-    rates. "unknown" is the same fallback already used for a row that
-    publishes no frequency at all.
+    (e.g. "Monthly or at maturity") resolves to a stable combination of the
+    matched keywords (sorted and joined, e.g. "at_maturity+monthly"), not to
+    one of them picked confidently by an unordered if-chain, nor collapsed
+    to plain "unknown": interest_payment_frequency is identity-bearing (see
+    :meth:`~.models.CompetitorRateRecord.eligibility_group_key`), and a
+    deposit row's ``product_name`` is often a fixed generic string ("Term
+    deposit") with no other field to distinguish it -- either shortcut would
+    collapse two rows offering genuinely different option sets (e.g.
+    "Monthly or at maturity" vs "Quarterly or at maturity") onto the same
+    identity, and a rate difference between them would then read as a
+    conflicting observation and reject both instead of keeping two valid
+    comparable rates. Sorting before joining keeps the value stable
+    regardless of the order the source page happens to list the options in.
+    Plain "unknown" is kept only for a row that publishes no frequency at
+    all -- the same fallback as before.
     """
     if not label:
         return "unknown"
@@ -89,9 +94,9 @@ def normalise_frequency(label: str | None) -> str:
         matches.add("quarterly")
     if "annual" in text or "yearly" in text:
         matches.add("annually")
-    if len(matches) == 1:
-        return matches.pop()
-    return "unknown"
+    if not matches:
+        return "unknown"
+    return "+".join(sorted(matches))
 
 
 def normalise_lvr_condition(label: str | None) -> str:

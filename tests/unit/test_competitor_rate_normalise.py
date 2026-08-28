@@ -47,21 +47,25 @@ def test_normalise_frequency_maps_common_labels(label, expected):
 
 
 @pytest.mark.parametrize(
-    "label",
+    ("label", "expected"),
     [
-        "Monthly or at maturity",
-        "Quarterly or at maturity",
-        "Monthly or quarterly",
+        ("Monthly or at maturity", "at_maturity+monthly"),
+        ("Quarterly or at maturity", "at_maturity+quarterly"),
+        ("Monthly or quarterly", "monthly+quarterly"),
+        ("At maturity or monthly", "at_maturity+monthly"),
     ],
 )
-def test_normalise_frequency_does_not_pick_one_option_from_a_choice(label):
-    """interest_payment_frequency is identity-bearing, so confidently
-    picking one keyword out of a genuine multi-option label (e.g. always
-    preferring "at maturity" over "monthly") would collapse two rows
-    offering different option sets onto the same identity -- a rate
-    difference between them would then read as a conflicting observation
-    and reject both."""
-    assert normalise_frequency(label) == "unknown"
+def test_normalise_frequency_combines_a_genuine_multi_option_choice(label, expected):
+    """interest_payment_frequency is identity-bearing, and a deposit row's
+    product_name is often a fixed generic string with no other field to
+    distinguish it -- confidently picking one keyword out of a genuine
+    multi-option label (e.g. always preferring "at maturity" over "monthly"),
+    or collapsing every combination to plain "unknown", would both collapse
+    two rows offering different option sets onto the same identity, and a
+    rate difference between them would then read as a conflicting
+    observation and reject both. The combined value is sorted so it does not
+    depend on which order the source page lists the options in."""
+    assert normalise_frequency(label) == expected
 
 
 @pytest.mark.parametrize(

@@ -158,6 +158,46 @@ def test_parse_html_rates_does_not_infer_monthly_frequency_from_a_six_month_term
     assert all(r.interest_payment_frequency == "unknown" for r in records)
 
 
+def test_parse_html_rates_distinguishes_two_multi_option_frequency_rows():
+    """Same bank/term/category rows offering different payment-frequency
+    choices (e.g. "Monthly or at maturity" vs "Quarterly or at maturity")
+    must not collapse onto the same identity: a term deposit's product_name
+    is a fixed generic string ("Term deposit"), so interest_payment_frequency
+    can be the only field distinguishing them. Both are genuinely comparable
+    advertised rates, so both must validate cleanly rather than being
+    rejected as a conflicting observation."""
+    from balance_pricing_engine.pricing_intelligence.validation import (
+        validate_observations,
+    )
+
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Frequency</th><th>Rate</th></tr>
+      <tr><td>1 year</td><td>Monthly or at maturity</td><td>4.50% p.a.</td></tr>
+      <tr><td>1 year</td><td>Quarterly or at maturity</td><td>4.60% p.a.</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="BNZ",
+        product_type="term_deposit",
+        source_url="https://example.test/td",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 2
+    assert {r.interest_payment_frequency for r in records} == {
+        "at_maturity+monthly",
+        "at_maturity+quarterly",
+    }
+    assert records[0].observation_key() != records[1].observation_key()
+
+    outcome = validate_observations(records)
+    assert outcome.rejected == []
+    assert len(outcome.accepted) == 2
+
+
 def test_parse_html_rates_preserves_frequency_published_in_the_same_cell_as_the_term():
     """_find_term_label() returns the whole cell it matched in, not just the
     term substring, when a bank combines term and frequency in one cell

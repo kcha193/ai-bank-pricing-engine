@@ -80,7 +80,16 @@ class CompetitorRateRecord(BaseModel):
     term_months_normalised: Optional[int] = Field(default=None, ge=0)
     term_days_raw: Optional[int] = Field(default=None, ge=0)
     advertised_rate_pct: float
-    interest_payment_frequency: InterestPaymentFrequency = "unknown"
+    #: Not typed as InterestPaymentFrequency: normalise_frequency() returns a
+    #: stable combined value (e.g. "at_maturity+monthly") for a row
+    #: advertising a genuine multiple-option choice, since
+    #: interest_payment_frequency is identity-bearing and collapsing every
+    #: such row to one of the five canonical values would make two rows
+    #: offering different option sets collide on observation_key(). Config
+    #: policy (e.g. TermDepositStrategyConfig.interest_payment_frequency_preference)
+    #: stays the closed InterestPaymentFrequency vocabulary -- only the
+    #: as-observed value on a record needs to accommodate a combination.
+    interest_payment_frequency: str = "unknown"
     min_balance_or_deposit: Optional[float] = Field(default=None, ge=0)
     max_balance_or_deposit: Optional[float] = Field(default=None, ge=0)
     lvr_condition: Optional[str] = None
