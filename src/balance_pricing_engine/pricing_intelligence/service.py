@@ -329,6 +329,30 @@ def _exclude_stale(
     return [record for record in records if record.captured_at_utc >= cutoff]
 
 
+def _resolve_rate_category(
+    product_type: ProductType | str, rate_category: Optional[str]
+) -> str:
+    """Comparable category for the selected market when the caller didn't
+    supply one explicitly.
+
+    Mirrors ``pricing_intelligence.cli``'s own ``_default_category()``:
+    mortgages compare on advertised specials (where front-book competition
+    happens); deposits on the plain term-deposit tier, excluding PIE
+    variants. ``None`` is the sentinel for "not supplied" -- every market-
+    view method below defaults to it rather than to a literal ``"special"``,
+    so a caller that only sets ``product_type=TERM_DEPOSIT`` still resolves
+    against the deposit market instead of a mortgage-specific default that
+    happens to match no deposit records at all. An explicitly requested
+    category (even one that equals the other product's default) is honoured
+    as-is.
+    """
+    if rate_category is not None:
+        return rate_category
+    if ProductType(product_type) is ProductType.TERM_DEPOSIT:
+        return "term_deposit"
+    return "special"
+
+
 def _reliably_collected_banks(
     report: CollectionReport,
     accepted: Sequence[CompetitorRateRecord],
@@ -712,7 +736,7 @@ class PricingIntelligenceService:
     def get_market_snapshot(
         self,
         product_type: ProductType | str = ProductType.HOME_LOAN,
-        rate_category: Optional[str] = "special",
+        rate_category: Optional[str] = None,
         as_of_run_id: Optional[str] = None,
         now: Optional[datetime] = None,
     ) -> MarketSnapshot:
@@ -739,6 +763,7 @@ class PricingIntelligenceService:
         unchanged re-observation, so it cannot answer for a run that isn't
         the latest one.
         """
+        rate_category = _resolve_rate_category(product_type, rate_category)
         as_of: Optional[datetime] = None
         if as_of_run_id is not None:
             as_of = self.store.get_run_started_at(as_of_run_id)
@@ -778,9 +803,10 @@ class PricingIntelligenceService:
     def get_previous_market_snapshot(
         self,
         product_type: ProductType | str = ProductType.HOME_LOAN,
-        rate_category: Optional[str] = "special",
+        rate_category: Optional[str] = None,
     ) -> Optional[MarketSnapshot]:
         """Return the snapshot from the run before the latest, if there is one."""
+        rate_category = _resolve_rate_category(product_type, rate_category)
         as_of = self.store.get_previous_run_started_at()
         if as_of is None:
             return None
@@ -871,7 +897,7 @@ class PricingIntelligenceService:
     def get_rate_history_series(
         self,
         term_months: int,
-        rate_category: str = "special",
+        rate_category: Optional[str] = None,
         product_type: ProductType | str = ProductType.HOME_LOAN,
     ) -> list[tuple[date, dict[str, float]]]:
         """Each bank's representative advertised rate at ``term_months``, one
@@ -890,6 +916,7 @@ class PricingIntelligenceService:
         forward-fill its last rate through every later date some other bank's
         change happens to introduce.
         """
+        rate_category = _resolve_rate_category(product_type, rate_category)
         history = self.store.get_rate_history(
             term_months=term_months, product_type=product_type, rate_category=rate_category
         )
@@ -939,7 +966,7 @@ class PricingIntelligenceService:
         days: Optional[int] = None,
         now: Optional[datetime] = None,
         product_type: ProductType | str = ProductType.HOME_LOAN,
-        rate_category: Optional[str] = "special",
+        rate_category: Optional[str] = None,
     ) -> MarketActivity:
         """Summarise repricing activity over a lookback window.
 
@@ -948,6 +975,7 @@ class PricingIntelligenceService:
         holding observations from an earlier or broader configuration must
         not alter this public market summary via an excluded bank or term.
         """
+        rate_category = _resolve_rate_category(product_type, rate_category)
         days = days or self.config.market_state.lookback_days
         return compute_market_activity(
             self.get_changes(
@@ -968,7 +996,7 @@ class PricingIntelligenceService:
         self,
         now: Optional[datetime] = None,
         product_type: ProductType | str = ProductType.HOME_LOAN,
-        rate_category: Optional[str] = "special",
+        rate_category: Optional[str] = None,
     ) -> MarketStateAssessment:
         """Classify how competitively active the market currently is.
 
@@ -978,6 +1006,7 @@ class PricingIntelligenceService:
         the classification, even though the snapshot it accompanies is
         already scoped to those same settings.
         """
+        rate_category = _resolve_rate_category(product_type, rate_category)
         changes = self.get_changes(
             days=self.config.market_state.lookback_days,
             now=now,
@@ -993,11 +1022,17 @@ class PricingIntelligenceService:
         self,
         our_rate: float,
         term_months: int = 12,
-        rate_category: Optional[str] = "special",
+        rate_category: Optional[str] = None,
         now: Optional[datetime] = None,
         product_type: ProductType | str = ProductType.HOME_LOAN,
     ) -> CompetitivePosition:
-        """Position a rate (in advertised percent) against the current market."""
+        """Position a rate (in advertised percent) against the current market.
+
+        ``rate_category`` defaults to the product-appropriate comparison tier
+        (via :meth:`get_market_snapshot`) rather than a mortgage-specific
+        literal, so a deposit position resolves against the deposit market
+        instead of a snapshot with no matching rates.
+        """
         snapshot = self.get_market_snapshot(
             product_type=product_type, rate_category=rate_category, now=now
         )
@@ -1019,11 +1054,17 @@ class PricingIntelligenceService:
         term_months: int = 12,
         manual_rate: Optional[float] = None,
         offset_bps: float = 0.0,
-        rate_category: Optional[str] = "special",
+        rate_category: Optional[str] = None,
         now: Optional[datetime] = None,
         product_type: ProductType | str = ProductType.HOME_LOAN,
     ) -> ResolvedCompetitorAssumption:
-        """Resolve the competitor assumption the optimiser should run with."""
+        """Resolve the competitor assumption the optimiser should run with.
+
+        ``rate_category`` defaults to the product-appropriate comparison tier
+        (via :meth:`get_market_snapshot`) rather than a mortgage-specific
+        literal, so a deposit assumption resolves against the deposit market
+        instead of a snapshot with no matching rates.
+        """
         snapshot = self.get_market_snapshot(
             product_type=product_type, rate_category=rate_category, now=now
         )

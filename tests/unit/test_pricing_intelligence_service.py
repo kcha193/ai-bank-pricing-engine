@@ -15,9 +15,11 @@ from balance_pricing_engine.pricing_intelligence.config import (
 from balance_pricing_engine.pricing_intelligence.market_state import MarketState
 from balance_pricing_engine.pricing_intelligence.service import (
     PricingIntelligenceService,
+    _resolve_rate_category,
     _resolve_suspicious,
 )
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
+from balance_pricing_engine.pricing_intelligence.strategy import CompetitorRateStrategy
 
 # Collection timestamps are dated relative to "now", not pinned to a calendar
 # date. Market snapshots exclude observations older than
@@ -1189,6 +1191,68 @@ def test_a_stale_observation_is_excluded_from_the_market_snapshot(fixture_fetche
 
     assert stale_snapshot.term(12) is None
     assert fresh_snapshot.term(12) is not None
+
+
+@pytest.mark.parametrize(
+    ("product_type", "supplied", "expected"),
+    [
+        (ProductType.HOME_LOAN, None, "special"),
+        (ProductType.TERM_DEPOSIT, None, "term_deposit"),
+        (ProductType.HOME_LOAN, "standard", "standard"),
+        (ProductType.TERM_DEPOSIT, "special", "special"),
+    ],
+)
+def test_resolve_rate_category_defaults_per_product_but_honours_an_explicit_value(
+    product_type, supplied, expected
+):
+    assert _resolve_rate_category(product_type, supplied) == expected
+
+
+def _deposit_service(make_record, *records_kwargs):
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+    )
+    service.store.record_observations(
+        [
+            make_record(product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit", **kw)
+            for kw in records_kwargs
+        ]
+    )
+    return service
+
+
+def test_resolve_competitor_assumption_defaults_to_the_deposit_category(make_record):
+    """product_type=TERM_DEPOSIT alone, with no explicit rate_category, must
+    resolve against the deposit market's own default category rather than
+    the mortgage-specific "special" literal, which matches no deposit
+    records and previously made this raise "requires advertised rates"."""
+    service = _deposit_service(
+        make_record,
+        {"bank": "ANZ", "rate_pct": 4.00},
+        {"bank": "BNZ", "rate_pct": 4.20},
+    )
+
+    assumption = service.resolve_competitor_assumption(
+        strategy=CompetitorRateStrategy.MARKET_MEDIAN, product_type=ProductType.TERM_DEPOSIT
+    )
+
+    assert assumption.rate_pct == pytest.approx(4.10)
+
+
+def test_get_competitive_position_defaults_to_the_deposit_category(make_record):
+    """Same bug via get_competitive_position(): previously raised
+    ValueError("no advertised market data...") for a deposit position with
+    no explicit rate_category."""
+    service = _deposit_service(make_record, {"bank": "ANZ", "rate_pct": 4.00})
+
+    position = service.get_competitive_position(
+        our_rate=4.10, product_type=ProductType.TERM_DEPOSIT
+    )
+
+    assert position.market_best == 4.00
 
 
 def test_the_market_snapshot_covers_every_bank(service):
