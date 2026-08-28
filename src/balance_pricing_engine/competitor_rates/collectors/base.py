@@ -321,6 +321,12 @@ class BankPricingCollector(abc.ABC):
         "income tax rate",
         "after tax",
         "prescribed investor rate",
+        # Banks commonly abbreviate the phrase above to "PIR" on the page
+        # itself (e.g. "PIR 28%: 4.01%"), one row per tax band -- without
+        # this, an abbreviated row matches no marker, keeps the generic
+        # "term_deposit" category, and can outrank every genuinely advertised
+        # rate for MARKET_LEADER.
+        "pir",
     )
 
     def __init__(

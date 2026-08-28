@@ -105,6 +105,25 @@ def test_pie_effective_rates_are_not_advertised_rates():
     assert {4.01, 4.19, 4.60} <= excluded
 
 
+def test_pir_abbreviated_effective_rate_rows_are_excluded_from_comparison(make_record):
+    """Banks commonly abbreviate "prescribed investor rate" to "PIR" on the
+    page itself (e.g. "PIR 28%: 4.01%") rather than spelling it out. Without
+    recognising the abbreviation, this row keeps the generic term_deposit
+    category and can outrank every genuinely advertised rate for
+    MARKET_LEADER."""
+    record = make_record(
+        bank="ANZ",
+        product_type="term_deposit",
+        rate_category="term_deposit",
+        rate_pct=4.01,
+        raw_text_context="1 year PIR 28%: 4.01%",
+    )
+
+    enriched = ANZCollector().enrich_term_deposit_record(record)
+
+    assert enriched.rate_category == "non_comparable"
+
+
 def test_excluded_deposit_products_are_retained_for_audit():
     records = collect(ANZCollector, "anz_term_deposits.html").records
     excluded = [r for r in records if r.rate_category == "non_comparable"]
