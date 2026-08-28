@@ -20,13 +20,31 @@ from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
 from balance_pricing_engine.pricing_intelligence.changes import resolve_pairing
 from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
 
-#: Matches an advertised-rate-shaped percentage token (e.g. "4.01%") so it can
-#: be stripped from raw_text_context before hashing for a non_comparable row's
-#: identity -- see _disambiguate_non_comparable_identity(). Deliberately a
-#: simple, generic pattern (unlike extractors.py's promotional/eligibility-
-#: aware ones): this only needs to remove the mutable rate value, not decide
-#: which percentage in the text is "the" rate.
-_RATE_TOKEN_PATTERN = re.compile(r"\d+(?:\.\d+)?\s*%")
+#: Matches any percentage token (e.g. "4.01%") in raw_text_context, so
+#: _strip_advertised_rate_token() can inspect each one's numeric value and
+#: remove only the occurrence(s) matching the record's own advertised rate --
+#: see _disambiguate_non_comparable_identity(). A blanket strip of every
+#: percentage would also remove a structural qualifier (e.g. a PIR/tax-band
+#: label such as "PIR 28%: 4.01%"), collapsing two genuinely different rows
+#: sharing a rate onto the same identity.
+_PERCENTAGE_TOKEN_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+
+
+def _strip_advertised_rate_token(raw_text_context: str, advertised_rate_pct: float) -> str:
+    """Remove only the record's own advertised rate from ``raw_text_context``.
+
+    Matched by numeric value rather than a fixed decimal-precision format, so
+    "4.01%" is found and removed whether the source page rendered it as
+    "4.01%", "4.010%", or "4.0100%" -- any other percentage in the text (a
+    PIR/tax-band qualifier, an unrelated fee) is left untouched.
+    """
+
+    def _replace(match: "re.Match[str]") -> str:
+        if abs(float(match.group(1)) - advertised_rate_pct) < 1e-6:
+            return ""
+        return match.group(0)
+
+    return _PERCENTAGE_TOKEN_PATTERN.sub(_replace, raw_text_context)
 
 
 @dataclass(frozen=True)
@@ -105,15 +123,20 @@ def validate_observations(
     unflagged. Only applied when exactly one unclaimed predecessor shares the
     category-agnostic group -- an ambiguous match is not used as a baseline.
 
-    A ``non_comparable`` record is given a stable per-row identity (see
-    :func:`_disambiguate_non_comparable_identity`) before any of the above,
-    so heterogeneous rows sharing the generic category never collide on
-    ``observation_key()`` in the first place.
+    A deposit-side ``non_comparable`` record is given a stable per-row
+    identity (see :func:`_disambiguate_non_comparable_identity`) before any
+    of the above, so heterogeneous rows sharing the generic category never
+    collide on ``observation_key()`` in the first place. Scoped to deposits
+    only: a mortgage's non_comparable products (subsidised/green top-ups,
+    closed products) are already individually named by the extractor and
+    have never needed this, so leaving them untouched preserves every
+    already-stored mortgage identity rather than migrating it.
     """
     thresholds = thresholds or ValidationThresholds()
     records = [
         _disambiguate_non_comparable_identity(record)
         if record.rate_category == "non_comparable"
+        and ProductType(record.product_type) is ProductType.TERM_DEPOSIT
         else record
         for record in records
     ]
@@ -198,18 +221,24 @@ def _disambiguate_non_comparable_identity(
     growing the database on every scheduled run -- 121 of 224 live deposit
     records hit this.
 
-    Appending a short hash of ``raw_text_context``, with its percentage
-    token(s) stripped, to ``product_name`` -- already part of
+    Appending a short hash of ``raw_text_context``, with only its own
+    advertised-rate token stripped (see :func:`_strip_advertised_rate_token`),
+    to ``product_name`` -- already part of
     :meth:`~.models.CompetitorRateRecord.eligibility_group_key`'s identity
     formula -- gives each row its own stable-across-runs identity without
     touching ``raw_text_context`` itself, which stays the untouched source
-    evidence. The rate must be stripped before hashing: ``raw_text_context``
-    contains the parsed percentage, so a genuine rate update on the same row
-    would otherwise change the hash too, making change detection read it as
-    that product being withdrawn and a new one appearing rather than a rate
-    update on the same identity.
+    evidence. The advertised rate specifically (not every percentage in the
+    text) must be stripped before hashing: ``raw_text_context`` contains the
+    parsed percentage, so a genuine rate update on the same row would
+    otherwise change the hash too, making change detection read it as that
+    product being withdrawn and a new one appearing rather than a rate update
+    on the same identity -- while a structural percentage such as a PIR/tax-
+    band qualifier ("PIR 28%: 4.01%") must survive the strip, or two rows
+    differing only by that qualifier would collapse onto one identity.
     """
-    structural_text = _RATE_TOKEN_PATTERN.sub("", record.raw_text_context)
+    structural_text = _strip_advertised_rate_token(
+        record.raw_text_context, record.advertised_rate_pct
+    )
     tag = hashlib.sha256(structural_text.encode("utf-8")).hexdigest()[:8]
     return record.model_copy(update={"product_name": f"{record.product_name} [{tag}]"})
 

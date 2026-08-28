@@ -453,6 +453,63 @@ def test_non_comparable_rows_get_a_stable_content_derived_identity(make_record):
     assert outcome.accepted[0].observation_key() != outcome.accepted[1].observation_key()
 
 
+def test_mortgage_non_comparable_identities_are_left_untouched(make_record):
+    """Disambiguation is scoped to deposits: a mortgage's non_comparable
+    products (subsidised/green top-ups, closed products) are already
+    individually named by the extractor, so touching product_name here would
+    break pairing against every already-stored mortgage identity."""
+    from balance_pricing_engine.pricing_intelligence.validation import (
+        validate_observations,
+    )
+
+    record = make_record(
+        bank="ASB",
+        product_type="home_loan",
+        rate_category="non_comparable",
+        product_name="Back My Build",
+    )
+
+    outcome = validate_observations([record])
+
+    assert outcome.accepted[0].product_name == "Back My Build"
+
+
+def test_non_comparable_rows_differing_only_by_a_structural_percentage_stay_distinct(
+    make_record,
+):
+    """A PIR/tax-band qualifier (e.g. "PIR 28%" vs "PIR 33%") is itself part
+    of what distinguishes two otherwise-similar deposit rows -- stripping
+    every percentage rather than only the advertised rate would collapse
+    them onto the same identity and reject them as a conflict instead of
+    keeping both as distinct audit records."""
+    from balance_pricing_engine.pricing_intelligence.validation import (
+        validate_observations,
+    )
+
+    excluded = [
+        make_record(
+            bank="ANZ",
+            product_type="term_deposit",
+            rate_category="non_comparable",
+            rate_pct=4.01,
+            raw_text_context="PIR 28%: 4.01%",
+        ),
+        make_record(
+            bank="ANZ",
+            product_type="term_deposit",
+            rate_category="non_comparable",
+            rate_pct=4.19,
+            raw_text_context="PIR 33%: 4.19%",
+        ),
+    ]
+
+    outcome = validate_observations(excluded)
+
+    assert outcome.rejected == []
+    assert len(outcome.accepted) == 2
+    assert outcome.accepted[0].observation_key() != outcome.accepted[1].observation_key()
+
+
 def test_non_comparable_identity_is_stable_across_a_genuine_rate_change(make_record):
     """raw_text_context contains the parsed percentage, so a genuine rate
     update on the same underlying row must not change its identity -- that
