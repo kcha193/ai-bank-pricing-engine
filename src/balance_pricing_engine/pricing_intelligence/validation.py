@@ -12,12 +12,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import hashlib
+import re
 from typing import Iterable, Optional, Sequence
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
 from balance_pricing_engine.pricing_intelligence.changes import resolve_pairing
 from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
+
+#: Matches an advertised-rate-shaped percentage token (e.g. "4.01%") so it can
+#: be stripped from raw_text_context before hashing for a non_comparable row's
+#: identity -- see _disambiguate_non_comparable_identity(). Deliberately a
+#: simple, generic pattern (unlike extractors.py's promotional/eligibility-
+#: aware ones): this only needs to remove the mutable rate value, not decide
+#: which percentage in the text is "the" rate.
+_RATE_TOKEN_PATTERN = re.compile(r"\d+(?:\.\d+)?\s*%")
 
 
 @dataclass(frozen=True)
@@ -189,13 +198,19 @@ def _disambiguate_non_comparable_identity(
     growing the database on every scheduled run -- 121 of 224 live deposit
     records hit this.
 
-    Appending a short hash of ``raw_text_context`` to ``product_name`` --
-    already part of :meth:`~.models.CompetitorRateRecord.eligibility_group_key`'s
-    identity formula -- gives each row its own stable-across-runs identity
-    without touching ``raw_text_context`` itself, which stays the untouched
-    source evidence.
+    Appending a short hash of ``raw_text_context``, with its percentage
+    token(s) stripped, to ``product_name`` -- already part of
+    :meth:`~.models.CompetitorRateRecord.eligibility_group_key`'s identity
+    formula -- gives each row its own stable-across-runs identity without
+    touching ``raw_text_context`` itself, which stays the untouched source
+    evidence. The rate must be stripped before hashing: ``raw_text_context``
+    contains the parsed percentage, so a genuine rate update on the same row
+    would otherwise change the hash too, making change detection read it as
+    that product being withdrawn and a new one appearing rather than a rate
+    update on the same identity.
     """
-    tag = hashlib.sha256(record.raw_text_context.encode("utf-8")).hexdigest()[:8]
+    structural_text = _RATE_TOKEN_PATTERN.sub("", record.raw_text_context)
+    tag = hashlib.sha256(structural_text.encode("utf-8")).hexdigest()[:8]
     return record.model_copy(update={"product_name": f"{record.product_name} [{tag}]"})
 
 

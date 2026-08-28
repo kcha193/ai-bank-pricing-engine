@@ -386,11 +386,16 @@ def test_each_side_resolves_independently(engine_config):
 
 
 def test_non_comparable_rows_do_not_flood_validation_with_conflicts(make_record):
-    """Excluded rows collide by construction; the guard must not fire on them.
+    """Excluded rows would otherwise collide on observation_key(); the guard
+    must not fire on genuinely different products just because the category
+    lumps them together.
 
     PIE effective-rate columns are deliberately lumped into one category, so
-    their identity is not meaningful. Applying the conflict guard there rejected
-    121 of 224 live deposit records and would drown a scheduled run's logs.
+    rate_category/term/bank alone is not a meaningful identity for them --
+    each live row still carries its own fund name, the structural text
+    _disambiguate_non_comparable_identity() now keys off. Applying the
+    conflict guard without that disambiguation rejected 121 of 224 live
+    deposit records and would drown a scheduled run's logs.
     """
     from balance_pricing_engine.pricing_intelligence.validation import (
         validate_observations,
@@ -401,9 +406,11 @@ def test_non_comparable_rows_do_not_flood_validation_with_conflicts(make_record)
             bank="ANZ",
             product_type="term_deposit",
             rate_category="non_comparable",
+            product_name=f"PIE Term Fund {label}",
             rate_pct=rate,
+            raw_text_context=f"PIE Term Fund {label} effective rate {rate}%",
         )
-        for rate in (4.01, 4.19, 4.60)
+        for label, rate in (("A", 4.01), ("B", 4.19), ("C", 4.60))
     ]
 
     outcome = validate_observations(excluded)
@@ -444,6 +451,36 @@ def test_non_comparable_rows_get_a_stable_content_derived_identity(make_record):
 
     assert len(outcome.accepted) == 2
     assert outcome.accepted[0].observation_key() != outcome.accepted[1].observation_key()
+
+
+def test_non_comparable_identity_is_stable_across_a_genuine_rate_change(make_record):
+    """raw_text_context contains the parsed percentage, so a genuine rate
+    update on the same underlying row must not change its identity -- that
+    would make change detection read it as that product being withdrawn and
+    a new one appearing, rather than a rate update on the same key."""
+    from balance_pricing_engine.pricing_intelligence.validation import (
+        validate_observations,
+    )
+
+    before = make_record(
+        bank="ANZ",
+        product_type="term_deposit",
+        rate_category="non_comparable",
+        rate_pct=4.01,
+        raw_text_context="PIE Term Fund A effective rate 4.01%",
+    )
+    after = make_record(
+        bank="ANZ",
+        product_type="term_deposit",
+        rate_category="non_comparable",
+        rate_pct=4.25,
+        raw_text_context="PIE Term Fund A effective rate 4.25%",
+    )
+
+    before_key = validate_observations([before]).accepted[0].observation_key()
+    after_key = validate_observations([after]).accepted[0].observation_key()
+
+    assert before_key == after_key
 
 
 def test_a_repeated_collection_of_non_comparable_rows_reports_unchanged(make_record):
