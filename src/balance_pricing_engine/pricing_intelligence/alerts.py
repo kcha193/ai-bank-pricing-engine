@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Protocol, Sequence, runtime_checkable
 
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange
 from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot
@@ -94,7 +95,12 @@ def format_alert(
     label = term_name(change.term_months)
     category = change.rate_category.replace("_", " ").title()
 
-    title = f"{marker} NZ MORTGAGE RATE CHANGE"
+    market_label = (
+        "TERM DEPOSIT"
+        if change.product_type is ProductType.TERM_DEPOSIT
+        else "MORTGAGE"
+    )
+    title = f"{marker} NZ {market_label} RATE CHANGE"
     lines = [f"{change.bank} — {label} Fixed {category}", ""]
 
     if change.is_rate_move:

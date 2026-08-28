@@ -910,6 +910,8 @@ class ObservationStore:
         term_months: Optional[int] = None,
         include_suspicious: bool = True,
         now: Optional[datetime] = None,
+        product_type: Optional[ProductType | str] = None,
+        rate_category: Optional[str] = None,
     ) -> list[dict]:
         """Return stored change events in a window, newest first.
 
@@ -933,6 +935,12 @@ class ObservationStore:
         if term_months is not None:
             clauses.append("term_months = ?")
             params.append(term_months)
+        if product_type is not None:
+            clauses.append("product_type = ?")
+            params.append(_product_value(product_type))
+        if rate_category is not None:
+            clauses.append("rate_category = ?")
+            params.append(rate_category)
         if not include_suspicious:
             clauses.append("suspicious = 0")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""

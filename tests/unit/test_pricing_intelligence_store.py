@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType, detect_changes
 from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
@@ -741,6 +742,39 @@ def test_changes_filter_by_bank_and_term(store, make_record):
     assert len(store.get_changes_since(days=7, term_months=60, now=DAY_TWO)) == 0
 
 
+def test_changes_filter_by_product_type(store, make_record):
+    home_loan_before = make_record(rate_pct=4.99)
+    home_loan_after = make_record(rate_pct=4.79, observed_at=DAY_TWO)
+    deposit_before = make_record(
+        product_type=ProductType.TERM_DEPOSIT,
+        product_name="Term Deposit",
+        rate_category="term_deposit",
+        rate_pct=3.50,
+    )
+    deposit_after = make_record(
+        product_type=ProductType.TERM_DEPOSIT,
+        product_name="Term Deposit",
+        rate_category="term_deposit",
+        rate_pct=3.60,
+        observed_at=DAY_TWO,
+    )
+
+    store.record_changes(
+        detect_changes(
+            [home_loan_before, deposit_before],
+            [home_loan_after, deposit_after],
+            detected_at=DAY_TWO,
+        )
+    )
+
+    changes = store.get_changes_since(
+        days=7, product_type=ProductType.TERM_DEPOSIT, now=DAY_TWO
+    )
+
+    assert len(changes) == 1
+    assert changes[0]["product_type"] == ProductType.TERM_DEPOSIT.value
+
+
 def test_changes_since_can_exclude_suspicious_events(store, make_record):
     changes = detect_changes(
         [make_record(rate_pct=4.89)],
@@ -752,6 +786,18 @@ def test_changes_since_can_exclude_suspicious_events(store, make_record):
 
     assert len(store.get_changes_since(days=7, now=DAY_TWO)) == 1
     assert store.get_changes_since(days=7, now=DAY_TWO, include_suspicious=False) == []
+
+
+def test_changes_since_preserves_legacy_positional_filters(store, make_record):
+    changes = detect_changes(
+        [make_record(rate_pct=4.89)],
+        [make_record(rate_pct=8.49, observed_at=DAY_TWO)],
+        detected_at=DAY_TWO,
+        thresholds=ValidationThresholds(suspicious_change_bps=75),
+    )
+    store.record_changes(changes)
+
+    assert store.get_changes_since(None, None, None, None, False, DAY_TWO) == []
 
 
 def test_banks_and_terms_are_discoverable(store, make_record):

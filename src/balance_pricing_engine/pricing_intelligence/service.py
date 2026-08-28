@@ -765,6 +765,8 @@ class PricingIntelligenceService:
         term_months: Optional[int] = None,
         now: Optional[datetime] = None,
         scope_to_market: bool = False,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        rate_category: Optional[str] = None,
     ) -> list[RateChange]:
         """Return detected changes inside a lookback window, newest first.
 
@@ -778,7 +780,12 @@ class PricingIntelligenceService:
         activity for a bank or term the rest of the market view doesn't show.
         """
         rows = self.store.get_changes_since(
-            days=days, bank=bank, term_months=term_months, now=now
+            days=days,
+            bank=bank,
+            term_months=term_months,
+            product_type=product_type,
+            rate_category=rate_category,
+            now=now,
         )
         changes = load_changes(rows)
         if scope_to_market:
@@ -842,7 +849,12 @@ class PricingIntelligenceService:
             term_months=term_months, product_type=product_type, rate_category=rate_category
         )
         change_dates = {record.captured_at_utc.date() for record in history}
-        for change in self.get_changes(days=None, term_months=term_months):
+        for change in self.get_changes(
+            days=None,
+            term_months=term_months,
+            product_type=product_type,
+            rate_category=rate_category,
+        ):
             if change.change_type is ChangeType.REMOVED_PRODUCT and (
                 change.rate_category == rate_category
             ):
@@ -878,7 +890,11 @@ class PricingIntelligenceService:
         return series
 
     def get_market_activity(
-        self, days: Optional[int] = None, now: Optional[datetime] = None
+        self,
+        days: Optional[int] = None,
+        now: Optional[datetime] = None,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        rate_category: Optional[str] = "special",
     ) -> MarketActivity:
         """Summarise repricing activity over a lookback window.
 
@@ -889,7 +905,13 @@ class PricingIntelligenceService:
         """
         days = days or self.config.market_state.lookback_days
         return compute_market_activity(
-            self.get_changes(days=days, now=now, scope_to_market=True),
+            self.get_changes(
+                days=days,
+                now=now,
+                scope_to_market=True,
+                product_type=product_type,
+                rate_category=rate_category,
+            ),
             lookback_days=days,
             now=now,
             directional_dominance_ratio=(
@@ -897,7 +919,12 @@ class PricingIntelligenceService:
             ),
         )
 
-    def get_market_state(self, now: Optional[datetime] = None) -> MarketStateAssessment:
+    def get_market_state(
+        self,
+        now: Optional[datetime] = None,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        rate_category: Optional[str] = "special",
+    ) -> MarketStateAssessment:
         """Classify how competitively active the market currently is.
 
         Scoped to ``selected_banks``/``tracked_terms_months``: a database
@@ -907,7 +934,11 @@ class PricingIntelligenceService:
         already scoped to those same settings.
         """
         changes = self.get_changes(
-            days=self.config.market_state.lookback_days, now=now, scope_to_market=True
+            days=self.config.market_state.lookback_days,
+            now=now,
+            scope_to_market=True,
+            product_type=product_type,
+            rate_category=rate_category,
         )
         return classify_market_state(
             changes, thresholds=self.config.market_state, now=now
@@ -919,9 +950,12 @@ class PricingIntelligenceService:
         term_months: int = 12,
         rate_category: Optional[str] = "special",
         now: Optional[datetime] = None,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
     ) -> CompetitivePosition:
         """Position a rate (in advertised percent) against the current market."""
-        snapshot = self.get_market_snapshot(rate_category=rate_category, now=now)
+        snapshot = self.get_market_snapshot(
+            product_type=product_type, rate_category=rate_category, now=now
+        )
         term_market = snapshot.term(term_months)
         if term_market is None:
             raise ValueError(
@@ -942,9 +976,12 @@ class PricingIntelligenceService:
         offset_bps: float = 0.0,
         rate_category: Optional[str] = "special",
         now: Optional[datetime] = None,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
     ) -> ResolvedCompetitorAssumption:
         """Resolve the competitor assumption the optimiser should run with."""
-        snapshot = self.get_market_snapshot(rate_category=rate_category, now=now)
+        snapshot = self.get_market_snapshot(
+            product_type=product_type, rate_category=rate_category, now=now
+        )
         return resolve_competitor_rate(
             strategy=strategy,
             snapshot=snapshot,

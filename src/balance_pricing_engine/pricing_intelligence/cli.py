@@ -207,8 +207,12 @@ def _collect(service: PricingIntelligenceService, args: argparse.Namespace) -> i
             # preview; omit it rather than compare against stale data.
             snapshot, previous_snapshot = None, None
         else:
-            snapshot = service.get_market_snapshot()
-            previous_snapshot = service.get_previous_market_snapshot()
+            snapshot = service.get_market_snapshot(
+                product_type=_product(args), rate_category=_default_category(args)
+            )
+            previous_snapshot = service.get_previous_market_snapshot(
+                product_type=_product(args), rate_category=_default_category(args)
+            )
         dispatch_alerts(
             format_alerts(
                 [change for change in outcome.changes if change.is_rate_move],
@@ -245,7 +249,7 @@ def _snapshot(service: PricingIntelligenceService, args: argparse.Namespace) -> 
     if market is None:
         print(f"No data at {args.term} months. Available: {list(snapshot.term_months)}")
         return 1
-    print(f"{args.term} MONTH FIXED ({args.category})")
+    print(f"{args.term} MONTH FIXED ({_default_category(args)})")
     print()
     for entry in market.ranking():
         print(f"  {entry.bank:<12}{entry.rate_pct:>6.2f}   #{entry.rank}")
@@ -253,20 +257,37 @@ def _snapshot(service: PricingIntelligenceService, args: argparse.Namespace) -> 
     print(f"  Best:   {market.best_rate:.2f}  ({', '.join(market.market_leaders)})")
     print(f"  Median: {market.median_rate:.2f}")
     print(f"  Mean:   {market.mean_rate:.2f}")
-    print(f"  Worst:  {market.highest_rate:.2f}")
+    worst_rate = (
+        market.highest_rate
+        if market.product_type is ProductType.HOME_LOAN
+        else market.lowest_rate
+    )
+    print(f"  Worst:  {worst_rate:.2f}")
     print(f"  Spread: {market.spread_bps:.0f} bps across {market.bank_count} banks")
     return 0
 
 
 def _changes(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
-    changes = service.get_changes(days=args.days, bank=args.bank, term_months=args.term)
+    changes = service.get_changes(
+        days=args.days,
+        bank=args.bank,
+        term_months=args.term,
+        product_type=_product(args),
+        rate_category=_default_category(args),
+    )
     if not changes:
         print(f"No changes detected in the last {args.days} days.")
         return 0
 
     if args.alerts:
         dispatch_alerts(
-            format_alerts(changes, service.get_market_snapshot()), ConsoleAlertSink()
+            format_alerts(
+                changes,
+                service.get_market_snapshot(
+                    product_type=_product(args), rate_category=_default_category(args)
+                ),
+            ),
+            ConsoleAlertSink(),
         )
         return 0
 
@@ -282,7 +303,8 @@ def _history(service: PricingIntelligenceService, args: argparse.Namespace) -> i
     records = service.get_rate_history(
         bank=args.bank,
         term_months=args.term,
-        rate_category=args.category,
+        product_type=_product(args),
+        rate_category=_default_category(args),
         days=args.days,
     )
     if not records:
@@ -304,7 +326,9 @@ def _history(service: PricingIntelligenceService, args: argparse.Namespace) -> i
 
 
 def _market_state(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
-    assessment = service.get_market_state()
+    assessment = service.get_market_state(
+        product_type=_product(args), rate_category=_default_category(args)
+    )
     payload = assessment.as_dict()
     print(f"MARKET STATE: {payload['state']}")
     print()
@@ -322,7 +346,12 @@ def _market_state(service: PricingIntelligenceService, args: argparse.Namespace)
 
 
 def _position(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
-    position = service.get_competitive_position(our_rate=args.rate, term_months=args.term)
+    position = service.get_competitive_position(
+        our_rate=args.rate,
+        term_months=args.term,
+        product_type=_product(args),
+        rate_category=_default_category(args),
+    )
     print(f"COMPETITIVE POSITION  {args.rate:.2f}% at {args.term} months")
     print()
     for key, value in position.as_features().items():
@@ -337,13 +366,20 @@ def _strategy(service: PricingIntelligenceService, args: argparse.Namespace) -> 
         term_months=args.term,
         manual_rate=args.manual_rate,
         offset_bps=args.offset_bps,
+        product_type=_product(args),
+        rate_category=_default_category(args),
     )
     print("COMPETITOR ASSUMPTION FOR THE PRICING ENGINE")
     print()
     print(f"  strategy              {assumption.strategy.value}")
     print(f"  term_months           {assumption.term_months}")
     print(f"  advertised rate       {assumption.rate_pct:.3f}%")
-    print(f"  competitor_loan_rate  {assumption.competitor_loan_rate}")
+    rate_label = (
+        "competitor_deposit_rate"
+        if _product(args) is ProductType.TERM_DEPOSIT
+        else "competitor_loan_rate"
+    )
+    print(f"  {rate_label:<22}{assumption.competitor_loan_rate}")
     print(f"  offset_bps            {assumption.offset_bps:+.0f}")
     print(f"  source banks          {', '.join(assumption.source_banks) or 'n/a'}")
     print(f"  rationale             {assumption.rationale}")
