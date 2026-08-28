@@ -7,7 +7,7 @@ as advertised deposit rates, and deposits rank highest-is-best, so anything
 inflated wins the market-leader position.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -410,6 +410,103 @@ def test_non_comparable_rows_do_not_flood_validation_with_conflicts(make_record)
 
     assert outcome.rejected == []
     assert not [i for i in outcome.errors if i.code == "conflicting_observation"]
+
+
+def test_non_comparable_rows_get_a_stable_content_derived_identity(make_record):
+    """Two non-comparable rows with different raw_text_context (representing
+    two genuinely different, if unlabelled, products) must not share an
+    observation_key() -- collapsing them onto one identity is what corrupted
+    ObservationStore.record_observations() into writing every one of them as
+    a fresh state on every re-collection, even when nothing on the source
+    page had changed."""
+    from balance_pricing_engine.pricing_intelligence.validation import (
+        validate_observations,
+    )
+
+    excluded = [
+        make_record(
+            bank="ANZ",
+            product_type="term_deposit",
+            rate_category="non_comparable",
+            rate_pct=4.01,
+            raw_text_context="PIE Term Fund A effective rate 4.01%",
+        ),
+        make_record(
+            bank="ANZ",
+            product_type="term_deposit",
+            rate_category="non_comparable",
+            rate_pct=4.01,
+            raw_text_context="PIE Term Fund B effective rate 4.01%",
+        ),
+    ]
+
+    outcome = validate_observations(excluded)
+
+    assert len(outcome.accepted) == 2
+    assert outcome.accepted[0].observation_key() != outcome.accepted[1].observation_key()
+
+
+def test_a_repeated_collection_of_non_comparable_rows_reports_unchanged(make_record):
+    """The actual corruption the disambiguation guards against: previously,
+    re-collecting an unchanged page re-inserted every colliding
+    non_comparable row as a fresh state instead of recognising it as
+    unchanged, growing the database on every scheduled run."""
+    from balance_pricing_engine.pricing_intelligence.store import ObservationStore
+    from balance_pricing_engine.pricing_intelligence.validation import (
+        validate_observations,
+    )
+
+    store = ObservationStore(":memory:")
+    excluded = [
+        make_record(
+            bank="ANZ",
+            product_type="term_deposit",
+            rate_category="non_comparable",
+            rate_pct=rate,
+            raw_text_context=f"PIE Term Fund {label} effective rate {rate}%",
+        )
+        for label, rate in (("A", 4.01), ("B", 4.19), ("C", 4.60))
+    ]
+
+    first = store.record_observations(
+        validate_observations(excluded).accepted, observed_at=OBSERVED_AT
+    )
+    assert first.inserted == 3
+
+    second = store.record_observations(
+        validate_observations(excluded).accepted,
+        observed_at=OBSERVED_AT + timedelta(days=1),
+    )
+
+    assert second.inserted == 0
+    assert second.unchanged == 3
+
+
+def test_identical_raw_text_with_different_rates_still_triggers_the_conflict_guard(
+    make_record,
+):
+    """A genuine parser fault -- the same row text somehow producing two
+    different rates -- must still be rejected loudly, not silently exempted
+    just because the category happens to be non_comparable."""
+    from balance_pricing_engine.pricing_intelligence.validation import (
+        validate_observations,
+    )
+
+    excluded = [
+        make_record(
+            bank="ANZ",
+            product_type="term_deposit",
+            rate_category="non_comparable",
+            rate_pct=rate,
+            raw_text_context="PIE Term Fund A effective rate",
+        )
+        for rate in (4.01, 4.19)
+    ]
+
+    outcome = validate_observations(excluded)
+
+    assert len(outcome.rejected) == 2
+    assert [i for i in outcome.errors if i.code == "conflicting_observation"]
 
 
 def test_the_conflict_guard_still_fires_on_comparable_rows(make_record):

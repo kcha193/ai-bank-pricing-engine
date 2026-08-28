@@ -11,6 +11,7 @@ so a caller always knows what was dropped and why.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 from typing import Iterable, Optional, Sequence
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
@@ -94,9 +95,19 @@ def validate_observations(
     would have no baseline to compare against and the movement would pass
     unflagged. Only applied when exactly one unclaimed predecessor shares the
     category-agnostic group -- an ambiguous match is not used as a baseline.
+
+    A ``non_comparable`` record is given a stable per-row identity (see
+    :func:`_disambiguate_non_comparable_identity`) before any of the above,
+    so heterogeneous rows sharing the generic category never collide on
+    ``observation_key()`` in the first place.
     """
     thresholds = thresholds or ValidationThresholds()
-    records = list(records)
+    records = [
+        _disambiguate_non_comparable_identity(record)
+        if record.rate_category == "non_comparable"
+        else record
+        for record in records
+    ]
     previous = list(previous or [])
     pairs = resolve_pairing(previous, records)
 
@@ -116,15 +127,14 @@ def validate_observations(
 
         conflicting_rates = conflicting_rates_by_key.get(key)
         # The conflict guard protects market statistics from an ambiguous
-        # identity silently resolving by insertion order. Records already fenced
-        # out as non-comparable never reach a statistic, and they collide by
-        # construction: heterogeneous rows (fund returns, PIE effective-rate
-        # columns) are deliberately lumped into one category, so their identity
-        # is not meaningful. Applying the guard there rejected 121 of 224 live
-        # deposit records and would drown a scheduled run's logs in errors for
-        # rows we intend to keep only as audit evidence.
-        if record.rate_category == "non_comparable":
-            conflicting_rates = None
+        # identity silently resolving by insertion order. A non_comparable
+        # record no longer needs an exemption here: it was disambiguated by
+        # _disambiguate_non_comparable_identity() above, so two genuinely
+        # different heterogeneous rows (fund returns, PIE effective-rate
+        # columns) no longer share a key at all. A collision that still
+        # reaches this point (identical raw_text_context, different rates)
+        # means the same input somehow produced two different readings --
+        # a real parser fault worth rejecting loudly, not one to exempt.
         if conflicting_rates is not None:
             issues.append(
                 ObservationIssue(
@@ -159,6 +169,34 @@ def validate_observations(
             outcome.accepted.append(record)
 
     return outcome
+
+
+def _disambiguate_non_comparable_identity(
+    record: CompetitorRateRecord,
+) -> CompetitorRateRecord:
+    """Give a ``non_comparable`` row a stable, content-derived identity.
+
+    ``rate_category="non_comparable"`` deliberately lumps heterogeneous rows
+    (fund returns, PIE effective-rate columns) into one category with no
+    identity-bearing distinction of their own, so several such rows can share
+    :meth:`~.models.CompetitorRateRecord.observation_key` while genuinely
+    representing different products at different rates. Exempting them from
+    the conflicting-observation guard let every one of them reach storage
+    unfiltered, but :meth:`~.store.ObservationStore.record_observations` then
+    read each simultaneous row as a *successive state of one product*: a
+    completely unchanged collection wrote every one of them again as a fresh
+    inserted state rather than unchanged, corrupting the audit history and
+    growing the database on every scheduled run -- 121 of 224 live deposit
+    records hit this.
+
+    Appending a short hash of ``raw_text_context`` to ``product_name`` --
+    already part of :meth:`~.models.CompetitorRateRecord.eligibility_group_key`'s
+    identity formula -- gives each row its own stable-across-runs identity
+    without touching ``raw_text_context`` itself, which stays the untouched
+    source evidence.
+    """
+    tag = hashlib.sha256(record.raw_text_context.encode("utf-8")).hexdigest()[:8]
+    return record.model_copy(update={"product_name": f"{record.product_name} [{tag}]"})
 
 
 def _conflicting_rates_within_batch(
