@@ -238,6 +238,43 @@ def test_a_market_loan_strategy_without_a_loan_snapshot_fails_loudly(engine_conf
         )
 
 
+def test_a_home_loan_snapshot_cannot_be_used_as_the_deposit_overlay(engine_config):
+    """A home-loan snapshot passed as deposit_snapshot must be rejected, not
+    silently written into competitor_deposit_rate -- ranking direction comes
+    from the snapshot too, so MARKET_LEADER would otherwise resolve the
+    mortgage market's benchmark instead of the deposit market's."""
+    from balance_pricing_engine.pricing_intelligence.strategy import (
+        CompetitorRateStrategy,
+        MarketStrategyError,
+        apply_market_strategy_to_config,
+    )
+
+    with pytest.raises(MarketStrategyError, match="deposit-side snapshot must be a term_deposit"):
+        apply_market_strategy_to_config(
+            engine_config,
+            strategy=CompetitorRateStrategy.MANUAL,
+            deposit_snapshot=_mortgage_snapshot(),
+            deposit_strategy=CompetitorRateStrategy.MARKET_LEADER,
+        )
+
+
+def test_a_deposit_snapshot_cannot_be_used_as_the_loan_overlay(engine_config):
+    """The symmetric case: a term-deposit snapshot passed as the loan-side
+    ``snapshot`` must be rejected too."""
+    from balance_pricing_engine.pricing_intelligence.strategy import (
+        CompetitorRateStrategy,
+        MarketStrategyError,
+        apply_market_strategy_to_config,
+    )
+
+    with pytest.raises(MarketStrategyError, match="loan-side snapshot must be a home_loan"):
+        apply_market_strategy_to_config(
+            engine_config,
+            strategy=CompetitorRateStrategy.MARKET_LEADER,
+            snapshot=_deposit_snapshot(),
+        )
+
+
 def test_omitting_a_deposit_snapshot_leaves_the_deposit_side_alone(engine_config):
     from balance_pricing_engine.pricing_intelligence.strategy import (
         CompetitorRateStrategy,
@@ -247,7 +284,7 @@ def test_omitting_a_deposit_snapshot_leaves_the_deposit_side_alone(engine_config
     result = apply_market_strategy_to_config(
         engine_config,
         strategy=CompetitorRateStrategy.MARKET_MEDIAN,
-        snapshot=_deposit_snapshot(),
+        snapshot=_mortgage_snapshot(),
         term_months=12,
     )
 

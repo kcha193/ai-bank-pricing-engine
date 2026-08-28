@@ -241,6 +241,43 @@ def _rejected_predecessor_keys(
     return suppressed
 
 
+def _skipped_row_predecessor_keys(
+    baseline: Sequence[CompetitorRateRecord],
+    accepted: Sequence[CompetitorRateRecord],
+    skipped_group_keys: Sequence[str],
+) -> set:
+    """Baseline keys that must not be reported as withdrawn this run because
+    they are the unmatched :meth:`~.models.CompetitorRateRecord.category_agnostic_group_key`
+    predecessor of a row that failed :class:`~.models.CompetitorRateRecord`
+    construction outright during extraction.
+
+    Mirrors :func:`_rejected_predecessor_keys` for a row that never became a
+    ``CompetitorRateRecord`` at all -- so it never reached
+    :func:`~.validation.validate_observations` to land in ``validation.rejected``
+    -- see ``competitor_rates.extractors.parse_html_rates``'s ``skipped_row_keys``
+    parameter. Without this, a row dropped by a parser fault this run would
+    read as its predecessor having been withdrawn, even though enough of the
+    bank's other rows passed validation for it to stay in scope for
+    withdrawal detection at all. Only suppressed when exactly one unclaimed
+    baseline record shares the group.
+    """
+    if not skipped_group_keys:
+        return set()
+    pairs = resolve_pairing(baseline, accepted)
+    claimed_baseline_keys = {p.observation_key() for p in pairs.values()}
+    unclaimed: dict[str, list[CompetitorRateRecord]] = {}
+    for p in baseline:
+        if p.observation_key() not in claimed_baseline_keys:
+            unclaimed.setdefault(p.category_agnostic_group_key(), []).append(p)
+
+    suppressed: set = set()
+    for group_key in skipped_group_keys:
+        candidates = unclaimed.get(group_key, [])
+        if len(candidates) == 1:
+            suppressed.add(candidates[0].observation_key())
+    return suppressed
+
+
 def _last_confirmed_predecessors(
     last_confirmed: Sequence[CompetitorRateRecord],
     accepted: Sequence[CompetitorRateRecord],
@@ -579,6 +616,14 @@ class PricingIntelligenceService:
                     }
                     | _rejected_predecessor_keys(baseline, validation.rejected)
                     | _suspicious_predecessor_keys(baseline, accepted, suspicious_keys)
+                    # A row that failed CompetitorRateRecord construction
+                    # outright this run (a parser fault, before the row could
+                    # even reach validate_observations) is unknown, not
+                    # withdrawn, same as a rejected-but-constructed record
+                    # just above.
+                    | _skipped_row_predecessor_keys(
+                        baseline, accepted, tuple(report.skipped_row_keys)
+                    )
                     | {
                         last_confirmed_pairs[key].observation_key()
                         for key in confirming_keys

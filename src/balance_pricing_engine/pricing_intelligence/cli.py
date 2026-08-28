@@ -121,7 +121,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     snapshot = subparsers.add_parser("snapshot", help="Show the current advertised market")
     snapshot.add_argument("--term", type=int, default=None, help="Detail one term, in months")
-    snapshot.add_argument("--category", default="special", help="Rate category to compare")
+    snapshot.add_argument(
+        "--category",
+        default=None,
+        help="Rate category to compare (default: 'special' for home loans, "
+        "'term_deposit' for term deposits)",
+    )
 
     changes = subparsers.add_parser("changes", help="Show detected market changes")
     changes.add_argument("--days", type=int, default=7)
@@ -169,9 +174,14 @@ def _default_category(args: argparse.Namespace) -> str:
 
     Mortgages are compared on advertised specials (where front-book competition
     happens); deposits on the plain term-deposit tier, excluding PIE variants.
+
+    ``None`` is the only sentinel for "not supplied": both ``snapshot`` and
+    ``history`` default ``--category`` to ``None``, so an explicit
+    ``--category special`` is honoured as-is rather than being mistaken for
+    the omitted case and rewritten to the other product's default.
     """
     supplied = getattr(args, "category", None)
-    if supplied not in (None, "special"):
+    if supplied is not None:
         return supplied
     if _product(args) is ProductType.TERM_DEPOSIT:
         return "term_deposit"

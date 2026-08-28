@@ -66,6 +66,12 @@ class BankCollectionResult:
     error_type: Optional[str] = None
     snapshot_path: Optional[str] = None
     content_sha256: Optional[str] = None
+    #: category_agnostic_key() of every row this run that parsed a term and
+    #: rate but then failed CompetitorRateRecord construction outright -- see
+    #: parse_html_rates(). Surfaced here (rather than only logged) so
+    #: PricingIntelligenceService.collect() can exclude each row's stored
+    #: predecessor from withdrawal detection instead of reporting it REMOVED.
+    skipped_row_keys: tuple[str, ...] = ()
 
     @property
     def succeeded(self) -> bool:
@@ -105,6 +111,14 @@ class CollectionReport:
     @property
     def any_success(self) -> bool:
         return bool(self.succeeded)
+
+    @property
+    def skipped_row_keys(self) -> set[str]:
+        """Union of every attempt's hard-skipped row keys.
+
+        See :attr:`BankCollectionResult.skipped_row_keys`.
+        """
+        return {key for result in self.results for key in result.skipped_row_keys}
 
     def render(self) -> str:
         """Render the fixed-width status table used by the CLI."""
@@ -356,7 +370,10 @@ class BankPricingCollector(abc.ABC):
     # ------------------------------------------------------------- overridable
 
     def parse_mortgage_html(
-        self, html: str, captured_at_utc: datetime
+        self,
+        html: str,
+        captured_at_utc: datetime,
+        skipped_row_keys: Optional[list[str]] = None,
     ) -> list[CompetitorRateRecord]:
         """Parse advertised mortgage rates from this bank's page HTML.
 
@@ -370,11 +387,15 @@ class BankPricingCollector(abc.ABC):
             source_url=self.home_loan_url,
             html=html,
             captured_at_utc=captured_at_utc,
+            skipped_row_keys=skipped_row_keys,
         )
         return [self.enrich_mortgage_record(record) for record in records]
 
     def parse_term_deposit_html(
-        self, html: str, captured_at_utc: datetime
+        self,
+        html: str,
+        captured_at_utc: datetime,
+        skipped_row_keys: Optional[list[str]] = None,
     ) -> list[CompetitorRateRecord]:
         """Parse advertised term-deposit rates from this bank's page HTML."""
         records = parse_html_rates(
@@ -383,6 +404,7 @@ class BankPricingCollector(abc.ABC):
             source_url=self.term_deposit_url or "",
             html=html,
             captured_at_utc=captured_at_utc,
+            skipped_row_keys=skipped_row_keys,
         )
         return [self.enrich_term_deposit_record(record) for record in records]
 
@@ -470,7 +492,7 @@ class BankPricingCollector(abc.ABC):
         self,
         product_type: ProductType,
         url: str,
-        parser: Callable[[str, datetime], list[CompetitorRateRecord]],
+        parser: Callable[..., list[CompetitorRateRecord]],
         captured_at_utc: Optional[datetime],
         persist_snapshot: bool,
     ) -> BankCollectionResult:
@@ -496,8 +518,9 @@ class BankPricingCollector(abc.ABC):
             else None
         )
 
+        skipped_row_keys: list[str] = []
         try:
-            records = parser(html, captured_at_utc)
+            records = parser(html, captured_at_utc, skipped_row_keys=skipped_row_keys)
         except Exception as exc:  # noqa: BLE001 - isolated into a FAILED result
             logger.warning("%s %s parse failed: %s", self.bank, product_type.value, exc)
             return BankCollectionResult(
@@ -509,6 +532,7 @@ class BankPricingCollector(abc.ABC):
                 error_type=type(exc).__name__,
                 snapshot_path=snapshot_path,
                 content_sha256=content_hash,
+                skipped_row_keys=tuple(skipped_row_keys),
             )
 
         if not records:
@@ -521,6 +545,7 @@ class BankPricingCollector(abc.ABC):
                 error_type="ParserError",
                 snapshot_path=snapshot_path,
                 content_sha256=content_hash,
+                skipped_row_keys=tuple(skipped_row_keys),
             )
 
         return BankCollectionResult(
@@ -531,6 +556,7 @@ class BankPricingCollector(abc.ABC):
             records=tuple(records),
             snapshot_path=snapshot_path,
             content_sha256=content_hash,
+            skipped_row_keys=tuple(skipped_row_keys),
         )
 
     def _write_snapshot(

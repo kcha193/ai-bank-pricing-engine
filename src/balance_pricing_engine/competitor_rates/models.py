@@ -36,6 +36,37 @@ InterestPaymentFrequency = Literal[
 ValidationStatus = Literal["unvalidated", "valid", "warning", "failed"]
 
 
+def category_agnostic_key(
+    bank: str,
+    product_type: "ProductType | str",
+    term_months_normalised: Optional[int],
+    term_label_raw: str,
+    interest_payment_frequency: str,
+    min_balance_or_deposit: Optional[float],
+    max_balance_or_deposit: Optional[float],
+) -> str:
+    """Standalone form of :meth:`CompetitorRateRecord.category_agnostic_group_key`.
+
+    Takes raw field values rather than a validated instance so a row that
+    fails :class:`CompetitorRateRecord` construction entirely -- and so never
+    becomes an instance to call the method on -- can still be matched against
+    a stored predecessor for withdrawal suppression (see
+    ``competitor_rates.extractors.parse_html_rates``).
+    """
+    return "|".join(
+        [
+            bank,
+            ProductType(product_type).value,
+            str(term_months_normalised)
+            if term_months_normalised is not None
+            else term_label_raw.lower(),
+            interest_payment_frequency,
+            _numeric_band(min_balance_or_deposit),
+            _numeric_band(max_balance_or_deposit),
+        ]
+    )
+
+
 class CompetitorRateRecord(BaseModel):
     """One advertised competitor rate with source and parser audit metadata."""
 
@@ -180,18 +211,21 @@ class CompetitorRateRecord(BaseModel):
         the very fallback this key exists for. The remaining fields are
         deliberately coarse; ambiguity is handled by every caller's
         "exactly one unclaimed candidate" guard, not by this key.
+
+        Delegates to the standalone :func:`category_agnostic_key` so a row
+        that never became a validated instance (see
+        ``competitor_rates.extractors.parse_html_rates``) can still compute
+        the identical key from its raw field values.
         """
-        parts = [
+        return category_agnostic_key(
             self.bank,
-            str(self.product_type),
-            str(self.term_months_normalised)
-            if self.term_months_normalised is not None
-            else self.term_label_raw.lower(),
+            self.product_type,
+            self.term_months_normalised,
+            self.term_label_raw,
             self.interest_payment_frequency,
-            _numeric_band(self.min_balance_or_deposit),
-            _numeric_band(self.max_balance_or_deposit),
-        ]
-        return "|".join(parts)
+            self.min_balance_or_deposit,
+            self.max_balance_or_deposit,
+        )
 
     @model_validator(mode="after")
     def validate_identity_and_range(self) -> "CompetitorRateRecord":

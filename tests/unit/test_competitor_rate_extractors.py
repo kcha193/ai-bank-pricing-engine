@@ -14,7 +14,7 @@ from balance_pricing_engine.competitor_rates.extractors import (
 )
 from balance_pricing_engine.competitor_rates.models import SourceAttempt
 from balance_pricing_engine.competitor_rates.sources import RateSource
-from balance_pricing_engine.competitor_rates.models import ProductType
+from balance_pricing_engine.competitor_rates.models import ProductType, category_agnostic_key
 
 
 FIXTURE_DIR = Path("tests/fixtures/competitor_rates")
@@ -39,6 +39,72 @@ def test_parse_home_loan_fixture_extracts_special_standard_and_floating_rates():
     assert records[2].rate_category == "floating"
     assert records[2].raw_html_sha256
     assert "Floating" in records[2].raw_text_context
+
+
+def test_parse_html_rates_reports_a_hard_skipped_rows_group_key(monkeypatch):
+    """A row that parses a term and rate but then fails CompetitorRateRecord
+    construction outright must not vanish untraceably: its
+    category_agnostic_key() is appended to skipped_row_keys, so a caller with
+    a stored baseline (pricing_intelligence) can recognise the row's
+    predecessor as unknown this run rather than withdrawn."""
+    html = (FIXTURE_DIR / "sample_bank_home_loan.html").read_text(encoding="utf-8")
+    real_record_cls = extractors.CompetitorRateRecord
+
+    def flaky_record(*args, **kwargs):
+        if kwargs.get("term_label_raw") == "1 year":
+            # A deliberately invalid balance range forces a real
+            # pydantic.ValidationError, the same as parse_html_rates() would
+            # hit from a genuine parser fault.
+            kwargs = {
+                **kwargs,
+                "min_balance_or_deposit": 500.0,
+                "max_balance_or_deposit": 100.0,
+            }
+        return real_record_cls(*args, **kwargs)
+
+    monkeypatch.setattr(extractors, "CompetitorRateRecord", flaky_record)
+
+    skipped_row_keys: list[str] = []
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+        skipped_row_keys=skipped_row_keys,
+    )
+
+    assert [record.term_label_raw for record in records] == ["2 years", "Floating"]
+    assert skipped_row_keys == [
+        category_agnostic_key("ANZ", ProductType.HOME_LOAN, 12, "1 year", "unknown", None, None)
+    ]
+
+
+def test_parse_html_rates_without_skipped_row_keys_still_drops_the_row(monkeypatch):
+    """The parameter is opt-in: omitting it must not change existing behaviour."""
+    html = (FIXTURE_DIR / "sample_bank_home_loan.html").read_text(encoding="utf-8")
+    real_record_cls = extractors.CompetitorRateRecord
+
+    def flaky_record(*args, **kwargs):
+        if kwargs.get("term_label_raw") == "1 year":
+            kwargs = {
+                **kwargs,
+                "min_balance_or_deposit": 500.0,
+                "max_balance_or_deposit": 100.0,
+            }
+        return real_record_cls(*args, **kwargs)
+
+    monkeypatch.setattr(extractors, "CompetitorRateRecord", flaky_record)
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert [record.term_label_raw for record in records] == ["2 years", "Floating"]
 
 
 def test_parse_term_deposit_fixture_extracts_terms_tiers_and_frequency_variants():

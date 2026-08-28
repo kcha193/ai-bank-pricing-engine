@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from balance_pricing_engine.competitor_rates.collectors import BankCollectionResult, CollectionStatus
-from balance_pricing_engine.competitor_rates.models import ProductType
+from balance_pricing_engine.competitor_rates.models import ProductType, category_agnostic_key
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange, detect_changes
 from balance_pricing_engine.pricing_intelligence.config import (
     CollectionConfig,
@@ -58,9 +58,10 @@ class _StubCollector:
     fallback exists for -- while going through the real collect() pipeline.
     """
 
-    def __init__(self, bank, records):
+    def __init__(self, bank, records, skipped_row_keys=()):
         self.bank = bank
         self._records = records
+        self._skipped_row_keys = skipped_row_keys
 
     def collect_mortgage_rates(self, captured_at_utc=None, persist_snapshot=True):
         return BankCollectionResult(
@@ -69,6 +70,7 @@ class _StubCollector:
             status=CollectionStatus.SUCCESS,
             source_url=f"https://www.example-bank.co.nz/{self.bank.lower()}/rates",
             records=tuple(self._records),
+            skipped_row_keys=tuple(self._skipped_row_keys),
         )
 
 
@@ -339,6 +341,50 @@ def test_a_validation_rejected_record_is_not_reported_as_a_withdrawal(fixture_fe
         change for change in outcome.changes if change.change_type is ChangeType.REMOVED_PRODUCT
     ]
     assert withdrawals == []
+
+
+def test_a_hard_skipped_row_is_not_reported_as_a_withdrawal(make_record):
+    """A row that fails CompetitorRateRecord construction outright during
+    extraction -- before it can even reach validate_observations() to land in
+    validation.rejected -- must not read as its predecessor having been
+    withdrawn, the same protection test_a_validation_rejected_record_is_not_
+    reported_as_a_withdrawal gives a row that fails validation afterwards."""
+    baseline = [
+        make_record(bank="ANZ", term_months=12, product_name="Fixed 12m"),
+        make_record(bank="ANZ", term_months=24, product_name="Fixed 24m"),
+    ]
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", baseline)],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    # This run: the 12m row parsed fine, but the 24m row failed
+    # CompetitorRateRecord construction entirely -- represented here exactly
+    # as parse_html_rates() would report it, via its own skipped_row_keys
+    # parameter (see test_competitor_rate_extractors.py for that unit test).
+    surviving = [make_record(bank="ANZ", term_months=12, product_name="Fixed 12m")]
+    skipped_key = category_agnostic_key(
+        bank="ANZ",
+        product_type=ProductType.HOME_LOAN,
+        term_months_normalised=24,
+        term_label_raw="24 months",
+        interest_payment_frequency="unknown",
+        min_balance_or_deposit=None,
+        max_balance_or_deposit=None,
+    )
+    service._collectors = [_StubCollector("ANZ", surviving, skipped_row_keys=[skipped_key])]
+    outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    anz_withdrawals = [
+        change
+        for change in outcome.changes
+        if change.change_type is ChangeType.REMOVED_PRODUCT and change.bank == "ANZ"
+    ]
+    assert anz_withdrawals == []
 
 
 def test_a_validation_rejected_line_keeps_its_last_known_rate_in_the_snapshot(fixture_fetcher):

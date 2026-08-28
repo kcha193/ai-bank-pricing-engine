@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from balance_pricing_engine.competitor_rates.models import (
     CompetitorRateRecord,
     ProductType,
+    category_agnostic_key,
 )
 from balance_pricing_engine.competitor_rates.sources import OFFICIAL_SOURCES
 
@@ -49,6 +50,32 @@ def test_competitor_rate_record_requires_source_and_identity_fields():
             raw_html_sha256="b" * 64,
             parser_version="test",
         )
+
+
+def test_category_agnostic_key_matches_the_method_it_backs():
+    """The standalone function must agree with the instance method it backs --
+    extractors.parse_html_rates() calls the function directly (on a row that
+    never became a validated instance), while everything else calls the
+    method, and the two must compute identically for the same identity."""
+    record = CompetitorRateRecord(
+        bank="ANZ",
+        product_type="home_loan",
+        product_name="Fixed home loan special",
+        rate_category="special",
+        term_label_raw="1 year",
+        term_months_normalised=12,
+        advertised_rate_pct=5.59,
+        interest_payment_frequency="unknown",
+        source_url="https://www.anz.co.nz/rates-fees-agreements/home-loans/",
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+        raw_text_context="1 year special 5.59% p.a.",
+        raw_html_sha256="a" * 64,
+        parser_version="test",
+    )
+
+    assert category_agnostic_key(
+        "ANZ", ProductType.HOME_LOAN, 12, "1 year", "unknown", None, None
+    ) == record.category_agnostic_group_key()
 
 
 def test_official_source_registry_contains_all_required_bank_product_pages():

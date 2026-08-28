@@ -21,6 +21,7 @@ from balance_pricing_engine.competitor_rates.apply import (
     CompetitorRateResolutionError,
     revalidate_config,
 )
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.bps import bps_to_percent
 from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot, TermMarket
 
@@ -31,6 +32,25 @@ class MarketStrategyError(CompetitorRateResolutionError):
     Subclasses the existing competitor-rate error so delivery layers that
     already map that failure to a 422 keep working unchanged.
     """
+
+
+def _require_snapshot_product(
+    snapshot: Optional[MarketSnapshot], expected: ProductType, side: str
+) -> None:
+    """Reject a snapshot overlaid onto the wrong side.
+
+    ``MarketSnapshot.product_type`` also drives ranking direction (deposits
+    rank highest-first, loans lowest-first) via :class:`TermMarket`, so a
+    mismatched snapshot would not just misattribute the rate -- MARKET_LEADER
+    could resolve the opposite product's benchmark entirely.
+    """
+    if snapshot is None:
+        return
+    actual = ProductType(snapshot.product_type)
+    if actual is not expected:
+        raise MarketStrategyError(
+            f"{side} snapshot must be a {expected.value} market view, got {actual.value}"
+        )
 
 
 class CompetitorRateStrategy(str, Enum):
@@ -194,6 +214,9 @@ def apply_market_strategy_to_config(
     mirrors :func:`competitor_rates.apply.apply_competitor_rates_to_config`.
     Set it false to keep spreads anchored to an independent benchmark.
     """
+    _require_snapshot_product(snapshot, ProductType.HOME_LOAN, "loan-side")
+    _require_snapshot_product(deposit_snapshot, ProductType.TERM_DEPOSIT, "deposit-side")
+
     resolved = resolve_competitor_rate(
         strategy=strategy,
         snapshot=snapshot,

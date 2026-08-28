@@ -209,6 +209,42 @@ def test_deposit_snapshot_detail_uses_deposit_category_and_worst_rate(
     assert "Worst:  3.50" in output
 
 
+def test_deposit_snapshot_honours_an_explicit_special_category(
+    tmp_path, make_record, capsys
+):
+    """--product term_deposit --category special must not be rewritten to
+    the term_deposit default: a bank can genuinely advertise a deposit
+    special, and --category claims to select the comparison category."""
+    path = tmp_path / "observations.db"
+    record = make_record(
+        bank="ANZ",
+        product_type=ProductType.TERM_DEPOSIT,
+        product_name="Term Deposit Special",
+        rate_category="special",
+        rate_pct=4.50,
+    )
+    config = PricingIntelligenceConfig(database_path=str(path))
+    with PricingIntelligenceService(config=config, store=ObservationStore(path)) as service:
+        service.store.record_observations([record])
+
+    exit_code = run(
+        [
+            "--database",
+            str(path),
+            "--product",
+            "term_deposit",
+            "snapshot",
+            "--category",
+            "special",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "NZ TERM DEPOSIT MARKET (special)" in output
+    assert "ANZ" in output
+
+
 def test_snapshot_reports_a_term_with_no_data(populated_database, capsys):
     exit_code = run(["--database", populated_database, "snapshot", "--term", "120"])
 

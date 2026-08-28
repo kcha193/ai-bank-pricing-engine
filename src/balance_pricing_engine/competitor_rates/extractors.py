@@ -18,6 +18,7 @@ from balance_pricing_engine.competitor_rates.models import (
     CompetitorRateRecord,
     ProductType,
     SourceAttempt,
+    category_agnostic_key,
 )
 from balance_pricing_engine.competitor_rates.normalise import (
     normalise_balance,
@@ -215,12 +216,20 @@ def parse_html_rates(
     source_url: str,
     html: str,
     captured_at_utc: datetime,
+    skipped_row_keys: list[str] | None = None,
 ) -> list[CompetitorRateRecord]:
     """Parse percentage-bearing rows from bank HTML into canonical records.
 
     This intentionally favours precision over recall. It parses table rows and nearby labels with
     recognisable terms, frequencies, balances, and mortgage conditions. Rows that include a
     percentage but no recognisable product term are skipped.
+
+    When ``skipped_row_keys`` is given, a row that parses a term and rate but
+    then fails :class:`CompetitorRateRecord` construction outright has its
+    :func:`~balance_pricing_engine.competitor_rates.models.category_agnostic_key`
+    appended to it, rather than being dropped with no trace: a caller with a
+    stored baseline (``pricing_intelligence``) can use this to recognise that
+    the row's predecessor is unknown this run, not withdrawn.
     """
     product = ProductType(product_type)
     parser = _TableTextParser()
@@ -266,6 +275,11 @@ def parse_html_rates(
                 if product == ProductType.TERM_DEPOSIT
                 else (None, None)
             )
+            interest_frequency = (
+                normalise_frequency(raw_text_context)
+                if product == ProductType.TERM_DEPOSIT
+                else "unknown"
+            )
             try:
                 record = CompetitorRateRecord(
                     bank=bank,
@@ -276,11 +290,7 @@ def parse_html_rates(
                     term_months_normalised=term.months,
                     term_days_raw=term.days,
                     advertised_rate_pct=rate,
-                    interest_payment_frequency=(
-                        normalise_frequency(raw_text_context)
-                        if product == ProductType.TERM_DEPOSIT
-                        else "unknown"
-                    ),
+                    interest_payment_frequency=interest_frequency,
                     min_balance_or_deposit=min_balance,
                     max_balance_or_deposit=max_balance,
                     lvr_condition=(
@@ -310,6 +320,18 @@ def parse_html_rates(
                     exc.error_count() if hasattr(exc, "error_count") else "invalid",
                     raw_text_context[:160],
                 )
+                if skipped_row_keys is not None:
+                    skipped_row_keys.append(
+                        category_agnostic_key(
+                            bank,
+                            product,
+                            term.months,
+                            term.raw_label,
+                            interest_frequency,
+                            min_balance,
+                            max_balance,
+                        )
+                    )
                 continue
             records.append(record)
     return _dedupe_records(records)
