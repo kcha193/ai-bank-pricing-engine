@@ -10,7 +10,6 @@ so a caller always knows what was dropped and why.
 
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass, field
 import hashlib
 import re
@@ -22,28 +21,29 @@ from balance_pricing_engine.pricing_intelligence.changes import resolve_pairing
 from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
 
 #: Matches any percentage token (e.g. "4.01%") in raw_text_context. Used two
-#: ways by _disambiguate_non_comparable_identities()'s two discriminator
-#: tiers: _strip_all_percentage_tokens() removes every occurrence outright
-#: (immune to an unrelated mutable figure, e.g. a fund's "since inception"
-#: return, but loses a percentage that is itself the only thing telling two
-#: rows apart, e.g. a PIR/tax-band label such as "PIR 28%: 4.01%");
-#: _strip_advertised_rate_token() instead inspects each occurrence's numeric
-#: value and removes only the one matching the record's own advertised rate,
-#: leaving a structural qualifier like that PIR label untouched.
+#: ways by _disambiguate_non_comparable_identities() and its helper
+#: _match_previous_non_comparable(): _strip_all_percentage_tokens() removes
+#: every occurrence outright (immune to an unrelated mutable figure, e.g. a
+#: fund's "since inception" return, but loses a percentage that is itself
+#: the only thing telling two rows apart, e.g. a PIR/tax-band label such as
+#: "PIR 28%: 4.01%"); _strip_advertised_rate_token() instead inspects each
+#: occurrence's numeric value and removes only the one matching the
+#: record's own advertised rate, leaving a structural qualifier like that
+#: PIR label untouched.
 _PERCENTAGE_TOKEN_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 
 
 def _strip_all_percentage_tokens(raw_text_context: str) -> str:
     """Remove every percentage token from ``raw_text_context``.
 
-    The preferred (Tier 1) discriminator input for
-    :func:`_disambiguate_non_comparable_identities`: most non_comparable rows
-    are already distinguished by non-numeric label text (a fund name, a
-    product description), so stripping every percentage -- not just the
-    record's own advertised rate -- makes the discriminator immune to any
-    *other* percentage in the same row that mutates independently, such as a
-    fund's "since inception" return alongside its (separately parsed)
-    "Return" column.
+    The permissive fallback match in :func:`_match_previous_non_comparable`,
+    used only when the precise (advertised-rate-only) match finds nothing:
+    most non_comparable rows are already distinguished by non-numeric label
+    text (a fund name, a product description), so a row can still be
+    recognised as continuing its predecessor even when some *other*
+    percentage in the same text mutated independently, such as a fund's
+    "since inception" return alongside its (separately parsed) "Return"
+    column.
     """
     return _PERCENTAGE_TOKEN_PATTERN.sub("", raw_text_context)
 
@@ -166,6 +166,7 @@ def validate_observations(
     """
     thresholds = thresholds or ValidationThresholds()
     records = list(records)
+    previous = list(previous or [])
     non_comparable_indices = [
         i
         for i, record in enumerate(records)
@@ -174,11 +175,10 @@ def validate_observations(
     ]
     if non_comparable_indices:
         disambiguated = _disambiguate_non_comparable_identities(
-            [records[i] for i in non_comparable_indices]
+            [records[i] for i in non_comparable_indices], previous
         )
         for i, record in zip(non_comparable_indices, disambiguated):
             records[i] = record
-    previous = list(previous or [])
     pairs = resolve_pairing(previous, records)
 
     claimed_previous_keys = {p.observation_key() for p in pairs.values()}
@@ -246,11 +246,68 @@ def _tagged(record: CompetitorRateRecord, discriminator_text: str) -> Competitor
     return record.model_copy(update={"product_name": f"{record.product_name} [{tag}]"})
 
 
+def _non_comparable_base_group_key(record: CompetitorRateRecord) -> tuple:
+    """Identity fields a disambiguation tag never touches.
+
+    Deliberately excludes ``product_name`` (the field the tag is appended
+    to) and anything derived from ``raw_text_context``, so this key means
+    the same thing for an untagged current record and an already-tagged
+    ``previous`` record -- letting :func:`_disambiguate_non_comparable_identities`
+    group both sides for matching without caring which run tagged either one.
+    """
+    return (
+        record.bank,
+        str(ProductType(record.product_type)),
+        record.rate_category,
+        record.term_months_normalised
+        if record.term_months_normalised is not None
+        else record.term_label_raw.lower(),
+        record.interest_payment_frequency,
+    )
+
+
+def _match_previous_non_comparable(
+    record: CompetitorRateRecord, candidates: Sequence[CompetitorRateRecord]
+) -> Optional[CompetitorRateRecord]:
+    """Find the one ``previous`` record ``record`` continues, if any.
+
+    Tries the precise match first (only the record's own advertised rate
+    stripped -- keeps a PIR/tax-band qualifier or any other non-identity
+    figure intact) and falls back to the permissive match (every percentage
+    stripped) only when the precise one finds nothing, so a genuinely
+    unrelated non-identity figure drifting between runs (e.g. a fund's
+    "since inception" return) doesn't break continuity. Either tier returns
+    a match only when it identifies exactly one candidate: an ambiguous tie
+    means "not confidently this one," not "guess," and falls through to
+    :func:`_disambiguate_non_comparable_identities` minting a fresh identity.
+    """
+    if not candidates:
+        return None
+    own_precise = _strip_advertised_rate_token(record.raw_text_context, record.advertised_rate_pct)
+    precise_matches = [
+        candidate
+        for candidate in candidates
+        if _strip_advertised_rate_token(candidate.raw_text_context, candidate.advertised_rate_pct)
+        == own_precise
+    ]
+    if len(precise_matches) == 1:
+        return precise_matches[0]
+    if precise_matches:
+        return None
+    own_permissive = _strip_all_percentage_tokens(record.raw_text_context)
+    permissive_matches = [
+        candidate
+        for candidate in candidates
+        if _strip_all_percentage_tokens(candidate.raw_text_context) == own_permissive
+    ]
+    return permissive_matches[0] if len(permissive_matches) == 1 else None
+
+
 def _disambiguate_non_comparable_identities(
     records: Sequence[CompetitorRateRecord],
+    previous: Sequence[CompetitorRateRecord],
 ) -> list[CompetitorRateRecord]:
-    """Give every ``non_comparable`` row in this batch a stable,
-    content-derived identity.
+    """Give every ``non_comparable`` row a stable, content-derived identity.
 
     ``rate_category="non_comparable"`` deliberately lumps heterogeneous rows
     (fund returns, PIE effective-rate columns) into one category with no
@@ -272,46 +329,58 @@ def _disambiguate_non_comparable_identities(
     touching ``raw_text_context`` itself, which stays the untouched source
     evidence.
 
-    Two tiers, tried in order per record, and escalating only where the
-    first can't tell rows in *this batch* apart:
+    A record's tag must not depend on which *sibling* rows happen to be in
+    this same batch: an earlier version disambiguated by whether two rows
+    collided once every percentage was stripped from their text, but that
+    made a surviving row's identity flip the moment a colliding sibling
+    stopped being collected (e.g. two rows told apart only by a PIR/tax-band
+    percentage -- "PIR 28%: 4.01%" vs "PIR 33%: 4.19%" -- one of them
+    disappearing let the survivor resolve to a different, sibling-free tag),
+    reading a completely unchanged row as withdrawn and a new one appearing.
 
-    1. Every percentage token stripped (:func:`_strip_all_percentage_tokens`).
-       Immune to any non-identity figure that mutates independently of the
-       row's own rate -- e.g. BNZ's ``bnz_term_deposits.html`` fund-return
-       rows carry both a "Return" (the parsed rate) and a "Since inception"
-       return in the same flattened text; the latter drifts over time with
-       no bearing on the row's identity, and including it in the hash made
-       every drift read as that product being withdrawn and a new one
-       appearing. Growth/Balanced/Moderate Fund rows already differ by fund
-       name alone once percentages are gone, so this tier resolves them with
-       no percentage-sensitivity at all.
-    2. Only the record's own advertised rate stripped (see
-       :func:`_strip_advertised_rate_token`), for the batch subset Tier 1
-       leaves colliding. Some non_comparable rows are told apart *only* by a
-       percentage -- e.g. a PIR/tax-band qualifier ("PIR 28%: 4.01%" vs "PIR
-       33%: 4.19%") -- and Tier 1 would collapse those onto one identity.
-       Tier 2 keeps that qualifier, at the cost of the same
-       independently-mutating-figure sensitivity Tier 1 exists to avoid, but
-       only for the rows that actually need a percentage to stay distinct.
-
-    A collision is scoped to the batch, not just Tier 1's raw text: two
-    records need every other field feeding
-    :meth:`~.models.CompetitorRateRecord.observation_key` to already match
-    (bank, term, frequency, category, ...) *and* the same Tier 1 text before
-    they're considered indistinguishable and escalated.
+    Instead, each record first looks for the ``previous`` record it
+    continues (see :func:`_match_previous_non_comparable`), scoped to
+    :func:`_non_comparable_base_group_key` so only rows that could plausibly
+    be the same position are compared, and inherits that record's exact
+    ``product_name`` (tag included) unchanged -- stable across runs by
+    construction, since it never depends on this batch's siblings at all,
+    only on history. A record with no continuing predecessor (first time
+    seen, or its old match was claimed by another record in this same
+    batch) gets a fresh tag from its own text with only its own advertised
+    rate stripped (see :func:`_strip_advertised_rate_token`): distinct
+    fresh rows are already told apart by their own content (a fund name, a
+    tax-band qualifier) without needing to know about each other, and any
+    future run re-establishes continuity through this same match.
     """
-    tier1 = [_tagged(record, _strip_all_percentage_tokens(record.raw_text_context)) for record in records]
-    tier1_keys = [record.observation_key() for record in tier1]
-    collisions = Counter(tier1_keys)
-    return [
-        _tagged(
-            original,
-            _strip_advertised_rate_token(original.raw_text_context, original.advertised_rate_pct),
-        )
-        if collisions[key] > 1
-        else candidate
-        for original, candidate, key in zip(records, tier1, tier1_keys)
-    ]
+    previous_by_base: dict[tuple, list[CompetitorRateRecord]] = {}
+    for candidate in previous:
+        if candidate.rate_category == "non_comparable" and ProductType(
+            candidate.product_type
+        ) is ProductType.TERM_DEPOSIT:
+            previous_by_base.setdefault(_non_comparable_base_group_key(candidate), []).append(
+                candidate
+            )
+
+    claimed_previous_ids: set[int] = set()
+    tagged: list[CompetitorRateRecord] = []
+    for record in records:
+        available = [
+            candidate
+            for candidate in previous_by_base.get(_non_comparable_base_group_key(record), [])
+            if id(candidate) not in claimed_previous_ids
+        ]
+        match = _match_previous_non_comparable(record, available)
+        if match is not None:
+            claimed_previous_ids.add(id(match))
+            tagged.append(record.model_copy(update={"product_name": match.product_name}))
+        else:
+            tagged.append(
+                _tagged(
+                    record,
+                    _strip_advertised_rate_token(record.raw_text_context, record.advertised_rate_pct),
+                )
+            )
+    return tagged
 
 
 def _conflicting_rates_within_batch(

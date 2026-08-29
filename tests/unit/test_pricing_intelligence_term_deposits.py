@@ -584,7 +584,12 @@ def test_non_comparable_identity_is_stable_across_a_mutable_sibling_figure(make_
     "1 year | 12.47% | 15.28% | Growth Fund | Return". That sibling figure
     drifting between collections, with the row's own rate unchanged, must
     not change the row's identity -- otherwise every drift reads as the
-    product being withdrawn and a new one appearing."""
+    product being withdrawn and a new one appearing.
+
+    Exercised the way production actually calls validate_observations(): the
+    second collection's ``previous`` is the first collection's own accepted
+    (already-tagged) output, since identity now comes from continuity with
+    history, not from recomputing fresh from this run's raw text alone."""
     from balance_pricing_engine.pricing_intelligence.validation import (
         validate_observations,
     )
@@ -596,6 +601,8 @@ def test_non_comparable_identity_is_stable_across_a_mutable_sibling_figure(make_
         rate_pct=12.47,
         raw_text_context="1 year | 12.47% | 15.28% | Growth Fund | Return",
     )
+    tagged_before = validate_observations([before]).accepted[0]
+
     after = make_record(
         bank="BNZ",
         product_type="term_deposit",
@@ -603,11 +610,53 @@ def test_non_comparable_identity_is_stable_across_a_mutable_sibling_figure(make_
         rate_pct=12.47,
         raw_text_context="1 year | 12.47% | 16.02% | Growth Fund | Return",
     )
+    tagged_after = validate_observations([after], previous=[tagged_before]).accepted[0]
 
-    before_key = validate_observations([before]).accepted[0].observation_key()
-    after_key = validate_observations([after]).accepted[0].observation_key()
+    assert tagged_before.observation_key() == tagged_after.observation_key()
 
-    assert before_key == after_key
+
+def test_non_comparable_identity_survives_a_colliding_sibling_disappearing(make_record):
+    """Two rows told apart only by a PIR/tax-band percentage must keep their
+    own separately-established identity even after the other one stops
+    being collected.
+
+    A batch-relative disambiguation rule (an earlier design) would flip the
+    survivor onto a different identity the moment it stops colliding with
+    its sibling, reading a completely unchanged row as withdrawn and a new
+    one appearing. Continuity is anchored in ``previous`` instead, which
+    still holds both rows even though only one is collected again."""
+    from balance_pricing_engine.pricing_intelligence.validation import (
+        validate_observations,
+    )
+
+    pir_28 = make_record(
+        bank="ANZ",
+        product_type="term_deposit",
+        rate_category="non_comparable",
+        rate_pct=4.01,
+        raw_text_context="PIR 28%: 4.01%",
+    )
+    pir_33 = make_record(
+        bank="ANZ",
+        product_type="term_deposit",
+        rate_category="non_comparable",
+        rate_pct=4.19,
+        raw_text_context="PIR 33%: 4.19%",
+    )
+    first_run = validate_observations([pir_28, pir_33]).accepted
+    tagged_28 = next(r for r in first_run if "28" in r.raw_text_context)
+
+    pir_28_again = make_record(
+        bank="ANZ",
+        product_type="term_deposit",
+        rate_category="non_comparable",
+        rate_pct=4.01,
+        raw_text_context="PIR 28%: 4.01%",
+    )
+    second_run = validate_observations([pir_28_again], previous=first_run).accepted
+
+    assert len(second_run) == 1
+    assert second_run[0].observation_key() == tagged_28.observation_key()
 
 
 def test_non_comparable_rows_stay_distinct_despite_a_shared_sibling_figure(make_record):
