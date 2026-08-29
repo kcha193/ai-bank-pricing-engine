@@ -991,8 +991,11 @@ class ObservationStore:
             "  ORDER BY first_observed_at DESC, id DESC LIMIT 1"
             ") AND NOT EXISTS ("
             "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
-            "  AND rc.change_type = 'REMOVED_PRODUCT' AND rc.detected_at > o.last_seen_at"
-            ") " + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra="") + "ORDER BY bank, term_months",
+            "  AND rc.change_type = 'REMOVED_PRODUCT' AND "
+            + _run_ordered_after("rc.run_id", "rc.detected_at", "o.last_seen_run_id", "o.last_seen_at")
+            + ") "
+            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra="")
+            + "ORDER BY bank, term_months",
             (_product_value(product_type),),
         ).fetchall()
         return [_row_to_record(row) for row in rows]
@@ -1028,8 +1031,9 @@ class ObservationStore:
             "  ORDER BY first_observed_at DESC, id DESC LIMIT 1"
             ") AND NOT EXISTS ("
             "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
-            "  AND rc.change_type = 'REMOVED_PRODUCT' AND rc.detected_at > o.last_seen_at"
-            ") "
+            "  AND rc.change_type = 'REMOVED_PRODUCT' AND "
+            + _run_ordered_after("rc.run_id", "rc.detected_at", "o.last_seen_run_id", "o.last_seen_at")
+            + ") "
             + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(
                 extra=" AND o3.validation_status != 'warning'"
             )

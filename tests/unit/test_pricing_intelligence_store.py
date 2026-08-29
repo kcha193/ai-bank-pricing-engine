@@ -772,6 +772,29 @@ def test_current_observations_exclude_a_confirmed_withdrawal(store, make_record)
     assert {record.bank for record in store.get_current_observations()} == {"ANZ"}
 
 
+def test_current_observations_exclude_a_same_timestamp_withdrawal(store, make_record):
+    """A product introduced in the earlier of two same-timestamp runs and
+    withdrawn in the later one must not linger in the current view --
+    rc.detected_at and the row's own last_seen_at tie at the identical
+    timestamp, so the withdrawal predicate needs run position, not a plain
+    detected_at > last_seen_at comparison, to recognise the withdrawal as
+    coming after the row was last confirmed."""
+    store.record_observations(
+        [make_record(bank="BNZ", rate_pct=4.85)], run_id="run-earlier", observed_at=DAY_TWO
+    )
+    later = store.record_observations([], run_id="run-later", observed_at=DAY_TWO)
+    changes = detect_changes(
+        previous=store.get_current_observations(),
+        current=[],
+        detected_at=DAY_TWO,
+        banks_collected=["BNZ"],
+        run_id=later.run_id,
+    )
+    store.record_changes(changes)
+
+    assert store.get_current_observations() == []
+
+
 def test_current_observations_exclude_a_superseded_eligibility_state(store, make_record):
     """An old eligibility state must not sit alongside its replacement forever."""
     store.record_observations(
@@ -1130,6 +1153,24 @@ def test_last_confirmed_observations_exclude_a_superseded_eligibility_state(stor
 
     assert len(confirmed) == 1
     assert confirmed[0].max_lvr == 0.75
+
+
+def test_last_confirmed_observations_exclude_a_same_timestamp_withdrawal(store, make_record):
+    """Same fix as get_current_observations(), for the confirmed-state view."""
+    store.record_observations(
+        [make_record(bank="BNZ", rate_pct=4.85)], run_id="run-earlier", observed_at=DAY_TWO
+    )
+    later = store.record_observations([], run_id="run-later", observed_at=DAY_TWO)
+    changes = detect_changes(
+        previous=store.get_current_observations(),
+        current=[],
+        detected_at=DAY_TWO,
+        banks_collected=["BNZ"],
+        run_id=later.run_id,
+    )
+    store.record_changes(changes)
+
+    assert store.get_last_confirmed_observations() == []
 
 
 def test_last_confirmed_observations_keep_a_confirmed_state_even_when_superseded_by_a_warning(
