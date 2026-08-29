@@ -471,6 +471,41 @@ def test_a_pre_column_database_migrates_first_seen_run_id(store, make_record):
     assert row["first_seen_run_id"] == write_result.run_id
 
 
+def test_a_mixed_legacy_bootstrap_run_backfills_first_seen_run_id_for_both_products(
+    store, make_record
+):
+    """A pre-column bootstrap run that collected both products at once has
+    exactly one collection_runs row, so _migrate_collection_runs_product_type
+    can only backfill a single product_type label onto that row (whichever
+    its own priority passes recovered evidence for). Without a fallback,
+    the *other* product's observations would find no collection_runs row
+    matching their own product_type at that timestamp and be left with
+    first_seen_run_id permanently NULL -- invisible to
+    get_previous_run_started_at() for that product even though the run
+    genuinely covered it. See _migrate_observations_first_seen_run_id()'s
+    docstring for the unfiltered fallback pass that recovers this."""
+    loan_record = make_record(product_type=ProductType.HOME_LOAN)
+    deposit_record = make_record(
+        product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit"
+    )
+    # Same run_id for both calls simulates one physical legacy run that
+    # collected both products at once, before product_type was tracked
+    # per collection.
+    store.record_observations([loan_record], run_id="legacy-run", observed_at=DAY_ONE)
+    store.record_observations([deposit_record], run_id="legacy-run", observed_at=DAY_ONE)
+
+    # Simulate a database that predates both columns.
+    store._connection.execute("ALTER TABLE observations DROP COLUMN first_seen_run_id")
+    store._connection.execute("ALTER TABLE collection_runs DROP COLUMN product_type")
+    store._create_schema()
+
+    rows = store._connection.execute(
+        "SELECT observation_key, first_seen_run_id FROM observations ORDER BY observation_key"
+    ).fetchall()
+    assert len(rows) == 2
+    assert all(row["first_seen_run_id"] == "legacy-run" for row in rows)
+
+
 def test_simultaneous_single_product_runs_are_not_cross_contaminated(store, make_record):
     """A caller collecting both products from one shared capture moment
     (e.g. the same captured_at_utc passed to two separate, single-product

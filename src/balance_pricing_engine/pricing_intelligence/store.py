@@ -389,8 +389,23 @@ class ObservationStore:
         pass applies, and for the same reason: it is a one-time correction
         for existing rows, not a live query path. It also runs after that
         method, so ``collection_runs.product_type`` is already backfilled
-        and narrows the match to the correct product where the two runs
-        would otherwise collide on ``started_at`` alone.
+        and narrows the match to the correct product where two runs would
+        otherwise collide on ``started_at`` alone.
+
+        That product filter is itself only safe when the legacy run was
+        genuinely single-product. A pre-column bootstrap run that collected
+        *both* products at once has exactly one ``collection_runs`` row, so
+        ``_migrate_collection_runs_product_type`` can only have backfilled a
+        single ``product_type`` label onto it -- whichever the priority
+        passes in its docstring recovered evidence for. That mislabels the
+        *other* product's observations from the same run: the product-
+        matched pass below finds no ``collection_runs`` row at all for them
+        and leaves ``first_seen_run_id`` ``NULL``, making that run invisible
+        to :meth:`get_previous_run_started_at` for that product even though
+        it was genuinely present. A second, unfiltered pass recovers those
+        rows by relaxing to a timestamp-only match -- but only for what the
+        first pass left ``NULL``, so it never overrides a correct
+        product-matched result with a same-timestamp different-product run.
         """
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(observations)")}
         if "first_seen_run_id" in columns:
@@ -403,6 +418,13 @@ class ObservationStore:
             "  AND cr.product_type = observations.product_type "
             "  ORDER BY cr.rowid LIMIT 1"
             ")"
+        )
+        connection.execute(
+            "UPDATE observations SET first_seen_run_id = ("
+            "  SELECT cr.run_id FROM collection_runs cr "
+            "  WHERE cr.started_at = observations.first_observed_at "
+            "  ORDER BY cr.rowid LIMIT 1"
+            ") WHERE first_seen_run_id IS NULL"
         )
 
     # ----------------------------------------------------------------- writes

@@ -133,6 +133,15 @@ def _build_parser() -> argparse.ArgumentParser:
     changes.add_argument("--bank", default=None)
     changes.add_argument("--term", type=int, default=None)
     changes.add_argument("--alerts", action="store_true", help="Render as formatted alerts")
+    changes.add_argument(
+        "--category",
+        default=None,
+        help=(
+            "Rate category to filter to (default: 'special' for home loans, "
+            "'term_deposit' for term deposits). Pass '--category all' to see "
+            "every stored category, e.g. a mortgage 'standard' repricing."
+        ),
+    )
 
     history = subparsers.add_parser("history", help="Show advertised rate history")
     history.add_argument("--bank", default=None)
@@ -278,12 +287,19 @@ def _snapshot(service: PricingIntelligenceService, args: argparse.Namespace) -> 
 
 
 def _changes(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
+    # Unlike snapshot/history, "changes" lists discrete events rather than a
+    # ranked comparison table, so unlike _default_category()'s other callers
+    # it also accepts "all" to mean no category filter at all (get_changes()
+    # already treats rate_category=None that way) -- without this, a
+    # non-default category such as a mortgage "standard" repricing or a
+    # deposit "special" was unreachable through this command.
+    rate_category = None if args.category == "all" else _default_category(args)
     changes = service.get_changes(
         days=args.days,
         bank=args.bank,
         term_months=args.term,
         product_type=_product(args),
-        rate_category=_default_category(args),
+        rate_category=rate_category,
     )
     if not changes:
         print(f"No changes detected in the last {args.days} days.")
@@ -293,8 +309,12 @@ def _changes(service: PricingIntelligenceService, args: argparse.Namespace) -> i
         dispatch_alerts(
             format_alerts(
                 changes,
+                # rate_category=None here resolves to the product's default
+                # comparison tier (via _resolve_rate_category), not "every
+                # category" -- a ranked snapshot can't mix categories, so
+                # "all" falls back to the same default a market view needs.
                 service.get_market_snapshot(
-                    product_type=_product(args), rate_category=_default_category(args)
+                    product_type=_product(args), rate_category=rate_category
                 ),
             ),
             ConsoleAlertSink(),

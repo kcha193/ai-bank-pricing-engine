@@ -309,6 +309,72 @@ def test_changes_alert_identifies_the_selected_deposit_market(mixed_product_data
     assert "NZ MORTGAGE RATE CHANGE" not in output
 
 
+@pytest.fixture
+def standard_category_database(tmp_path, make_record):
+    """A mortgage market with one detected change recorded under a
+    non-default rate category ("standard", not "special")."""
+    path = tmp_path / "observations.db"
+    standard_record = make_record(rate_category="standard", observed_at=DAY_TWO)
+    change = RateChange(
+        observation_key=standard_record.observation_key(),
+        bank=standard_record.bank,
+        product_type=ProductType(standard_record.product_type),
+        product_name=standard_record.product_name,
+        rate_category=standard_record.rate_category,
+        term_months=standard_record.term_months_normalised,
+        change_type=ChangeType.RATE_INCREASE,
+        detected_at=DAY_TWO,
+        previous_rate_pct=standard_record.advertised_rate_pct - 0.10,
+        current_rate_pct=standard_record.advertised_rate_pct,
+        change_bps=10.0,
+    )
+    with ObservationStore(path) as store:
+        store.record_observations([standard_record], observed_at=DAY_TWO)
+        store.record_changes([change])
+    return str(path)
+
+
+def test_changes_command_default_category_misses_a_standard_repricing(
+    standard_category_database, capsys
+):
+    exit_code = run(["--database", standard_category_database, "changes", "--days", "7"])
+
+    assert exit_code == 0
+    assert "No changes detected" in capsys.readouterr().out
+
+
+def test_changes_command_category_all_surfaces_a_standard_repricing(
+    standard_category_database, capsys
+):
+    exit_code = run(
+        ["--database", standard_category_database, "changes", "--days", "7", "--category", "all"]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "(1 events)" in output
+
+
+def test_changes_command_explicit_category_reaches_a_standard_repricing(
+    standard_category_database, capsys
+):
+    exit_code = run(
+        [
+            "--database",
+            standard_category_database,
+            "changes",
+            "--days",
+            "7",
+            "--category",
+            "standard",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "(1 events)" in output
+
+
 def test_changes_command_can_render_as_alerts(repriced_database, capsys):
     exit_code = run(["--database", repriced_database, "changes", "--days", "7", "--alerts"])
     output = capsys.readouterr().out
