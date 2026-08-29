@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS observations (
     validation_status   TEXT NOT NULL DEFAULT 'unvalidated',
     validation_warnings TEXT NOT NULL DEFAULT '[]',
     first_observed_at   TEXT NOT NULL,
+    first_seen_run_id   TEXT,
     last_seen_at        TEXT NOT NULL,
     last_seen_run_id    TEXT NOT NULL,
     observation_count   INTEGER NOT NULL DEFAULT 1
@@ -272,6 +273,7 @@ class ObservationStore:
         with self._transaction() as connection:
             connection.executescript(_SCHEMA)
             self._migrate_collection_runs_product_type(connection)
+            self._migrate_observations_first_seen_run_id(connection)
             row = connection.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
                 connection.execute(
@@ -314,6 +316,18 @@ class ObservationStore:
           pass can no longer find it via ``last_seen_run_id``, but the third
           still can via ``first_observed_at``.
 
+        The third pass matches on ``started_at`` value rather than
+        ``run_id`` -- ``observations`` has no column recording which run
+        first introduced a row, so this is a one-time, best-effort backfill
+        for a database that predates :meth:`_migrate_observations_first_seen_run_id`
+        (which adds exactly that column, and is what the *live* query
+        methods correlate through going forward -- see its own docstring for
+        why the ``started_at``-value approach is not safe to use there).
+        A run that shares its ``started_at`` with another run of a different
+        product (both migrated in the very same pass) could therefore still
+        be mislabelled here; this is an accepted, bounded imprecision for
+        one-time historical backfill, not an ongoing correctness bug.
+
         A truly ancient run with no trace in any of the three -- superseded
         in ``observations`` on both timestamps and with zero recorded
         changes -- has no surviving way to recover its product, and keeps
@@ -342,6 +356,53 @@ class ObservationStore:
             "  SELECT o.product_type FROM observations o "
             "  WHERE o.first_observed_at = collection_runs.started_at LIMIT 1"
             ") WHERE started_at IN (SELECT DISTINCT first_observed_at FROM observations)"
+        )
+
+    def _migrate_observations_first_seen_run_id(self, connection: sqlite3.Connection) -> None:
+        """Add ``observations.first_seen_run_id`` for a database created
+        before this column existed.
+
+        ``last_seen_run_id`` is overwritten forward on every re-observation,
+        so it cannot answer "which run first introduced this row" once a
+        later collection has reconfirmed it -- exactly the gap
+        :meth:`latest_run_id`/:meth:`get_previous_run_started_at` need
+        closed for a mixed-product or bootstrapping legacy run (see
+        :meth:`_migrate_collection_runs_product_type`'s docstring). This
+        column is the direct fix: set once at insertion in
+        :meth:`record_observations` and never touched again, so those
+        methods can correlate ``observations`` to the run that introduced
+        them by an actual ``run_id`` rather than by matching
+        ``first_observed_at`` against ``collection_runs.started_at`` --
+        matching on that shared *timestamp value* is unsafe as a live,
+        ongoing correlation: two different runs captured with the same
+        ``observed_at`` (e.g. a caller collecting home-loan and
+        term-deposit batches from one shared capture moment) would then
+        each appear to contain the other's rows too, and the query's own
+        ``ORDER BY ... rowid DESC`` tie-break could return the wrong run
+        for either product -- a live bug, not just a one-time migration
+        imprecision, because it would recur on every simultaneous
+        multi-product collection rather than being confined to backfilling
+        historical data once.
+
+        The backfill below still uses the timestamp match -- the same
+        caveat as :meth:`_migrate_collection_runs_product_type`'s own third
+        pass applies, and for the same reason: it is a one-time correction
+        for existing rows, not a live query path. It also runs after that
+        method, so ``collection_runs.product_type`` is already backfilled
+        and narrows the match to the correct product where the two runs
+        would otherwise collide on ``started_at`` alone.
+        """
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(observations)")}
+        if "first_seen_run_id" in columns:
+            return
+        connection.execute("ALTER TABLE observations ADD COLUMN first_seen_run_id TEXT")
+        connection.execute(
+            "UPDATE observations SET first_seen_run_id = ("
+            "  SELECT cr.run_id FROM collection_runs cr "
+            "  WHERE cr.started_at = observations.first_observed_at "
+            "  AND cr.product_type = observations.product_type "
+            "  ORDER BY cr.rowid LIMIT 1"
+            ")"
         )
 
     # ----------------------------------------------------------------- writes
@@ -732,10 +793,15 @@ class ObservationStore:
         backfills from, not just two of them: a mixed *bootstrap* run can have
         zero ``rate_changes`` for *either* product, and once both products'
         rows have since been reconfirmed unchanged, neither still shows this
-        run via ``last_seen_run_id`` either -- ``observations.first_observed_at``
-        (frozen at insertion, unlike ``last_seen_run_id``) is then the only
+        run via ``last_seen_run_id`` either -- ``observations.first_seen_run_id``
+        (frozen at insertion, unlike ``last_seen_run_id``; see
+        :meth:`_migrate_observations_first_seen_run_id`) is then the only
         surviving trace for the product the migration's single-column
-        backfill didn't happen to pick.
+        backfill didn't happen to pick. Correlated by that column's actual
+        ``run_id``, not by matching ``first_observed_at`` against
+        ``started_at`` -- two runs captured with the same timestamp (e.g. a
+        caller collecting both products from one shared capture moment)
+        would otherwise each appear to contain the other's rows too.
         """
         if product_type is None:
             row = self._connection.execute(
@@ -750,7 +816,7 @@ class ObservationStore:
                 "OR EXISTS (SELECT 1 FROM rate_changes rc "
                 "           WHERE rc.run_id = cr.run_id AND rc.product_type = ?) "
                 "OR EXISTS (SELECT 1 FROM observations o2 "
-                "           WHERE o2.first_observed_at = cr.started_at AND o2.product_type = ?) "
+                "           WHERE o2.first_seen_run_id = cr.run_id AND o2.product_type = ?) "
                 "ORDER BY cr.started_at DESC, cr.rowid DESC LIMIT 1",
                 (value, value, value, value),
             ).fetchone()
@@ -1051,7 +1117,10 @@ class ObservationStore:
             # migration's single-column backfill happened to pick -- all
             # three signals _migrate_collection_runs_product_type() backfills
             # from, including a mixed bootstrap run's only surviving trace,
-            # first_observed_at.
+            # first_seen_run_id (correlated by actual run_id, like
+            # last_seen_run_id/rate_changes.run_id above -- not by matching
+            # first_observed_at against started_at, which would also match
+            # an unrelated run captured at the same timestamp).
             value = _product_value(product_type)
             previous = self._connection.execute(
                 "SELECT cr.started_at FROM collection_runs cr WHERE cr.started_at < ? "
@@ -1061,7 +1130,7 @@ class ObservationStore:
                 "     OR EXISTS (SELECT 1 FROM rate_changes rc "
                 "                WHERE rc.run_id = cr.run_id AND rc.product_type = ?) "
                 "     OR EXISTS (SELECT 1 FROM observations o2 "
-                "                WHERE o2.first_observed_at = cr.started_at AND o2.product_type = ?)) "
+                "                WHERE o2.first_seen_run_id = cr.run_id AND o2.product_type = ?)) "
                 "ORDER BY cr.started_at DESC, cr.rowid DESC LIMIT 1",
                 (_iso(started_at), value, value, value, value),
             ).fetchone()
@@ -1198,6 +1267,7 @@ def _record_to_row(record: CompetitorRateRecord, timestamp: str, run_id: str) ->
         "validation_status": record.validation_status,
         "validation_warnings": json.dumps(record.validation_warnings),
         "first_observed_at": timestamp,
+        "first_seen_run_id": run_id,
         "last_seen_at": timestamp,
         "last_seen_run_id": run_id,
         "observation_count": 1,

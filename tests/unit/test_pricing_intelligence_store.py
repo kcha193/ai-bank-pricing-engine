@@ -450,6 +450,57 @@ def test_a_pre_column_migration_recovers_a_reconfirmed_bootstrap_run(store, make
     assert row["product_type"] == "term_deposit"
 
 
+def test_a_pre_column_database_migrates_first_seen_run_id(store, make_record):
+    """A database created before observations.first_seen_run_id existed
+    must gain it via migration (backfilled from the matching
+    collection_runs row, scoped by product_type to avoid the same
+    cross-contamination a live, timestamp-only correlation would risk --
+    see _migrate_observations_first_seen_run_id()'s docstring), not raise
+    when opened, and not merely default to NULL forever."""
+    record = make_record(product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")
+    write_result = store.record_observations([record], observed_at=DAY_ONE)
+
+    # Simulate a database that predates the column: drop it, then reopen.
+    store._connection.execute("ALTER TABLE observations DROP COLUMN first_seen_run_id")
+    store._create_schema()
+
+    row = store._connection.execute(
+        "SELECT first_seen_run_id FROM observations WHERE observation_key = ?",
+        (record.observation_key(),),
+    ).fetchone()
+    assert row["first_seen_run_id"] == write_result.run_id
+
+
+def test_simultaneous_single_product_runs_are_not_cross_contaminated(store, make_record):
+    """A caller collecting both products from one shared capture moment
+    (e.g. the same captured_at_utc passed to two separate, single-product
+    record_observations() calls) produces two collection_runs rows with the
+    same started_at but different run_ids. Correlating first-seen evidence
+    by matching started_at values (rather than by the run_id
+    first_seen_run_id actually references) would make each run appear to
+    contain the other's rows too, and latest_run_id()'s own
+    ORDER BY ... rowid DESC tie-break could then return the wrong run_id
+    for either product -- leaving get_latest_rates() for one product
+    filtering on a last_seen_run_id nothing points to."""
+    home_loan_record = make_record(product_type=ProductType.HOME_LOAN)
+    deposit_record = make_record(product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")
+    home_loan_write = store.record_observations([home_loan_record], observed_at=DAY_ONE)
+    deposit_write = store.record_observations([deposit_record], observed_at=DAY_ONE)
+    assert home_loan_write.run_id != deposit_write.run_id
+    assert store.get_run_started_at(home_loan_write.run_id) == store.get_run_started_at(
+        deposit_write.run_id
+    )
+
+    assert store.latest_run_id(product_type=ProductType.HOME_LOAN) == home_loan_write.run_id
+    assert store.latest_run_id(product_type=ProductType.TERM_DEPOSIT) == deposit_write.run_id
+    assert [r.bank for r in store.get_latest_rates(product_type=ProductType.HOME_LOAN)] == [
+        home_loan_record.bank
+    ]
+    assert [
+        r.bank for r in store.get_latest_rates(product_type=ProductType.TERM_DEPOSIT)
+    ] == [deposit_record.bank]
+
+
 def test_a_legacy_run_that_mixed_both_products_stays_findable_under_either(store, make_record):
     """Before record_observations() rejected a mixed batch, a database could
     hold a legacy run whose single collection_runs row ends up labelled with
