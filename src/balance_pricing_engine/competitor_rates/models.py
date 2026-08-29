@@ -146,12 +146,21 @@ class CompetitorRateRecord(BaseModel):
     @classmethod
     def validate_interest_payment_frequency(cls, value: str) -> str:
         tokens = value.split("+")
-        if len(tokens) != len(set(tokens)) or not all(
-            token in _CANONICAL_INTEREST_FREQUENCIES for token in tokens
+        if (
+            len(tokens) != len(set(tokens))
+            or not all(token in _CANONICAL_INTEREST_FREQUENCIES for token in tokens)
+            # "unknown" means no frequency was published at all -- mutually
+            # exclusive with a real one. normalise_frequency() only ever
+            # returns it alone (never alongside a matched keyword), so
+            # "unknown+monthly" is not a legitimate combination: it would
+            # make _select_frequency() treat the row as offering monthly
+            # payments it never actually advertised.
+            or ("unknown" in tokens and len(tokens) > 1)
         ):
             raise ValueError(
                 "interest_payment_frequency must be a '+'-joined combination of "
-                f"{sorted(_CANONICAL_INTEREST_FREQUENCIES)} with no duplicates, got {value!r}"
+                f"{sorted(_CANONICAL_INTEREST_FREQUENCIES)} with no duplicates, and 'unknown' "
+                f"only on its own, got {value!r}"
             )
         # Sorted to match normalise_frequency()'s own canonical ordering: this
         # field participates in observation_key(), so "monthly+at_maturity"

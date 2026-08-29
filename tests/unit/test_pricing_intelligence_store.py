@@ -1031,6 +1031,61 @@ def test_observations_as_of_do_not_apply_a_same_timestamp_later_withdrawal(store
     assert {record.bank for record in as_of_later} == {"ANZ"}
 
 
+def test_observations_as_of_apply_a_same_run_withdrawal_of_a_just_introduced_state(
+    store, make_record
+):
+    """A product introduced in the earlier of two same-timestamp runs and
+    withdrawn in the later one must be excluded once reconstruction reaches
+    that later run. rc.detected_at and the state's own first_observed_at tie
+    at the identical timestamp here, so the withdrawal predicate needs run
+    position -- not a plain detected_at > first_observed_at comparison -- to
+    recognise the withdrawal as coming after the introduction."""
+    store.record_observations(
+        [make_record(bank="BNZ", rate_pct=4.85)], run_id="run-earlier", observed_at=DAY_TWO
+    )
+    later = store.record_observations([], run_id="run-later", observed_at=DAY_TWO)
+    changes = detect_changes(
+        previous=store.get_current_observations(),
+        current=[],
+        detected_at=DAY_TWO,
+        banks_collected=["BNZ"],
+        run_id=later.run_id,
+    )
+    store.record_changes(changes)
+
+    as_of_later = store.get_observations_as_of(as_of=DAY_TWO, before_run_id=later.run_id)
+
+    assert as_of_later == []
+
+
+def test_observations_as_of_apply_a_same_timestamp_later_eligibility_transition(
+    store, make_record
+):
+    """An eligibility transition recorded by a LATER same-timestamp run must
+    still retire the OLD state from a reconstruction anchored at that later
+    run, even when the old state's own last confirmation happened at the
+    identical timestamp -- o3.first_observed_at and o.last_seen_at tie here,
+    so the supersession predicate needs run position, not a plain >
+    timestamp comparison, to recognise the newer key as coming after."""
+    store.record_observations(
+        [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.79)], observed_at=DAY_ONE
+    )
+    store.record_observations(
+        [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.79)],  # reconfirmed, unchanged
+        run_id="run-earlier",
+        observed_at=DAY_TWO,
+    )
+    later = store.record_observations(
+        [make_record(max_lvr=0.75, min_equity=0.25, rate_pct=4.99)],  # new eligibility key
+        run_id="run-later",
+        observed_at=DAY_TWO,
+    )
+
+    as_of_later = store.get_observations_as_of(as_of=DAY_TWO, before_run_id=later.run_id)
+
+    assert [record.max_lvr for record in as_of_later] == [0.75]
+
+
 def test_a_product_returning_after_a_withdrawal_starts_a_fresh_state(store, make_record):
     """A re-add is not a continuation: it must not inherit the pre-gap first_observed_at."""
     _withdraw_bnz_on_day_two(store, make_record)

@@ -154,16 +154,65 @@ _SAME_TERM_IDENTITY = (
     ")"
 )
 
+def _run_ordered_after(
+    later_run_column: str,
+    later_timestamp_column: str,
+    earlier_run_column: str,
+    earlier_timestamp_column: str,
+) -> str:
+    """SQL fragment: true when the run named by ``later_run_column`` comes
+    strictly after the run named by ``earlier_run_column``.
+
+    Compares each side's ``collection_runs`` row by ``(started_at, rowid)``
+    -- the same ordering :meth:`ObservationStore.latest_run_id` and
+    :meth:`ObservationStore._as_of_cutoff` use -- when both correlate to a
+    stored run, so two events sharing a timestamp are still ordered
+    correctly by which run actually happened first. Falls back to comparing
+    ``later_timestamp_column``/``earlier_timestamp_column`` directly when
+    either run_id does not correlate to a stored run at all (matching this
+    comparison's original, timestamp-only behaviour for that case -- see
+    :meth:`ObservationStore._as_of_cutoff`'s docstring for why an
+    unresolvable run_id needs this fallback).
+
+    Unlike ``_as_of_cutoff()``'s fragments (which compare one row's
+    introducing run against a single fixed reference run, supplied via query
+    params), this compares two run_id *columns* against each other directly
+    within the same query -- e.g. "did this withdrawal happen in a run
+    strictly after the one that introduced this state" or "did this
+    eligibility-superseding sibling first appear in a run strictly after the
+    one that last confirmed this row" -- so it takes no params of its own;
+    both operands are column references already present in the query.
+    """
+    return (
+        "("
+        f"EXISTS (SELECT 1 FROM collection_runs cr_later, collection_runs cr_earlier "
+        f"WHERE cr_later.run_id = {later_run_column} AND cr_earlier.run_id = {earlier_run_column} "
+        "AND (cr_later.started_at > cr_earlier.started_at "
+        "OR (cr_later.started_at = cr_earlier.started_at AND cr_later.rowid > cr_earlier.rowid))) "
+        "OR ("
+        f"(NOT EXISTS (SELECT 1 FROM collection_runs WHERE run_id = {later_run_column}) "
+        f"OR NOT EXISTS (SELECT 1 FROM collection_runs WHERE run_id = {earlier_run_column})) "
+        f"AND {later_timestamp_column} > {earlier_timestamp_column}"
+        ")"
+        ")"
+    )
+
+
 # Excludes row `o` when another key `o3` in the same eligibility group (same
 # bank/term/category/frequency/product_name/balance tier, i.e. the same
 # product under a different eligibility condition -- see
 # CompetitorRateRecord.eligibility_group_key()) first appeared after `o` was
 # last confirmed: that is the signature of an eligibility-edit transition,
 # where change detection deliberately leaves the old key's row untouched
-# (see changes.resolve_pairing()) rather than closing it out. `{extra}` lets
-# a caller reconstructing a historical point in time (get_observations_as_of)
-# additionally bound `o3` to have existed by that point too -- an eligibility
-# edit that happens after the reconstruction point does not apply.
+# (see changes.resolve_pairing()) rather than closing it out. Compared by run
+# position (see _run_ordered_after()), not a plain first_observed_at/
+# last_seen_at timestamp check: two runs sharing a timestamp -- the old key
+# last confirmed by one, the new key introduced by the other -- would
+# otherwise fail this test in whichever direction ties read as "not after".
+# `{extra}` lets a caller reconstructing a historical point in time
+# (get_observations_as_of) additionally bound `o3` to have existed by that
+# point too -- an eligibility edit that happens after the reconstruction
+# point does not apply.
 _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY = (
     "AND NOT EXISTS ("
     "  SELECT 1 FROM observations o3 WHERE o3.observation_key <> o.observation_key "
@@ -172,7 +221,11 @@ _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY = (
     "  AND o3.interest_payment_frequency = o.interest_payment_frequency "
     "  AND LOWER(o3.product_name) = LOWER(o.product_name) "
     "  AND o3.min_balance IS o.min_balance AND o3.max_balance IS o.max_balance "
-    "  AND o3.first_observed_at > o.last_seen_at{extra}"
+    "  AND "
+    + _run_ordered_after(
+        "o3.first_seen_run_id", "o3.first_observed_at", "o.last_seen_run_id", "o.last_seen_at"
+    )
+    + "{extra}"
     ") "
 )
 
@@ -1139,8 +1192,9 @@ class ObservationStore:
             "AND NOT EXISTS ("
             "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
             f"  AND rc.change_type = 'REMOVED_PRODUCT' AND {cutoff.withdrawal} "
-            "  AND rc.detected_at > o.first_observed_at"
-            ") "
+            "  AND "
+            + _run_ordered_after("rc.run_id", "rc.detected_at", "o.first_seen_run_id", "o.first_observed_at")
+            + ") "
             + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra=f" AND {cutoff.eligibility}")
             + "ORDER BY bank, term_months",
             (
@@ -1188,8 +1242,9 @@ class ObservationStore:
             "AND NOT EXISTS ("
             "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
             f"  AND rc.change_type = 'REMOVED_PRODUCT' AND {cutoff.withdrawal} "
-            "  AND rc.detected_at > o.first_observed_at"
-            ") "
+            "  AND "
+            + _run_ordered_after("rc.run_id", "rc.detected_at", "o.first_seen_run_id", "o.first_observed_at")
+            + ") "
             + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(
                 extra=f" AND {cutoff.eligibility} AND o3.validation_status != 'warning'"
             )

@@ -110,6 +110,15 @@ def test_interest_payment_frequency_rejects_a_duplicated_token():
         _make_deposit_record(interest_payment_frequency="monthly+monthly")
 
 
+def test_interest_payment_frequency_rejects_unknown_combined_with_a_real_frequency():
+    """"unknown" means no frequency was published at all -- normalise_frequency()
+    only ever returns it alone, never alongside a matched keyword. Accepting
+    "unknown+monthly" would make _select_frequency() treat the row as
+    offering monthly payments it never actually advertised."""
+    with pytest.raises(ValidationError):
+        _make_deposit_record(interest_payment_frequency="unknown+monthly")
+
+
 def test_category_agnostic_key_matches_the_method_it_backs():
     """The standalone function must agree with the instance method it backs --
     extractors.parse_html_rates() calls the function directly (on a row that
