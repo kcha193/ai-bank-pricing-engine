@@ -171,7 +171,7 @@ def _select_frequency(
 ) -> CompetitorRateRecord:
     for frequency in preference:
         for record in records:
-            if record.interest_payment_frequency == frequency:
+            if frequency in record.interest_payment_frequency.split("+"):
                 return record
     return records[0]
 
