@@ -153,7 +153,13 @@ class CompetitorRateRecord(BaseModel):
                 "interest_payment_frequency must be a '+'-joined combination of "
                 f"{sorted(_CANONICAL_INTEREST_FREQUENCIES)} with no duplicates, got {value!r}"
             )
-        return value
+        # Sorted to match normalise_frequency()'s own canonical ordering: this
+        # field participates in observation_key(), so "monthly+at_maturity"
+        # and "at_maturity+monthly" -- the same option set, differently
+        # ordered by a strict source or a third-party collector -- must
+        # collapse onto one identity rather than reading as a withdrawal and
+        # a new product appearing.
+        return "+".join(sorted(tokens))
 
     @field_validator("raw_html_sha256")
     @classmethod

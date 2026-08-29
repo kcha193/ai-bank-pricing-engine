@@ -1008,10 +1008,49 @@ class ObservationStore:
         ).fetchall()
         return [_row_to_history_record(row) for row in rows]
 
+    def _as_of_cutoff(
+        self, before_run_id: Optional[str], timestamp: str
+    ) -> Optional[tuple[str, str, tuple, tuple]]:
+        """Build the per-alias SQL cutoff fragments and params for
+        :meth:`get_observations_as_of`/:meth:`get_confirmed_observations_as_of`.
+
+        Returns ``(outer_cutoff, inner_cutoff, outer_params, inner_params)``,
+        or ``None`` when ``before_run_id`` was given but no longer resolves to
+        a stored run (an empty result is then correct, not an unscoped
+        fallback).
+
+        Plain ``first_observed_at <= ?`` when ``before_run_id`` is omitted --
+        unchanged, timestamp-only behaviour. When given, anchors the cutoff to
+        that specific run's ``(started_at, rowid)`` position instead, via each
+        candidate row's ``first_seen_run_id``: two runs for the same product
+        can share an identical ``started_at`` (:meth:`record_observations`'s
+        public API allows an explicit ``observed_at``), and a plain timestamp
+        cutoff cannot tell which of them a reconstruction should stop at --
+        a row introduced by a *later* same-timestamp run would still satisfy
+        ``first_observed_at <= as_of`` (they're equal) and win the per-key
+        selection, even when the caller specifically wants the earlier run's
+        state (see :meth:`get_previous_run_rates`).
+        """
+        if before_run_id is None:
+            return "o.first_observed_at <= ?", "o2.first_observed_at <= ?", (timestamp,), (timestamp,)
+        reference = self._connection.execute(
+            "SELECT started_at, rowid FROM collection_runs WHERE run_id = ?",
+            (before_run_id,),
+        ).fetchone()
+        if reference is None:
+            return None
+        params = (reference["started_at"], reference["started_at"], reference["rowid"])
+        cutoff = (
+            "EXISTS (SELECT 1 FROM collection_runs cr_row WHERE cr_row.run_id = {alias}.first_seen_run_id "
+            "AND (cr_row.started_at < ? OR (cr_row.started_at = ? AND cr_row.rowid <= ?)))"
+        )
+        return cutoff.format(alias="o"), cutoff.format(alias="o2"), params, params
+
     def get_observations_as_of(
         self,
         as_of: datetime,
         product_type: ProductType | str = ProductType.HOME_LOAN,
+        before_run_id: Optional[str] = None,
     ) -> list[CompetitorRateRecord]:
         """Reconstruct the advertised state of every key as of a given time.
 
@@ -1020,6 +1059,10 @@ class ObservationStore:
         like at an earlier run once a later run has touched it. This instead
         picks, per key, the most recent row whose ``first_observed_at`` is at
         or before ``as_of`` -- the state that was actually current then.
+
+        ``before_run_id``, when given, anchors that per-key selection to a
+        specific run's position rather than ``as_of`` alone -- see
+        :meth:`_as_of_cutoff` for why a timestamp alone can be ambiguous.
 
         A key withdrawn before ``as_of`` and never re-added must not be
         resurrected just because its last row predates the cutoff. The
@@ -1040,11 +1083,15 @@ class ObservationStore:
         predecessor from a reconstruction of an earlier point in time.
         """
         timestamp = _iso(as_of)
+        cutoff = self._as_of_cutoff(before_run_id, timestamp)
+        if cutoff is None:
+            return []
+        outer_cutoff, inner_cutoff, outer_params, inner_params = cutoff
         rows = self._connection.execute(
-            "SELECT * FROM observations o WHERE product_type = ? AND first_observed_at <= ? "
+            f"SELECT * FROM observations o WHERE product_type = ? AND {outer_cutoff} "
             "AND id = ("
-            "  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
-            "  AND o2.first_observed_at <= ? ORDER BY first_observed_at DESC, id DESC LIMIT 1"
+            f"  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
+            f"  AND {inner_cutoff} ORDER BY first_observed_at DESC, id DESC LIMIT 1"
             ") "
             "AND NOT EXISTS ("
             "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
@@ -1053,7 +1100,7 @@ class ObservationStore:
             ") "
             + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra=" AND o3.first_observed_at <= ?")
             + "ORDER BY bank, term_months",
-            (_product_value(product_type), timestamp, timestamp, timestamp, timestamp),
+            (_product_value(product_type), *outer_params, *inner_params, timestamp, timestamp),
         ).fetchall()
         return [_row_to_history_record(row) for row in rows]
 
@@ -1061,6 +1108,7 @@ class ObservationStore:
         self,
         as_of: datetime,
         product_type: ProductType | str = ProductType.HOME_LOAN,
+        before_run_id: Optional[str] = None,
     ) -> list[CompetitorRateRecord]:
         """Like :meth:`get_observations_as_of`, but skips a "warning"-tagged
         row to find the last confirmed state per key as of a point in time.
@@ -1077,12 +1125,16 @@ class ObservationStore:
         that should retire this row's candidacy as the fallback.
         """
         timestamp = _iso(as_of)
+        cutoff = self._as_of_cutoff(before_run_id, timestamp)
+        if cutoff is None:
+            return []
+        outer_cutoff, inner_cutoff, outer_params, inner_params = cutoff
         rows = self._connection.execute(
-            "SELECT * FROM observations o WHERE product_type = ? AND first_observed_at <= ? "
+            f"SELECT * FROM observations o WHERE product_type = ? AND {outer_cutoff} "
             "AND validation_status != 'warning' "
             "AND id = ("
-            "  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
-            "  AND o2.first_observed_at <= ? AND o2.validation_status != 'warning' "
+            f"  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
+            f"  AND {inner_cutoff} AND o2.validation_status != 'warning' "
             "  ORDER BY first_observed_at DESC, id DESC LIMIT 1"
             ") "
             "AND NOT EXISTS ("
@@ -1094,9 +1146,73 @@ class ObservationStore:
                 extra=" AND o3.first_observed_at <= ? AND o3.validation_status != 'warning'"
             )
             + "ORDER BY bank, term_months",
-            (_product_value(product_type), timestamp, timestamp, timestamp, timestamp),
+            (_product_value(product_type), *outer_params, *inner_params, timestamp, timestamp),
         ).fetchall()
         return [_row_to_history_record(row) for row in rows]
+
+    def _previous_run_row(
+        self,
+        before_run_id: Optional[str],
+        product_type: Optional[ProductType | str],
+    ) -> Optional[sqlite3.Row]:
+        """Resolve the run immediately before ``before_run_id`` (default: the
+        latest run), optionally scoped to one product.
+
+        Shared by :meth:`get_previous_run_started_at` (which only needs the
+        timestamp) and :meth:`get_previous_run_rates` (which also needs the
+        ``run_id`` to anchor :meth:`get_observations_as_of`'s reconstruction
+        to this specific run rather than to its timestamp alone -- see that
+        method's own docstring for why the two are not interchangeable when
+        two runs share a timestamp).
+        """
+        before_run_id = before_run_id or self.latest_run_id(product_type=product_type)
+        if before_run_id is None:
+            return None
+        reference = self._connection.execute(
+            "SELECT started_at, rowid FROM collection_runs WHERE run_id = ?",
+            (before_run_id,),
+        ).fetchone()
+        if reference is None:
+            return None
+        # Two runs for the same product can share started_at -- record_observations()'s
+        # public API allows an explicit observed_at, and latest_run_id() already
+        # breaks such ties on rowid. Matching only "started_at < reference" (not
+        # this same (started_at, rowid) pair) would treat a same-timestamp
+        # earlier-inserted run as not preceding the reference at all, skipping it
+        # entirely rather than returning it as the correct predecessor.
+        reference_started_at = reference["started_at"]
+        reference_rowid = reference["rowid"]
+        precedes = "(cr.started_at < ? OR (cr.started_at = ? AND cr.rowid < ?))"
+        if product_type is None:
+            return self._connection.execute(
+                f"SELECT run_id, started_at FROM collection_runs cr WHERE {precedes} "
+                "ORDER BY cr.started_at DESC, cr.rowid DESC LIMIT 1",
+                (reference_started_at, reference_started_at, reference_rowid),
+            ).fetchone()
+        # Same stored-value-or-EXISTS matching as latest_run_id(), for the
+        # same reason: a legacy run that mixed both products under one
+        # run_id (before record_observations() rejected that) must stay
+        # findable under either product, not just whichever one the
+        # migration's single-column backfill happened to pick -- all
+        # three signals _migrate_collection_runs_product_type() backfills
+        # from, including a mixed bootstrap run's only surviving trace,
+        # first_seen_run_id (correlated by actual run_id, like
+        # last_seen_run_id/rate_changes.run_id above -- not by matching
+        # first_observed_at against started_at, which would also match
+        # an unrelated run captured at the same timestamp).
+        value = _product_value(product_type)
+        return self._connection.execute(
+            f"SELECT cr.run_id, cr.started_at FROM collection_runs cr WHERE {precedes} "
+            "AND (cr.product_type = ? "
+            "     OR EXISTS (SELECT 1 FROM observations o "
+            "                WHERE o.last_seen_run_id = cr.run_id AND o.product_type = ?) "
+            "     OR EXISTS (SELECT 1 FROM rate_changes rc "
+            "                WHERE rc.run_id = cr.run_id AND rc.product_type = ?) "
+            "     OR EXISTS (SELECT 1 FROM observations o2 "
+            "                WHERE o2.first_seen_run_id = cr.run_id AND o2.product_type = ?)) "
+            "ORDER BY cr.started_at DESC, cr.rowid DESC LIMIT 1",
+            (reference_started_at, reference_started_at, reference_rowid, value, value, value, value),
+        ).fetchone()
 
     def get_previous_run_started_at(
         self,
@@ -1119,56 +1235,26 @@ class ObservationStore:
         also pass this timestamp on as the snapshot's ``as_of``, rather than
         letting it be inferred from the reconstructed records themselves.
         """
-        before_run_id = before_run_id or self.latest_run_id(product_type=product_type)
-        if before_run_id is None:
-            return None
-        reference = self._connection.execute(
-            "SELECT started_at, rowid FROM collection_runs WHERE run_id = ?",
-            (before_run_id,),
-        ).fetchone()
-        if reference is None:
-            return None
-        # Two runs for the same product can share started_at -- record_observations()'s
-        # public API allows an explicit observed_at, and latest_run_id() already
-        # breaks such ties on rowid. Matching only "started_at < reference" (not
-        # this same (started_at, rowid) pair) would treat a same-timestamp
-        # earlier-inserted run as not preceding the reference at all, skipping it
-        # entirely rather than returning it as the correct predecessor.
-        reference_started_at = reference["started_at"]
-        reference_rowid = reference["rowid"]
-        precedes = "(cr.started_at < ? OR (cr.started_at = ? AND cr.rowid < ?))"
-        if product_type is None:
-            previous = self._connection.execute(
-                f"SELECT started_at FROM collection_runs cr WHERE {precedes} "
-                "ORDER BY cr.started_at DESC, cr.rowid DESC LIMIT 1",
-                (reference_started_at, reference_started_at, reference_rowid),
-            ).fetchone()
-        else:
-            # Same stored-value-or-EXISTS matching as latest_run_id(), for the
-            # same reason: a legacy run that mixed both products under one
-            # run_id (before record_observations() rejected that) must stay
-            # findable under either product, not just whichever one the
-            # migration's single-column backfill happened to pick -- all
-            # three signals _migrate_collection_runs_product_type() backfills
-            # from, including a mixed bootstrap run's only surviving trace,
-            # first_seen_run_id (correlated by actual run_id, like
-            # last_seen_run_id/rate_changes.run_id above -- not by matching
-            # first_observed_at against started_at, which would also match
-            # an unrelated run captured at the same timestamp).
-            value = _product_value(product_type)
-            previous = self._connection.execute(
-                f"SELECT cr.started_at FROM collection_runs cr WHERE {precedes} "
-                "AND (cr.product_type = ? "
-                "     OR EXISTS (SELECT 1 FROM observations o "
-                "                WHERE o.last_seen_run_id = cr.run_id AND o.product_type = ?) "
-                "     OR EXISTS (SELECT 1 FROM rate_changes rc "
-                "                WHERE rc.run_id = cr.run_id AND rc.product_type = ?) "
-                "     OR EXISTS (SELECT 1 FROM observations o2 "
-                "                WHERE o2.first_seen_run_id = cr.run_id AND o2.product_type = ?)) "
-                "ORDER BY cr.started_at DESC, cr.rowid DESC LIMIT 1",
-                (reference_started_at, reference_started_at, reference_rowid, value, value, value, value),
-            ).fetchone()
+        previous = self._previous_run_row(before_run_id, product_type)
         return _parse_iso(previous["started_at"]) if previous is not None else None
+
+    def get_previous_run_id(
+        self,
+        before_run_id: Optional[str] = None,
+        product_type: Optional[ProductType | str] = None,
+    ) -> Optional[str]:
+        """Resolve the ``run_id`` of the run before ``before_run_id``
+        (default: the latest run), optionally scoped to one product.
+
+        A caller reconstructing that run's state (e.g.
+        ``get_previous_market_snapshot()``) needs this alongside
+        :meth:`get_previous_run_started_at`'s timestamp, to pass on as
+        :meth:`get_observations_as_of`'s ``before_run_id`` -- see that
+        method's docstring for why the timestamp alone is not always enough
+        to identify the right run when two runs share a timestamp.
+        """
+        previous = self._previous_run_row(before_run_id, product_type)
+        return previous["run_id"] if previous is not None else None
 
     def get_previous_run_rates(
         self,
@@ -1176,10 +1262,14 @@ class ObservationStore:
         before_run_id: Optional[str] = None,
     ) -> list[CompetitorRateRecord]:
         """Return the advertised rates from the run before ``before_run_id``."""
-        as_of = self.get_previous_run_started_at(before_run_id, product_type=product_type)
-        if as_of is None:
+        previous_run = self._previous_run_row(before_run_id, product_type)
+        if previous_run is None:
             return []
-        return self.get_observations_as_of(as_of=as_of, product_type=product_type)
+        return self.get_observations_as_of(
+            as_of=_parse_iso(previous_run["started_at"]),
+            product_type=product_type,
+            before_run_id=previous_run["run_id"],
+        )
 
     def get_changes_since(
         self,

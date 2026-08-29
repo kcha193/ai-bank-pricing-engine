@@ -822,13 +822,20 @@ class PricingIntelligenceService:
         as_of = self.store.get_previous_run_started_at(product_type=product_type)
         if as_of is None:
             return None
-        records = self.store.get_observations_as_of(as_of=as_of, product_type=product_type)
+        # Anchored to the resolved run's own identity, not just its
+        # timestamp: two runs for the same product can share observed_at, and
+        # a timestamp-only reconstruction can't tell which of them to stop
+        # at -- see ObservationStore._as_of_cutoff()'s docstring.
+        before_run_id = self.store.get_previous_run_id(product_type=product_type)
+        records = self.store.get_observations_as_of(
+            as_of=as_of, product_type=product_type, before_run_id=before_run_id
+        )
         if not records:
             return None
         records = _resolve_suspicious_if_present(
             records,
             lambda: self.store.get_confirmed_observations_as_of(
-                as_of=as_of, product_type=product_type
+                as_of=as_of, product_type=product_type, before_run_id=before_run_id
             ),
         )
         return build_market_snapshot(

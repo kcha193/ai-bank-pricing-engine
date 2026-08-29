@@ -654,6 +654,22 @@ def test_get_previous_run_started_at_unscoped_finds_a_same_timestamp_predecessor
     assert store.get_previous_run_started_at(before_run_id=later.run_id) == DAY_TWO
 
 
+def test_previous_run_rates_correctly_resolve_a_same_timestamp_predecessor(store, make_record):
+    """Two runs for the same product sharing observed_at, with the rate
+    changing between them, must not have get_previous_run_rates() report the
+    LATER run's rate as also being the PREVIOUS run's rate. A timestamp-only
+    reconstruction can't tell the two same-timestamp runs apart -- without
+    anchoring to the resolved predecessor's own run identity, the later
+    run's row also satisfies "first_observed_at <= as_of" (they're equal)
+    and wins the per-key selection."""
+    store.record_observations([make_record(rate_pct=4.60)], observed_at=DAY_TWO)
+    store.record_observations([make_record(rate_pct=4.70)], observed_at=DAY_TWO)
+
+    previous = store.get_previous_run_rates()
+
+    assert [record.advertised_rate_pct for record in previous] == [4.60]
+
+
 def test_previous_run_rates_survive_unchanged_intermediate_collections(store, make_record):
     """An unchanged re-observation must not erase the previous run's membership."""
     store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)

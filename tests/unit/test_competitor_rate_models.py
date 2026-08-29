@@ -81,6 +81,20 @@ def test_interest_payment_frequency_accepts_a_combined_canonical_value():
     assert record.interest_payment_frequency == "at_maturity+monthly"
 
 
+def test_interest_payment_frequency_canonicalizes_token_order():
+    """normalise_frequency() always joins matched tokens in sorted order, but
+    interest_payment_frequency participates in observation_key() -- a strict
+    source or third-party collector supplying the same option set in a
+    different order ("monthly+at_maturity") must still collapse onto the
+    same identity as the canonical "at_maturity+monthly", not read as a
+    withdrawal and a new product appearing."""
+    canonical = _make_deposit_record(interest_payment_frequency="at_maturity+monthly")
+    reordered = _make_deposit_record(interest_payment_frequency="monthly+at_maturity")
+
+    assert reordered.interest_payment_frequency == "at_maturity+monthly"
+    assert canonical.observation_key() == reordered.observation_key()
+
+
 def test_interest_payment_frequency_rejects_a_typo():
     """Widening interest_payment_frequency from the closed
     InterestPaymentFrequency Literal to str (to support combined values)
