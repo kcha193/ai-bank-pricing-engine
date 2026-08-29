@@ -193,12 +193,43 @@ def _partial_rejection_failures(outcome: CollectionOutcome, already_flagged: set
     return failures
 
 
+def _hard_skipped_row_failures(outcome: CollectionOutcome, already_flagged: set[str]) -> list[dict]:
+    """Banks with at least one row that failed record construction outright,
+    not already flagged more specifically.
+
+    A row that fails ``CompetitorRateRecord`` construction (see
+    ``competitor_rates.extractors.parse_html_rates``'s ``skipped_row_keys``)
+    never reaches ``validate_observations()`` at all, so it shows up in
+    neither ``report.failed`` nor ``validation.rejected`` -- previously
+    ``exit_code_for()`` could return success while a market-derived snapshot
+    and pricing assumption were built from an incomplete bank range. On a
+    bootstrap run there is not even a stored predecessor for the skipped row
+    to fall back on, so this is the only place the gap is visible at all.
+    """
+    failures = []
+    for result in outcome.report.results:
+        if result.bank in already_flagged or not result.skipped_row_keys:
+            continue
+        failures.append(
+            {
+                "bank": result.bank,
+                "error_type": "row_skipped",
+                "error": (
+                    f"{len(result.skipped_row_keys)} row(s) failed to parse into a "
+                    "record and were skipped"
+                ),
+            }
+        )
+    return failures
+
+
 def _bank_scoped_failures(outcome: CollectionOutcome) -> list[dict]:
     """Every bank-scoped failure not already visible in report.failed.
 
     Checked in order of specificity so a bank is reported once, under its
     most informative category: zero accepted rows, then coverage below
-    threshold, then any remaining bank with at least one rejected row.
+    threshold, then any remaining bank with at least one rejected row, then
+    any remaining bank with at least one hard-skipped row.
     """
     zero_accepted_failures = _validation_only_failures(outcome)
     low_coverage_failures = _low_coverage_failures(outcome)
@@ -206,7 +237,14 @@ def _bank_scoped_failures(outcome: CollectionOutcome) -> list[dict]:
         failure["bank"] for failure in low_coverage_failures
     }
     partial_rejection_failures = _partial_rejection_failures(outcome, already_flagged)
-    return zero_accepted_failures + low_coverage_failures + partial_rejection_failures
+    already_flagged |= {failure["bank"] for failure in partial_rejection_failures}
+    hard_skipped_row_failures = _hard_skipped_row_failures(outcome, already_flagged)
+    return (
+        zero_accepted_failures
+        + low_coverage_failures
+        + partial_rejection_failures
+        + hard_skipped_row_failures
+    )
 
 
 def build_summary(
@@ -232,6 +270,7 @@ def build_summary(
         "banks_failed": list(outcome.failed_banks) + sorted(bank_scoped_failed_banks),
         "rates_accepted": outcome.rate_count,
         "rates_rejected": len(outcome.validation.rejected),
+        "rows_skipped": len(outcome.report.skipped_row_keys),
         "validation_errors": len(outcome.validation.errors),
         "validation_warnings": len(outcome.validation.warnings),
         "new_states_stored": (
@@ -262,9 +301,18 @@ def exit_code_for(outcome: CollectionOutcome) -> int:
     # regression can silently drop one product from an otherwise-healthy
     # bank. A low-coverage bank catches the case validation can't: rows that
     # were never parsed at all (not rejected -- simply missing) because a
-    # page-layout regression silently dropped most of a bank's table.
-    # Warnings (e.g. a suspicious but plausible movement) stay non-fatal.
-    if outcome.report.failed or outcome.validation.rejected or outcome.low_coverage_banks:
+    # page-layout regression silently dropped most of a bank's table. A
+    # hard-skipped row (failed CompetitorRateRecord construction outright,
+    # before validate_observations() ever saw it) is the same kind of gap as
+    # a rejected observation, just one step earlier in the pipeline, and must
+    # not let a run with an incomplete bank range report success. Warnings
+    # (e.g. a suspicious but plausible movement) stay non-fatal.
+    if (
+        outcome.report.failed
+        or outcome.validation.rejected
+        or outcome.low_coverage_banks
+        or outcome.report.skipped_row_keys
+    ):
         return EXIT_PARTIAL_FAILURE
     return EXIT_OK
 

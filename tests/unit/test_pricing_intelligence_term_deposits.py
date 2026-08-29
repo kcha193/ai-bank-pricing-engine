@@ -576,6 +576,71 @@ def test_non_comparable_identity_is_stable_across_a_genuine_rate_change(make_rec
     assert before_key == after_key
 
 
+def test_non_comparable_identity_is_stable_across_a_mutable_sibling_figure(make_record):
+    """A non_comparable row can carry a second, independently-mutating
+    percentage besides its own advertised rate -- BNZ's real fund-return rows
+    (see bnz_term_deposits.html) carry both a "Return" (the parsed rate) and
+    a "Since inception" return in the same flattened raw_text_context:
+    "1 year | 12.47% | 15.28% | Growth Fund | Return". That sibling figure
+    drifting between collections, with the row's own rate unchanged, must
+    not change the row's identity -- otherwise every drift reads as the
+    product being withdrawn and a new one appearing."""
+    from balance_pricing_engine.pricing_intelligence.validation import (
+        validate_observations,
+    )
+
+    before = make_record(
+        bank="BNZ",
+        product_type="term_deposit",
+        rate_category="non_comparable",
+        rate_pct=12.47,
+        raw_text_context="1 year | 12.47% | 15.28% | Growth Fund | Return",
+    )
+    after = make_record(
+        bank="BNZ",
+        product_type="term_deposit",
+        rate_category="non_comparable",
+        rate_pct=12.47,
+        raw_text_context="1 year | 12.47% | 16.02% | Growth Fund | Return",
+    )
+
+    before_key = validate_observations([before]).accepted[0].observation_key()
+    after_key = validate_observations([after]).accepted[0].observation_key()
+
+    assert before_key == after_key
+
+
+def test_non_comparable_rows_stay_distinct_despite_a_shared_sibling_figure(make_record):
+    """Growth Fund and Balanced Fund publish the exact same "Since inception"
+    figure (15.28%, see bnz_term_deposits.html) but are genuinely different
+    products at different rates -- the fund name, not a shared percentage,
+    is what must keep them distinct."""
+    from balance_pricing_engine.pricing_intelligence.validation import (
+        validate_observations,
+    )
+
+    growth = make_record(
+        bank="BNZ",
+        product_type="term_deposit",
+        rate_category="non_comparable",
+        rate_pct=12.47,
+        raw_text_context="1 year | 12.47% | 15.28% | Growth Fund | Return",
+    )
+    balanced = make_record(
+        bank="BNZ",
+        product_type="term_deposit",
+        rate_category="non_comparable",
+        rate_pct=9.76,
+        raw_text_context="1 year | 9.76% | 15.28% | Balanced Fund | Return",
+    )
+
+    outcome = validate_observations([growth, balanced])
+
+    assert outcome.rejected == []
+    assert len(outcome.accepted) == 2
+    assert outcome.accepted[0].observation_key() != outcome.accepted[1].observation_key()
+
+
 def test_a_repeated_collection_of_non_comparable_rows_reports_unchanged(make_record):
     """The actual corruption the disambiguation guards against: previously,
     re-collecting an unchanged page re-inserted every colliding

@@ -44,9 +44,10 @@ class _StubCollector:
     fragile HTML-fixture surgery.
     """
 
-    def __init__(self, bank, records):
+    def __init__(self, bank, records, skipped_row_keys=()):
         self.bank = bank
         self._records = records
+        self._skipped_row_keys = skipped_row_keys
 
     def collect_mortgage_rates(self, captured_at_utc=None, persist_snapshot=True):
         return BankCollectionResult(
@@ -55,6 +56,7 @@ class _StubCollector:
             status=CollectionStatus.SUCCESS,
             source_url=f"https://www.example-bank.co.nz/{self.bank.lower()}/rates",
             records=tuple(self._records),
+            skipped_row_keys=tuple(self._skipped_row_keys),
         )
 
 
@@ -274,6 +276,49 @@ def test_low_coverage_bank_is_a_partial_failure(workflow, make_record, tmp_path)
     anz_failures = [f for f in summary["failures"] if f["bank"] == "ANZ"]
     assert len(anz_failures) == 1
     assert anz_failures[0]["error_type"] == "low_coverage"
+
+
+def test_hard_skipped_row_is_a_partial_failure(workflow, make_record, tmp_path):
+    """A row that fails CompetitorRateRecord construction outright (see
+    parse_html_rates()'s skipped_row_keys) never reaches
+    validate_observations() at all, so it shows up in neither report.failed
+    nor validation.rejected. On a bootstrap run there is not even a stored
+    predecessor for the row to fall back on -- without surfacing this,
+    exit_code_for() could return success while a market-derived snapshot and
+    pricing assumption were built from an incomplete bank range."""
+    from balance_pricing_engine.competitor_rates.models import category_agnostic_key
+
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    skipped_key = category_agnostic_key(
+        "ANZ", ProductType.HOME_LOAN, 12, "1 year", "unknown", None, None
+    )
+    with PricingIntelligenceService(
+        config=config,
+        store=ObservationStore(config.database_path),
+        collectors=[
+            _StubCollector(
+                "ANZ", [make_record(bank="ANZ")], skipped_row_keys=[skipped_key]
+            )
+        ],
+    ) as service:
+        outcome = service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    assert not outcome.report.failed
+    assert not outcome.validation.rejected
+    assert outcome.rate_count > 0
+    assert outcome.report.skipped_row_keys
+    assert workflow.exit_code_for(outcome) == workflow.EXIT_PARTIAL_FAILURE
+
+    summary = workflow.build_summary(outcome)
+    assert summary["rows_skipped"] == 1
+    assert "ANZ" not in summary["banks_succeeded"]
+    assert "ANZ" in summary["banks_failed"]
+    anz_failures = [f for f in summary["failures"] if f["bank"] == "ANZ"]
+    assert len(anz_failures) == 1
+    assert anz_failures[0]["error_type"] == "row_skipped"
 
 
 def test_summary_reflects_bank_wide_validation_rejection(workflow, fixture_fetcher, tmp_path):
