@@ -1125,6 +1125,41 @@ def test_a_product_returning_after_a_withdrawal_starts_a_fresh_state(store, make
     assert len(history) == 2, "the withdrawal and the return must be distinct states"
 
 
+def test_a_product_returning_after_a_same_timestamp_withdrawal_starts_a_fresh_state(
+    store, make_record
+):
+    """Same fix as the run-order withdrawal/eligibility comparisons, applied
+    at write time: a product observed, withdrawn, and returned across three
+    runs sharing the same observed_at must still start a fresh state on
+    return, not merge into the stale pre-withdrawal row -- which would
+    corrupt that row's first_seen_run_id for every later run-anchored
+    reconstruction (get_market_snapshot(as_of_run_id=<return run>) would
+    keep seeing the withdrawal as predating the row's own introduction and
+    omit the product even though it has reappeared)."""
+    store.record_observations(
+        [make_record(bank="BNZ", rate_pct=4.85)], run_id="run-observed", observed_at=DAY_TWO
+    )
+    withdraw_run = store.record_observations([], run_id="run-withdrawn", observed_at=DAY_TWO)
+    changes = detect_changes(
+        previous=store.get_current_observations(),
+        current=[],
+        detected_at=DAY_TWO,
+        banks_collected=["BNZ"],
+        run_id=withdraw_run.run_id,
+    )
+    store.record_changes(changes)
+
+    return_run = store.record_observations(
+        [make_record(bank="BNZ", rate_pct=4.85)], run_id="run-returned", observed_at=DAY_TWO
+    )
+
+    history = store.get_rate_history(bank="BNZ")
+    assert len(history) == 2, "the withdrawal and the return must be distinct states"
+
+    snapshot = store.get_observations_as_of(as_of=DAY_TWO, before_run_id=return_run.run_id)
+    assert [record.bank for record in snapshot] == ["BNZ"]
+
+
 def test_a_stale_suspicious_tag_clears_once_reconfirmed(store, make_record):
     """A large move that repeats unchanged is no longer suspicious."""
     store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)

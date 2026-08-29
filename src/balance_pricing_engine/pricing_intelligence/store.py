@@ -569,6 +569,52 @@ class ObservationStore:
         )
         return WriteResult(run_id=run_id, inserted=inserted, unchanged=unchanged)
 
+    def _returned_after_a_withdrawal(
+        self, connection: sqlite3.Connection, observation_key: str, current: sqlite3.Row
+    ) -> bool:
+        """True when a ``REMOVED_PRODUCT`` event for ``observation_key`` was
+        recorded by a run strictly after the one that last touched ``current``.
+
+        Compared by run position (mirroring :func:`_run_ordered_after`), not
+        a plain ``detected_at > last_seen_at`` timestamp check: two runs
+        sharing a timestamp -- the row last confirmed by one, withdrawn and
+        then reappearing across a later one -- would otherwise tie, merging
+        the return into the stale pre-withdrawal row instead of starting a
+        fresh state. That corrupts the row's ``first_seen_run_id`` for every
+        later run-anchored reconstruction: ``get_market_snapshot(as_of_run_id=
+        <return run>)`` would keep seeing the withdrawal as coming after the
+        row's (unchanged, pre-withdrawal) introducing run and omit the
+        product even though it has genuinely returned.
+        """
+        reference = connection.execute(
+            "SELECT started_at, rowid FROM collection_runs WHERE run_id = ?",
+            (current["last_seen_run_id"],),
+        ).fetchone()
+        if reference is None:
+            ordering = "rc.detected_at > ?"
+            params: tuple = (current["last_seen_at"],)
+        else:
+            ordering = (
+                "(EXISTS (SELECT 1 FROM collection_runs cr WHERE cr.run_id = rc.run_id "
+                "AND (cr.started_at > ? OR (cr.started_at = ? AND cr.rowid > ?))) "
+                "OR (NOT EXISTS (SELECT 1 FROM collection_runs WHERE run_id = rc.run_id) "
+                "AND rc.detected_at > ?))"
+            )
+            params = (
+                reference["started_at"],
+                reference["started_at"],
+                reference["rowid"],
+                current["last_seen_at"],
+            )
+        return (
+            connection.execute(
+                "SELECT 1 FROM rate_changes rc WHERE rc.observation_key = ? "
+                f"AND rc.change_type = 'REMOVED_PRODUCT' AND {ordering} LIMIT 1",
+                (observation_key, *params),
+            ).fetchone()
+            is not None
+        )
+
     def _upsert_observation(
         self,
         connection: sqlite3.Connection,
@@ -589,11 +635,9 @@ class ObservationStore:
         # new state even if the content is identical, so first_observed_at
         # marks the return rather than get_observations_as_of() reading this
         # gap as unbroken presence.
-        returned_after_a_withdrawal = current is not None and connection.execute(
-            "SELECT 1 FROM rate_changes WHERE observation_key = ? "
-            "AND change_type = 'REMOVED_PRODUCT' AND detected_at > ? LIMIT 1",
-            (payload["observation_key"], current["last_seen_at"]),
-        ).fetchone() is not None
+        returned_after_a_withdrawal = current is not None and self._returned_after_a_withdrawal(
+            connection, payload["observation_key"], current
+        )
 
         # A product that reverts to an earlier eligibility condition (e.g.
         # 80% LVR -> 75% -> back to 80%) is not a withdrawal -- an
