@@ -627,6 +627,33 @@ def test_get_previous_run_started_at_finds_a_legacy_run_that_mixed_both_products
     assert store.get_previous_run_started_at(product_type=ProductType.TERM_DEPOSIT) == DAY_ONE
 
 
+def test_get_previous_run_started_at_finds_a_same_timestamp_predecessor(store, make_record):
+    """Two runs for the same product can share observed_at -- record_observations()'s
+    public API allows an explicit timestamp, and latest_run_id() already
+    breaks such ties on insertion order (rowid). A strict "started_at <
+    reference" comparison would instead skip a same-timestamp predecessor
+    entirely and return an even older run, producing an incorrect
+    "previous market snapshot" comparison in get_previous_market_snapshot()."""
+    store.record_observations([make_record(rate_pct=4.50)], observed_at=DAY_ONE)
+    store.record_observations([make_record(rate_pct=4.60)], observed_at=DAY_TWO)
+    later = store.record_observations([make_record(rate_pct=4.70)], observed_at=DAY_TWO)
+
+    assert store.get_previous_run_started_at(
+        before_run_id=later.run_id, product_type=ProductType.HOME_LOAN
+    ) == DAY_TWO
+
+
+def test_get_previous_run_started_at_unscoped_finds_a_same_timestamp_predecessor(
+    store, make_record
+):
+    """Same fix, unscoped query path (product_type=None)."""
+    store.record_observations([make_record(rate_pct=4.50)], observed_at=DAY_ONE)
+    store.record_observations([make_record(rate_pct=4.60)], observed_at=DAY_TWO)
+    later = store.record_observations([make_record(rate_pct=4.70)], observed_at=DAY_TWO)
+
+    assert store.get_previous_run_started_at(before_run_id=later.run_id) == DAY_TWO
+
+
 def test_previous_run_rates_survive_unchanged_intermediate_collections(store, make_record):
     """An unchanged re-observation must not erase the previous run's membership."""
     store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)

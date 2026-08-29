@@ -1122,14 +1122,26 @@ class ObservationStore:
         before_run_id = before_run_id or self.latest_run_id(product_type=product_type)
         if before_run_id is None:
             return None
-        started_at = self.get_run_started_at(before_run_id)
-        if started_at is None:
+        reference = self._connection.execute(
+            "SELECT started_at, rowid FROM collection_runs WHERE run_id = ?",
+            (before_run_id,),
+        ).fetchone()
+        if reference is None:
             return None
+        # Two runs for the same product can share started_at -- record_observations()'s
+        # public API allows an explicit observed_at, and latest_run_id() already
+        # breaks such ties on rowid. Matching only "started_at < reference" (not
+        # this same (started_at, rowid) pair) would treat a same-timestamp
+        # earlier-inserted run as not preceding the reference at all, skipping it
+        # entirely rather than returning it as the correct predecessor.
+        reference_started_at = reference["started_at"]
+        reference_rowid = reference["rowid"]
+        precedes = "(cr.started_at < ? OR (cr.started_at = ? AND cr.rowid < ?))"
         if product_type is None:
             previous = self._connection.execute(
-                "SELECT started_at FROM collection_runs WHERE started_at < ? "
-                "ORDER BY started_at DESC, rowid DESC LIMIT 1",
-                (_iso(started_at),),
+                f"SELECT started_at FROM collection_runs cr WHERE {precedes} "
+                "ORDER BY cr.started_at DESC, cr.rowid DESC LIMIT 1",
+                (reference_started_at, reference_started_at, reference_rowid),
             ).fetchone()
         else:
             # Same stored-value-or-EXISTS matching as latest_run_id(), for the
@@ -1145,7 +1157,7 @@ class ObservationStore:
             # an unrelated run captured at the same timestamp).
             value = _product_value(product_type)
             previous = self._connection.execute(
-                "SELECT cr.started_at FROM collection_runs cr WHERE cr.started_at < ? "
+                f"SELECT cr.started_at FROM collection_runs cr WHERE {precedes} "
                 "AND (cr.product_type = ? "
                 "     OR EXISTS (SELECT 1 FROM observations o "
                 "                WHERE o.last_seen_run_id = cr.run_id AND o.product_type = ?) "
@@ -1154,7 +1166,7 @@ class ObservationStore:
                 "     OR EXISTS (SELECT 1 FROM observations o2 "
                 "                WHERE o2.first_seen_run_id = cr.run_id AND o2.product_type = ?)) "
                 "ORDER BY cr.started_at DESC, cr.rowid DESC LIMIT 1",
-                (_iso(started_at), value, value, value, value),
+                (reference_started_at, reference_started_at, reference_rowid, value, value, value, value),
             ).fetchone()
         return _parse_iso(previous["started_at"]) if previous is not None else None
 

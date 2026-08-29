@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Literal, Optional
+from typing import Literal, Optional, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -34,6 +34,13 @@ InterestPaymentFrequency = Literal[
     "unknown",
 ]
 ValidationStatus = Literal["unvalidated", "valid", "warning", "failed"]
+
+#: The canonical vocabulary a combined interest_payment_frequency value (see
+#: CompetitorRateRecord.interest_payment_frequency) is built from -- every
+#: "+"-separated token must be one of these, so a typo from strict source
+#: JSON or a third-party collector ("montly") can't slip past the field's
+#: str type and silently defeat _select_frequency()'s preference matching.
+_CANONICAL_INTEREST_FREQUENCIES = frozenset(get_args(InterestPaymentFrequency))
 
 
 def category_agnostic_key(
@@ -134,6 +141,19 @@ class CompetitorRateRecord(BaseModel):
         if value.tzinfo is None:
             raise ValueError("captured_at_utc must be timezone-aware")
         return value.astimezone(timezone.utc)
+
+    @field_validator("interest_payment_frequency")
+    @classmethod
+    def validate_interest_payment_frequency(cls, value: str) -> str:
+        tokens = value.split("+")
+        if len(tokens) != len(set(tokens)) or not all(
+            token in _CANONICAL_INTEREST_FREQUENCIES for token in tokens
+        ):
+            raise ValueError(
+                "interest_payment_frequency must be a '+'-joined combination of "
+                f"{sorted(_CANONICAL_INTEREST_FREQUENCIES)} with no duplicates, got {value!r}"
+            )
+        return value
 
     @field_validator("raw_html_sha256")
     @classmethod
