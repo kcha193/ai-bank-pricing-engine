@@ -29,7 +29,7 @@ import json
 import logging
 from pathlib import Path
 import sqlite3
-from typing import Iterable, Iterator, Mapping, Optional, Sequence
+from typing import Iterable, Iterator, Mapping, NamedTuple, Optional, Sequence
 import uuid
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
@@ -188,6 +188,16 @@ class WriteResult:
     @property
     def total(self) -> int:
         return self.inserted + self.unchanged
+
+
+class _AsOfCutoff(NamedTuple):
+    """SQL fragments and params built by :meth:`ObservationStore._as_of_cutoff`."""
+
+    outer: str
+    inner: str
+    withdrawal: str
+    observation_params: tuple
+    withdrawal_params: tuple
 
 
 def _iso(value: datetime) -> str:
@@ -1010,41 +1020,71 @@ class ObservationStore:
 
     def _as_of_cutoff(
         self, before_run_id: Optional[str], timestamp: str
-    ) -> Optional[tuple[str, str, tuple, tuple]]:
-        """Build the per-alias SQL cutoff fragments and params for
+    ) -> Optional["_AsOfCutoff"]:
+        """Build the SQL cutoff fragments and params for
         :meth:`get_observations_as_of`/:meth:`get_confirmed_observations_as_of`.
 
-        Returns ``(outer_cutoff, inner_cutoff, outer_params, inner_params)``,
-        or ``None`` when ``before_run_id`` was given but no longer resolves to
-        a stored run (an empty result is then correct, not an unscoped
-        fallback).
+        Returns ``None`` when ``before_run_id`` was given but no longer
+        resolves to a stored run (an empty result is then correct, not an
+        unscoped fallback).
 
-        Plain ``first_observed_at <= ?`` when ``before_run_id`` is omitted --
-        unchanged, timestamp-only behaviour. When given, anchors the cutoff to
-        that specific run's ``(started_at, rowid)`` position instead, via each
-        candidate row's ``first_seen_run_id``: two runs for the same product
-        can share an identical ``started_at`` (:meth:`record_observations`'s
-        public API allows an explicit ``observed_at``), and a plain timestamp
-        cutoff cannot tell which of them a reconstruction should stop at --
-        a row introduced by a *later* same-timestamp run would still satisfy
-        ``first_observed_at <= as_of`` (they're equal) and win the per-key
-        selection, even when the caller specifically wants the earlier run's
-        state (see :meth:`get_previous_run_rates`).
+        Plain ``first_observed_at <= ?`` / ``rc.detected_at <= ?`` when
+        ``before_run_id`` is omitted -- unchanged, timestamp-only behaviour.
+        When given, anchors every cutoff to that specific run's
+        ``(started_at, rowid)`` position instead: two runs for the same
+        product can share an identical ``started_at``
+        (:meth:`record_observations`'s public API allows an explicit
+        ``observed_at``), and a plain timestamp cutoff cannot tell which of
+        them a reconstruction should stop at -- a row (or a withdrawal event)
+        introduced by a *later* same-timestamp run would still satisfy
+        ``<= as_of`` (they're equal) and either win the per-key selection or
+        retroactively apply a withdrawal one run early, even when the caller
+        specifically wants the earlier run's state (see
+        :meth:`get_previous_run_rates`). ``outer``/``inner`` anchor via each
+        observation row's ``first_seen_run_id``; ``withdrawal`` anchors via
+        ``rate_changes.run_id`` instead, since a ``REMOVED_PRODUCT`` event
+        needs the same run-order treatment as the observation rows it
+        excludes -- with a further fallback to ``rc.detected_at`` for a
+        ``rate_changes`` row whose ``run_id`` does not correlate to any
+        stored run at all (e.g. one written via ``record_changes()`` from a
+        caller that built its own ``RateChange`` without a real ``run_id`` --
+        :meth:`record_changes` stores that as ``""``, not ``NULL``): such a
+        row has no run position to anchor to, so it falls back to being
+        honoured by timestamp alone rather than silently never excluding
+        anything.
         """
         if before_run_id is None:
-            return "o.first_observed_at <= ?", "o2.first_observed_at <= ?", (timestamp,), (timestamp,)
+            return _AsOfCutoff(
+                outer="o.first_observed_at <= ?",
+                inner="o2.first_observed_at <= ?",
+                withdrawal="rc.detected_at <= ?",
+                observation_params=(timestamp,),
+                withdrawal_params=(timestamp,),
+            )
         reference = self._connection.execute(
             "SELECT started_at, rowid FROM collection_runs WHERE run_id = ?",
             (before_run_id,),
         ).fetchone()
         if reference is None:
             return None
-        params = (reference["started_at"], reference["started_at"], reference["rowid"])
-        cutoff = (
-            "EXISTS (SELECT 1 FROM collection_runs cr_row WHERE cr_row.run_id = {alias}.first_seen_run_id "
-            "AND (cr_row.started_at < ? OR (cr_row.started_at = ? AND cr_row.rowid <= ?)))"
+        observation_params = (reference["started_at"], reference["started_at"], reference["rowid"])
+        ordering = "(cr_row.started_at < ? OR (cr_row.started_at = ? AND cr_row.rowid <= ?))"
+        observation_cutoff = (
+            f"EXISTS (SELECT 1 FROM collection_runs cr_row WHERE cr_row.run_id = {{alias}}.first_seen_run_id "
+            f"AND {ordering})"
         )
-        return cutoff.format(alias="o"), cutoff.format(alias="o2"), params, params
+        withdrawal_cutoff = (
+            f"(EXISTS (SELECT 1 FROM collection_runs cr_row WHERE cr_row.run_id = rc.run_id AND {ordering}) "
+            "OR (NOT EXISTS (SELECT 1 FROM collection_runs cr_check WHERE cr_check.run_id = rc.run_id) "
+            "AND rc.detected_at <= ?))"
+        )
+        return _AsOfCutoff(
+            outer=observation_cutoff.format(alias="o"),
+            inner=observation_cutoff.format(alias="o2"),
+            withdrawal=withdrawal_cutoff,
+            observation_params=observation_params,
+            withdrawal_params=(*observation_params, timestamp),
+        )
 
     def get_observations_as_of(
         self,
@@ -1086,21 +1126,26 @@ class ObservationStore:
         cutoff = self._as_of_cutoff(before_run_id, timestamp)
         if cutoff is None:
             return []
-        outer_cutoff, inner_cutoff, outer_params, inner_params = cutoff
         rows = self._connection.execute(
-            f"SELECT * FROM observations o WHERE product_type = ? AND {outer_cutoff} "
+            f"SELECT * FROM observations o WHERE product_type = ? AND {cutoff.outer} "
             "AND id = ("
             f"  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
-            f"  AND {inner_cutoff} ORDER BY first_observed_at DESC, id DESC LIMIT 1"
+            f"  AND {cutoff.inner} ORDER BY first_observed_at DESC, id DESC LIMIT 1"
             ") "
             "AND NOT EXISTS ("
             "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
-            "  AND rc.change_type = 'REMOVED_PRODUCT' AND rc.detected_at <= ? "
+            f"  AND rc.change_type = 'REMOVED_PRODUCT' AND {cutoff.withdrawal} "
             "  AND rc.detected_at > o.first_observed_at"
             ") "
             + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra=" AND o3.first_observed_at <= ?")
             + "ORDER BY bank, term_months",
-            (_product_value(product_type), *outer_params, *inner_params, timestamp, timestamp),
+            (
+                _product_value(product_type),
+                *cutoff.observation_params,
+                *cutoff.observation_params,
+                *cutoff.withdrawal_params,
+                timestamp,
+            ),
         ).fetchall()
         return [_row_to_history_record(row) for row in rows]
 
@@ -1128,25 +1173,30 @@ class ObservationStore:
         cutoff = self._as_of_cutoff(before_run_id, timestamp)
         if cutoff is None:
             return []
-        outer_cutoff, inner_cutoff, outer_params, inner_params = cutoff
         rows = self._connection.execute(
-            f"SELECT * FROM observations o WHERE product_type = ? AND {outer_cutoff} "
+            f"SELECT * FROM observations o WHERE product_type = ? AND {cutoff.outer} "
             "AND validation_status != 'warning' "
             "AND id = ("
             f"  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
-            f"  AND {inner_cutoff} AND o2.validation_status != 'warning' "
+            f"  AND {cutoff.inner} AND o2.validation_status != 'warning' "
             "  ORDER BY first_observed_at DESC, id DESC LIMIT 1"
             ") "
             "AND NOT EXISTS ("
             "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
-            "  AND rc.change_type = 'REMOVED_PRODUCT' AND rc.detected_at <= ? "
+            f"  AND rc.change_type = 'REMOVED_PRODUCT' AND {cutoff.withdrawal} "
             "  AND rc.detected_at > o.first_observed_at"
             ") "
             + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(
                 extra=" AND o3.first_observed_at <= ? AND o3.validation_status != 'warning'"
             )
             + "ORDER BY bank, term_months",
-            (_product_value(product_type), *outer_params, *inner_params, timestamp, timestamp),
+            (
+                _product_value(product_type),
+                *cutoff.observation_params,
+                *cutoff.observation_params,
+                *cutoff.withdrawal_params,
+                timestamp,
+            ),
         ).fetchall()
         return [_row_to_history_record(row) for row in rows]
 

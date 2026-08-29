@@ -782,13 +782,20 @@ class PricingIntelligenceService:
             if as_of is None:
                 records = []
             else:
+                # before_run_id=as_of_run_id anchors the reconstruction to
+                # this specific run's own (started_at, rowid) position, not
+                # just its timestamp -- two runs for the same product can
+                # share started_at, and without this a later same-timestamp
+                # run's state would still win the per-key selection even when
+                # this run_id explicitly names the earlier one. See
+                # ObservationStore._as_of_cutoff()'s docstring.
                 records = self.store.get_observations_as_of(
-                    as_of=as_of, product_type=product_type
+                    as_of=as_of, product_type=product_type, before_run_id=as_of_run_id
                 )
                 records = _resolve_suspicious_if_present(
                     records,
                     lambda: self.store.get_confirmed_observations_as_of(
-                        as_of=as_of, product_type=product_type
+                        as_of=as_of, product_type=product_type, before_run_id=as_of_run_id
                     ),
                 )
         else:

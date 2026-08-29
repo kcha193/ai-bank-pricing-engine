@@ -971,6 +971,41 @@ def test_previous_run_rates_do_not_resurrect_a_product_withdrawn_in_that_run(sto
     assert {record.bank for record in previous} == {"ANZ"}
 
 
+def test_observations_as_of_do_not_apply_a_same_timestamp_later_withdrawal(store, make_record):
+    """A REMOVED_PRODUCT event recorded by a LATER same-timestamp run must not
+    retroactively apply to a reconstruction anchored at an EARLIER
+    same-timestamp run. rate_changes.detected_at ties the same way
+    observations.first_observed_at does, so the withdrawal predicate needs
+    the identical run-order anchoring, via rate_changes.run_id -- not just
+    the observation-row cutoff."""
+    store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.79), make_record(bank="BNZ", rate_pct=4.85)],
+        observed_at=DAY_ONE,
+    )
+    baseline = store.get_current_observations()
+
+    earlier = store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.79)], run_id="run-earlier", observed_at=DAY_TWO
+    )
+    later = store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.79)], run_id="run-later", observed_at=DAY_TWO
+    )
+    changes = detect_changes(
+        previous=baseline,
+        current=[make_record(bank="ANZ", rate_pct=4.79, observed_at=DAY_TWO)],
+        detected_at=DAY_TWO,
+        banks_collected=["ANZ", "BNZ"],
+        run_id=later.run_id,
+    )
+    store.record_changes(changes)
+
+    as_of_earlier = store.get_observations_as_of(as_of=DAY_TWO, before_run_id=earlier.run_id)
+    as_of_later = store.get_observations_as_of(as_of=DAY_TWO, before_run_id=later.run_id)
+
+    assert {record.bank for record in as_of_earlier} == {"ANZ", "BNZ"}
+    assert {record.bank for record in as_of_later} == {"ANZ"}
+
+
 def test_a_product_returning_after_a_withdrawal_starts_a_fresh_state(store, make_record):
     """A re-add is not a continuation: it must not inherit the pre-gap first_observed_at."""
     _withdraw_bnz_on_day_two(store, make_record)

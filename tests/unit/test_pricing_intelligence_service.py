@@ -1312,6 +1312,22 @@ def test_market_snapshot_reconstructs_an_older_run_by_id(fixture_fetcher):
     assert snapshot_at_run_two.term(12).rate_for("ANZ") == 4.79
 
 
+def test_market_snapshot_as_of_run_id_resolves_a_same_timestamp_run(service, make_record):
+    """Two runs sharing observed_at, with the rate changing between them, must
+    let as_of_run_id reconstruct the specific run named -- not whichever
+    same-timestamp run a plain timestamp comparison happens to prefer."""
+    earlier = service.store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.60)], observed_at=DAY_TWO
+    )
+    service.store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.70)], observed_at=DAY_TWO
+    )
+
+    snapshot = service.get_market_snapshot(as_of_run_id=earlier.run_id)
+
+    assert snapshot.term(12).rate_for("ANZ") == 4.60
+
+
 def test_market_snapshot_as_of_a_suspicious_run_falls_back_to_the_confirmed_rate(
     service, make_record
 ):
