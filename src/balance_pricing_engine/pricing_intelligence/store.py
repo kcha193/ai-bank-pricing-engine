@@ -390,7 +390,14 @@ class ObservationStore:
         A run that shares its ``started_at`` with another run of a different
         product (both migrated in the very same pass) could therefore still
         be mislabelled here; this is an accepted, bounded imprecision for
-        one-time historical backfill, not an ongoing correctness bug.
+        one-time historical backfill, not an ongoing correctness bug -- but
+        only for a run neither of the first two, higher-confidence passes
+        could already resolve. The third pass is restricted to exactly those
+        runs (excluded from both ``WHERE run_id IN (...)`` conditions
+        above): applying it unconditionally would let its own unordered,
+        arbitrary ``LIMIT 1`` pick overwrite an *already-correct* label from
+        pass one or two whenever a same-timestamp different-product run
+        happens to be the one it picks.
 
         A truly ancient run with no trace in any of the three -- superseded
         in ``observations`` on both timestamps and with zero recorded
@@ -419,7 +426,9 @@ class ObservationStore:
             "UPDATE collection_runs SET product_type = ("
             "  SELECT o.product_type FROM observations o "
             "  WHERE o.first_observed_at = collection_runs.started_at LIMIT 1"
-            ") WHERE started_at IN (SELECT DISTINCT first_observed_at FROM observations)"
+            ") WHERE started_at IN (SELECT DISTINCT first_observed_at FROM observations) "
+            "AND run_id NOT IN (SELECT DISTINCT run_id FROM rate_changes) "
+            "AND run_id NOT IN (SELECT DISTINCT last_seen_run_id FROM observations)"
         )
 
     def _migrate_observations_first_seen_run_id(self, connection: sqlite3.Connection) -> None:
@@ -448,28 +457,42 @@ class ObservationStore:
         multi-product collection rather than being confined to backfilling
         historical data once.
 
-        The backfill below still uses the timestamp match -- the same
-        caveat as :meth:`_migrate_collection_runs_product_type`'s own third
-        pass applies, and for the same reason: it is a one-time correction
-        for existing rows, not a live query path. It also runs after that
-        method, so ``collection_runs.product_type`` is already backfilled
-        and narrows the match to the correct product where two runs would
-        otherwise collide on ``started_at`` alone.
+        Three passes, in descending order of confidence, each only touching
+        what the previous one left ``NULL``:
 
-        That product filter is itself only safe when the legacy run was
-        genuinely single-product. A pre-column bootstrap run that collected
-        *both* products at once has exactly one ``collection_runs`` row, so
-        ``_migrate_collection_runs_product_type`` can only have backfilled a
-        single ``product_type`` label onto it -- whichever the priority
-        passes in its docstring recovered evidence for. That mislabels the
-        *other* product's observations from the same run: the product-
-        matched pass below finds no ``collection_runs`` row at all for them
-        and leaves ``first_seen_run_id`` ``NULL``, making that run invisible
-        to :meth:`get_previous_run_started_at` for that product even though
-        it was genuinely present. A second, unfiltered pass recovers those
-        rows by relaxing to a timestamp-only match -- but only for what the
-        first pass left ``NULL``, so it never overrides a correct
-        product-matched result with a same-timestamp different-product run.
+        1. An exact ``rate_changes`` match: a ``NEW_PRODUCT`` event recorded
+           for this exact ``observation_key`` at this exact
+           ``first_observed_at`` names the introducing ``run_id`` directly,
+           no timestamp-ordering guess needed. A bootstrapping first-ever
+           collection produces none of these (``detect_changes()``'s own
+           bootstrap suppression), so this pass only ever helps a later,
+           non-bootstrap introduction -- exactly the gap the two passes below
+           cannot resolve unambiguously.
+        2. The timestamp-and-product match below -- the same caveat as
+           :meth:`_migrate_collection_runs_product_type`'s own third pass
+           applies, and for the same reason: it is a one-time correction for
+           existing rows, not a live query path. It also runs after that
+           method, so ``collection_runs.product_type`` is already backfilled
+           and narrows the match to the correct product where two runs would
+           otherwise collide on ``started_at`` alone. Still ambiguous when
+           *two same-product* runs share a timestamp (picks the earliest by
+           ``rowid``), which is exactly why pass 1 is tried first wherever it
+           can answer precisely.
+
+           That product filter is itself only safe when the legacy run was
+           genuinely single-product. A pre-column bootstrap run that
+           collected *both* products at once has exactly one
+           ``collection_runs`` row, so
+           ``_migrate_collection_runs_product_type`` can only have backfilled
+           a single ``product_type`` label onto it -- whichever the priority
+           passes in its docstring recovered evidence for. That mislabels the
+           *other* product's observations from the same run: this pass finds
+           no ``collection_runs`` row at all for them and leaves
+           ``first_seen_run_id`` ``NULL``, making that run invisible to
+           :meth:`get_previous_run_started_at` for that product even though
+           it was genuinely present.
+        3. An unfiltered timestamp-only match, recovering the mixed-bootstrap
+           case pass 2 leaves ``NULL`` by relaxing the product filter.
         """
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(observations)")}
         if "first_seen_run_id" in columns:
@@ -477,11 +500,25 @@ class ObservationStore:
         connection.execute("ALTER TABLE observations ADD COLUMN first_seen_run_id TEXT")
         connection.execute(
             "UPDATE observations SET first_seen_run_id = ("
+            "  SELECT rc.run_id FROM rate_changes rc "
+            "  WHERE rc.observation_key = observations.observation_key "
+            "  AND rc.change_type = 'NEW_PRODUCT' "
+            "  AND rc.detected_at = observations.first_observed_at "
+            "  LIMIT 1"
+            ") WHERE EXISTS ("
+            "  SELECT 1 FROM rate_changes rc2 "
+            "  WHERE rc2.observation_key = observations.observation_key "
+            "  AND rc2.change_type = 'NEW_PRODUCT' "
+            "  AND rc2.detected_at = observations.first_observed_at"
+            ")"
+        )
+        connection.execute(
+            "UPDATE observations SET first_seen_run_id = ("
             "  SELECT cr.run_id FROM collection_runs cr "
             "  WHERE cr.started_at = observations.first_observed_at "
             "  AND cr.product_type = observations.product_type "
             "  ORDER BY cr.rowid LIMIT 1"
-            ")"
+            ") WHERE first_seen_run_id IS NULL"
         )
         connection.execute(
             "UPDATE observations SET first_seen_run_id = ("

@@ -450,6 +450,69 @@ def test_a_pre_column_migration_recovers_a_reconfirmed_bootstrap_run(store, make
     assert row["product_type"] == "term_deposit"
 
 
+def test_a_pre_column_migration_does_not_overwrite_a_correctly_resolved_product(
+    store, make_record
+):
+    """Pass three of _migrate_collection_runs_product_type (started_at-value
+    matching, unordered) must not clobber a run pass one or two already
+    resolved with real evidence -- two different-product runs sharing a
+    legacy started_at would otherwise both end up mislabelled with whichever
+    product pass three's unordered pick happens to prefer."""
+    loan_record = make_record(product_type=ProductType.HOME_LOAN)
+    deposit_record = make_record(
+        product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit"
+    )
+    loan_write = store.record_observations([loan_record], observed_at=DAY_ONE)
+    deposit_write = store.record_observations([deposit_record], observed_at=DAY_ONE)
+
+    # Simulate a database that predates the column.
+    store._connection.execute("ALTER TABLE collection_runs DROP COLUMN product_type")
+    store._create_schema()
+
+    loan_row = store._connection.execute(
+        "SELECT product_type FROM collection_runs WHERE run_id = ?", (loan_write.run_id,)
+    ).fetchone()
+    deposit_row = store._connection.execute(
+        "SELECT product_type FROM collection_runs WHERE run_id = ?", (deposit_write.run_id,)
+    ).fetchone()
+    assert loan_row["product_type"] == "home_loan"
+    assert deposit_row["product_type"] == "term_deposit"
+
+
+def test_a_pre_column_migration_prefers_rate_changes_evidence_over_timestamp_ordering(
+    store, make_record
+):
+    """Two legacy runs for the same product sharing a timestamp are
+    inherently ambiguous by (timestamp, rowid) alone -- but a NEW_PRODUCT
+    event recorded for a specific observation_key at a specific
+    first_observed_at names its introducing run exactly. Preferring that
+    exact match avoids picking the wrong (earliest-rowid) run when a later
+    same-timestamp run is the one that actually introduced the row."""
+    anz_record = make_record(bank="ANZ", rate_pct=4.79)
+    store.record_observations([anz_record], run_id="run-first", observed_at=DAY_ONE)
+
+    bnz_record = make_record(bank="BNZ", rate_pct=4.85)
+    second_run = store.record_observations([bnz_record], run_id="run-second", observed_at=DAY_ONE)
+    changes = detect_changes(
+        previous=[],
+        current=[bnz_record],
+        detected_at=DAY_ONE,
+        banks_collected=["BNZ"],
+        run_id=second_run.run_id,
+    )
+    store.record_changes(changes)
+
+    # Simulate a database that predates the column.
+    store._connection.execute("ALTER TABLE observations DROP COLUMN first_seen_run_id")
+    store._create_schema()
+
+    row = store._connection.execute(
+        "SELECT first_seen_run_id FROM observations WHERE observation_key = ?",
+        (bnz_record.observation_key(),),
+    ).fetchone()
+    assert row["first_seen_run_id"] == second_run.run_id
+
+
 def test_a_pre_column_database_migrates_first_seen_run_id(store, make_record):
     """A database created before observations.first_seen_run_id existed
     must gain it via migration (backfilled from the matching
