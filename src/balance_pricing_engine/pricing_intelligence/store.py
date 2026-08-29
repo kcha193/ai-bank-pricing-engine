@@ -195,6 +195,7 @@ class _AsOfCutoff(NamedTuple):
 
     outer: str
     inner: str
+    eligibility: str
     withdrawal: str
     observation_params: tuple
     withdrawal_params: tuple
@@ -1035,28 +1036,30 @@ class ObservationStore:
         product can share an identical ``started_at``
         (:meth:`record_observations`'s public API allows an explicit
         ``observed_at``), and a plain timestamp cutoff cannot tell which of
-        them a reconstruction should stop at -- a row (or a withdrawal event)
-        introduced by a *later* same-timestamp run would still satisfy
-        ``<= as_of`` (they're equal) and either win the per-key selection or
-        retroactively apply a withdrawal one run early, even when the caller
-        specifically wants the earlier run's state (see
-        :meth:`get_previous_run_rates`). ``outer``/``inner`` anchor via each
-        observation row's ``first_seen_run_id``; ``withdrawal`` anchors via
-        ``rate_changes.run_id`` instead, since a ``REMOVED_PRODUCT`` event
-        needs the same run-order treatment as the observation rows it
-        excludes -- with a further fallback to ``rc.detected_at`` for a
-        ``rate_changes`` row whose ``run_id`` does not correlate to any
-        stored run at all (e.g. one written via ``record_changes()`` from a
-        caller that built its own ``RateChange`` without a real ``run_id`` --
-        :meth:`record_changes` stores that as ``""``, not ``NULL``): such a
-        row has no run position to anchor to, so it falls back to being
-        honoured by timestamp alone rather than silently never excluding
-        anything.
+        them a reconstruction should stop at -- a row (or a withdrawal event,
+        or an eligibility-superseding sibling) introduced by a *later*
+        same-timestamp run would still satisfy ``<= as_of`` (they're equal)
+        and either win the per-key selection, retroactively apply a
+        withdrawal, or retroactively supersede a row one run early, even when
+        the caller specifically wants the earlier run's state (see
+        :meth:`get_previous_run_rates`). ``outer``/``inner``/``eligibility``
+        all anchor via an observation row's ``first_seen_run_id``;
+        ``withdrawal`` anchors via ``rate_changes.run_id`` instead, since a
+        ``REMOVED_PRODUCT`` event needs the same run-order treatment as the
+        observation rows it excludes -- with a further fallback to
+        ``rc.detected_at`` for a ``rate_changes`` row whose ``run_id`` does
+        not correlate to any stored run at all (e.g. one written via
+        ``record_changes()`` from a caller that built its own ``RateChange``
+        without a real ``run_id`` -- :meth:`record_changes` stores that as
+        ``""``, not ``NULL``): such a row has no run position to anchor to,
+        so it falls back to being honoured by timestamp alone rather than
+        silently never excluding anything.
         """
         if before_run_id is None:
             return _AsOfCutoff(
                 outer="o.first_observed_at <= ?",
                 inner="o2.first_observed_at <= ?",
+                eligibility="o3.first_observed_at <= ?",
                 withdrawal="rc.detected_at <= ?",
                 observation_params=(timestamp,),
                 withdrawal_params=(timestamp,),
@@ -1081,6 +1084,7 @@ class ObservationStore:
         return _AsOfCutoff(
             outer=observation_cutoff.format(alias="o"),
             inner=observation_cutoff.format(alias="o2"),
+            eligibility=observation_cutoff.format(alias="o3"),
             withdrawal=withdrawal_cutoff,
             observation_params=observation_params,
             withdrawal_params=(*observation_params, timestamp),
@@ -1137,14 +1141,14 @@ class ObservationStore:
             f"  AND rc.change_type = 'REMOVED_PRODUCT' AND {cutoff.withdrawal} "
             "  AND rc.detected_at > o.first_observed_at"
             ") "
-            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra=" AND o3.first_observed_at <= ?")
+            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra=f" AND {cutoff.eligibility}")
             + "ORDER BY bank, term_months",
             (
                 _product_value(product_type),
                 *cutoff.observation_params,
                 *cutoff.observation_params,
                 *cutoff.withdrawal_params,
-                timestamp,
+                *cutoff.observation_params,
             ),
         ).fetchall()
         return [_row_to_history_record(row) for row in rows]
@@ -1187,7 +1191,7 @@ class ObservationStore:
             "  AND rc.detected_at > o.first_observed_at"
             ") "
             + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(
-                extra=" AND o3.first_observed_at <= ? AND o3.validation_status != 'warning'"
+                extra=f" AND {cutoff.eligibility} AND o3.validation_status != 'warning'"
             )
             + "ORDER BY bank, term_months",
             (
@@ -1195,7 +1199,7 @@ class ObservationStore:
                 *cutoff.observation_params,
                 *cutoff.observation_params,
                 *cutoff.withdrawal_params,
-                timestamp,
+                *cutoff.observation_params,
             ),
         ).fetchall()
         return [_row_to_history_record(row) for row in rows]

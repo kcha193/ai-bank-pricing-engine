@@ -356,6 +356,42 @@ def test_non_comparable_rows_do_not_count_against_coverage(make_record):
     assert "ANZ" not in outcome.low_coverage_banks
 
 
+def test_non_comparable_rows_missing_coverage_does_not_emit_withdrawals(make_record):
+    """The other half of the guard test_non_comparable_rows_do_not_count_against_coverage
+    checks: a bank whose non_comparable extraction alone regresses still
+    counts as reliably collected (comparable coverage is fine), so
+    detect_changes() would otherwise read every now-missing non_comparable
+    identity as a genuine REMOVED_PRODUCT -- persisting the exact
+    parser-failure scenario as change events instead of merely dropping the
+    coverage ratio the way _reliably_collected_banks() already does for a
+    comparable-coverage regression."""
+    comparable = make_record(bank="ANZ", term_months=12, product_name="Fixed 12m")
+    non_comparable = [
+        make_record(bank="ANZ", rate_category="non_comparable", product_name=f"PIE Fund {i}")
+        for i in range(5)
+    ]
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", [comparable] + non_comparable)],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    # Same stand-in as the coverage test: only the comparable row re-collects.
+    service._collectors = [_StubCollector("ANZ", [comparable])]
+    outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    non_comparable_withdrawals = [
+        change
+        for change in outcome.changes
+        if change.change_type is ChangeType.REMOVED_PRODUCT
+        and change.rate_category == "non_comparable"
+    ]
+    assert non_comparable_withdrawals == []
+
+
 def test_a_validation_rejected_record_is_not_reported_as_a_withdrawal(fixture_fetcher):
     """A single implausible rate must not read as the bank withdrawing that line."""
 

@@ -854,6 +854,31 @@ def test_observations_as_of_exclude_a_superseded_eligibility_state(store, make_r
     assert [r.max_lvr for r in after_transition] == [0.75]
 
 
+def test_observations_as_of_do_not_apply_a_same_timestamp_later_eligibility_edit(
+    store, make_record
+):
+    """An eligibility transition recorded by a LATER same-timestamp run must
+    not retroactively supersede the prior state for a reconstruction anchored
+    at an EARLIER same-timestamp run -- the same run-order requirement
+    already applied to the withdrawal predicate, here applied to
+    _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY's {extra} bound."""
+    store.record_observations(
+        [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=4.79)], observed_at=DAY_ONE
+    )
+    # A bank unreachable in the earlier of two same-timestamp runs...
+    earlier = store.record_observations([], run_id="run-earlier", observed_at=DAY_TWO)
+    # ...returns in the later one with a changed eligibility key.
+    store.record_observations(
+        [make_record(max_lvr=0.75, min_equity=0.25, rate_pct=4.99)],
+        run_id="run-later",
+        observed_at=DAY_TWO,
+    )
+
+    as_of_earlier = store.get_observations_as_of(as_of=DAY_TWO, before_run_id=earlier.run_id)
+
+    assert [r.max_lvr for r in as_of_earlier] == [0.80]
+
+
 def test_observations_as_of_keep_simultaneous_lvr_tiers_that_started_later(store, make_record):
     """A genuinely new simultaneous tier must not exclude an older sibling tier."""
     store.record_observations(

@@ -405,6 +405,49 @@ def _reliably_collected_banks(
     return tuple(reliable)
 
 
+def _non_comparable_predecessor_keys_to_suppress(
+    accepted: Sequence[CompetitorRateRecord],
+    baseline: Sequence[CompetitorRateRecord],
+    min_coverage_ratio: float,
+) -> set[str]:
+    """Baseline ``non_comparable`` keys to exempt from withdrawal detection
+    for a bank whose *audit-only* extraction coverage this run fell below
+    ``min_coverage_ratio``.
+
+    :func:`_reliably_collected_banks` already excludes ``non_comparable``
+    identities from the comparable coverage ratio, so a bank whose
+    audit-only extraction alone regresses (a parser fault, or a page that
+    stops publishing just those rows, while every comparable term-deposit
+    rate keeps collecting cleanly) still counts as reliably collected and
+    reaches ``detect_changes()`` as a ``banks_collected`` bank. Without this,
+    every one of that bank's now-missing ``non_comparable`` identities is
+    read as a genuine ``REMOVED_PRODUCT`` -- exactly the parser-failure
+    scenario :func:`_reliably_collected_banks` exists to guard against, just
+    persisted as a change event instead of merely dropping the coverage
+    ratio. Computed the same way, scoped to the opposite subset, so a bank
+    whose ``non_comparable`` coverage stays healthy is unaffected: a single
+    fund genuinely closing while its siblings keep collecting still reports
+    as withdrawn.
+    """
+    non_comparable_baseline = [record for record in baseline if record.rate_category == "non_comparable"]
+    baseline_keys: dict[str, set[str]] = {}
+    for record in non_comparable_baseline:
+        baseline_keys.setdefault(record.bank, set()).add(record.observation_key())
+    if not baseline_keys:
+        return set()
+
+    matched_keys: dict[str, set[str]] = {}
+    for predecessor in resolve_pairing(non_comparable_baseline, accepted).values():
+        matched_keys.setdefault(predecessor.bank, set()).add(predecessor.observation_key())
+
+    suppressed: set[str] = set()
+    for bank, known in baseline_keys.items():
+        matched = matched_keys.get(bank, set())
+        if len(matched) < len(known) * min_coverage_ratio:
+            suppressed.update(known - matched)
+    return suppressed
+
+
 @dataclass(frozen=True)
 class CollectionOutcome:
     """Everything one collection run produced."""
@@ -665,6 +708,17 @@ class PricingIntelligenceService:
                         for key in confirming_keys
                         if key in last_confirmed_pairs
                     }
+                    # A bank counted as reliably_collected_banks above only
+                    # because non_comparable identities are excluded from
+                    # that ratio -- its audit-only extraction can still have
+                    # regressed on its own. Without this, every now-missing
+                    # non_comparable identity for such a bank reads as a
+                    # genuine withdrawal instead of the same "unknown, not
+                    # withdrawn" treatment _reliably_collected_banks() gives
+                    # a comparable-coverage regression.
+                    | _non_comparable_predecessor_keys_to_suppress(
+                        accepted, baseline, self.config.validation.min_bank_coverage_ratio
+                    )
                 ),
             )
             # A bank's first-ever successful collection would otherwise report
