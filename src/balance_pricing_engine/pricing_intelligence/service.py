@@ -353,6 +353,22 @@ def _resolve_rate_category(
     return "special"
 
 
+#: Distinguishes "rate_category not supplied" from an explicit
+#: rate_category=None on get_market_snapshot()/get_previous_market_snapshot()
+#: specifically. Those two build their result via build_market_snapshot(),
+#: whose own contract already treats rate_category=None as "unfiltered,
+#: every category" -- collapsing that onto the same None _resolve_rate_category()
+#: treats as "not supplied, resolve the product's default" would silently
+#: turn an explicit request for the unfiltered view into a filtered one for
+#: any caller relying on that contract. The other market-view methods below
+#: (get_market_state, get_competitive_position, resolve_competitor_assumption)
+#: have no unfiltered mode of their own -- comparing across categories has no
+#: coherent meaning for a market-state classification or a single resolved
+#: rate -- so they keep the simpler None-is-not-supplied convention
+#: _resolve_rate_category() documents.
+_RATE_CATEGORY_OMITTED = object()
+
+
 def _reliably_collected_banks(
     report: CollectionReport,
     accepted: Sequence[CompetitorRateRecord],
@@ -802,11 +818,17 @@ class PricingIntelligenceService:
     def get_market_snapshot(
         self,
         product_type: ProductType | str = ProductType.HOME_LOAN,
-        rate_category: Optional[str] = None,
+        rate_category: Optional[str] = _RATE_CATEGORY_OMITTED,
         as_of_run_id: Optional[str] = None,
         now: Optional[datetime] = None,
     ) -> MarketSnapshot:
         """Return the currently-advertised market across tracked terms.
+
+        ``rate_category`` defaults to the product's comparable category (see
+        :func:`_resolve_rate_category`) when omitted. Pass ``rate_category=None``
+        explicitly for the unfiltered view across every category, matching
+        :func:`~.snapshot.build_market_snapshot`'s own contract -- see
+        :data:`_RATE_CATEGORY_OMITTED`.
 
         Uses the last known state per key (via ``get_current_observations()``),
         not a strict "last run" filter: a bank's rate that failed to fetch, or
@@ -829,7 +851,8 @@ class PricingIntelligenceService:
         unchanged re-observation, so it cannot answer for a run that isn't
         the latest one.
         """
-        rate_category = _resolve_rate_category(product_type, rate_category)
+        if rate_category is _RATE_CATEGORY_OMITTED:
+            rate_category = _resolve_rate_category(product_type, None)
         as_of: Optional[datetime] = None
         if as_of_run_id is not None:
             as_of = self.store.get_run_started_at(as_of_run_id)
@@ -876,10 +899,16 @@ class PricingIntelligenceService:
     def get_previous_market_snapshot(
         self,
         product_type: ProductType | str = ProductType.HOME_LOAN,
-        rate_category: Optional[str] = None,
+        rate_category: Optional[str] = _RATE_CATEGORY_OMITTED,
     ) -> Optional[MarketSnapshot]:
-        """Return the snapshot from the run before the latest, if there is one."""
-        rate_category = _resolve_rate_category(product_type, rate_category)
+        """Return the snapshot from the run before the latest, if there is one.
+
+        ``rate_category`` defaults to the product's comparable category when
+        omitted; pass ``rate_category=None`` explicitly for the unfiltered
+        view across every category -- see :data:`_RATE_CATEGORY_OMITTED`.
+        """
+        if rate_category is _RATE_CATEGORY_OMITTED:
+            rate_category = _resolve_rate_category(product_type, None)
         as_of = self.store.get_previous_run_started_at(product_type=product_type)
         if as_of is None:
             return None

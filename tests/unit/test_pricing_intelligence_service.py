@@ -1333,6 +1333,46 @@ def test_the_market_snapshot_covers_every_bank(service):
     assert market.bank_count == 5
 
 
+def test_market_snapshot_rate_category_none_is_unfiltered(service, make_record):
+    """rate_category=None, passed explicitly, must give the unfiltered view
+    across every category -- matching build_market_snapshot()'s own
+    contract -- not the smart per-product default _resolve_rate_category()
+    applies when the argument is omitted entirely."""
+    service.store.record_observations(
+        [
+            make_record(bank="ANZ", rate_category="special", rate_pct=4.79),
+            make_record(bank="BNZ", rate_category="standard", rate_pct=5.39),
+        ],
+        observed_at=DAY_ONE,
+    )
+
+    default_snapshot = service.get_market_snapshot(now=DAY_ONE)
+    unfiltered_snapshot = service.get_market_snapshot(rate_category=None, now=DAY_ONE)
+
+    assert set(default_snapshot.banks) == {"ANZ"}
+    assert set(unfiltered_snapshot.banks) == {"ANZ", "BNZ"}
+
+
+def test_previous_market_snapshot_rate_category_none_is_unfiltered(service, make_record):
+    """Same fix as get_market_snapshot(), for the previous-run snapshot."""
+    service.store.record_observations(
+        [
+            make_record(bank="ANZ", rate_category="special", rate_pct=4.79),
+            make_record(bank="BNZ", rate_category="standard", rate_pct=5.39),
+        ],
+        observed_at=DAY_ONE,
+    )
+    service.store.record_observations(
+        [make_record(bank="ANZ", rate_category="special", rate_pct=4.89)], observed_at=DAY_TWO
+    )
+
+    default_snapshot = service.get_previous_market_snapshot()
+    unfiltered_snapshot = service.get_previous_market_snapshot(rate_category=None)
+
+    assert set(default_snapshot.banks) == {"ANZ"}
+    assert set(unfiltered_snapshot.banks) == {"ANZ", "BNZ"}
+
+
 def test_market_snapshot_reconstructs_an_older_run_by_id(fixture_fetcher):
     """last_seen_run_id gets overwritten by later unchanged runs; the snapshot must not."""
     with build_service(fixture_fetcher()) as service:
