@@ -1322,6 +1322,46 @@ def test_get_competitive_position_defaults_to_the_deposit_category(make_record):
     assert position.market_best == 4.00
 
 
+def test_resolve_competitor_assumption_does_not_blend_categories(service, make_record):
+    """rate_category=None (this method's own default) must resolve to the
+    product's comparable category before reaching get_market_snapshot(),
+    not forward None straight through -- that method's own None now means
+    the unfiltered view across every category (see _RATE_CATEGORY_OMITTED),
+    which would let MARKET_MEDIAN silently blend special and standard
+    mortgage tiers into one competitor assumption fed straight into the
+    optimiser."""
+    service.store.record_observations(
+        [
+            make_record(bank="ANZ", rate_category="special", rate_pct=4.00),
+            make_record(bank="BNZ", rate_category="standard", rate_pct=6.00),
+        ],
+        observed_at=DAY_ONE,
+    )
+
+    assumption = service.resolve_competitor_assumption(strategy=CompetitorRateStrategy.MARKET_MEDIAN)
+
+    assert assumption.rate_pct == pytest.approx(4.00)
+
+
+def test_get_competitive_position_does_not_blend_categories(service, make_record):
+    """Same fix as resolve_competitor_assumption(), for get_competitive_position().
+    Asserted via market_worst (6.00 from BNZ's standard rate would leak in
+    unfiltered), not market_best: the lower "special" rate would win either
+    way and so would not, by itself, expose the blending bug."""
+    service.store.record_observations(
+        [
+            make_record(bank="ANZ", rate_category="special", rate_pct=4.00),
+            make_record(bank="BNZ", rate_category="standard", rate_pct=6.00),
+        ],
+        observed_at=DAY_ONE,
+    )
+
+    position = service.get_competitive_position(our_rate=4.10)
+
+    assert position.market_best == 4.00
+    assert position.market_worst == 4.00
+
+
 def test_the_market_snapshot_covers_every_bank(service):
     service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
     snapshot = service.get_market_snapshot(now=DAY_ONE)

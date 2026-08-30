@@ -1138,10 +1138,18 @@ class PricingIntelligenceService:
         """Position a rate (in advertised percent) against the current market.
 
         ``rate_category`` defaults to the product-appropriate comparison tier
-        (via :meth:`get_market_snapshot`) rather than a mortgage-specific
+        (via :func:`_resolve_rate_category`) rather than a mortgage-specific
         literal, so a deposit position resolves against the deposit market
-        instead of a snapshot with no matching rates.
+        instead of a snapshot with no matching rates. Resolved here, before
+        calling :meth:`get_market_snapshot`, rather than forwarding ``None``
+        straight through: that method's own ``rate_category=None`` means the
+        *unfiltered* view across every category (see
+        :data:`_RATE_CATEGORY_OMITTED`) -- a position against a single,
+        comparable market has no coherent "unfiltered" reading, so this
+        method's own ``None`` must resolve to a concrete category before it
+        ever reaches that call.
         """
+        rate_category = _resolve_rate_category(product_type, rate_category)
         snapshot = self.get_market_snapshot(
             product_type=product_type, rate_category=rate_category, now=now
         )
@@ -1170,10 +1178,19 @@ class PricingIntelligenceService:
         """Resolve the competitor assumption the optimiser should run with.
 
         ``rate_category`` defaults to the product-appropriate comparison tier
-        (via :meth:`get_market_snapshot`) rather than a mortgage-specific
+        (via :func:`_resolve_rate_category`) rather than a mortgage-specific
         literal, so a deposit assumption resolves against the deposit market
-        instead of a snapshot with no matching rates.
+        instead of a snapshot with no matching rates. Resolved here, before
+        calling :meth:`get_market_snapshot`, rather than forwarding ``None``
+        straight through: that method's own ``rate_category=None`` means the
+        *unfiltered* view across every category (see
+        :data:`_RATE_CATEGORY_OMITTED`), which would let a
+        ``MARKET_MEDIAN``/``MARKET_AVERAGE``/etc. strategy silently blend a
+        mortgage's ``special``/``standard`` tiers -- or a deposit's
+        ``term_deposit``/PIE rows -- into one competitor assumption fed
+        straight into the optimiser.
         """
+        rate_category = _resolve_rate_category(product_type, rate_category)
         snapshot = self.get_market_snapshot(
             product_type=product_type, rate_category=rate_category, now=now
         )
