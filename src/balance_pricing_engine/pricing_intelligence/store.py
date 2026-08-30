@@ -627,48 +627,133 @@ class ObservationStore:
         )
         return WriteResult(run_id=run_id, inserted=inserted, unchanged=unchanged)
 
+    def _run_ordered_after_fixed_reference(
+        self,
+        connection: sqlite3.Connection,
+        reference_run_id: str,
+        reference_timestamp: str,
+        candidate_run_column: str,
+        candidate_timestamp_column: str,
+    ) -> tuple:
+        """SQL fragment + params: true when the run named by
+        ``candidate_run_column`` (a column in the caller's own query) comes
+        strictly after one fixed, already-known reference run.
+
+        Complements the module-level :func:`_run_ordered_after`, which
+        compares two run_id *columns* within the same query -- here the
+        "earlier" side is a single row (e.g. the observation currently being
+        upserted) resolved once, up front, rather than a second column.
+        Shared by both write-time checks that need exactly this comparison:
+        "did this REMOVED_PRODUCT event happen in a run after the one that
+        last confirmed this row" (:meth:`_returned_after_a_withdrawal`) and
+        "did this eligibility-superseding sibling first appear in a run
+        after the one that last confirmed this row" (the eligibility-return
+        check in :meth:`_upsert_observation`). Two runs sharing a timestamp
+        would otherwise tie under a plain ``timestamp > timestamp`` check,
+        merging a same-timestamp return into the stale pre-transition row
+        instead of starting a fresh state. Falls back to plain timestamp
+        comparison when ``reference_run_id`` itself does not correlate to a
+        stored ``collection_runs`` row.
+        """
+        reference = connection.execute(
+            "SELECT started_at, rowid FROM collection_runs WHERE run_id = ?",
+            (reference_run_id,),
+        ).fetchone()
+        if reference is None:
+            return f"{candidate_timestamp_column} > ?", (reference_timestamp,)
+        ordering = (
+            f"(EXISTS (SELECT 1 FROM collection_runs cr WHERE cr.run_id = {candidate_run_column} "
+            "AND (cr.started_at > ? OR (cr.started_at = ? AND cr.rowid > ?))) "
+            f"OR (NOT EXISTS (SELECT 1 FROM collection_runs WHERE run_id = {candidate_run_column}) "
+            f"AND {candidate_timestamp_column} > ?))"
+        )
+        params = (
+            reference["started_at"],
+            reference["started_at"],
+            reference["rowid"],
+            reference_timestamp,
+        )
+        return ordering, params
+
     def _returned_after_a_withdrawal(
         self, connection: sqlite3.Connection, observation_key: str, current: sqlite3.Row
     ) -> bool:
         """True when a ``REMOVED_PRODUCT`` event for ``observation_key`` was
         recorded by a run strictly after the one that last touched ``current``.
 
-        Compared by run position (mirroring :func:`_run_ordered_after`), not
-        a plain ``detected_at > last_seen_at`` timestamp check: two runs
-        sharing a timestamp -- the row last confirmed by one, withdrawn and
-        then reappearing across a later one -- would otherwise tie, merging
-        the return into the stale pre-withdrawal row instead of starting a
+        Compared by run position (see
+        :meth:`_run_ordered_after_fixed_reference`), not a plain
+        ``detected_at > last_seen_at`` timestamp check: two runs sharing a
+        timestamp -- the row last confirmed by one, withdrawn and then
+        reappearing across a later one -- would otherwise tie, merging the
+        return into the stale pre-withdrawal row instead of starting a
         fresh state. That corrupts the row's ``first_seen_run_id`` for every
         later run-anchored reconstruction: ``get_market_snapshot(as_of_run_id=
         <return run>)`` would keep seeing the withdrawal as coming after the
         row's (unchanged, pre-withdrawal) introducing run and omit the
         product even though it has genuinely returned.
         """
-        reference = connection.execute(
-            "SELECT started_at, rowid FROM collection_runs WHERE run_id = ?",
-            (current["last_seen_run_id"],),
-        ).fetchone()
-        if reference is None:
-            ordering = "rc.detected_at > ?"
-            params: tuple = (current["last_seen_at"],)
-        else:
-            ordering = (
-                "(EXISTS (SELECT 1 FROM collection_runs cr WHERE cr.run_id = rc.run_id "
-                "AND (cr.started_at > ? OR (cr.started_at = ? AND cr.rowid > ?))) "
-                "OR (NOT EXISTS (SELECT 1 FROM collection_runs WHERE run_id = rc.run_id) "
-                "AND rc.detected_at > ?))"
-            )
-            params = (
-                reference["started_at"],
-                reference["started_at"],
-                reference["rowid"],
-                current["last_seen_at"],
-            )
+        ordering, params = self._run_ordered_after_fixed_reference(
+            connection, current["last_seen_run_id"], current["last_seen_at"], "rc.run_id", "rc.detected_at"
+        )
         return (
             connection.execute(
                 "SELECT 1 FROM rate_changes rc WHERE rc.observation_key = ? "
                 f"AND rc.change_type = 'REMOVED_PRODUCT' AND {ordering} LIMIT 1",
                 (observation_key, *params),
+            ).fetchone()
+            is not None
+        )
+
+    def _returned_after_an_eligibility_transition(
+        self, connection: sqlite3.Connection, payload: dict, current: sqlite3.Row
+    ) -> bool:
+        """True when a sibling key in this row's eligibility group first
+        appeared in a run strictly after the one that last touched ``current``.
+
+        Compared by run position (see
+        :meth:`_run_ordered_after_fixed_reference`), not a plain
+        ``first_observed_at > last_seen_at`` timestamp check: an eligibility
+        condition flipping A -> B -> A across three runs sharing one
+        timestamp would otherwise tie, since B's ``first_observed_at``
+        equals A's ``last_seen_at`` rather than exceeding it. That would
+        merge the returning A into its stale pre-transition row instead of
+        starting a fresh state, so a later run-anchored reconstruction of
+        the middle run would no longer see B as superseding A and both
+        eligibility states could appear in the same historical snapshot.
+        """
+        ordering, params = self._run_ordered_after_fixed_reference(
+            connection,
+            current["last_seen_run_id"],
+            current["last_seen_at"],
+            "first_seen_run_id",
+            "first_observed_at",
+        )
+        return (
+            connection.execute(
+                "SELECT 1 FROM observations WHERE observation_key <> ? "
+                "AND bank = ? AND product_type = ? AND rate_category = ? "
+                "AND ("
+                "  (term_months IS NOT NULL AND ? IS NOT NULL AND term_months = ?)"
+                "  OR (term_months IS NULL AND ? IS NULL AND LOWER(term_label_raw) = LOWER(?))"
+                ") "
+                "AND interest_payment_frequency = ? AND LOWER(product_name) = LOWER(?) "
+                f"AND min_balance IS ? AND max_balance IS ? AND {ordering} LIMIT 1",
+                (
+                    payload["observation_key"],
+                    payload["bank"],
+                    payload["product_type"],
+                    payload["rate_category"],
+                    payload["term_months"],
+                    payload["term_months"],
+                    payload["term_months"],
+                    payload["term_label_raw"],
+                    payload["interest_payment_frequency"],
+                    payload["product_name"],
+                    payload["min_balance"],
+                    payload["max_balance"],
+                    *params,
+                ),
             ).fetchone()
             is not None
         )
@@ -714,31 +799,10 @@ class ObservationStore:
         # still the same term), regardless of the raw label -- a plain
         # term_label_raw equality check here would miss a transition that
         # eligibility_group_key() already pairs, leaving both rows current.
-        returned_after_an_eligibility_transition = current is not None and connection.execute(
-            "SELECT 1 FROM observations WHERE observation_key <> ? "
-            "AND bank = ? AND product_type = ? AND rate_category = ? "
-            "AND ("
-            "  (term_months IS NOT NULL AND ? IS NOT NULL AND term_months = ?)"
-            "  OR (term_months IS NULL AND ? IS NULL AND LOWER(term_label_raw) = LOWER(?))"
-            ") "
-            "AND interest_payment_frequency = ? AND LOWER(product_name) = LOWER(?) "
-            "AND min_balance IS ? AND max_balance IS ? AND first_observed_at > ? LIMIT 1",
-            (
-                payload["observation_key"],
-                payload["bank"],
-                payload["product_type"],
-                payload["rate_category"],
-                payload["term_months"],
-                payload["term_months"],
-                payload["term_months"],
-                payload["term_label_raw"],
-                payload["interest_payment_frequency"],
-                payload["product_name"],
-                payload["min_balance"],
-                payload["max_balance"],
-                current["last_seen_at"],
-            ),
-        ).fetchone() is not None
+        returned_after_an_eligibility_transition = (
+            current is not None
+            and self._returned_after_an_eligibility_transition(connection, payload, current)
+        )
 
         # A repeated suspicious value that is no longer independently flagged
         # this run (0 bps movement against its own warning-tagged baseline)

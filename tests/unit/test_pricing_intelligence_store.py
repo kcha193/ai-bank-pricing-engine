@@ -1115,6 +1115,45 @@ def test_a_reverted_eligibility_condition_starts_a_fresh_state(store, make_recor
     assert [r.max_lvr for r in mid_period] == [0.75]
 
 
+def test_a_reverted_eligibility_condition_starts_a_fresh_state_across_same_timestamp_runs(
+    store, make_record
+):
+    """Same fix as the run-order withdrawal/return comparison, applied to
+    the eligibility-transition path: an eligibility condition flipping
+    A -> B -> A across three runs sharing one observed_at must still start
+    a fresh state on the A return, not silently merge into the stale
+    pre-transition row. Under a plain first_observed_at > last_seen_at
+    timestamp check, B's first_observed_at ties with A's last_seen_at (both
+    DAY_TWO), so the transition would go undetected, the return would be
+    treated as an unchanged reconfirmation of the original row, and a later
+    run-anchored reconstruction of the middle run would no longer see B as
+    superseding A."""
+    store.record_observations(
+        [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=5.19)],
+        run_id="run-a",
+        observed_at=DAY_TWO,
+    )
+    store.record_observations(
+        [make_record(max_lvr=0.75, min_equity=0.25, rate_pct=4.99)],  # new eligibility key
+        run_id="run-b",
+        observed_at=DAY_TWO,
+    )
+    # Reverts to the exact same values as state A, at the same observed_at.
+    result = store.record_observations(
+        [make_record(max_lvr=0.80, min_equity=0.20, rate_pct=5.19)],
+        run_id="run-a-return",
+        observed_at=DAY_TWO,
+    )
+
+    assert result.inserted == 1, "must start a fresh state, not silently merge into the stale row"
+
+    key = make_record(max_lvr=0.80, min_equity=0.20, rate_pct=5.19).observation_key()
+    row = store._connection.execute(
+        "SELECT COUNT(*) AS n FROM observations WHERE observation_key = ?", (key,)
+    ).fetchone()
+    assert row["n"] == 2, "the original and reverted states must be distinct rows"
+
+
 def test_observations_as_of_does_not_resurrect_a_withdrawn_product(store, make_record):
     """A product withdrawn before the cutoff must not be reconstructed as present."""
     _withdraw_bnz_on_day_two(store, make_record)
