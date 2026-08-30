@@ -909,14 +909,21 @@ class PricingIntelligenceService:
         """
         if rate_category is _RATE_CATEGORY_OMITTED:
             rate_category = _resolve_rate_category(product_type, None)
-        as_of = self.store.get_previous_run_started_at(product_type=product_type)
-        if as_of is None:
+        # Resolved together from one store lookup, not as two separate
+        # get_previous_run_started_at()/get_previous_run_id() calls: another
+        # same-product collection committing between two separate calls
+        # would shift which run each one resolves "previous" relative to,
+        # so the timestamp and run_id could end up naming two different
+        # runs -- see ObservationStore.get_previous_run()'s docstring.
+        previous_run = self.store.get_previous_run(product_type=product_type)
+        if previous_run is None:
             return None
+        as_of = previous_run.started_at
         # Anchored to the resolved run's own identity, not just its
         # timestamp: two runs for the same product can share observed_at, and
         # a timestamp-only reconstruction can't tell which of them to stop
         # at -- see ObservationStore._as_of_cutoff()'s docstring.
-        before_run_id = self.store.get_previous_run_id(product_type=product_type)
+        before_run_id = previous_run.run_id
         records = self.store.get_observations_as_of(
             as_of=as_of, product_type=product_type, before_run_id=before_run_id
         )

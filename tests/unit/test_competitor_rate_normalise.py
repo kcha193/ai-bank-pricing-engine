@@ -118,3 +118,14 @@ def test_normalise_balance_ascending_unrelated_minimums_do_not_become_a_range():
 
 def test_normalise_balance_hyphen_separator_is_a_genuine_range():
     assert normalise_balance("$10,000-$49,999") == (10000.0, 49999.0)
+
+
+def test_normalise_balance_an_unrelated_leading_minimum_before_a_genuine_range_is_not_folded_in():
+    """A genuine range separator existing *somewhere* in the text is not
+    enough -- pairing the first two amounts found regardless of where the
+    separator actually sits would fold an unrelated leading minimum into a
+    range it was never part of, fabricating a maximum. The leading minimum
+    must be returned alone; the genuine range's own two amounts (5000,
+    9999) belong to a different figure and must not surface as the max
+    either."""
+    assert normalise_balance("Minimum $1,000 | Balance $5,000 to $9,999") == (1000.0, None)

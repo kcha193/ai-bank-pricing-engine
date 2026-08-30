@@ -243,6 +243,19 @@ class WriteResult:
         return self.inserted + self.unchanged
 
 
+class PreviousRun(NamedTuple):
+    """The run immediately before a reference run, resolved atomically.
+
+    See :meth:`ObservationStore.get_previous_run` -- a caller needing both
+    the run_id and started_at of "the previous run" must resolve them
+    together from one lookup, not via two separate calls that could each
+    resolve "previous" relative to a different latest run.
+    """
+
+    run_id: str
+    started_at: datetime
+
+
 class _AsOfCutoff(NamedTuple):
     """SQL fragments and params built by :meth:`ObservationStore._as_of_cutoff`."""
 
@@ -1531,9 +1544,45 @@ class ObservationStore:
         :meth:`get_observations_as_of`'s ``before_run_id`` -- see that
         method's docstring for why the timestamp alone is not always enough
         to identify the right run when two runs share a timestamp.
+
+        Calling this and :meth:`get_previous_run_started_at` as two separate
+        store round-trips is unsafe when both values are needed for the
+        *same* reconstruction: a collection commit landing between the two
+        calls can shift which run is "the latest", so each call resolves
+        "the previous run" relative to a different reference and returns a
+        run_id/started_at pair that do not name the same run. Use
+        :meth:`get_previous_run` instead for that case.
         """
         previous = self._previous_run_row(before_run_id, product_type)
         return previous["run_id"] if previous is not None else None
+
+    def get_previous_run(
+        self,
+        before_run_id: Optional[str] = None,
+        product_type: Optional[ProductType | str] = None,
+    ) -> Optional[PreviousRun]:
+        """Resolve the run before ``before_run_id`` (default: the latest
+        run), returning its ``run_id`` and ``started_at`` together from one
+        lookup.
+
+        :meth:`get_previous_run_started_at` and :meth:`get_previous_run_id`
+        each independently call :meth:`_previous_run_row`. A caller needing
+        both values for one reconstruction (e.g.
+        :meth:`~.service.PricingIntelligenceService.get_previous_market_snapshot`,
+        which anchors :meth:`get_observations_as_of` to both the timestamp
+        *and* the run_id) must not call them as two separate store
+        round-trips: another same-product collection committing between the
+        two calls shifts which run each one resolves "previous" relative to,
+        so the resulting timestamp and run_id can name two different runs --
+        the snapshot would then reconstruct one run's state while labelling
+        it with another run's ``as_of``. This method resolves both from a
+        single :meth:`_previous_run_row` call, so they always name the same
+        run.
+        """
+        previous = self._previous_run_row(before_run_id, product_type)
+        if previous is None:
+            return None
+        return PreviousRun(run_id=previous["run_id"], started_at=_parse_iso(previous["started_at"]))
 
     def get_previous_run_rates(
         self,

@@ -167,21 +167,31 @@ def normalise_balance(label: str | None) -> tuple[float | None, float | None]:
     advertised rate into false new/removed product events. Amounts are
     therefore only treated as a range when an explicit range separator (a
     "to"/hyphen directly between the two dollar amounts, nothing else in
-    between -- see :data:`_BALANCE_RANGE_SEPARATOR_PATTERN`) confirms it;
+    between -- see :data:`_BALANCE_RANGE_SEPARATOR_PATTERN`) confirms it.
+
+    Confirming a separator exists *somewhere* in the text is not enough,
+    though: an unrelated leading amount before a genuine, unconnected range
+    (e.g. "Minimum $1,000 | Balance $5,000 to $9,999") would otherwise still
+    pair the first two amounts found -- ``$1,000``/``$5,000`` -- as if the
+    range began at the leading minimum, fabricating a maximum the text never
+    associated with it. The separator match is therefore anchored to start
+    exactly where the first dollar amount does, so it can only confirm a
+    range whose own two endpoints *are* the first two amounts found;
     otherwise the first (most specific, row-level) figure is the minimum and
     the maximum is left unknown rather than invented.
     """
     if not label:
         return None, None
-    amounts = [
-        float(value.replace(",", ""))
-        for value in re.findall(r"\$\s*([0-9][0-9,]*(?:\.\d+)?)", label)
-    ]
-    if not amounts:
+    figures = list(re.finditer(r"\$\s*([0-9][0-9,]*(?:\.\d+)?)", label))
+    if not figures:
         return None, None
+    amounts = [float(figure.group(1).replace(",", "")) for figure in figures]
     if len(amounts) == 1:
         return amounts[0], None
-    if amounts[1] > amounts[0] and _BALANCE_RANGE_SEPARATOR_PATTERN.search(label):
+    range_begins_at_first_amount = _BALANCE_RANGE_SEPARATOR_PATTERN.match(
+        label, figures[0].start()
+    )
+    if amounts[1] > amounts[0] and range_begins_at_first_amount:
         return amounts[0], amounts[1]
     return amounts[0], None
 

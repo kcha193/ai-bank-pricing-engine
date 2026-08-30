@@ -1413,6 +1413,40 @@ def test_previous_market_snapshot_rate_category_none_is_unfiltered(service, make
     assert set(unfiltered_snapshot.banks) == {"ANZ", "BNZ"}
 
 
+def test_previous_market_snapshot_resolves_run_id_and_timestamp_atomically(service, make_record):
+    """get_previous_market_snapshot() must resolve the previous run's
+    started_at and run_id from a single store lookup, not as two separate
+    calls a concurrent collection could straddle: the old code called
+    get_previous_run_started_at() then get_previous_run_id() separately,
+    each independently resolving "the previous run" relative to whatever
+    was the latest run *at the time of that call*. A same-product
+    collection committing between the two calls becomes the new latest
+    run, so the second call resolves a different predecessor than the
+    first -- the resulting (as_of, before_run_id) pair then names two
+    different runs, and get_observations_as_of() reconstructs the state as
+    of the run_id (which can be later than the reported as_of), leaking a
+    newer rate into a snapshot labelled with an older timestamp."""
+    service.store.record_observations([make_record(bank="ANZ", rate_pct=4.79)], observed_at=DAY_ONE)
+    service.store.record_observations([make_record(bank="ANZ", rate_pct=4.89)], observed_at=DAY_TWO)
+
+    original_started_at = service.store.get_previous_run_started_at
+
+    def started_at_then_concurrent_commit(*args, **kwargs):
+        result = original_started_at(*args, **kwargs)
+        # Simulates a same-product collection committing between what the
+        # old code treated as its two separate store lookups.
+        service.store.record_observations(
+            [make_record(bank="ANZ", rate_pct=4.99)], observed_at=DAY_THREE
+        )
+        return result
+
+    service.store.get_previous_run_started_at = started_at_then_concurrent_commit
+
+    snapshot = service.get_previous_market_snapshot()
+
+    assert snapshot.term(12).rate_for("ANZ") == 4.79
+
+
 def test_market_snapshot_reconstructs_an_older_run_by_id(fixture_fetcher):
     """last_seen_run_id gets overwritten by later unchanged runs; the snapshot must not."""
     with build_service(fixture_fetcher()) as service:
