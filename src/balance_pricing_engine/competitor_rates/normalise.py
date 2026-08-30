@@ -62,6 +62,14 @@ def normalise_term(label: str) -> NormalisedTerm:
     return NormalisedTerm(raw_label=raw_label, months=None, days=None)
 
 
+#: Matches "annual rate"/"annual interest rate"/"yearly rate" (and their
+#: interest-rate variants) -- a common column-header phrasing that describes
+#: the *rate's own annualised unit*, not a payment-frequency option. See
+#: normalise_frequency()'s docstring for why this must not count as
+#: "annually" the way a genuine "paid annually"/"monthly or annually" does.
+_ANNUAL_RATE_LABEL_PATTERN = re.compile(r"(?:annual|yearly)(?:\s+interest)?\s+rate\b")
+
+
 def normalise_frequency(label: str | None) -> str:
     """Map an advertised interest payment frequency to the canonical vocabulary.
 
@@ -81,6 +89,15 @@ def normalise_frequency(label: str | None) -> str:
     regardless of the order the source page happens to list the options in.
     Plain "unknown" is kept only for a row that publishes no frequency at
     all -- the same fallback as before.
+
+    "annual"/"yearly" is matched after stripping any "annual (interest)
+    rate" phrase from the text first: a deposit table commonly labels its
+    rate column "Annual Interest Rate" or "Annual Rate" to describe the
+    rate's own annualised unit, not a payment option -- counting that as a
+    genuine "annually" would let the extractor's aligned column header
+    fabricate a payment frequency the row never actually advertised, while
+    a real "paid annually"/"monthly or annually" mention elsewhere in the
+    same text survives the strip untouched.
     """
     if not label:
         return "unknown"
@@ -92,7 +109,8 @@ def normalise_frequency(label: str | None) -> str:
         matches.add("monthly")
     if "quarter" in text:
         matches.add("quarterly")
-    if "annual" in text or "yearly" in text:
+    annual_text = _ANNUAL_RATE_LABEL_PATTERN.sub("", text)
+    if "annual" in annual_text or "yearly" in annual_text:
         matches.add("annually")
     if not matches:
         return "unknown"
@@ -113,6 +131,15 @@ def normalise_lvr_condition(label: str | None) -> str:
     return "standard"
 
 
+#: An explicit range separator directly between two dollar amounts (only
+#: whitespace either side), e.g. "$10,000 to $49,999" or "$10,000-$49,999".
+#: See normalise_balance()'s docstring for why ascending order alone is not
+#: enough to infer a range.
+_BALANCE_RANGE_SEPARATOR_PATTERN = re.compile(
+    r"\$\s*[0-9][0-9,]*(?:\.\d+)?\s*(?:to|-|–|—)\s*\$"
+)
+
+
 def normalise_balance(label: str | None) -> tuple[float | None, float | None]:
     """Extract min/max currency amounts from a displayed balance tier.
 
@@ -124,9 +151,17 @@ def normalise_balance(label: str | None) -> tuple[float | None, float | None]:
 
     Reading those in document order gives min=5,000/max=1,000 -- an invalid
     record that the model rejects, which previously aborted the whole bank's
-    parse. Amounts are therefore only treated as a range when they ascend;
-    otherwise the first (most specific, row-level) figure is the minimum and the
-    maximum is left unknown rather than invented.
+    parse. Two unrelated minimums can also happen to ascend, though -- e.g. a
+    product-wide "minimum $1,000" followed by a row-specific "minimum
+    $5,000" -- and ``max_balance_or_deposit`` is identity-bearing
+    (``eligibility_group_key()``), so inventing a maximum from numeric order
+    alone would let either boilerplate minimum changing turn an unchanged
+    advertised rate into false new/removed product events. Amounts are
+    therefore only treated as a range when an explicit range separator (a
+    "to"/hyphen directly between the two dollar amounts, nothing else in
+    between -- see :data:`_BALANCE_RANGE_SEPARATOR_PATTERN`) confirms it;
+    otherwise the first (most specific, row-level) figure is the minimum and
+    the maximum is left unknown rather than invented.
     """
     if not label:
         return None, None
@@ -138,7 +173,7 @@ def normalise_balance(label: str | None) -> tuple[float | None, float | None]:
         return None, None
     if len(amounts) == 1:
         return amounts[0], None
-    if amounts[1] > amounts[0]:
+    if amounts[1] > amounts[0] and _BALANCE_RANGE_SEPARATOR_PATTERN.search(label):
         return amounts[0], amounts[1]
     return amounts[0], None
 
