@@ -375,6 +375,34 @@ def test_changes_command_explicit_category_reaches_a_standard_repricing(
     assert "(1 events)" in output
 
 
+def test_changes_command_category_all_alerts_still_show_market_context(
+    standard_category_database, capsys
+):
+    """--category all resolves to rate_category=None, which get_market_snapshot()
+    now treats as the unfiltered view -- but format_alert()'s market-context
+    guard requires snapshot.rate_category == change.rate_category, which a
+    single None-category snapshot can never satisfy against a change's own
+    concrete category ("standard" here). Without a snapshot built for that
+    change's own category, every alert would silently lose its market
+    median/rank context."""
+    exit_code = run(
+        [
+            "--database",
+            standard_category_database,
+            "changes",
+            "--days",
+            "7",
+            "--category",
+            "all",
+            "--alerts",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Market median:" in output
+
+
 def test_changes_command_can_render_as_alerts(repriced_database, capsys):
     exit_code = run(["--database", repriced_database, "changes", "--days", "7", "--alerts"])
     output = capsys.readouterr().out

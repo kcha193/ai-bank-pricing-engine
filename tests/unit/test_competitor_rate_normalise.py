@@ -43,7 +43,11 @@ def test_normalise_term_preserves_raw_label_and_derives_term_fields(label, month
         ("Annual Interest Rate", "unknown"),
         ("Annual Rate", "unknown"),
         ("Yearly Rate", "unknown"),
+        ("Annual Percentage Rate", "unknown"),
+        ("Annualised Rate", "unknown"),
+        ("Annualized Rate", "unknown"),
         ("Annual Interest Rate | Monthly", "monthly"),
+        ("Annual Percentage Rate | Monthly", "monthly"),
     ],
 )
 def test_normalise_frequency_maps_common_labels(label, expected):

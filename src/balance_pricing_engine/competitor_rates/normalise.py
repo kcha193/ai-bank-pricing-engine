@@ -62,12 +62,20 @@ def normalise_term(label: str) -> NormalisedTerm:
     return NormalisedTerm(raw_label=raw_label, months=None, days=None)
 
 
-#: Matches "annual rate"/"annual interest rate"/"yearly rate" (and their
-#: interest-rate variants) -- a common column-header phrasing that describes
-#: the *rate's own annualised unit*, not a payment-frequency option. See
-#: normalise_frequency()'s docstring for why this must not count as
-#: "annually" the way a genuine "paid annually"/"monthly or annually" does.
-_ANNUAL_RATE_LABEL_PATTERN = re.compile(r"(?:annual|yearly)(?:\s+interest)?\s+rate\b")
+#: Matches "annual rate"/"annual interest rate"/"annual percentage rate"/
+#: "annualised rate"/"yearly rate" and similar -- a common column-header
+#: phrasing that describes the *rate's own annualised unit*, not a
+#: payment-frequency option. See normalise_frequency()'s docstring for why
+#: this must not count as "annually" the way a genuine "paid annually"/
+#: "monthly or annually" does. Allows up to two words between the
+#: annual/yearly adjective and "rate" (covering "annual interest rate",
+#: "annual percentage rate", ...) rather than special-casing just
+#: "interest" -- \w+ can't cross a table-cell separator like " | " in the
+#: already-flattened text, so this can't accidentally bridge an unrelated
+#: "annual" in one cell to a "rate" in another.
+_ANNUAL_RATE_LABEL_PATTERN = re.compile(
+    r"(?:annual(?:ised|ized)?|yearly)(?:\s+\w+){0,2}\s+rate\b"
+)
 
 
 def normalise_frequency(label: str | None) -> str:

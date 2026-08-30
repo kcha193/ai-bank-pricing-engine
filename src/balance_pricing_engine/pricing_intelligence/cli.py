@@ -306,19 +306,32 @@ def _changes(service: PricingIntelligenceService, args: argparse.Namespace) -> i
         return 0
 
     if args.alerts:
-        dispatch_alerts(
-            format_alerts(
+        if rate_category is None:
+            # "all" categories: format_alert()'s market-context guard
+            # (snapshot.rate_category == change.rate_category) can never
+            # match a single unfiltered (rate_category=None) snapshot --
+            # None never equals a change's own concrete category -- which
+            # would silently drop market-median/rank context from every
+            # alert. Build one concrete-category snapshot per distinct
+            # category actually present among these changes instead, so
+            # each group of changes gets a snapshot the guard can match.
+            alerts = [
+                alert
+                for category in sorted({change.rate_category for change in changes})
+                for alert in format_alerts(
+                    [change for change in changes if change.rate_category == category],
+                    service.get_market_snapshot(product_type=_product(args), rate_category=category),
+                )
+            ]
+            alerts.sort(key=lambda alert: (-abs(alert.change.change_bps or 0), alert.change.bank))
+        else:
+            alerts = format_alerts(
                 changes,
-                # rate_category=None here resolves to the product's default
-                # comparison tier (via _resolve_rate_category), not "every
-                # category" -- a ranked snapshot can't mix categories, so
-                # "all" falls back to the same default a market view needs.
                 service.get_market_snapshot(
                     product_type=_product(args), rate_category=rate_category
                 ),
-            ),
-            ConsoleAlertSink(),
-        )
+            )
+        dispatch_alerts(alerts, ConsoleAlertSink())
         return 0
 
     print(f"MARKET CHANGES - last {args.days} days ({len(changes)} events)")
