@@ -569,6 +569,59 @@ def test_a_mixed_legacy_bootstrap_run_backfills_first_seen_run_id_for_both_produ
     assert all(row["first_seen_run_id"] == "legacy-run" for row in rows)
 
 
+def test_a_pre_column_migration_does_not_attribute_a_same_timestamp_return_to_the_bootstrap_row(
+    store, make_record
+):
+    """A bootstrap row and a later return row can share first_observed_at
+    when the return happens to be backfilled with the bootstrap run's own
+    timestamp (a legacy-data scenario). Both rows then tie on
+    (observation_key, first_observed_at), but only the return produced a
+    NEW_PRODUCT event -- the migration's exact-event pass must not let its
+    correlated subquery match that one event to both tied rows and hand the
+    return's run_id to the untouched bootstrap row too."""
+    bnz_record = make_record(bank="BNZ", rate_pct=4.85)
+    store.record_observations([bnz_record], run_id="run-bootstrap", observed_at=DAY_ONE)
+    # No record_changes() call: a genuine bootstrap run detects nothing.
+
+    withdraw_run = store.record_observations([], run_id="run-withdrawn", observed_at=DAY_TWO)
+    store.record_changes(
+        detect_changes(
+            previous=store.get_current_observations(),
+            current=[],
+            detected_at=DAY_TWO,
+            banks_collected=["BNZ"],
+            run_id=withdraw_run.run_id,
+        )
+    )
+
+    # The return is backfilled with the bootstrap run's own timestamp,
+    # tying first_observed_at across the two observations rows.
+    return_run = store.record_observations(
+        [bnz_record], run_id="run-returned", observed_at=DAY_ONE
+    )
+    store.record_changes(
+        detect_changes(
+            previous=[],
+            current=[bnz_record],
+            detected_at=DAY_ONE,
+            banks_collected=["BNZ"],
+            run_id=return_run.run_id,
+        )
+    )
+
+    # Simulate a database that predates the column.
+    store._connection.execute("ALTER TABLE observations DROP COLUMN first_seen_run_id")
+    store._create_schema()
+
+    rows = store._connection.execute(
+        "SELECT id, first_seen_run_id FROM observations WHERE observation_key = ? ORDER BY id",
+        (bnz_record.observation_key(),),
+    ).fetchall()
+    assert len(rows) == 2, "the withdrawal and the return must be distinct states"
+    assert rows[0]["first_seen_run_id"] == "run-bootstrap"
+    assert rows[1]["first_seen_run_id"] == "run-returned"
+
+
 def test_simultaneous_single_product_runs_are_not_cross_contaminated(store, make_record):
     """A caller collecting both products from one shared capture moment
     (e.g. the same captured_at_utc passed to two separate, single-product

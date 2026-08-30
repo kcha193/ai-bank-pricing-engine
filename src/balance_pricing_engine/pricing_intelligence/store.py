@@ -468,6 +468,23 @@ class ObservationStore:
            bootstrap suppression), so this pass only ever helps a later,
            non-bootstrap introduction -- exactly the gap the two passes below
            cannot resolve unambiguously.
+
+           Restricted to the highest-``id`` row per ``(observation_key,
+           first_observed_at)`` group: a legacy product bootstrapped, then
+           withdrawn, then returned across a run sharing the bootstrap run's
+           own ``started_at`` produces two ``observations`` rows tied on
+           that pair (the untouched bootstrap row and the fresh return row),
+           but only one ``NEW_PRODUCT`` event -- from the return -- exists at
+           that ``detected_at`` (``rate_changes`` is unique on
+           ``(observation_key, change_type, detected_at)``). Without this
+           restriction the correlated subquery matches *both* tied rows and
+           assigns the return's ``run_id`` to the bootstrap row too, so a
+           later ``get_observations_as_of(before_run_id=<bootstrap run>)``
+           would see the bootstrap row as introduced by the return and
+           wrongly omit a product that was genuinely present. The excluded
+           (non-latest) row is left ``NULL`` here and resolved unambiguously
+           by pass two or three instead, which key off ``collection_runs``
+           row order rather than this event match.
         2. The timestamp-and-product match below -- the same caveat as
            :meth:`_migrate_collection_runs_product_type`'s own third pass
            applies, and for the same reason: it is a one-time correction for
@@ -510,6 +527,10 @@ class ObservationStore:
             "  WHERE rc2.observation_key = observations.observation_key "
             "  AND rc2.change_type = 'NEW_PRODUCT' "
             "  AND rc2.detected_at = observations.first_observed_at"
+            ") AND observations.id = ("
+            "  SELECT MAX(o2.id) FROM observations o2 "
+            "  WHERE o2.observation_key = observations.observation_key "
+            "  AND o2.first_observed_at = observations.first_observed_at"
             ")"
         )
         connection.execute(
