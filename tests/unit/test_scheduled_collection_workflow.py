@@ -232,6 +232,72 @@ def test_summary_reflects_partial_rejection_within_a_bank(workflow, fixture_fetc
     assert anz_failures[0]["error_type"] == "validation_rejected"
 
 
+def test_bootstrap_run_with_only_non_comparable_rates_is_a_total_failure(
+    workflow, make_record, tmp_path
+):
+    """A bootstrap run whose only accepted rows are all non_comparable (e.g.
+    managed-fund returns, PIE effective rates) must not report success.
+
+    Those rows are genuinely validation-accepted (rate_count > 0), so the
+    plain rate_count == 0 guard misses this -- but pricing_intelligence.snapshot
+    excludes every non_comparable record from a market snapshot, so the
+    usable market view this run actually produced is empty. With no prior
+    baseline (a bootstrap run), low_coverage_banks stays empty too: there is
+    nothing to compare coverage against yet. Only a comparable-rate-count
+    check catches this."""
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    non_comparable_record = make_record(bank="ANZ", rate_category="non_comparable")
+    with PricingIntelligenceService(
+        config=config,
+        store=ObservationStore(config.database_path),
+        collectors=[_StubCollector("ANZ", [non_comparable_record])],
+    ) as service:
+        outcome = service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    assert not outcome.report.failed
+    assert not outcome.validation.rejected
+    assert outcome.rate_count > 0
+    assert not outcome.low_coverage_banks
+    assert workflow._comparable_rate_count(outcome) == 0
+    assert workflow.exit_code_for(outcome) == workflow.EXIT_TOTAL_FAILURE
+
+
+def test_bank_with_only_non_comparable_rates_is_a_partial_failure_among_others(
+    workflow, make_record, tmp_path
+):
+    """Scoped to one bank: ANZ's accepted rows are all non_comparable while
+    ASB collects normally, so the run as a whole has comparable rates and
+    must not be a total failure -- but ANZ contributed nothing usable and
+    must still be flagged, not silently folded into banks_succeeded."""
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    with PricingIntelligenceService(
+        config=config,
+        store=ObservationStore(config.database_path),
+        collectors=[
+            _StubCollector("ANZ", [make_record(bank="ANZ", rate_category="non_comparable")]),
+            _StubCollector("ASB", [make_record(bank="ASB")]),
+        ],
+    ) as service:
+        outcome = service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    assert workflow._comparable_rate_count(outcome) > 0
+    assert "ANZ" in workflow._banks_with_zero_comparable_rates(outcome)
+    assert workflow.exit_code_for(outcome) == workflow.EXIT_PARTIAL_FAILURE
+
+    summary = workflow.build_summary(outcome)
+    assert "ANZ" not in summary["banks_succeeded"]
+    assert "ASB" in summary["banks_succeeded"]
+    anz_failures = [f for f in summary["failures"] if f["bank"] == "ANZ"]
+    assert len(anz_failures) == 1
+    assert anz_failures[0]["error_type"] == "no_comparable_rates"
+
+
 def test_low_coverage_bank_is_a_partial_failure(workflow, make_record, tmp_path):
     """A page-layout regression that leaves one row parseable while silently
     dropping the rest of a bank's table.
