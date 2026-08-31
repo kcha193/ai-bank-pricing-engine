@@ -75,6 +75,16 @@ class _StubCollector:
             skipped_row_keys=tuple(self._skipped_row_keys),
         )
 
+    def collect_term_deposit_rates(self, captured_at_utc=None, persist_snapshot=True):
+        return BankCollectionResult(
+            bank=self.bank,
+            product_type=ProductType.TERM_DEPOSIT,
+            status=CollectionStatus.SUCCESS,
+            source_url=f"https://www.example-bank.co.nz/{self.bank.lower()}/deposits",
+            records=tuple(self._records),
+            skipped_row_keys=tuple(self._skipped_row_keys),
+        )
+
 
 def cut_anz_one_year(bank, html):
     if bank == "ANZ":
@@ -390,6 +400,71 @@ def test_non_comparable_rows_missing_coverage_does_not_emit_withdrawals(make_rec
         and change.rate_category == "non_comparable"
     ]
     assert non_comparable_withdrawals == []
+
+
+def test_a_regressed_non_default_category_does_not_hide_behind_healthy_lumped_coverage(
+    make_record,
+):
+    """A term-deposit bank whose ordinary term_deposit rows a parser
+    regression now misses entirely, while its pie_term_deposit rows keep
+    collecting cleanly, must not have every missing term_deposit key read
+    as a genuine REMOVED_PRODUCT.
+
+    _reliably_collected_banks() lumps every non-non_comparable category
+    into one combined ratio: 0/3 term_deposit + 3/3 pie_term_deposit = 3/6
+    matched, exactly the default 50% threshold, so the bank stays in
+    banks_collected and reaches detect_changes() normally. Without
+    per-category suppression, that would read as three genuine withdrawals
+    of the bank's default-category rates -- removing them from every
+    future default market snapshot -- purely because a healthy but
+    off-default category masked the regression in the combined ratio."""
+    term_deposit_baseline = [
+        make_record(
+            bank="ANZ",
+            product_type=ProductType.TERM_DEPOSIT,
+            rate_category="term_deposit",
+            term_months=months,
+        )
+        for months in (3, 6, 12)
+    ]
+    pie_baseline = [
+        make_record(
+            bank="ANZ",
+            product_type=ProductType.TERM_DEPOSIT,
+            rate_category="pie_term_deposit",
+            term_months=months,
+        )
+        for months in (3, 6, 12)
+    ]
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", term_deposit_baseline + pie_baseline)],
+    )
+    service.collect(
+        captured_at_utc=DAY_ONE, product_type=ProductType.TERM_DEPOSIT, persist_snapshot=False
+    )
+
+    # This run: only the pie_term_deposit rows re-collect -- a stand-in for
+    # a parser regression that stops matching the ordinary term_deposit
+    # table while the PIE table keeps extracting cleanly.
+    service._collectors = [_StubCollector("ANZ", pie_baseline)]
+    outcome = service.collect(
+        captured_at_utc=DAY_TWO, product_type=ProductType.TERM_DEPOSIT, persist_snapshot=False
+    )
+
+    assert "ANZ" not in outcome.low_coverage_banks, (
+        "sanity check: the lumped ratio (3/6 = 50%) still clears the default threshold"
+    )
+    term_deposit_withdrawals = [
+        change
+        for change in outcome.changes
+        if change.change_type is ChangeType.REMOVED_PRODUCT
+        and change.rate_category == "term_deposit"
+    ]
+    assert term_deposit_withdrawals == []
 
 
 def test_a_validation_rejected_record_is_not_reported_as_a_withdrawal(fixture_fetcher):
