@@ -59,6 +59,16 @@ class _StubCollector:
             skipped_row_keys=tuple(self._skipped_row_keys),
         )
 
+    def collect_term_deposit_rates(self, captured_at_utc=None, persist_snapshot=True):
+        return BankCollectionResult(
+            bank=self.bank,
+            product_type=ProductType.TERM_DEPOSIT,
+            status=CollectionStatus.SUCCESS,
+            source_url=f"https://www.example-bank.co.nz/{self.bank.lower()}/deposits",
+            records=tuple(self._records),
+            skipped_row_keys=tuple(self._skipped_row_keys),
+        )
+
 
 def _minimal_engine_config(**pricing_intelligence_overrides):
     """A minimal EngineConfig YAML body, mirroring test_pricing_intelligence_cli.py."""
@@ -296,6 +306,45 @@ def test_bank_with_only_non_comparable_rates_is_a_partial_failure_among_others(
     anz_failures = [f for f in summary["failures"] if f["bank"] == "ANZ"]
     assert len(anz_failures) == 1
     assert anz_failures[0]["error_type"] == "no_comparable_rates"
+
+
+def test_bootstrap_deposit_run_with_only_pie_rates_is_a_total_failure(
+    workflow, make_record, tmp_path
+):
+    """A term-deposit bootstrap run whose parser only matches the PIE table
+    (rate_category="pie_term_deposit") while missing every ordinary
+    term_deposit row must not report success.
+
+    pie_term_deposit is a real, validation-accepted category -- not
+    non_comparable -- so the round-42 fix (which only excluded
+    non_comparable) is not enough on its own: the service's default deposit
+    snapshot filters to rate_category="term_deposit" specifically, so these
+    PIE rows can never enter it. The comparable-rate check must resolve the
+    product's actual default category, not just exclude non_comparable."""
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    pie_record = make_record(
+        bank="ANZ", product_type=ProductType.TERM_DEPOSIT, rate_category="pie_term_deposit"
+    )
+    with PricingIntelligenceService(
+        config=config,
+        store=ObservationStore(config.database_path),
+        collectors=[_StubCollector("ANZ", [pie_record])],
+    ) as service:
+        outcome = service.collect(
+            captured_at_utc=DAY_ONE, product_type=ProductType.TERM_DEPOSIT, persist_snapshot=False
+        )
+
+    assert not outcome.report.failed
+    assert not outcome.validation.rejected
+    assert outcome.rate_count > 0
+    assert not outcome.low_coverage_banks
+    assert workflow._comparable_rate_count(outcome, ProductType.TERM_DEPOSIT) == 0
+    assert (
+        workflow.exit_code_for(outcome, ProductType.TERM_DEPOSIT) == workflow.EXIT_TOTAL_FAILURE
+    )
 
 
 def test_low_coverage_bank_is_a_partial_failure(workflow, make_record, tmp_path):

@@ -34,6 +34,7 @@ from balance_pricing_engine.pricing_intelligence.config import PricingIntelligen
 from balance_pricing_engine.pricing_intelligence.service import (
     CollectionOutcome,
     PricingIntelligenceService,
+    _resolve_rate_category,
 )
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 
@@ -98,38 +99,51 @@ def _banks_with_zero_accepted_rates(outcome: CollectionOutcome) -> set[str]:
     return {bank for bank in outcome.succeeded_banks if bank not in accepted_banks}
 
 
-def _comparable_rate_count(outcome: CollectionOutcome) -> int:
-    """Accepted rows that can actually enter a market snapshot.
+def _comparable_rate_count(
+    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
+) -> int:
+    """Accepted rows in the product's default scheduled comparison category.
 
-    A ``non_comparable``-tagged row (a managed-fund return, a PIE effective
-    rate, ...) is validation-*accepted* -- it is real data worth keeping for
-    audit -- but ``pricing_intelligence.snapshot`` excludes it from every
-    market statistic, so it can never feed a pricing assumption. Counting it
-    alongside comparable rows in ``CollectionOutcome.rate_count`` would let a
-    run whose only accepted rows are all ``non_comparable`` (e.g. a bootstrap
-    term-deposit collection that only matched audit-only rows) look like it
-    stored usable market data when the resulting snapshot is actually empty.
+    Not "every accepted row that isn't ``non_comparable``": a term-deposit
+    collection can validation-accept a real, non-``non_comparable`` category
+    such as ``pie_term_deposit`` while missing every ordinary
+    ``term_deposit`` row entirely (e.g. a parser regression that only
+    matches the PIE table) -- those PIE rows are genuine data, but the
+    service's default deposit snapshot filters to ``rate_category=
+    "term_deposit"`` specifically (see :func:`_resolve_rate_category`), so
+    they can never enter it. The same applies to home loans: a bank
+    contributing only its ``standard`` tier while missing ``special``
+    leaves the default comparison view empty for that bank even though
+    ``rate_count`` is positive. Resolved via the same
+    :func:`_resolve_rate_category` the market snapshot itself uses, so this
+    cannot drift from what "usable" actually means for a given product.
     """
+    target_category = _resolve_rate_category(product_type, None)
     return sum(
-        1 for record in outcome.validation.accepted if record.rate_category != "non_comparable"
+        1 for record in outcome.validation.accepted if record.rate_category == target_category
     )
 
 
-def _banks_with_zero_comparable_rates(outcome: CollectionOutcome) -> set[str]:
-    """Banks that fetched and had rows accepted, but none comparable.
+def _banks_with_zero_comparable_rates(
+    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
+) -> set[str]:
+    """Banks that fetched and had rows accepted, but none in the product's
+    default scheduled comparison category (see :func:`_comparable_rate_count`).
 
     One step further down the pipeline than :func:`_banks_with_zero_accepted_rates`:
-    a bank whose only accepted rows are all ``non_comparable`` contributed
-    nothing a market snapshot can use, the same as a bank with zero accepted
-    rows at all -- just not yet caught, since validation genuinely accepted
-    the rows. Banks with zero accepted rows at all are excluded here;
-    :func:`_validation_only_failures` already reports those.
+    a bank whose only accepted rows fall outside the default comparison
+    category contributed nothing the scheduled market view can use, the
+    same as a bank with zero accepted rows at all -- just not yet caught,
+    since validation genuinely accepted the rows. Banks with zero accepted
+    rows at all are excluded here; :func:`_validation_only_failures`
+    already reports those.
     """
     zero_accepted = _banks_with_zero_accepted_rates(outcome)
+    target_category = _resolve_rate_category(product_type, None)
     comparable_banks = {
         record.bank
         for record in outcome.validation.accepted
-        if record.rate_category != "non_comparable"
+        if record.rate_category == target_category
     }
     return {
         bank
@@ -169,21 +183,24 @@ def _validation_only_failures(outcome: CollectionOutcome) -> list[dict]:
     return failures
 
 
-def _zero_comparable_rate_failures(outcome: CollectionOutcome) -> list[dict]:
-    """Banks whose accepted rows are all ``non_comparable``.
+def _zero_comparable_rate_failures(
+    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
+) -> list[dict]:
+    """Banks with no accepted row in the product's default comparison category.
 
     See :func:`_banks_with_zero_comparable_rates` -- a bank in this state
     reads as succeeded everywhere else (it fetched, and validation genuinely
     accepted its rows), but contributed nothing a market snapshot or pricing
     assumption can use.
     """
+    target_category = _resolve_rate_category(product_type, None)
     return [
         {
             "bank": bank,
             "error_type": "no_comparable_rates",
-            "error": "every accepted row was non_comparable (audit-only)",
+            "error": f"no accepted row in the default comparison category ({target_category})",
         }
-        for bank in sorted(_banks_with_zero_comparable_rates(outcome))
+        for bank in sorted(_banks_with_zero_comparable_rates(outcome, product_type))
     ]
 
 
@@ -281,7 +298,9 @@ def _hard_skipped_row_failures(outcome: CollectionOutcome, already_flagged: set[
     return failures
 
 
-def _bank_scoped_failures(outcome: CollectionOutcome) -> list[dict]:
+def _bank_scoped_failures(
+    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
+) -> list[dict]:
     """Every bank-scoped failure not already visible in report.failed.
 
     Checked in order of specificity so a bank is reported once, under its
@@ -291,7 +310,7 @@ def _bank_scoped_failures(outcome: CollectionOutcome) -> list[dict]:
     hard-skipped row.
     """
     zero_accepted_failures = _validation_only_failures(outcome)
-    zero_comparable_failures = _zero_comparable_rate_failures(outcome)
+    zero_comparable_failures = _zero_comparable_rate_failures(outcome, product_type)
     low_coverage_failures = _low_coverage_failures(outcome)
     already_flagged = (
         {failure["bank"] for failure in zero_accepted_failures}
@@ -322,7 +341,7 @@ def build_summary(
     other single-product defaults; every existing caller collecting the
     default product keeps working unchanged.
     """
-    bank_scoped_failures = _bank_scoped_failures(outcome)
+    bank_scoped_failures = _bank_scoped_failures(outcome, product_type)
     bank_scoped_failed_banks = {failure["bank"] for failure in bank_scoped_failures}
     return {
         "product_type": ProductType(product_type).value,
@@ -353,16 +372,23 @@ def build_summary(
     }
 
 
-def exit_code_for(outcome: CollectionOutcome) -> int:
+def exit_code_for(
+    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
+) -> int:
     # A run where every bank failed to fetch is a failure, and so is one where
     # pages parsed but validation rejected every record -- either way nothing
     # usable was stored, and a scheduler must not treat that as success. Zero
-    # *comparable* accepted rows is the same failure one step further down
-    # the pipeline: a run whose only accepted rows are all non_comparable
-    # (audit-only, e.g. managed-fund returns or PIE effective rates) passes
-    # rate_count > 0 while the market snapshot it can actually build is
-    # empty -- see _comparable_rate_count()'s docstring.
-    if not outcome.report.any_success or outcome.rate_count == 0 or _comparable_rate_count(outcome) == 0:
+    # rows in the product's default *comparison category* is the same failure
+    # one step further down the pipeline: a run whose only accepted rows fall
+    # outside that category (non_comparable audit-only rows, or a real but
+    # off-default category like pie_term_deposit) passes rate_count > 0 while
+    # the market snapshot it can actually build is empty -- see
+    # _comparable_rate_count()'s docstring.
+    if (
+        not outcome.report.any_success
+        or outcome.rate_count == 0
+        or _comparable_rate_count(outcome, product_type) == 0
+    ):
         return EXIT_TOTAL_FAILURE
     # Any rejected observation -- not just a bank where every row was
     # rejected -- means the collection is incomplete: a term-specific parser
@@ -370,22 +396,22 @@ def exit_code_for(outcome: CollectionOutcome) -> int:
     # bank. A low-coverage bank catches the case validation can't: rows that
     # were never parsed at all (not rejected -- simply missing) because a
     # page-layout regression silently dropped most of a bank's table. A bank
-    # whose accepted rows are all non_comparable is the same gap as a
-    # zero-accepted bank, just caught one step later in the pipeline (see
-    # _banks_with_zero_comparable_rates()) -- most relevant on a bootstrap
-    # run, where there is no prior baseline for low_coverage_banks to compare
-    # against at all. A hard-skipped row (failed CompetitorRateRecord
-    # construction outright, before validate_observations() ever saw it) is
-    # the same kind of gap as a rejected observation, just one step earlier
-    # in the pipeline, and must not let a run with an incomplete bank range
-    # report success. Warnings (e.g. a suspicious but plausible movement)
-    # stay non-fatal.
+    # whose accepted rows fall entirely outside the default comparison
+    # category is the same gap as a zero-accepted bank, just caught one step
+    # later in the pipeline (see _banks_with_zero_comparable_rates()) --
+    # most relevant on a bootstrap run, where there is no prior baseline for
+    # low_coverage_banks to compare against at all. A hard-skipped row
+    # (failed CompetitorRateRecord construction outright, before
+    # validate_observations() ever saw it) is the same kind of gap as a
+    # rejected observation, just one step earlier in the pipeline, and must
+    # not let a run with an incomplete bank range report success. Warnings
+    # (e.g. a suspicious but plausible movement) stay non-fatal.
     if (
         outcome.report.failed
         or outcome.validation.rejected
         or outcome.low_coverage_banks
         or outcome.report.skipped_row_keys
-        or _banks_with_zero_comparable_rates(outcome)
+        or _banks_with_zero_comparable_rates(outcome, product_type)
     ):
         return EXIT_PARTIAL_FAILURE
     return EXIT_OK
@@ -414,7 +440,7 @@ def run_collection(
         outcome = service.collect(product_type=product_type)
 
     summary = build_summary(outcome, product_type)
-    code = exit_code_for(outcome)
+    code = exit_code_for(outcome, product_type)
 
     if code == EXIT_TOTAL_FAILURE:
         completion_level = logging.ERROR
