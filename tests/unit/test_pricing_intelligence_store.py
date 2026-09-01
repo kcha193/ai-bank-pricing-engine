@@ -423,6 +423,92 @@ def test_retrying_one_side_of_a_mixed_legacy_run_does_not_replay_its_observation
     ]
 
 
+def test_retrying_a_quiet_mixed_legacy_run_side_does_not_replay_its_observations(
+    store, make_record
+):
+    """The gap a durable collection_run_products ledger exists to close: a
+    legacy mixed run whose home-loan side merely reconfirmed a pre-existing
+    row (producing no rate_changes, and leaving first_seen_run_id pointing
+    at the original bootstrap run, not this shared one) leaves *no*
+    observation/rate_changes evidence at all once a later home-loan run
+    moves last_seen_run_id on -- and collection_runs.product_type gets
+    overwritten to term_deposit by the mixed run's other side. Every
+    fallback signal the previous fix relied on is therefore false; only a
+    durable, write-once per-(run_id, product_type) record still recognises
+    a retry of that shared run's home-loan side."""
+    # The bootstrap run that first introduces ANZ's rate -- distinct from
+    # the shared mixed run below, so first_seen_run_id never points to it.
+    store.record_observations(
+        [make_record(bank="ANZ", product_type=ProductType.HOME_LOAN, rate_pct=4.79)],
+        run_id="bootstrap",
+        observed_at=DAY_ONE,
+    )
+
+    shared_run_id = "legacy-mixed-quiet-run"
+    # Reconfirms the bootstrap rate unchanged -- produces no rate_changes
+    # and does not touch first_seen_run_id.
+    store.record_observations(
+        [make_record(bank="ANZ", product_type=ProductType.HOME_LOAN, rate_pct=4.79)],
+        run_id=shared_run_id,
+        observed_at=DAY_TWO,
+    )
+    # Overwrites collection_runs.product_type to term_deposit.
+    store.record_observations(
+        [make_record(bank="ANZ", product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")],
+        run_id=shared_run_id,
+        observed_at=DAY_TWO,
+    )
+
+    # A later, genuine home-loan run reconfirms the same rate again, moving
+    # last_seen_run_id on from the shared run.
+    store.record_observations(
+        [make_record(bank="ANZ", product_type=ProductType.HOME_LOAN, rate_pct=4.79)],
+        run_id="run-later-home-loan",
+        observed_at=DAY_THREE,
+    )
+
+    # Retry the shared run's home-loan side.
+    store.record_observations(
+        [make_record(bank="ANZ", product_type=ProductType.HOME_LOAN, rate_pct=4.79)],
+        run_id=shared_run_id,
+        observed_at=DAY_TWO,
+    )
+
+    assert store.latest_run_id(product_type=ProductType.HOME_LOAN) == "run-later-home-loan"
+    assert [record.bank for record in store.get_latest_rates(product_type=ProductType.HOME_LOAN)] == [
+        "ANZ"
+    ]
+
+
+def test_migrating_collection_run_products_backfills_from_surviving_evidence(store, make_record):
+    """A database created before collection_run_products existed must have
+    it backfilled from whatever evidence still survives -- collection_runs'
+    own stored product_type paired with its recorded inserted/unchanged
+    counts (see _migrate_collection_run_products())."""
+    write = store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.79)], run_id="run-one", observed_at=DAY_ONE
+    )
+
+    # Simulate a database that predates the table.
+    store._connection.execute("DROP TABLE collection_run_products")
+    store._create_schema()
+
+    row = store._connection.execute(
+        "SELECT inserted_count, unchanged_count FROM collection_run_products "
+        "WHERE run_id = ? AND product_type = ?",
+        ("run-one", ProductType.HOME_LOAN.value),
+    ).fetchone()
+    assert row is not None
+    assert (row["inserted_count"], row["unchanged_count"]) == (write.inserted, write.unchanged)
+
+    # Re-running the migration must be a no-op, not a duplicate/overwrite.
+    store._create_schema()
+    rows = store._connection.execute(
+        "SELECT COUNT(*) AS n FROM collection_run_products WHERE run_id = ?", ("run-one",)
+    ).fetchone()
+    assert rows["n"] == 1
+
+
 def test_latest_run_id_is_scoped_per_product(store, make_record):
     """Home-loan and term-deposit collections share one collection_runs
     table, so an unscoped latest_run_id() can return either product's run --

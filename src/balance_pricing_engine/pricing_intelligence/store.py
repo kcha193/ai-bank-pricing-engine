@@ -88,6 +88,28 @@ CREATE TABLE IF NOT EXISTS collection_runs (
     report_json         TEXT
 );
 
+-- A durable, write-once ledger of which (run_id, product_type) pairs
+-- record_observations() has actually processed -- the sole source of truth
+-- for its idempotent-retry short-circuit. collection_runs.product_type
+-- alone cannot serve this: it holds only one value, so a legacy run_id that
+-- recorded both products (two calls sharing one run_id, one per product)
+-- has it pinned to whichever call happened last. Falling back to
+-- observations.last_seen_run_id/first_seen_run_id or rate_changes.run_id
+-- (each paired with product_type) isn't reliable either: a quiet
+-- reconfirmation-only call leaves no rate_changes row at all, and
+-- last_seen_run_id/first_seen_run_id can each move on to a later run,
+-- erasing the only trace this run_id ever touched that product. This table
+-- is never updated after its row is first written, so that trace survives
+-- regardless of what any later run does to the observations/rate_changes
+-- tables.
+CREATE TABLE IF NOT EXISTS collection_run_products (
+    run_id              TEXT NOT NULL,
+    product_type        TEXT NOT NULL,
+    inserted_count      INTEGER NOT NULL DEFAULT 0,
+    unchanged_count     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (run_id, product_type)
+);
+
 CREATE TABLE IF NOT EXISTS observations (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     observation_key     TEXT NOT NULL,
@@ -363,6 +385,7 @@ class ObservationStore:
             self._migrate_collection_runs_product_type(connection)
             self._migrate_observations_first_seen_run_id(connection)
             self._migrate_rate_changes_run_scoped_uniqueness(connection)
+            self._migrate_collection_run_products(connection)
             row = connection.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
                 connection.execute(
@@ -638,6 +661,62 @@ class ObservationStore:
         )
         connection.execute("DROP TABLE rate_changes_pre_run_scoped_unique")
 
+    def _migrate_collection_run_products(self, connection: sqlite3.Connection) -> None:
+        """Backfill ``collection_run_products`` from whatever evidence of
+        historical (run_id, product_type) participation still survives.
+
+        ``CREATE TABLE IF NOT EXISTS`` in ``_SCHEMA`` already creates this
+        table (empty) for every database, new or pre-existing -- this
+        recovers rows for one that predates it, from the same three signals
+        :meth:`latest_run_id` correlates through:
+
+        1. ``collection_runs.product_type`` itself, together with its
+           already-recorded ``inserted_count``/``unchanged_count`` -- the one
+           pass that can recover the *real* original counts, for whichever
+           product currently owns that single-value column.
+        2. ``observations.last_seen_run_id``/``first_seen_run_id`` paired
+           with ``product_type``, and ``rate_changes.run_id`` paired with
+           ``product_type`` -- recovering the *other* product of a legacy
+           mixed run (or any run pass 1 missed), but with no way to recover
+           its real counts, so ``0, 0`` is recorded for these.
+
+        Run unconditionally on every call rather than gated on "have I
+        already migrated": ``INSERT OR IGNORE`` against this table's
+        ``(run_id, product_type)`` primary key makes re-running it a no-op
+        wherever a row already exists (from a prior migration run, or from
+        normal write-time recording by :meth:`record_observations`), so
+        there is nothing to gain from a separate has-this-run-before check
+        and one fewer thing to keep in sync with the table's own definition.
+
+        This is still only a best-effort historical recovery: a *quiet*
+        legacy mixed run (one side merely reconfirmed pre-existing rows,
+        producing no ``rate_changes``) whose ``observations`` evidence has
+        *already* moved on to a later run by the time this migration runs
+        cannot be recovered by any signal here -- there is nothing left to
+        read it from. Every write going forward is recorded directly by
+        :meth:`record_observations`, so this gap cannot reopen once a
+        database is running under this schema.
+        """
+        connection.execute(
+            "INSERT OR IGNORE INTO collection_run_products "
+            "(run_id, product_type, inserted_count, unchanged_count) "
+            "SELECT run_id, product_type, inserted_count, unchanged_count FROM collection_runs"
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO collection_run_products (run_id, product_type) "
+            "SELECT DISTINCT last_seen_run_id, product_type FROM observations "
+            "WHERE last_seen_run_id IS NOT NULL"
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO collection_run_products (run_id, product_type) "
+            "SELECT DISTINCT first_seen_run_id, product_type FROM observations "
+            "WHERE first_seen_run_id IS NOT NULL"
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO collection_run_products (run_id, product_type) "
+            "SELECT DISTINCT run_id, product_type FROM rate_changes"
+        )
+
     # ----------------------------------------------------------------- writes
 
     def record_observations(
@@ -701,34 +780,18 @@ class ObservationStore:
         any given ``run_id`` (for a given product) authoritative, and any
         retry an inert no-op.
 
-        Scoped to matching ``product_type`` -- not just a bare ``run_id``
-        match -- because a legacy database can hold one physical run that
-        collected *both* products before this method rejected a mixed batch:
-        represented here as two ``record_observations()`` calls sharing one
-        ``run_id``, one per product (see e.g.
-        :meth:`_migrate_collection_runs_product_type`'s docstring and the
-        ``test_a_*_legacy_*``/``test_a_*_mixed_*`` tests). Short-circuiting
-        on a bare ``run_id`` match would silently drop the second product's
-        genuinely new records instead of recording them.
-
-        "Already recorded for this product" is not just
-        ``collection_runs.product_type = ?``, though: that single column can
-        only ever hold whichever product's call happened *last* under a
-        shared legacy ``run_id``, so retrying the *other* (now-overwritten)
-        side would find no match there and replay straight through -- the
-        same corruption this whole short-circuit exists to prevent, just
-        reached via the opposite product. Falls back to the same
-        observation/rate_changes evidence :meth:`latest_run_id` already
-        checks for exactly this lossy-single-column reason
-        (``observations.last_seen_run_id``/``first_seen_run_id`` or
-        ``rate_changes.run_id``, each paired with ``product_type``), so a
-        retry is recognised regardless of which side of a mixed run
-        currently owns the stored label. When recognised only through that
-        fallback (the stored column names the *other* product), the
-        original call's own inserted/unchanged counts were themselves
-        overwritten by the other product's later call and are not
-        recoverable without replaying this one -- returned as ``0, 0``
-        rather than borrowing the other product's numbers.
+        Determined via ``collection_run_products`` -- a durable, write-once
+        ledger of every ``(run_id, product_type)`` pair this method has
+        processed -- not ``collection_runs.product_type`` (that single
+        column can only hold one value, so a legacy run_id that recorded
+        both products, one call per product, has it pinned to whichever call
+        happened last) nor the ``observations``/``rate_changes`` evidence an
+        earlier version of this check fell back to (a later run can move
+        ``last_seen_run_id``/``first_seen_run_id`` on, and a quiet
+        reconfirmation-only call leaves no ``rate_changes`` row at all --
+        either erases the only trace a given run_id ever touched a product).
+        See :meth:`_migrate_collection_run_products` for how a pre-existing
+        database recovers what it still can of that history.
         """
         records = list(records)
         observed_at = observed_at or datetime.now(timezone.utc)
@@ -752,42 +815,17 @@ class ObservationStore:
         else:
             product_type = next(iter(record_product_types), ProductType.HOME_LOAN)
 
-        existing_run = self._connection.execute(
-            "SELECT product_type, inserted_count, unchanged_count "
-            "FROM collection_runs WHERE run_id = ?",
-            (run_id,),
+        existing_participation = self._connection.execute(
+            "SELECT inserted_count, unchanged_count FROM collection_run_products "
+            "WHERE run_id = ? AND product_type = ?",
+            (run_id, product_type.value),
         ).fetchone()
-        if existing_run is not None:
-            product_value = product_type.value
-            already_recorded = (
-                existing_run["product_type"] == product_value
-                or self._connection.execute(
-                    "SELECT 1 WHERE "
-                    "EXISTS (SELECT 1 FROM observations "
-                    "        WHERE last_seen_run_id = ? AND product_type = ?) "
-                    "OR EXISTS (SELECT 1 FROM observations "
-                    "           WHERE first_seen_run_id = ? AND product_type = ?) "
-                    "OR EXISTS (SELECT 1 FROM rate_changes "
-                    "           WHERE run_id = ? AND product_type = ?)",
-                    (run_id, product_value, run_id, product_value, run_id, product_value),
-                ).fetchone()
-                is not None
+        if existing_participation is not None:
+            return WriteResult(
+                run_id=run_id,
+                inserted=existing_participation["inserted_count"],
+                unchanged=existing_participation["unchanged_count"],
             )
-            if already_recorded:
-                if existing_run["product_type"] == product_value:
-                    inserted_count, unchanged_count = (
-                        existing_run["inserted_count"],
-                        existing_run["unchanged_count"],
-                    )
-                else:
-                    # collection_runs' stored counts reflect only whichever
-                    # product's call happened last under this shared legacy
-                    # run_id -- this product's own original counts were
-                    # overwritten and are not recoverable without replaying
-                    # it, which is exactly what this short-circuit exists to
-                    # avoid.
-                    inserted_count, unchanged_count = 0, 0
-                return WriteResult(run_id=run_id, inserted=inserted_count, unchanged=unchanged_count)
 
         inserted = 0
         unchanged = 0
@@ -833,6 +871,16 @@ class ObservationStore:
                 "UPDATE collection_runs SET inserted_count = ?, unchanged_count = ? "
                 "WHERE run_id = ?",
                 (inserted, unchanged, run_id),
+            )
+            # Written once, here, and never updated again -- this row is the
+            # durable record that this exact (run_id, product_type) has been
+            # processed, checked by existing_participation above regardless
+            # of what any later run subsequently does to observations/
+            # rate_changes.
+            connection.execute(
+                "INSERT INTO collection_run_products "
+                "(run_id, product_type, inserted_count, unchanged_count) VALUES (?, ?, ?, ?)",
+                (run_id, product_type.value, inserted, unchanged),
             )
 
         logger.info(
