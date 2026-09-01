@@ -384,6 +384,45 @@ def test_retrying_a_run_id_does_not_replay_its_observations(store, make_record):
     assert retried == original, "a retry must report the same outcome as the original call"
 
 
+def test_retrying_one_side_of_a_mixed_legacy_run_does_not_replay_its_observations(
+    store, make_record
+):
+    """collection_runs.product_type can only hold one value, so a legacy
+    run_id that recorded both products (see test_a_legacy_run_that_mixed_
+    both_products_stays_findable_under_either) has that column pinned to
+    whichever product's call happened last -- home_loan gets overwritten to
+    term_deposit here. Retrying the now-overwritten home_loan side must
+    still be recognised as a repeat and short-circuited, not just when the
+    stored column happens to match: recognising it only via that lossy
+    column would replay the home-loan record straight through, dragging
+    last_seen_run_id back to the shared legacy run_id even though a later,
+    genuinely newer home-loan run has since confirmed it."""
+    shared_run_id = "legacy-mixed-run"
+    home_loan_record = make_record(bank="ANZ", product_type=ProductType.HOME_LOAN, rate_pct=4.79)
+    deposit_record = make_record(
+        bank="ANZ", product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit"
+    )
+    store.record_observations([home_loan_record], run_id=shared_run_id, observed_at=DAY_ONE)
+    # Overwrites collection_runs.product_type to term_deposit -- the
+    # home-loan side's own stored counts are lost from this point on.
+    store.record_observations([deposit_record], run_id=shared_run_id, observed_at=DAY_ONE)
+
+    # A later, genuine home-loan run reconfirms the same (unchanged) rate.
+    store.record_observations(
+        [make_record(bank="ANZ", product_type=ProductType.HOME_LOAN, rate_pct=4.79)],
+        run_id="run-later-home-loan",
+        observed_at=DAY_TWO,
+    )
+
+    # Retry the shared run's home-loan side.
+    store.record_observations([home_loan_record], run_id=shared_run_id, observed_at=DAY_ONE)
+
+    assert store.latest_run_id(product_type=ProductType.HOME_LOAN) == "run-later-home-loan"
+    assert [record.bank for record in store.get_latest_rates(product_type=ProductType.HOME_LOAN)] == [
+        "ANZ"
+    ]
+
+
 def test_latest_run_id_is_scoped_per_product(store, make_record):
     """Home-loan and term-deposit collections share one collection_runs
     table, so an unscoped latest_run_id() can return either product's run --

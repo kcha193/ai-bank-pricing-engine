@@ -710,6 +710,25 @@ class ObservationStore:
         ``test_a_*_legacy_*``/``test_a_*_mixed_*`` tests). Short-circuiting
         on a bare ``run_id`` match would silently drop the second product's
         genuinely new records instead of recording them.
+
+        "Already recorded for this product" is not just
+        ``collection_runs.product_type = ?``, though: that single column can
+        only ever hold whichever product's call happened *last* under a
+        shared legacy ``run_id``, so retrying the *other* (now-overwritten)
+        side would find no match there and replay straight through -- the
+        same corruption this whole short-circuit exists to prevent, just
+        reached via the opposite product. Falls back to the same
+        observation/rate_changes evidence :meth:`latest_run_id` already
+        checks for exactly this lossy-single-column reason
+        (``observations.last_seen_run_id``/``first_seen_run_id`` or
+        ``rate_changes.run_id``, each paired with ``product_type``), so a
+        retry is recognised regardless of which side of a mixed run
+        currently owns the stored label. When recognised only through that
+        fallback (the stored column names the *other* product), the
+        original call's own inserted/unchanged counts were themselves
+        overwritten by the other product's later call and are not
+        recoverable without replaying this one -- returned as ``0, 0``
+        rather than borrowing the other product's numbers.
         """
         records = list(records)
         observed_at = observed_at or datetime.now(timezone.utc)
@@ -738,12 +757,37 @@ class ObservationStore:
             "FROM collection_runs WHERE run_id = ?",
             (run_id,),
         ).fetchone()
-        if existing_run is not None and existing_run["product_type"] == product_type.value:
-            return WriteResult(
-                run_id=run_id,
-                inserted=existing_run["inserted_count"],
-                unchanged=existing_run["unchanged_count"],
+        if existing_run is not None:
+            product_value = product_type.value
+            already_recorded = (
+                existing_run["product_type"] == product_value
+                or self._connection.execute(
+                    "SELECT 1 WHERE "
+                    "EXISTS (SELECT 1 FROM observations "
+                    "        WHERE last_seen_run_id = ? AND product_type = ?) "
+                    "OR EXISTS (SELECT 1 FROM observations "
+                    "           WHERE first_seen_run_id = ? AND product_type = ?) "
+                    "OR EXISTS (SELECT 1 FROM rate_changes "
+                    "           WHERE run_id = ? AND product_type = ?)",
+                    (run_id, product_value, run_id, product_value, run_id, product_value),
+                ).fetchone()
+                is not None
             )
+            if already_recorded:
+                if existing_run["product_type"] == product_value:
+                    inserted_count, unchanged_count = (
+                        existing_run["inserted_count"],
+                        existing_run["unchanged_count"],
+                    )
+                else:
+                    # collection_runs' stored counts reflect only whichever
+                    # product's call happened last under this shared legacy
+                    # run_id -- this product's own original counts were
+                    # overwritten and are not recoverable without replaying
+                    # it, which is exactly what this short-circuit exists to
+                    # avoid.
+                    inserted_count, unchanged_count = 0, 0
+                return WriteResult(run_id=run_id, inserted=inserted_count, unchanged=unchanged_count)
 
         inserted = 0
         unchanged = 0
