@@ -483,8 +483,8 @@ def test_retrying_a_quiet_mixed_legacy_run_side_does_not_replay_its_observations
 def test_migrating_collection_run_products_backfills_from_surviving_evidence(store, make_record):
     """A database created before collection_run_products existed must have
     it backfilled from whatever evidence still survives -- collection_runs'
-    own stored product_type paired with its recorded inserted/unchanged
-    counts (see _migrate_collection_run_products())."""
+    own stored product_type/started_at paired with its recorded
+    inserted/unchanged counts (see _migrate_collection_run_products())."""
     write = store.record_observations(
         [make_record(bank="ANZ", rate_pct=4.79)], run_id="run-one", observed_at=DAY_ONE
     )
@@ -494,12 +494,13 @@ def test_migrating_collection_run_products_backfills_from_surviving_evidence(sto
     store._create_schema()
 
     row = store._connection.execute(
-        "SELECT inserted_count, unchanged_count FROM collection_run_products "
+        "SELECT started_at, inserted_count, unchanged_count FROM collection_run_products "
         "WHERE run_id = ? AND product_type = ?",
         ("run-one", ProductType.HOME_LOAN.value),
     ).fetchone()
     assert row is not None
     assert (row["inserted_count"], row["unchanged_count"]) == (write.inserted, write.unchanged)
+    assert row["started_at"] == DAY_ONE.isoformat()
 
     # Re-running the migration must be a no-op, not a duplicate/overwrite.
     store._create_schema()
@@ -507,6 +508,40 @@ def test_migrating_collection_run_products_backfills_from_surviving_evidence(sto
         "SELECT COUNT(*) AS n FROM collection_run_products WHERE run_id = ?", ("run-one",)
     ).fetchone()
     assert rows["n"] == 1
+
+
+def test_migrating_collection_run_products_adds_started_at_to_a_pre_column_table(
+    store, make_record
+):
+    """A database that already has collection_run_products from this
+    store's previous revision (before started_at joined it) must have that
+    column added and backfilled, not left on the table's own DEFAULT ''
+    placeholder -- which would otherwise make every one of its rows sort as
+    the earliest possible run in latest_run_id()/_previous_run_row()'s
+    ordering."""
+    store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.79)], run_id="run-one", observed_at=DAY_ONE
+    )
+
+    # Simulate a database whose collection_run_products predates started_at.
+    store._connection.executescript(
+        "DROP TABLE collection_run_products;"
+        "CREATE TABLE collection_run_products ("
+        "    run_id TEXT NOT NULL, product_type TEXT NOT NULL, "
+        "    inserted_count INTEGER NOT NULL DEFAULT 0, "
+        "    unchanged_count INTEGER NOT NULL DEFAULT 0, "
+        "    PRIMARY KEY (run_id, product_type)"
+        ");"
+        "INSERT INTO collection_run_products (run_id, product_type, inserted_count, unchanged_count) "
+        "VALUES ('run-one', 'home_loan', 1, 0);"
+    )
+    store._create_schema()
+
+    row = store._connection.execute(
+        "SELECT started_at FROM collection_run_products WHERE run_id = ? AND product_type = ?",
+        ("run-one", ProductType.HOME_LOAN.value),
+    ).fetchone()
+    assert row["started_at"] == DAY_ONE.isoformat()
 
 
 def test_get_previous_run_started_at_finds_a_quiet_mixed_run_that_lost_its_evidence(
@@ -550,6 +585,43 @@ def test_get_previous_run_started_at_finds_a_quiet_mixed_run_that_lost_its_evide
     )
 
     assert store.get_previous_run_started_at(product_type=ProductType.HOME_LOAN) == DAY_TWO
+
+
+def test_reusing_a_run_id_for_a_second_product_does_not_misdate_the_first(store, make_record):
+    """A run_id reused for a second product with its own, later observed_at
+    overwrites collection_runs.started_at (record_observations()'s upsert
+    replaces every column, including started_at, on a run_id collision) --
+    retroactively changing the *first* product's recorded start time, not
+    just which product owns the label. latest_run_id(HOME_LOAN) must keep
+    ordering by the home-loan side's own original timing (from
+    collection_run_products, written once and never touched again), not the
+    shared collection_runs row's now-overwritten value, or it would rank the
+    day-3 term-deposit reuse of "shared" above the genuinely later day-2
+    home-loan run and make get_latest_rates(HOME_LOAN) empty (last_seen_run_id
+    points at the day-2 run, not "shared")."""
+    shared_run_id = "shared"
+    store.record_observations(
+        [make_record(bank="ANZ", product_type=ProductType.HOME_LOAN, rate_pct=4.79)],
+        run_id=shared_run_id,
+        observed_at=DAY_ONE,
+    )
+    store.record_observations(
+        [make_record(bank="ANZ", product_type=ProductType.HOME_LOAN, rate_pct=4.79)],
+        run_id="run-later-home-loan",
+        observed_at=DAY_TWO,
+    )
+    # Reuses "shared" for term_deposit with a later observed_at -- overwrites
+    # collection_runs.started_at for run_id="shared" from DAY_ONE to DAY_THREE.
+    store.record_observations(
+        [make_record(bank="ANZ", product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")],
+        run_id=shared_run_id,
+        observed_at=DAY_THREE,
+    )
+
+    assert store.latest_run_id(product_type=ProductType.HOME_LOAN) == "run-later-home-loan"
+    assert [record.bank for record in store.get_latest_rates(product_type=ProductType.HOME_LOAN)] == [
+        "ANZ"
+    ]
 
 
 def test_latest_run_id_is_scoped_per_product(store, make_record):
