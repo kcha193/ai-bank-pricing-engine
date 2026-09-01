@@ -40,6 +40,40 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 
+#: Uniqueness is scoped to run_id (not just observation_key/change_type/
+#: detected_at) so a genuinely new event from a later run is never silently
+#: dropped just because an earlier run's event happened to share the exact
+#: same detected_at -- e.g. four runs sharing one started_at (observed,
+#: withdrawn, returned, withdrawn again) each get their own REMOVED_PRODUCT
+#: row instead of the second withdrawal colliding with the first's. Shared
+#: with :meth:`ObservationStore._migrate_rate_changes_run_scoped_uniqueness`,
+#: which recreates this table with the same definition for a database
+#: created before run_id joined the constraint.
+_RATE_CHANGES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS rate_changes (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    observation_key     TEXT NOT NULL,
+    bank                TEXT NOT NULL,
+    product_type        TEXT NOT NULL,
+    product_name        TEXT NOT NULL,
+    rate_category       TEXT NOT NULL,
+    term_months         INTEGER,
+    change_type         TEXT NOT NULL,
+    previous_rate_pct   REAL,
+    current_rate_pct    REAL,
+    change_bps          REAL,
+    previous_observed_at TEXT,
+    detected_at         TEXT NOT NULL,
+    run_id              TEXT NOT NULL,
+    suspicious          INTEGER NOT NULL DEFAULT 0,
+    detail              TEXT,
+    source_url          TEXT,
+    UNIQUE (observation_key, change_type, detected_at, run_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_changes_detected_at ON rate_changes (detected_at);
+"""
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 
@@ -97,30 +131,7 @@ CREATE INDEX IF NOT EXISTS idx_observations_bank_term
     ON observations (bank, product_type, term_months);
 CREATE INDEX IF NOT EXISTS idx_observations_last_seen
     ON observations (last_seen_run_id);
-
-CREATE TABLE IF NOT EXISTS rate_changes (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    observation_key     TEXT NOT NULL,
-    bank                TEXT NOT NULL,
-    product_type        TEXT NOT NULL,
-    product_name        TEXT NOT NULL,
-    rate_category       TEXT NOT NULL,
-    term_months         INTEGER,
-    change_type         TEXT NOT NULL,
-    previous_rate_pct   REAL,
-    current_rate_pct    REAL,
-    change_bps          REAL,
-    previous_observed_at TEXT,
-    detected_at         TEXT NOT NULL,
-    run_id              TEXT NOT NULL,
-    suspicious          INTEGER NOT NULL DEFAULT 0,
-    detail              TEXT,
-    source_url          TEXT,
-    UNIQUE (observation_key, change_type, detected_at)
-);
-
-CREATE INDEX IF NOT EXISTS idx_changes_detected_at ON rate_changes (detected_at);
-"""
+""" + _RATE_CHANGES_SCHEMA
 
 # Fields whose movement makes an observation a genuinely new advertised state.
 # Provenance fields (hashes, page titles, raw text) are deliberately excluded:
@@ -351,6 +362,7 @@ class ObservationStore:
             connection.executescript(_SCHEMA)
             self._migrate_collection_runs_product_type(connection)
             self._migrate_observations_first_seen_run_id(connection)
+            self._migrate_rate_changes_run_scoped_uniqueness(connection)
             row = connection.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
                 connection.execute(
@@ -488,9 +500,12 @@ class ObservationStore:
            own ``started_at`` produces two ``observations`` rows tied on
            that pair (the untouched bootstrap row and the fresh return row),
            but only one ``NEW_PRODUCT`` event -- from the return -- exists at
-           that ``detected_at`` (``rate_changes`` is unique on
-           ``(observation_key, change_type, detected_at)``). Without this
-           restriction the correlated subquery matches *both* tied rows and
+           that ``detected_at`` (a pre-existing legacy database's rows were
+           written while ``rate_changes`` was unique on ``(observation_key,
+           change_type, detected_at)`` alone, before :meth:`_migrate_rate_changes_run_scoped_uniqueness`
+           widened that to include ``run_id``, so at most one such row could
+           ever have been recorded for it). Without this restriction the
+           correlated subquery matches *both* tied rows and
            assigns the return's ``run_id`` to the bootstrap row too, so a
            later ``get_observations_as_of(before_run_id=<bootstrap run>)``
            would see the bootstrap row as introduced by the return and
@@ -561,6 +576,55 @@ class ObservationStore:
             "  ORDER BY cr.rowid LIMIT 1"
             ") WHERE first_seen_run_id IS NULL"
         )
+
+    def _migrate_rate_changes_run_scoped_uniqueness(self, connection: sqlite3.Connection) -> None:
+        """Widen ``rate_changes``' uniqueness to include ``run_id``, for a
+        database created before this column joined the constraint.
+
+        ``record_changes()`` relies on ``INSERT OR IGNORE`` plus this
+        uniqueness for idempotency: retrying the exact same detected changes
+        (the same objects, hence the same ``run_id``) must not create
+        duplicate rows. But scoped to only ``(observation_key, change_type,
+        detected_at)``, that same guard also silently drops a *genuinely new*
+        event from a *later* run whenever an earlier run's event happens to
+        share the exact same ``detected_at`` -- e.g. four runs sharing one
+        ``started_at`` (observed, withdrawn, returned, withdrawn again) each
+        try to record their own event for this key, but the second
+        ``REMOVED_PRODUCT`` collides with the first's and is discarded.
+        ``get_current_observations()`` then finds no ``REMOVED_PRODUCT``
+        run-ordered after the row's last touch and keeps serving the
+        withdrawn rate. Including ``run_id`` in the constraint keeps
+        same-run retries idempotent (they always share one run_id) while
+        letting every run's own event persist independently.
+
+        SQLite cannot ``ALTER`` a table-level ``UNIQUE`` constraint in place,
+        so this recreates the table under its new definition (identical to
+        :data:`_RATE_CHANGES_SCHEMA`, which ``_SCHEMA`` also uses) and copies
+        every existing row across -- safe because no two of them could have
+        ever violated the *new*, less restrictive constraint if they didn't
+        already violate the old one.
+        """
+        already_run_scoped = any(
+            index["unique"]
+            and {
+                info["name"]
+                for info in connection.execute(f"PRAGMA index_info({index['name']!r})")
+            }
+            == {"observation_key", "change_type", "detected_at", "run_id"}
+            for index in connection.execute("PRAGMA index_list('rate_changes')")
+        )
+        if already_run_scoped:
+            return
+        columns = ", ".join(
+            row["name"] for row in connection.execute("PRAGMA table_info('rate_changes')")
+        )
+        connection.execute("ALTER TABLE rate_changes RENAME TO rate_changes_pre_run_scoped_unique")
+        connection.executescript(_RATE_CHANGES_SCHEMA)
+        connection.execute(
+            f"INSERT INTO rate_changes ({columns}) "
+            f"SELECT {columns} FROM rate_changes_pre_run_scoped_unique"
+        )
+        connection.execute("DROP TABLE rate_changes_pre_run_scoped_unique")
 
     # ----------------------------------------------------------------- writes
 
@@ -902,6 +966,14 @@ class ObservationStore:
 
         Accepts ``RateChange`` objects (typed in ``changes.py``; kept structural
         here to avoid a circular import).
+
+        Relies on :data:`_RATE_CHANGES_SCHEMA`'s ``UNIQUE (observation_key,
+        change_type, detected_at, run_id)`` for idempotency: retrying this
+        call with the exact same ``changes`` (the same objects, hence the
+        same ``run_id`` on each) inserts nothing new. Scoped to ``run_id`` so
+        a genuinely different run's event is never mistaken for that same
+        retry just because it happens to share the same ``detected_at`` as an
+        earlier run's event for this key.
         """
         written = 0
         with self._transaction() as connection:

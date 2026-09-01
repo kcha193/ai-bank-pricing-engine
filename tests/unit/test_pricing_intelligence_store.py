@@ -941,6 +941,138 @@ def test_current_observations_exclude_a_same_timestamp_withdrawal(store, make_re
     assert store.get_current_observations() == []
 
 
+def test_repeated_same_timestamp_withdrawals_are_both_recorded(store, make_record):
+    """Four runs sharing one started_at -- observed, withdrawn, returned,
+    withdrawn again -- must record a REMOVED_PRODUCT event for *each*
+    withdrawal, not just the first. rate_changes' uniqueness scoped only to
+    (observation_key, change_type, detected_at) would otherwise collide the
+    second withdrawal's event with the first's (same key, same change_type,
+    same shared timestamp) and silently drop it via INSERT OR IGNORE,
+    leaving the returned-then-withdrawn row in get_current_observations()
+    with no REMOVED_PRODUCT recorded after its last (return) touch."""
+    bnz_record = make_record(bank="BNZ", rate_pct=4.85)
+
+    store.record_observations([bnz_record], run_id="run-1-observed", observed_at=DAY_TWO)
+    # No record_changes() call: a genuine bootstrap run detects nothing.
+
+    withdrawn_once = store.record_observations([], run_id="run-2-withdrawn", observed_at=DAY_TWO)
+    store.record_changes(
+        detect_changes(
+            previous=store.get_current_observations(),
+            current=[],
+            detected_at=DAY_TWO,
+            banks_collected=["BNZ"],
+            run_id=withdrawn_once.run_id,
+        )
+    )
+
+    returned = store.record_observations([bnz_record], run_id="run-3-returned", observed_at=DAY_TWO)
+    store.record_changes(
+        detect_changes(
+            previous=store.get_current_observations(),
+            current=[bnz_record],
+            detected_at=DAY_TWO,
+            banks_collected=["BNZ"],
+            run_id=returned.run_id,
+        )
+    )
+    assert {record.bank for record in store.get_current_observations()} == {"BNZ"}
+
+    withdrawn_again = store.record_observations(
+        [], run_id="run-4-withdrawn-again", observed_at=DAY_TWO
+    )
+    store.record_changes(
+        detect_changes(
+            previous=store.get_current_observations(),
+            current=[],
+            detected_at=DAY_TWO,
+            banks_collected=["BNZ"],
+            run_id=withdrawn_again.run_id,
+        )
+    )
+
+    assert store.get_current_observations() == []
+
+
+def test_migrating_rate_changes_widens_uniqueness_without_losing_existing_rows(store, make_record):
+    """A database created before run_id joined rate_changes' UNIQUE
+    constraint must be upgraded in place, keeping its existing event, and
+    afterwards accept a second event that only the old three-column
+    constraint would have collided with (same observation_key/change_type/
+    detected_at, a different run_id) -- exactly the same-timestamp
+    repeated-withdrawal scenario this widening exists to fix."""
+    bnz_record = make_record(bank="BNZ", rate_pct=4.85)
+    write = store.record_observations([bnz_record], observed_at=DAY_ONE)
+    store.record_changes(
+        [
+            RateChange(
+                observation_key=bnz_record.observation_key(),
+                bank=bnz_record.bank,
+                product_type=ProductType(bnz_record.product_type),
+                product_name=bnz_record.product_name,
+                rate_category=bnz_record.rate_category,
+                term_months=bnz_record.term_months_normalised,
+                change_type=ChangeType.NEW_PRODUCT,
+                detected_at=DAY_ONE,
+                current_rate_pct=bnz_record.advertised_rate_pct,
+                run_id=write.run_id,
+            )
+        ]
+    )
+
+    # Simulate a database that predates run_id joining the UNIQUE constraint:
+    # rebuild rate_changes under the old three-column definition, preserving
+    # its one existing row.
+    store._connection.executescript(
+        "ALTER TABLE rate_changes RENAME TO rate_changes_new;"
+        "CREATE TABLE rate_changes ("
+        "    id INTEGER PRIMARY KEY AUTOINCREMENT, observation_key TEXT NOT NULL, "
+        "    bank TEXT NOT NULL, product_type TEXT NOT NULL, product_name TEXT NOT NULL, "
+        "    rate_category TEXT NOT NULL, term_months INTEGER, change_type TEXT NOT NULL, "
+        "    previous_rate_pct REAL, current_rate_pct REAL, change_bps REAL, "
+        "    previous_observed_at TEXT, detected_at TEXT NOT NULL, run_id TEXT NOT NULL, "
+        "    suspicious INTEGER NOT NULL DEFAULT 0, detail TEXT, source_url TEXT, "
+        "    UNIQUE (observation_key, change_type, detected_at)"
+        ");"
+        "INSERT INTO rate_changes SELECT * FROM rate_changes_new;"
+        "DROP TABLE rate_changes_new;"
+    )
+
+    store._create_schema()
+
+    rows = store._connection.execute("SELECT run_id FROM rate_changes").fetchall()
+    assert [row["run_id"] for row in rows] == [write.run_id]
+
+    # Re-running the migration on an already-upgraded database must be a
+    # no-op, not a repeated rebuild.
+    store._create_schema()
+    rows = store._connection.execute("SELECT run_id FROM rate_changes").fetchall()
+    assert [row["run_id"] for row in rows] == [write.run_id]
+
+    # The exact scenario the widened constraint exists for: a second event
+    # for the same key/change_type/detected_at, from a different run, must
+    # no longer collide with the first.
+    store.record_changes(
+        [
+            RateChange(
+                observation_key=bnz_record.observation_key(),
+                bank=bnz_record.bank,
+                product_type=ProductType(bnz_record.product_type),
+                product_name=bnz_record.product_name,
+                rate_category=bnz_record.rate_category,
+                term_months=bnz_record.term_months_normalised,
+                change_type=ChangeType.NEW_PRODUCT,
+                detected_at=DAY_ONE,
+                current_rate_pct=bnz_record.advertised_rate_pct,
+                run_id="a-different-run",
+            )
+        ]
+    )
+
+    run_ids = {row["run_id"] for row in store._connection.execute("SELECT run_id FROM rate_changes")}
+    assert run_ids == {write.run_id, "a-different-run"}
+
+
 def test_current_observations_exclude_a_superseded_eligibility_state(store, make_record):
     """An old eligibility state must not sit alongside its replacement forever."""
     store.record_observations(
