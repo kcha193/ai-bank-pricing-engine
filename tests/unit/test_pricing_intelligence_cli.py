@@ -103,6 +103,7 @@ def mixed_product_database(tmp_path, make_record):
             previous_rate_pct=record.advertised_rate_pct - 0.10,
             current_rate_pct=record.advertised_rate_pct,
             change_bps=10.0,
+            run_id="test-run",
         )
 
     with ObservationStore(path) as store:
@@ -353,6 +354,7 @@ def standard_category_database(tmp_path, make_record):
         previous_rate_pct=standard_record.advertised_rate_pct - 0.10,
         current_rate_pct=standard_record.advertised_rate_pct,
         change_bps=10.0,
+        run_id="test-run",
     )
     with ObservationStore(path) as store:
         store.record_observations([standard_record], observed_at=DAY_TWO)

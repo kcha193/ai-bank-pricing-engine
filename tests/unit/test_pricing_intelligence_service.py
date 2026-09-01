@@ -127,6 +127,7 @@ def test_new_products_are_reported_after_the_market_goes_fully_quiet(fixture_fet
             current=[],
             detected_at=DAY_TWO,
             banks_collected=[record.bank for record in baseline],
+            run_id="withdraw-everything",
         )
         service.store.record_changes(withdrawal)
         assert service.store.get_current_observations() == [], "sanity check"
@@ -590,6 +591,7 @@ def test_market_state_ignores_changes_outside_the_configured_market():
         previous_rate_pct=5.00,
         current_rate_pct=4.50,
         change_bps=-50.0,
+        run_id="test-run",
     )
     service.store.record_changes([out_of_scope_change])
 
@@ -621,6 +623,7 @@ def test_get_changes_scope_to_market_filters_by_selected_banks_and_terms():
         previous_rate_pct=5.00,
         current_rate_pct=4.90,
         change_bps=-10.0,
+        run_id="test-run",
     )
     out_of_scope = RateChange(
         observation_key="BNZ|home_loan|special|24|unknown|fixed special",
@@ -634,6 +637,7 @@ def test_get_changes_scope_to_market_filters_by_selected_banks_and_terms():
         previous_rate_pct=5.00,
         current_rate_pct=4.50,
         change_bps=-50.0,
+        run_id="test-run",
     )
     service.store.record_changes([in_scope, out_of_scope])
 

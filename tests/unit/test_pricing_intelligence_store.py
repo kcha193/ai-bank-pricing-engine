@@ -901,12 +901,13 @@ def _withdraw_bnz_on_day_two(store, make_record):
     )
     baseline = store.get_current_observations()
     current = [make_record(bank="ANZ", rate_pct=4.79, observed_at=DAY_TWO)]
-    store.record_observations(current, observed_at=DAY_TWO)
+    write = store.record_observations(current, observed_at=DAY_TWO)
     changes = detect_changes(
         previous=baseline,
         current=current,
         detected_at=DAY_TWO,
         banks_collected=["ANZ", "BNZ"],
+        run_id=write.run_id,
     )
     store.record_changes(changes)
 
@@ -1025,6 +1026,7 @@ def test_migrating_rate_changes_widens_uniqueness_without_losing_existing_rows(s
     # its one existing row.
     store._connection.executescript(
         "ALTER TABLE rate_changes RENAME TO rate_changes_new;"
+        "DROP INDEX idx_changes_detected_at;"
         "CREATE TABLE rate_changes ("
         "    id INTEGER PRIMARY KEY AUTOINCREMENT, observation_key TEXT NOT NULL, "
         "    bank TEXT NOT NULL, product_type TEXT NOT NULL, product_name TEXT NOT NULL, "
@@ -1034,6 +1036,7 @@ def test_migrating_rate_changes_widens_uniqueness_without_losing_existing_rows(s
         "    suspicious INTEGER NOT NULL DEFAULT 0, detail TEXT, source_url TEXT, "
         "    UNIQUE (observation_key, change_type, detected_at)"
         ");"
+        "CREATE INDEX idx_changes_detected_at ON rate_changes (detected_at);"
         "INSERT INTO rate_changes SELECT * FROM rate_changes_new;"
         "DROP TABLE rate_changes_new;"
     )
@@ -1042,6 +1045,21 @@ def test_migrating_rate_changes_widens_uniqueness_without_losing_existing_rows(s
 
     rows = store._connection.execute("SELECT run_id FROM rate_changes").fetchall()
     assert [row["run_id"] for row in rows] == [write.run_id]
+
+    # ALTER TABLE ... RENAME carries an index across under its original name,
+    # so a migration that recreates the table without first dropping that
+    # index would find CREATE INDEX IF NOT EXISTS a no-op (name already
+    # taken by the renamed-away old table) and then lose it entirely once
+    # the old table is dropped -- leaving detected_at with no index at all.
+    detected_at_indexes = [
+        index["name"]
+        for index in store._connection.execute("PRAGMA index_list('rate_changes')")
+        if {
+            info["name"] for info in store._connection.execute(f"PRAGMA index_info({index['name']!r})")
+        }
+        == {"detected_at"}
+    ]
+    assert detected_at_indexes, "rate_changes must still have an index on detected_at"
 
     # Re-running the migration on an already-upgraded database must be a
     # no-op, not a repeated rebuild.
@@ -1114,12 +1132,13 @@ def test_no_delayed_withdrawal_follows_an_eligibility_transition(store, make_rec
     transitioned = [
         make_record(max_lvr=0.75, min_equity=0.25, rate_pct=4.79, observed_at=DAY_TWO)
     ]
-    store.record_observations(transitioned, observed_at=DAY_TWO)
+    write_at_run_two = store.record_observations(transitioned, observed_at=DAY_TWO)
     changes_at_run_two = detect_changes(
         previous=baseline_at_run_two,
         current=transitioned,
         detected_at=DAY_TWO,
         banks_collected=["ANZ"],
+        run_id=write_at_run_two.run_id,
     )
     store.record_changes(changes_at_run_two)
     assert [c.change_type for c in changes_at_run_two] == [ChangeType.ELIGIBILITY_CHANGE]
@@ -1580,6 +1599,7 @@ def test_changes_are_persisted_and_queried_by_window(store, make_record):
         [make_record(rate_pct=4.99)],
         [make_record(rate_pct=4.79, observed_at=DAY_TWO)],
         detected_at=DAY_TWO,
+        run_id="run-two",
     )
     store.record_changes(changes)
 
@@ -1600,6 +1620,7 @@ def test_changes_since_excludes_events_detected_after_now(store, make_record):
         [make_record(rate_pct=4.99)],
         [make_record(rate_pct=4.79, observed_at=DAY_THREE)],
         detected_at=DAY_THREE,
+        run_id="run-three",
     )
     store.record_changes(changes)
 
@@ -1612,11 +1633,29 @@ def test_recording_the_same_change_twice_is_idempotent(store, make_record):
         [make_record(rate_pct=4.99)],
         [make_record(rate_pct=4.79, observed_at=DAY_TWO)],
         detected_at=DAY_TWO,
+        run_id="run-two",
     )
     store.record_changes(changes)
     store.record_changes(changes)
 
     assert len(store.get_changes_since(days=7, now=DAY_TWO)) == 1
+
+
+def test_record_changes_rejects_a_change_with_no_run_id(store, make_record):
+    """RateChange.run_id is optional at construction (a caller may only want
+    a change for display/alerting and never persist it), but a shared
+    placeholder for every omitted run_id at persistence time would let two
+    genuinely different events collide on it exactly as they used to collide
+    on a shared detected_at alone -- so record_changes() must refuse rather
+    than silently substitute one."""
+    changes = detect_changes(
+        [make_record(rate_pct=4.99)],
+        [make_record(rate_pct=4.79, observed_at=DAY_TWO)],
+        detected_at=DAY_TWO,
+    )
+
+    with pytest.raises(ValueError, match="run_id"):
+        store.record_changes(changes)
 
 
 def test_changes_filter_by_bank_and_term(store, make_record):
@@ -1627,6 +1666,7 @@ def test_changes_filter_by_bank_and_term(store, make_record):
             make_record(bank="BNZ", rate_pct=4.85, observed_at=DAY_TWO),
         ],
         detected_at=DAY_TWO,
+        run_id="run-two",
     )
     store.record_changes(changes)
 
@@ -1657,6 +1697,7 @@ def test_changes_filter_by_product_type(store, make_record):
             [home_loan_before, deposit_before],
             [home_loan_after, deposit_after],
             detected_at=DAY_TWO,
+            run_id="run-two",
         )
     )
 
@@ -1674,6 +1715,7 @@ def test_changes_since_can_exclude_suspicious_events(store, make_record):
         [make_record(rate_pct=8.49, observed_at=DAY_TWO)],
         detected_at=DAY_TWO,
         thresholds=ValidationThresholds(suspicious_change_bps=75),
+        run_id="run-two",
     )
     store.record_changes(changes)
 
@@ -1687,6 +1729,7 @@ def test_changes_since_preserves_legacy_positional_filters(store, make_record):
         [make_record(rate_pct=8.49, observed_at=DAY_TWO)],
         detected_at=DAY_TWO,
         thresholds=ValidationThresholds(suspicious_change_bps=75),
+        run_id="run-two",
     )
     store.record_changes(changes)
 
@@ -1733,6 +1776,7 @@ def test_atomic_commits_every_write_together_on_success(store, make_record):
         [make_record(rate_pct=4.99)],
         [make_record(rate_pct=4.79, observed_at=DAY_TWO)],
         detected_at=DAY_TWO,
+        run_id="run-two",
     )
     with store.atomic():
         store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)

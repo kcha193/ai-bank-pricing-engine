@@ -603,6 +603,17 @@ class ObservationStore:
         every existing row across -- safe because no two of them could have
         ever violated the *new*, less restrictive constraint if they didn't
         already violate the old one.
+
+        Explicitly drops ``idx_changes_detected_at`` right after the rename,
+        before creating the new table: ``ALTER TABLE ... RENAME`` carries an
+        index across onto the renamed table under its *original* name, so
+        without this, :data:`_RATE_CHANGES_SCHEMA`'s own ``CREATE INDEX IF
+        NOT EXISTS idx_changes_detected_at`` finds that name already taken
+        (by the old table) and silently skips creating one for the new
+        table -- then dropping the old table drops its now-orphaned index
+        along with it, leaving the new ``rate_changes`` with no index on
+        ``detected_at`` at all for :meth:`get_changes_since`'s window
+        queries.
         """
         already_run_scoped = any(
             index["unique"]
@@ -619,6 +630,7 @@ class ObservationStore:
             row["name"] for row in connection.execute("PRAGMA table_info('rate_changes')")
         )
         connection.execute("ALTER TABLE rate_changes RENAME TO rate_changes_pre_run_scoped_unique")
+        connection.execute("DROP INDEX IF EXISTS idx_changes_detected_at")
         connection.executescript(_RATE_CHANGES_SCHEMA)
         connection.execute(
             f"INSERT INTO rate_changes ({columns}) "
@@ -974,10 +986,31 @@ class ObservationStore:
         a genuinely different run's event is never mistaken for that same
         retry just because it happens to share the same ``detected_at`` as an
         earlier run's event for this key.
+
+        Requires every change to carry a real (truthy) ``run_id`` -- coercing
+        a missing one to a shared placeholder (e.g. ``""``) would make that
+        run-scoping meaningless: two genuinely different events that both
+        omitted ``run_id`` (``RateChange.run_id`` is optional at construction,
+        for callers that only need a change for display/alerting and never
+        persist it) would collide on the placeholder exactly as they used to
+        collide on a shared ``detected_at`` alone, silently dropping the
+        later one again. A caller that wants to persist a change must supply
+        its own ``run_id`` -- :meth:`~.service.PricingIntelligenceService.collect`
+        always does, via :meth:`record_observations`'s freshly generated one.
         """
         written = 0
         with self._transaction() as connection:
             for change in changes:
+                if not change.run_id:
+                    raise ValueError(
+                        "record_changes() requires every change to carry a real run_id "
+                        f"(got {change.run_id!r} for observation_key={change.observation_key!r}, "
+                        f"change_type={ChangeType(change.change_type).value!r}); rate_changes' "
+                        "uniqueness is scoped to run_id specifically so two distinct events "
+                        "sharing the same observation_key/change_type/detected_at (e.g. two "
+                        "same-timestamp withdrawals) don't collide -- a shared placeholder for "
+                        "every omitted run_id would defeat that."
+                    )
                 cursor = connection.execute(
                     "INSERT OR IGNORE INTO rate_changes ("
                     "observation_key, bank, product_type, product_name, rate_category, "
@@ -997,7 +1030,7 @@ class ObservationStore:
                         change.change_bps,
                         _iso(change.previous_observed_at) if change.previous_observed_at else None,
                         _iso(change.detected_at),
-                        change.run_id or "",
+                        change.run_id,
                         int(change.suspicious),
                         change.detail,
                         change.source_url,
