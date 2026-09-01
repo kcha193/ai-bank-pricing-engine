@@ -301,6 +301,36 @@ def test_record_observations_rejects_a_mixed_product_batch(store, make_record):
         store.record_observations(mixed, observed_at=DAY_ONE)
 
 
+def test_record_observations_preserves_an_explicit_product_type_for_an_empty_run(store):
+    """Inferring collection_runs.product_type solely from an empty records
+    list silently defaults to HOME_LOAN regardless of what was actually being
+    collected -- e.g. a term-deposit run where every bank withdrew, or a
+    failed attempt worth recording. A caller that already knows the product
+    (PricingIntelligenceService.collect() always does) must be able to say so
+    explicitly instead of relying on that inference."""
+    store.record_observations(
+        [], run_id="empty-deposit-run", observed_at=DAY_ONE, product_type=ProductType.TERM_DEPOSIT
+    )
+
+    assert store.latest_run_id(product_type=ProductType.TERM_DEPOSIT) == "empty-deposit-run"
+    assert store.latest_run_id(product_type=ProductType.HOME_LOAN) is None
+
+
+def test_record_observations_rejects_a_product_type_that_contradicts_its_records(
+    store, make_record
+):
+    """An explicit product_type is a caller assertion, not an override -- it
+    must agree with what the records themselves say, or a genuine mismatch
+    (a caller passing the wrong product) would otherwise be silently trusted
+    over the records' own truth."""
+    home_loan_record = make_record(product_type=ProductType.HOME_LOAN)
+
+    with pytest.raises(ValueError, match="term_deposit"):
+        store.record_observations(
+            [home_loan_record], observed_at=DAY_ONE, product_type=ProductType.TERM_DEPOSIT
+        )
+
+
 def test_latest_run_id_is_scoped_per_product(store, make_record):
     """Home-loan and term-deposit collections share one collection_runs
     table, so an unscoped latest_run_id() can return either product's run --

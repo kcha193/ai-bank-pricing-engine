@@ -570,6 +570,7 @@ class ObservationStore:
         run_id: Optional[str] = None,
         observed_at: Optional[datetime] = None,
         report_json: Optional[str] = None,
+        product_type: Optional[ProductType | str] = None,
     ) -> WriteResult:
         """Persist one collection run, collapsing unchanged re-observations.
 
@@ -577,30 +578,53 @@ class ObservationStore:
         re-observations, so a caller can tell a quiet day from a repricing day
         without querying further.
 
-        ``collection_runs.product_type`` is taken from the records themselves,
-        defaulting to ``HOME_LOAN`` for an empty ``records`` so a run is still
-        recorded consistently with this store's pre-term-deposit history. This
-        is what lets :meth:`latest_run_id`/:meth:`get_previous_run_started_at`
-        resolve "the latest run" *for a given product* now that home-loan and
-        term-deposit collections share one ``collection_runs`` table -- which
-        only works if every record in one call belongs to the same product:
-        :meth:`~.service.PricingIntelligenceService.collect` always calls this
-        with one product's own ``accepted`` list, and a caller seeding a store
-        directly must do the same, one call per product, rather than passing
-        a mixed batch that only one product's runs could ever be found under.
+        ``collection_runs.product_type`` is taken from the records themselves
+        when ``product_type`` is not supplied, defaulting to ``HOME_LOAN`` for
+        an empty ``records`` so a run is still recorded consistently with this
+        store's pre-term-deposit history. This is what lets
+        :meth:`latest_run_id`/:meth:`get_previous_run_started_at` resolve "the
+        latest run" *for a given product* now that home-loan and term-deposit
+        collections share one ``collection_runs`` table -- which only works if
+        every record in one call belongs to the same product: a caller seeding
+        a store directly must do the same, one call per product, rather than
+        passing a mixed batch that only one product's runs could ever be found
+        under.
+
+        Inferring solely from ``records`` silently mislabels a call with zero
+        records (e.g. a term-deposit collection where every bank withdrew, or
+        a failed attempt worth recording as an empty run) as ``HOME_LOAN``
+        regardless of which product was actually being collected -- it can
+        then surface as the latest home-loan run for previous-snapshot and
+        run-scoped history queries, while that product's own run history loses
+        all trace the attempt happened. A caller that already knows the
+        product -- :meth:`~.service.PricingIntelligenceService.collect` always
+        does -- should pass ``product_type`` explicitly instead of relying on
+        inference. When both are given, ``product_type`` must agree with every
+        record's own ``product_type``, catching a caller's mismatch rather
+        than silently trusting the explicit value over genuinely conflicting
+        records.
         """
         records = list(records)
         observed_at = observed_at or datetime.now(timezone.utc)
         run_id = run_id or str(uuid.uuid4())
         timestamp = _iso(observed_at)
-        product_types = {ProductType(record.product_type) for record in records}
-        if len(product_types) > 1:
+        record_product_types = {ProductType(record.product_type) for record in records}
+        if len(record_product_types) > 1:
             raise ValueError(
                 "record_observations() received a mixed-product batch "
-                f"({sorted(p.value for p in product_types)}); one run must be a single "
+                f"({sorted(p.value for p in record_product_types)}); one run must be a single "
                 "product's collection -- call it once per product instead."
             )
-        product_type = next(iter(product_types), ProductType.HOME_LOAN)
+        if product_type is not None:
+            product_type = ProductType(product_type)
+            if record_product_types and product_type not in record_product_types:
+                raise ValueError(
+                    f"record_observations() received product_type={product_type.value!r} but "
+                    f"every record's own product_type is "
+                    f"{sorted(p.value for p in record_product_types)}"
+                )
+        else:
+            product_type = next(iter(record_product_types), ProductType.HOME_LOAN)
 
         inserted = 0
         unchanged = 0

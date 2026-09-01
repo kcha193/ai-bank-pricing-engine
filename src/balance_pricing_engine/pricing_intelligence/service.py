@@ -631,7 +631,9 @@ class PricingIntelligenceService:
             # against the stored baseline -- otherwise --no-persist could not be
             # used to preview what a real collection would do.
             write_result = (
-                self.store.record_observations(accepted, observed_at=captured_at_utc)
+                self.store.record_observations(
+                    accepted, observed_at=captured_at_utc, product_type=product_type
+                )
                 if persist
                 else None
             )
