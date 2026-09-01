@@ -509,6 +509,49 @@ def test_migrating_collection_run_products_backfills_from_surviving_evidence(sto
     assert rows["n"] == 1
 
 
+def test_get_previous_run_started_at_finds_a_quiet_mixed_run_that_lost_its_evidence(
+    store, make_record
+):
+    """Direct-read run selection is exposed to the same evidence-loss gap as
+    record_observations()'s own idempotency check: a legacy run_id that
+    recorded both products (one call per product) with its home-loan side
+    merely reconfirming a pre-existing row (no rate_changes) has that
+    reconfirmation's only trace -- last_seen_run_id -- erased the moment a
+    later home-loan run touches the same key, while
+    collection_runs.product_type has already been overwritten by the run's
+    own deposit side. get_previous_run_started_at(HOME_LOAN) must still find
+    that quiet mixed run as the immediately-preceding home-loan run via
+    collection_run_products, not skip straight past it to an even earlier
+    one."""
+    store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.79)], run_id="bootstrap", observed_at=DAY_ONE
+    )
+
+    shared_run_id = "legacy-mixed-quiet-run"
+    # Reconfirms the bootstrap rate unchanged -- produces no rate_changes
+    # and does not touch first_seen_run_id.
+    store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.79)], run_id=shared_run_id, observed_at=DAY_TWO
+    )
+    # Overwrites collection_runs.product_type to term_deposit.
+    store.record_observations(
+        [make_record(bank="ANZ", product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")],
+        run_id=shared_run_id,
+        observed_at=DAY_TWO,
+    )
+
+    # A later, genuine home-loan run reconfirms the same rate again, moving
+    # last_seen_run_id on from the shared run -- erasing its last remaining
+    # trace under the old fallback-only matching.
+    store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.79)],
+        run_id="run-later-home-loan",
+        observed_at=DAY_THREE,
+    )
+
+    assert store.get_previous_run_started_at(product_type=ProductType.HOME_LOAN) == DAY_TWO
+
+
 def test_latest_run_id_is_scoped_per_product(store, make_record):
     """Home-loan and term-deposit collections share one collection_runs
     table, so an unscoped latest_run_id() can return either product's run --

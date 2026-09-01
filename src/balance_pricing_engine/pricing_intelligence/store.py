@@ -1325,21 +1325,32 @@ class ObservationStore:
         market it happened to be".
 
         A scoped query matches a run whose stored ``product_type`` agrees
-        *or* whose ``observations``/``rate_changes`` rows show the requested
-        product, not the stored column alone: ``record_observations()``
-        rejects a mixed-product batch now, but a database from before that
-        guard existed can still hold a legacy run that mixed both products
-        under one ``run_id`` (one row, so the migration backfilling this
-        column could only pick one). The extra check keeps such a run
-        findable under *either* product instead of losing one of them --
-        which the stored value alone is still enough to resolve for the
-        overwhelmingly common case of a normal, single-product run.
+        *or* whose ``collection_run_products``/``observations``/``rate_changes``
+        rows show the requested product, not the stored column alone:
+        ``record_observations()`` rejects a mixed-product batch now, but a
+        database from before that guard existed can still hold a legacy run
+        that mixed both products under one ``run_id`` (one row, so the
+        migration backfilling this column could only pick one). The extra
+        checks keep such a run findable under *either* product instead of
+        losing one of them -- which the stored value alone is still enough
+        to resolve for the overwhelmingly common case of a normal,
+        single-product run.
 
-        Mirrors all three signals :meth:`_migrate_collection_runs_product_type`
-        backfills from, not just two of them: a mixed *bootstrap* run can have
-        zero ``rate_changes`` for *either* product, and once both products'
-        rows have since been reconfirmed unchanged, neither still shows this
-        run via ``last_seen_run_id`` either -- ``observations.first_seen_run_id``
+        ``collection_run_products`` (see :meth:`record_observations`) is
+        checked first among the fallbacks because it is the only durable
+        one: a mixed run whose home-loan side merely reconfirmed pre-existing
+        rows produces no ``rate_changes``, and ``last_seen_run_id`` moves on
+        to whatever run next touches those rows -- ``first_seen_run_id``
+        would be the only surviving trace, but it was never this shared
+        run's to begin with (the rows already existed before it touched
+        them). The other three still mirror every signal
+        :meth:`_migrate_collection_runs_product_type` backfills from, kept
+        as a fallback net for whatever a pre-``collection_run_products``
+        database's own migration (:meth:`_migrate_collection_run_products`)
+        was unable to recover: a mixed *bootstrap* run can have zero
+        ``rate_changes`` for *either* product, and once both products' rows
+        have since been reconfirmed unchanged, neither still shows this run
+        via ``last_seen_run_id`` either -- ``observations.first_seen_run_id``
         (frozen at insertion, unlike ``last_seen_run_id``; see
         :meth:`_migrate_observations_first_seen_run_id`) is then the only
         surviving trace for the product the migration's single-column
@@ -1357,6 +1368,8 @@ class ObservationStore:
             value = _product_value(product_type)
             row = self._connection.execute(
                 "SELECT cr.run_id FROM collection_runs cr WHERE cr.product_type = ? "
+                "OR EXISTS (SELECT 1 FROM collection_run_products crp "
+                "           WHERE crp.run_id = cr.run_id AND crp.product_type = ?) "
                 "OR EXISTS (SELECT 1 FROM observations o "
                 "           WHERE o.last_seen_run_id = cr.run_id AND o.product_type = ?) "
                 "OR EXISTS (SELECT 1 FROM rate_changes rc "
@@ -1364,7 +1377,7 @@ class ObservationStore:
                 "OR EXISTS (SELECT 1 FROM observations o2 "
                 "           WHERE o2.first_seen_run_id = cr.run_id AND o2.product_type = ?) "
                 "ORDER BY cr.started_at DESC, cr.rowid DESC LIMIT 1",
-                (value, value, value, value),
+                (value, value, value, value, value),
             ).fetchone()
         return row["run_id"] if row else None
 
@@ -1766,9 +1779,16 @@ class ObservationStore:
         # same reason: a legacy run that mixed both products under one
         # run_id (before record_observations() rejected that) must stay
         # findable under either product, not just whichever one the
-        # migration's single-column backfill happened to pick -- all
-        # three signals _migrate_collection_runs_product_type() backfills
-        # from, including a mixed bootstrap run's only surviving trace,
+        # migration's single-column backfill happened to pick.
+        # collection_run_products (see record_observations()) is checked
+        # first as the only durable signal -- a mixed run whose side for
+        # this product merely reconfirmed pre-existing rows leaves none of
+        # the other three behind once a later run moves last_seen_run_id on.
+        # Those three remain as a fallback net for whatever a
+        # pre-collection_run_products database's own migration
+        # (_migrate_collection_run_products()) could not recover: every
+        # signal _migrate_collection_runs_product_type() backfills from,
+        # including a mixed bootstrap run's only surviving trace,
         # first_seen_run_id (correlated by actual run_id, like
         # last_seen_run_id/rate_changes.run_id above -- not by matching
         # first_observed_at against started_at, which would also match
@@ -1777,6 +1797,8 @@ class ObservationStore:
         return self._connection.execute(
             f"SELECT cr.run_id, cr.started_at FROM collection_runs cr WHERE {precedes} "
             "AND (cr.product_type = ? "
+            "     OR EXISTS (SELECT 1 FROM collection_run_products crp "
+            "                WHERE crp.run_id = cr.run_id AND crp.product_type = ?) "
             "     OR EXISTS (SELECT 1 FROM observations o "
             "                WHERE o.last_seen_run_id = cr.run_id AND o.product_type = ?) "
             "     OR EXISTS (SELECT 1 FROM rate_changes rc "
@@ -1784,7 +1806,16 @@ class ObservationStore:
             "     OR EXISTS (SELECT 1 FROM observations o2 "
             "                WHERE o2.first_seen_run_id = cr.run_id AND o2.product_type = ?)) "
             "ORDER BY cr.started_at DESC, cr.rowid DESC LIMIT 1",
-            (reference_started_at, reference_started_at, reference_rowid, value, value, value, value),
+            (
+                reference_started_at,
+                reference_started_at,
+                reference_rowid,
+                value,
+                value,
+                value,
+                value,
+                value,
+            ),
         ).fetchone()
 
     def get_previous_run_started_at(
