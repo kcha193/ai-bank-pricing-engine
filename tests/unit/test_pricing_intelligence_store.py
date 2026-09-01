@@ -331,6 +331,30 @@ def test_record_observations_rejects_a_product_type_that_contradicts_its_records
         )
 
 
+def test_retrying_a_run_id_does_not_reorder_it_after_a_later_run(store, make_record):
+    """INSERT OR REPLACE deletes and reinserts a collection_runs row on a
+    run_id collision, handing it a fresh (higher) rowid --
+    _run_ordered_after()/_as_of_cutoff() use that rowid to break a
+    started_at tie. Retrying an earlier run under its own run_id after a
+    later same-timestamp run has already committed must not let that retry
+    jump ahead of the later run in rowid order, or latest_run_id() and every
+    run-anchored reconstruction would order the two runs backwards."""
+    store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.79)], run_id="run-earlier", observed_at=DAY_TWO
+    )
+    store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.89)], run_id="run-later", observed_at=DAY_TWO
+    )
+
+    # Retry "run-earlier" (e.g. an idempotent re-processing keyed by run_id)
+    # -- must not disturb its position relative to "run-later".
+    store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.79)], run_id="run-earlier", observed_at=DAY_TWO
+    )
+
+    assert store.latest_run_id() == "run-later"
+
+
 def test_latest_run_id_is_scoped_per_product(store, make_record):
     """Home-loan and term-deposit collections share one collection_runs
     table, so an unscoped latest_run_id() can return either product's run --

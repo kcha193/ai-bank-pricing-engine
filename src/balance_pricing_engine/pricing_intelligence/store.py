@@ -707,10 +707,27 @@ class ObservationStore:
         banks = sorted({record.bank for record in records})
 
         with self._transaction() as connection:
+            # An upsert (UPDATE on conflict), not INSERT OR REPLACE: the
+            # latter deletes and reinserts on a run_id collision, handing the
+            # row a brand new (higher) rowid. _run_ordered_after()/
+            # _as_of_cutoff() break a started_at tie between two runs by
+            # comparing collection_runs.rowid as an insertion-order proxy --
+            # retrying an earlier run under its own run_id after a later,
+            # same-timestamp run has already committed would otherwise give
+            # the retried (semantically earlier) run the higher rowid,
+            # reordering it after the later run: latest_run_id() could then
+            # select the retried historical run, and run-anchored
+            # reconstructions would apply states/withdrawals out of order.
+            # UPDATE leaves the original row (and its original rowid) in
+            # place.
             connection.execute(
-                "INSERT OR REPLACE INTO collection_runs "
+                "INSERT INTO collection_runs "
                 "(run_id, started_at, banks, product_type, record_count, inserted_count, "
-                "unchanged_count, report_json) VALUES (?, ?, ?, ?, ?, 0, 0, ?)",
+                "unchanged_count, report_json) VALUES (?, ?, ?, ?, ?, 0, 0, ?) "
+                "ON CONFLICT(run_id) DO UPDATE SET "
+                "started_at = excluded.started_at, banks = excluded.banks, "
+                "product_type = excluded.product_type, record_count = excluded.record_count, "
+                "inserted_count = 0, unchanged_count = 0, report_json = excluded.report_json",
                 (
                     run_id,
                     timestamp,
