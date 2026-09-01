@@ -840,21 +840,33 @@ class ObservationStore:
         See :meth:`_migrate_collection_run_products` for how a pre-existing
         database recovers what it still can of that history.
 
-        Raises ``ValueError`` if ``run_id`` already names a run recorded
-        with a *different* ``observed_at``. The upsert below replaces every
-        ``collection_runs`` column on a ``run_id`` collision, including
-        ``started_at`` -- reusing a run_id for a second product with its own,
-        different ``observed_at`` would retroactively overwrite the first
-        product's recorded start time, corrupting every ordering query that
-        still reads it directly (:meth:`_run_ordered_after`,
+        Raises ``ValueError`` if ``run_id`` already names a run recorded for
+        a *different* product -- reusing one run_id across two calls for
+        different products is refused outright now, not just when their
+        ``observed_at`` values differ. Even matching timestamps aren't safe:
+        ``collection_runs`` holds one ``rowid`` per ``run_id``, preserved
+        across the upsert below at whichever position the *first* call
+        established it. A third, unrelated run sharing that same timestamp
+        and committing between the two calls for this run_id then sits, by
+        real insertion order, *between* the run_id's two products' calls --
+        but every ordering query that reads ``collection_runs.started_at``/
+        ``rowid`` directly (:meth:`_run_ordered_after`,
         :meth:`_run_ordered_after_fixed_reference`, :meth:`_as_of_cutoff`,
-        :meth:`get_run_started_at`) even though :meth:`latest_run_id`/
-        :meth:`_previous_run_row` now resolve their own ordering through
-        ``collection_run_products`` instead. A ``run_id`` is meant to name
-        one shared collection moment -- a legitimate mixed-product run
-        reuses it with the *same* ``observed_at`` for every product's call
-        (see the ``test_a_*_legacy_*``/``test_a_*_mixed_*`` tests); a
-        genuinely later collection needs its own ``run_id``.
+        :meth:`get_run_started_at`) still sees only the run_id's one fixed
+        position, misordering it against that third run for whichever
+        product's call happened second. :meth:`latest_run_id`/
+        :meth:`_previous_run_row` resolve their own ordering through
+        ``collection_run_products`` instead and would not be fooled, but
+        making every ordering path do the same is more places to keep in
+        sync than simply not allowing the ambiguity to exist. A ``run_id``
+        is meant to name one physical collection event with one position in
+        run order; each product's own collection -- even one genuinely
+        gathered at the same real-world moment -- gets its own ``run_id``.
+        A pre-existing (legacy) database can still hold a genuinely mixed
+        run_id from before this guard existed -- see
+        :meth:`_migrate_collection_run_products` for how its read-side
+        participation is recovered, and ``collection_run_products``'s own
+        module-level comment for why that recovery is necessary.
         """
         records = list(records)
         observed_at = observed_at or datetime.now(timezone.utc)
@@ -890,17 +902,19 @@ class ObservationStore:
                 unchanged=existing_participation["unchanged_count"],
             )
 
-        existing_run_timestamp = self._connection.execute(
+        existing_run = self._connection.execute(
             "SELECT started_at FROM collection_runs WHERE run_id = ?", (run_id,)
         ).fetchone()
-        if existing_run_timestamp is not None and existing_run_timestamp["started_at"] != timestamp:
+        if existing_run is not None:
             raise ValueError(
-                f"record_observations() received run_id={run_id!r} with observed_at "
-                f"resolving to {timestamp!r}, but that run_id is already recorded with "
-                f"started_at={existing_run_timestamp['started_at']!r}. A run_id names one "
-                "shared collection moment -- reusing it for a second product (a mixed "
-                "collection covering both products at once) must pass the exact same "
-                "observed_at every time; a genuinely later collection needs its own run_id."
+                f"record_observations() received run_id={run_id!r} for product="
+                f"{product_type.value!r}, but that run_id is already recorded "
+                f"(started_at={existing_run['started_at']!r}) for a different product -- "
+                "the same-product case is handled by the idempotent short-circuit above. "
+                "collection_runs holds one row (and one rowid) per run_id, which cannot "
+                "represent two products' relative ordering against other runs at once, so "
+                "reusing one run_id across separate calls for different products is not "
+                "supported; use a distinct run_id for each product's call."
             )
 
         inserted = 0

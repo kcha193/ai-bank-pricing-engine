@@ -21,6 +21,47 @@ def store():
         yield observation_store
 
 
+def _reuse_run_id_for_another_product(store, run_id, records, observed_at, product_type):
+    """Simulate ``run_id`` being reused for a second product's call, the way
+    a pre-guard version of ``record_observations()`` used to allow --
+    something the current API now refuses outright (see
+    ``test_reusing_a_run_id_with_a_different_observed_at_is_rejected``).
+    Writes normally under a throwaway run_id, then relabels every row that
+    call touched onto the shared ``run_id`` and folds its ``collection_runs``
+    metadata into the shared row, reproducing exactly the database state the
+    old, unguarded code path used to leave behind -- e.g. for tests
+    exercising how the read side recovers a genuinely mixed legacy run."""
+    throwaway_run_id = f"{run_id}::throwaway"
+    store.record_observations(
+        records, run_id=throwaway_run_id, observed_at=observed_at, product_type=product_type
+    )
+    connection = store._connection
+    throwaway = connection.execute(
+        "SELECT product_type, banks, record_count FROM collection_runs WHERE run_id = ?",
+        (throwaway_run_id,),
+    ).fetchone()
+    connection.execute(
+        "UPDATE collection_runs SET product_type = ?, banks = ?, record_count = ? WHERE run_id = ?",
+        (throwaway["product_type"], throwaway["banks"], throwaway["record_count"], run_id),
+    )
+    connection.execute(
+        "UPDATE observations SET last_seen_run_id = ? WHERE last_seen_run_id = ?",
+        (run_id, throwaway_run_id),
+    )
+    connection.execute(
+        "UPDATE observations SET first_seen_run_id = ? WHERE first_seen_run_id = ?",
+        (run_id, throwaway_run_id),
+    )
+    connection.execute(
+        "UPDATE rate_changes SET run_id = ? WHERE run_id = ?", (run_id, throwaway_run_id)
+    )
+    connection.execute(
+        "UPDATE collection_run_products SET run_id = ? WHERE run_id = ?",
+        (run_id, throwaway_run_id),
+    )
+    connection.execute("DELETE FROM collection_runs WHERE run_id = ?", (throwaway_run_id,))
+
+
 def test_observations_are_stored_and_read_back(store, make_record):
     store.record_observations([make_record(bank="ANZ", rate_pct=4.79)], observed_at=DAY_ONE)
     latest = store.get_latest_rates()
@@ -405,7 +446,9 @@ def test_retrying_one_side_of_a_mixed_legacy_run_does_not_replay_its_observation
     store.record_observations([home_loan_record], run_id=shared_run_id, observed_at=DAY_ONE)
     # Overwrites collection_runs.product_type to term_deposit -- the
     # home-loan side's own stored counts are lost from this point on.
-    store.record_observations([deposit_record], run_id=shared_run_id, observed_at=DAY_ONE)
+    _reuse_run_id_for_another_product(
+        store, shared_run_id, [deposit_record], DAY_ONE, ProductType.TERM_DEPOSIT
+    )
 
     # A later, genuine home-loan run reconfirms the same (unchanged) rate.
     store.record_observations(
@@ -453,10 +496,12 @@ def test_retrying_a_quiet_mixed_legacy_run_side_does_not_replay_its_observations
         observed_at=DAY_TWO,
     )
     # Overwrites collection_runs.product_type to term_deposit.
-    store.record_observations(
+    _reuse_run_id_for_another_product(
+        store,
+        shared_run_id,
         [make_record(bank="ANZ", product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")],
-        run_id=shared_run_id,
-        observed_at=DAY_TWO,
+        DAY_TWO,
+        ProductType.TERM_DEPOSIT,
     )
 
     # A later, genuine home-loan run reconfirms the same rate again, moving
@@ -569,10 +614,12 @@ def test_get_previous_run_started_at_finds_a_quiet_mixed_run_that_lost_its_evide
         [make_record(bank="ANZ", rate_pct=4.79)], run_id=shared_run_id, observed_at=DAY_TWO
     )
     # Overwrites collection_runs.product_type to term_deposit.
-    store.record_observations(
+    _reuse_run_id_for_another_product(
+        store,
+        shared_run_id,
         [make_record(bank="ANZ", product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")],
-        run_id=shared_run_id,
-        observed_at=DAY_TWO,
+        DAY_TWO,
+        ProductType.TERM_DEPOSIT,
     )
 
     # A later, genuine home-loan run reconfirms the same rate again, moving
@@ -587,19 +634,23 @@ def test_get_previous_run_started_at_finds_a_quiet_mixed_run_that_lost_its_evide
     assert store.get_previous_run_started_at(product_type=ProductType.HOME_LOAN) == DAY_TWO
 
 
-def test_reusing_a_run_id_with_a_different_observed_at_is_rejected(store, make_record):
+def test_reusing_a_run_id_for_a_different_product_is_rejected(store, make_record):
     """record_observations()'s upsert replaces every collection_runs column
-    on a run_id collision, including started_at -- reusing a run_id for a
-    second product with its own, different observed_at would retroactively
-    overwrite the first product's recorded start time, corrupting every
-    ordering query that reads collection_runs.started_at/rowid directly
-    (_run_ordered_after(), _as_of_cutoff(), get_run_started_at(), and more).
-    A run_id is meant to name one shared collection moment: a legitimate
-    mixed-product run (see test_a_legacy_run_that_mixed_both_products_stays_
-    findable_under_either) reuses it with the *same* observed_at for every
-    product's call, so rejecting a differing one closes this off entirely
-    rather than requiring every past and future ordering query to defend
-    against it individually."""
+    on a run_id collision, including started_at, and preserves the run's one
+    rowid across it -- reusing a run_id for a second product would either
+    retroactively overwrite the first product's recorded start time (a
+    different observed_at) or, even at a matching observed_at, leave the
+    run_id's one fixed rowid unable to represent both products' correct
+    position relative to some third run that committed in between the two
+    calls. Every ordering query that reads collection_runs.started_at/rowid
+    directly (_run_ordered_after(), _as_of_cutoff(), get_run_started_at(),
+    and more) is exposed to either failure mode. Rejecting cross-product
+    reuse outright closes this off entirely, rather than requiring every
+    past and future ordering query to defend against it individually. A
+    pre-existing (legacy) database can still hold a genuinely mixed run_id
+    from before this guard existed -- see test_a_legacy_run_that_mixed_
+    both_products_stays_findable_under_either for how the read side
+    recovers that."""
     shared_run_id = "shared"
     store.record_observations(
         [make_record(bank="ANZ", product_type=ProductType.HOME_LOAN, rate_pct=4.79)],
@@ -607,7 +658,7 @@ def test_reusing_a_run_id_with_a_different_observed_at_is_rejected(store, make_r
         observed_at=DAY_ONE,
     )
 
-    with pytest.raises(ValueError, match="already recorded with"):
+    with pytest.raises(ValueError, match="already recorded"):
         store.record_observations(
             [
                 make_record(
@@ -616,6 +667,21 @@ def test_reusing_a_run_id_with_a_different_observed_at_is_rejected(store, make_r
             ],
             run_id=shared_run_id,
             observed_at=DAY_THREE,
+        )
+
+    # Even a matching observed_at is refused: collection_runs' rowid, fixed
+    # at whichever position the first call established, still can't
+    # represent this run_id's second product correctly against a third run
+    # sharing that same timestamp and committing in between.
+    with pytest.raises(ValueError, match="already recorded"):
+        store.record_observations(
+            [
+                make_record(
+                    bank="ANZ", product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit"
+                )
+            ],
+            run_id=shared_run_id,
+            observed_at=DAY_ONE,
         )
 
 
@@ -873,7 +939,9 @@ def test_a_mixed_legacy_bootstrap_run_backfills_first_seen_run_id_for_both_produ
     # collected both products at once, before product_type was tracked
     # per collection.
     store.record_observations([loan_record], run_id="legacy-run", observed_at=DAY_ONE)
-    store.record_observations([deposit_record], run_id="legacy-run", observed_at=DAY_ONE)
+    _reuse_run_id_for_another_product(
+        store, "legacy-run", [deposit_record], DAY_ONE, ProductType.TERM_DEPOSIT
+    )
 
     # Simulate a database that predates both columns.
     store._connection.execute("ALTER TABLE observations DROP COLUMN first_seen_run_id")
@@ -983,16 +1051,16 @@ def test_a_legacy_run_that_mixed_both_products_stays_findable_under_either(store
         run_id=shared_run_id,
         observed_at=DAY_ONE,
     )
-    # The upsert on this same run_id overwrites collection_runs' stored
-    # product_type to term_deposit here -- exactly the ambiguity a
-    # genuinely mixed legacy run leaves behind for the home-loan side. A
-    # different product_type than the run's existing row is what keeps
-    # record_observations()'s idempotency short-circuit from treating this
-    # as a same-run retry and dropping it instead.
-    store.record_observations(
+    # Simulates the other product's call under this same legacy run_id --
+    # exactly the ambiguity a genuinely mixed legacy run leaves behind for
+    # the home-loan side, since collection_runs' stored product_type ends
+    # up naming whichever product's call happened last.
+    _reuse_run_id_for_another_product(
+        store,
+        shared_run_id,
         [make_record(product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")],
-        run_id=shared_run_id,
-        observed_at=DAY_ONE,
+        DAY_ONE,
+        ProductType.TERM_DEPOSIT,
     )
 
     assert store.latest_run_id(product_type=ProductType.HOME_LOAN) == shared_run_id
@@ -1017,7 +1085,9 @@ def test_a_mixed_bootstrap_run_is_findable_under_either_product_after_reconfirma
     # Overwrites collection_runs' stored product_type to term_deposit --
     # the home-loan side now has nothing but first_observed_at pointing
     # back to this run.
-    store.record_observations([deposit_record], run_id=shared_run_id, observed_at=DAY_ONE)
+    _reuse_run_id_for_another_product(
+        store, shared_run_id, [deposit_record], DAY_ONE, ProductType.TERM_DEPOSIT
+    )
     # No record_changes() call for shared_run_id at all: a genuine bootstrap
     # detects nothing for either product.
 
@@ -1047,10 +1117,12 @@ def test_get_previous_run_started_at_finds_a_legacy_run_that_mixed_both_products
         run_id=shared_run_id,
         observed_at=DAY_ONE,
     )
-    store.record_observations(
+    _reuse_run_id_for_another_product(
+        store,
+        shared_run_id,
         [make_record(product_type=ProductType.HOME_LOAN)],
-        run_id=shared_run_id,
-        observed_at=DAY_ONE,
+        DAY_ONE,
+        ProductType.HOME_LOAN,
     )
     store.record_observations(
         [
