@@ -258,8 +258,20 @@ def _skipped_row_predecessor_keys(
     parameter. Without this, a row dropped by a parser fault this run would
     read as its predecessor having been withdrawn, even though enough of the
     bank's other rows passed validation for it to stay in scope for
-    withdrawal detection at all. Only suppressed when exactly one unclaimed
-    baseline record shares the group.
+    withdrawal detection at all.
+
+    Unlike :func:`_rejected_predecessor_keys`/:func:`_suspicious_predecessor_keys`
+    (which only suppress an unambiguous single match, since an ambiguous
+    group there merely means "this specific record's predecessor can't be
+    pinned down" -- there is no independent proof any of them actually
+    failed), a name in ``skipped_group_keys`` is proof-positive that
+    extraction failed for *some* row sharing that exact group this run. When
+    more than one baseline record shares that same coarse group, we cannot
+    tell *which* one the failure belongs to, but we know it belongs to one
+    of them -- so every candidate in the group is suppressed, not just an
+    unambiguous singleton, or a genuinely withdrawn sibling could be spared
+    the ``REMOVED_PRODUCT`` event to which it merely happens to share a
+    category-agnostic key with the row that actually failed.
     """
     if not skipped_group_keys:
         return set()
@@ -272,9 +284,8 @@ def _skipped_row_predecessor_keys(
 
     suppressed: set = set()
     for group_key in skipped_group_keys:
-        candidates = unclaimed.get(group_key, [])
-        if len(candidates) == 1:
-            suppressed.add(candidates[0].observation_key())
+        for candidate in unclaimed.get(group_key, []):
+            suppressed.add(candidate.observation_key())
     return suppressed
 
 

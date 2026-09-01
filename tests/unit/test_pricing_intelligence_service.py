@@ -532,6 +532,63 @@ def test_a_hard_skipped_row_is_not_reported_as_a_withdrawal(make_record):
     assert anz_withdrawals == []
 
 
+def test_ambiguous_skipped_rows_suppress_every_candidate_not_just_a_singleton(make_record):
+    """category_agnostic_group_key() deliberately ignores rate_category, so a
+    bank's simultaneous "special" and "standard" rows at the same term share
+    one group -- if both fail CompetitorRateRecord construction this run
+    (e.g. a page-layout regression hitting that term generally, not one
+    category specifically), _skipped_row_predecessor_keys() must suppress
+    *both* unclaimed baseline candidates, even though it cannot tell which
+    one the reported failure belongs to. Suppressing only an unambiguous
+    singleton would let one of the two -- whichever survived some other
+    disambiguation -- be reported REMOVED_PRODUCT purely because it happens
+    to share a coarse group key with the row that actually failed. Each
+    category keeps its own 24m sibling surviving normally, so neither the
+    bank's lumped coverage ratio nor the per-category one falls below the
+    50% default threshold and masks this via a different suppression path."""
+    baseline = [
+        make_record(bank="ANZ", term_months=12, rate_category="special", product_name="Fixed Special"),
+        make_record(bank="ANZ", term_months=24, rate_category="special", product_name="Fixed Special"),
+        make_record(bank="ANZ", term_months=12, rate_category="standard", product_name="Fixed Standard"),
+        make_record(bank="ANZ", term_months=24, rate_category="standard", product_name="Fixed Standard"),
+    ]
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", baseline)],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    # This run: both 24m rows survive (one per category), but the 12m term
+    # fails CompetitorRateRecord construction entirely regardless of
+    # category -- reported once via skipped_row_keys, exactly as
+    # parse_html_rates() would for a term-wide extraction fault.
+    surviving = [
+        make_record(bank="ANZ", term_months=24, rate_category="special", product_name="Fixed Special"),
+        make_record(bank="ANZ", term_months=24, rate_category="standard", product_name="Fixed Standard"),
+    ]
+    skipped_key = category_agnostic_key(
+        bank="ANZ",
+        product_type=ProductType.HOME_LOAN,
+        term_months_normalised=12,
+        term_label_raw="12 months",
+        interest_payment_frequency="unknown",
+        min_balance_or_deposit=None,
+        max_balance_or_deposit=None,
+    )
+    service._collectors = [_StubCollector("ANZ", surviving, skipped_row_keys=[skipped_key])]
+    outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    anz_withdrawals = [
+        change
+        for change in outcome.changes
+        if change.change_type is ChangeType.REMOVED_PRODUCT and change.bank == "ANZ"
+    ]
+    assert anz_withdrawals == []
+
+
 def test_a_validation_rejected_line_keeps_its_last_known_rate_in_the_snapshot(fixture_fetcher):
     """A rejected line must not silently disappear from market-derived pricing either."""
 
