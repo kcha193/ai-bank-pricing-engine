@@ -21,15 +21,16 @@ from balance_pricing_engine.pricing_intelligence.changes import resolve_pairing
 from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
 
 #: Matches any percentage token (e.g. "4.01%") in raw_text_context. Used two
-#: ways by _disambiguate_non_comparable_identities() and its helper
-#: _match_previous_non_comparable(): _strip_all_percentage_tokens() removes
-#: every occurrence outright (immune to an unrelated mutable figure, e.g. a
-#: fund's "since inception" return, but loses a percentage that is itself
-#: the only thing telling two rows apart, e.g. a PIR/tax-band label such as
-#: "PIR 28%: 4.01%"); _strip_advertised_rate_token() instead inspects each
-#: occurrence's numeric value and removes only the one matching the
-#: record's own advertised rate, leaving a structural qualifier like that
-#: PIR label untouched.
+#: ways by _disambiguate_non_comparable_identities() and its helpers
+#: _match_previous_non_comparable_precise()/_permissive():
+#: _strip_all_percentage_tokens() removes every occurrence outright (immune
+#: to an unrelated mutable figure, e.g. a fund's "since inception" return,
+#: but loses a percentage that is itself the only thing telling two rows
+#: apart, e.g. a PIR/tax-band label such as "PIR 28%: 4.01%");
+#: _strip_advertised_rate_token() instead inspects each occurrence's
+#: numeric value and removes only the one matching the record's own
+#: advertised rate, leaving a structural qualifier like that PIR label
+#: untouched.
 _PERCENTAGE_TOKEN_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 
 
@@ -266,20 +267,18 @@ def _non_comparable_base_group_key(record: CompetitorRateRecord) -> tuple:
     )
 
 
-def _match_previous_non_comparable(
+def _match_previous_non_comparable_precise(
     record: CompetitorRateRecord, candidates: Sequence[CompetitorRateRecord]
 ) -> Optional[CompetitorRateRecord]:
-    """Find the one ``previous`` record ``record`` continues, if any.
+    """Find the one ``previous`` record ``record`` precisely continues, if any.
 
-    Tries the precise match first (only the record's own advertised rate
-    stripped -- keeps a PIR/tax-band qualifier or any other non-identity
-    figure intact) and falls back to the permissive match (every percentage
-    stripped) only when the precise one finds nothing, so a genuinely
-    unrelated non-identity figure drifting between runs (e.g. a fund's
-    "since inception" return) doesn't break continuity. Either tier returns
-    a match only when it identifies exactly one candidate: an ambiguous tie
-    means "not confidently this one," not "guess," and falls through to
-    :func:`_disambiguate_non_comparable_identities` minting a fresh identity.
+    Only the record's own advertised rate is stripped, keeping a PIR/tax-band
+    qualifier or any other non-identity figure intact -- see
+    :func:`_disambiguate_non_comparable_identities` for why this must be
+    resolved for the whole batch before :func:`_match_previous_non_comparable_permissive`
+    is tried on any record. Returns a match only when it identifies exactly
+    one candidate: an ambiguous tie means "not confidently this one," not
+    "guess."
     """
     if not candidates:
         return None
@@ -290,9 +289,22 @@ def _match_previous_non_comparable(
         if _strip_advertised_rate_token(candidate.raw_text_context, candidate.advertised_rate_pct)
         == own_precise
     ]
-    if len(precise_matches) == 1:
-        return precise_matches[0]
-    if precise_matches:
+    return precise_matches[0] if len(precise_matches) == 1 else None
+
+
+def _match_previous_non_comparable_permissive(
+    record: CompetitorRateRecord, candidates: Sequence[CompetitorRateRecord]
+) -> Optional[CompetitorRateRecord]:
+    """Find the one ``previous`` record ``record`` permissively continues, if any.
+
+    Every percentage is stripped, so a genuinely unrelated non-identity
+    figure drifting between runs (e.g. a fund's "since inception" return)
+    doesn't break continuity. Only tried, batch-wide, after
+    :func:`_match_previous_non_comparable_precise` -- see
+    :func:`_disambiguate_non_comparable_identities`. Returns a match only
+    when it identifies exactly one candidate.
+    """
+    if not candidates:
         return None
     own_permissive = _strip_all_percentage_tokens(record.raw_text_context)
     permissive_matches = [
@@ -339,18 +351,35 @@ def _disambiguate_non_comparable_identities(
     reading a completely unchanged row as withdrawn and a new one appearing.
 
     Instead, each record first looks for the ``previous`` record it
-    continues (see :func:`_match_previous_non_comparable`), scoped to
-    :func:`_non_comparable_base_group_key` so only rows that could plausibly
-    be the same position are compared, and inherits that record's exact
-    ``product_name`` (tag included) unchanged -- stable across runs by
-    construction, since it never depends on this batch's siblings at all,
-    only on history. A record with no continuing predecessor (first time
-    seen, or its old match was claimed by another record in this same
-    batch) gets a fresh tag from its own text with only its own advertised
-    rate stripped (see :func:`_strip_advertised_rate_token`): distinct
-    fresh rows are already told apart by their own content (a fund name, a
-    tax-band qualifier) without needing to know about each other, and any
-    future run re-establishes continuity through this same match.
+    continues, scoped to :func:`_non_comparable_base_group_key` so only rows
+    that could plausibly be the same position are compared, and inherits
+    that record's exact ``product_name`` (tag included) unchanged -- stable
+    across runs by construction, since it never depends on this batch's
+    siblings at all, only on history. A record with no continuing
+    predecessor (first time seen, or its old match was claimed by another
+    record in this same batch) gets a fresh tag from its own text with only
+    its own advertised rate stripped (see :func:`_strip_advertised_rate_token`):
+    distinct fresh rows are already told apart by their own content (a fund
+    name, a tax-band qualifier) without needing to know about each other,
+    and any future run re-establishes continuity through this same match.
+
+    Matching runs in two full batch-wide passes --
+    :func:`_match_previous_non_comparable_precise` for every record before
+    :func:`_match_previous_non_comparable_permissive` is tried on any of
+    them -- rather than trying both tiers per record as the batch is walked.
+    Interleaving them per record makes the outcome depend on iteration
+    order: with two prior rows told apart only by a PIR/tax-band percentage
+    ("PIR 28%: 4.01%" vs "PIR 33%: 4.19%"), a row whose own precise text has
+    since changed permissively matches *both* once every percentage is
+    stripped. Reached before its sibling's unchanged row has precisely
+    claimed its own predecessor, that permissive lookup sees both
+    candidates still available, calls the tie ambiguous, and mints a
+    needless fresh identity -- reached after, only one candidate remains
+    and the match succeeds. Resolving every precise match first removes
+    that dependency: the unchanged row always claims its own predecessor
+    before any permissive lookup runs, so the changed row's permissive
+    match is judged against the batch's true leftover candidates no matter
+    which record was visited first.
     """
     previous_by_base: dict[tuple, list[CompetitorRateRecord]] = {}
     for candidate in previous:
@@ -362,16 +391,33 @@ def _disambiguate_non_comparable_identities(
             )
 
     claimed_previous_ids: set[int] = set()
-    tagged: list[CompetitorRateRecord] = []
-    for record in records:
-        available = [
+
+    def _available(record: CompetitorRateRecord) -> list[CompetitorRateRecord]:
+        return [
             candidate
             for candidate in previous_by_base.get(_non_comparable_base_group_key(record), [])
             if id(candidate) not in claimed_previous_ids
         ]
-        match = _match_previous_non_comparable(record, available)
+
+    matches: dict[int, CompetitorRateRecord] = {}
+    for index, record in enumerate(records):
+        match = _match_previous_non_comparable_precise(record, _available(record))
         if match is not None:
             claimed_previous_ids.add(id(match))
+            matches[index] = match
+
+    for index, record in enumerate(records):
+        if index in matches:
+            continue
+        match = _match_previous_non_comparable_permissive(record, _available(record))
+        if match is not None:
+            claimed_previous_ids.add(id(match))
+            matches[index] = match
+
+    tagged: list[CompetitorRateRecord] = []
+    for index, record in enumerate(records):
+        match = matches.get(index)
+        if match is not None:
             tagged.append(record.model_copy(update={"product_name": match.product_name}))
         else:
             tagged.append(

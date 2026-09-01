@@ -659,6 +659,70 @@ def test_non_comparable_identity_survives_a_colliding_sibling_disappearing(make_
     assert second_run[0].observation_key() == tagged_28.observation_key()
 
 
+def test_non_comparable_matching_is_independent_of_batch_order(make_record):
+    """Precise matches must be resolved for the whole batch before any
+    permissive match is attempted, or the outcome depends on which record
+    the loop happens to visit first.
+
+    Two prior rows told apart only by a PIR/tax-band percentage ("PIR 28%"
+    vs "PIR 33%") each also carry a second, independently-mutating "since
+    inception" figure. When the 28% row's own rate *and* that companion
+    figure both move, its precise match (only its own rate stripped) finds
+    nothing and falls back to a permissive match (every percentage
+    stripped) -- which, with both previous rows still available, ties on
+    both, since the surviving text is otherwise identical. Resolving the
+    unchanged 33% row's precise match first removes it from the pool before
+    that permissive lookup ever runs, whichever order the batch lists the
+    two records in."""
+    from balance_pricing_engine.pricing_intelligence.validation import (
+        validate_observations,
+    )
+
+    previous_28 = make_record(
+        bank="ANZ",
+        product_type="term_deposit",
+        rate_category="non_comparable",
+        rate_pct=4.01,
+        raw_text_context="PIR 28% | 4.01% | 9.50% since inception",
+    )
+    previous_33 = make_record(
+        bank="ANZ",
+        product_type="term_deposit",
+        rate_category="non_comparable",
+        rate_pct=4.19,
+        raw_text_context="PIR 33% | 4.19% | 8.20% since inception",
+    )
+    first_run = validate_observations([previous_28, previous_33]).accepted
+    tagged_28 = next(r for r in first_run if "28" in r.raw_text_context)
+    tagged_33 = next(r for r in first_run if "33" in r.raw_text_context)
+
+    def second_run(changed_first: bool):
+        changed_28 = make_record(
+            bank="ANZ",
+            product_type="term_deposit",
+            rate_category="non_comparable",
+            rate_pct=4.15,
+            raw_text_context="PIR 28% | 4.15% | 9.90% since inception",
+        )
+        unchanged_33 = make_record(
+            bank="ANZ",
+            product_type="term_deposit",
+            rate_category="non_comparable",
+            rate_pct=4.19,
+            raw_text_context="PIR 33% | 4.19% | 8.20% since inception",
+        )
+        batch = [changed_28, unchanged_33] if changed_first else [unchanged_33, changed_28]
+        accepted = validate_observations(batch, previous=first_run).accepted
+        changed = next(r for r in accepted if "28" in r.raw_text_context)
+        unchanged = next(r for r in accepted if "33" in r.raw_text_context)
+        return changed, unchanged
+
+    for changed_first in (True, False):
+        changed, unchanged = second_run(changed_first)
+        assert changed.observation_key() == tagged_28.observation_key()
+        assert unchanged.observation_key() == tagged_33.observation_key()
+
+
 def test_non_comparable_rows_stay_distinct_despite_a_shared_sibling_figure(make_record):
     """Growth Fund and Balanced Fund publish the exact same "Since inception"
     figure (15.28%, see bnz_term_deposits.html) but are genuinely different
