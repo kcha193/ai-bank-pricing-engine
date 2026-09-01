@@ -587,41 +587,36 @@ def test_get_previous_run_started_at_finds_a_quiet_mixed_run_that_lost_its_evide
     assert store.get_previous_run_started_at(product_type=ProductType.HOME_LOAN) == DAY_TWO
 
 
-def test_reusing_a_run_id_for_a_second_product_does_not_misdate_the_first(store, make_record):
-    """A run_id reused for a second product with its own, later observed_at
-    overwrites collection_runs.started_at (record_observations()'s upsert
-    replaces every column, including started_at, on a run_id collision) --
-    retroactively changing the *first* product's recorded start time, not
-    just which product owns the label. latest_run_id(HOME_LOAN) must keep
-    ordering by the home-loan side's own original timing (from
-    collection_run_products, written once and never touched again), not the
-    shared collection_runs row's now-overwritten value, or it would rank the
-    day-3 term-deposit reuse of "shared" above the genuinely later day-2
-    home-loan run and make get_latest_rates(HOME_LOAN) empty (last_seen_run_id
-    points at the day-2 run, not "shared")."""
+def test_reusing_a_run_id_with_a_different_observed_at_is_rejected(store, make_record):
+    """record_observations()'s upsert replaces every collection_runs column
+    on a run_id collision, including started_at -- reusing a run_id for a
+    second product with its own, different observed_at would retroactively
+    overwrite the first product's recorded start time, corrupting every
+    ordering query that reads collection_runs.started_at/rowid directly
+    (_run_ordered_after(), _as_of_cutoff(), get_run_started_at(), and more).
+    A run_id is meant to name one shared collection moment: a legitimate
+    mixed-product run (see test_a_legacy_run_that_mixed_both_products_stays_
+    findable_under_either) reuses it with the *same* observed_at for every
+    product's call, so rejecting a differing one closes this off entirely
+    rather than requiring every past and future ordering query to defend
+    against it individually."""
     shared_run_id = "shared"
     store.record_observations(
         [make_record(bank="ANZ", product_type=ProductType.HOME_LOAN, rate_pct=4.79)],
         run_id=shared_run_id,
         observed_at=DAY_ONE,
     )
-    store.record_observations(
-        [make_record(bank="ANZ", product_type=ProductType.HOME_LOAN, rate_pct=4.79)],
-        run_id="run-later-home-loan",
-        observed_at=DAY_TWO,
-    )
-    # Reuses "shared" for term_deposit with a later observed_at -- overwrites
-    # collection_runs.started_at for run_id="shared" from DAY_ONE to DAY_THREE.
-    store.record_observations(
-        [make_record(bank="ANZ", product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")],
-        run_id=shared_run_id,
-        observed_at=DAY_THREE,
-    )
 
-    assert store.latest_run_id(product_type=ProductType.HOME_LOAN) == "run-later-home-loan"
-    assert [record.bank for record in store.get_latest_rates(product_type=ProductType.HOME_LOAN)] == [
-        "ANZ"
-    ]
+    with pytest.raises(ValueError, match="already recorded with"):
+        store.record_observations(
+            [
+                make_record(
+                    bank="ANZ", product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit"
+                )
+            ],
+            run_id=shared_run_id,
+            observed_at=DAY_THREE,
+        )
 
 
 def test_latest_run_id_is_scoped_per_product(store, make_record):

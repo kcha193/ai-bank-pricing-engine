@@ -839,6 +839,22 @@ class ObservationStore:
         either erases the only trace a given run_id ever touched a product).
         See :meth:`_migrate_collection_run_products` for how a pre-existing
         database recovers what it still can of that history.
+
+        Raises ``ValueError`` if ``run_id`` already names a run recorded
+        with a *different* ``observed_at``. The upsert below replaces every
+        ``collection_runs`` column on a ``run_id`` collision, including
+        ``started_at`` -- reusing a run_id for a second product with its own,
+        different ``observed_at`` would retroactively overwrite the first
+        product's recorded start time, corrupting every ordering query that
+        still reads it directly (:meth:`_run_ordered_after`,
+        :meth:`_run_ordered_after_fixed_reference`, :meth:`_as_of_cutoff`,
+        :meth:`get_run_started_at`) even though :meth:`latest_run_id`/
+        :meth:`_previous_run_row` now resolve their own ordering through
+        ``collection_run_products`` instead. A ``run_id`` is meant to name
+        one shared collection moment -- a legitimate mixed-product run
+        reuses it with the *same* ``observed_at`` for every product's call
+        (see the ``test_a_*_legacy_*``/``test_a_*_mixed_*`` tests); a
+        genuinely later collection needs its own ``run_id``.
         """
         records = list(records)
         observed_at = observed_at or datetime.now(timezone.utc)
@@ -872,6 +888,19 @@ class ObservationStore:
                 run_id=run_id,
                 inserted=existing_participation["inserted_count"],
                 unchanged=existing_participation["unchanged_count"],
+            )
+
+        existing_run_timestamp = self._connection.execute(
+            "SELECT started_at FROM collection_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if existing_run_timestamp is not None and existing_run_timestamp["started_at"] != timestamp:
+            raise ValueError(
+                f"record_observations() received run_id={run_id!r} with observed_at "
+                f"resolving to {timestamp!r}, but that run_id is already recorded with "
+                f"started_at={existing_run_timestamp['started_at']!r}. A run_id names one "
+                "shared collection moment -- reusing it for a second product (a mixed "
+                "collection covering both products at once) must pass the exact same "
+                "observed_at every time; a genuinely later collection needs its own run_id."
             )
 
         inserted = 0
