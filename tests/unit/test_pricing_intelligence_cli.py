@@ -7,6 +7,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import yaml
 
+from balance_pricing_engine.competitor_rates.collectors import (
+    BankCollectionResult,
+    CollectionStatus,
+)
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange
 from balance_pricing_engine.pricing_intelligence import cli
@@ -109,6 +113,28 @@ def mixed_product_database(tmp_path, make_record):
         store.record_observations([deposit_a, deposit_b], observed_at=DAY_TWO)
         store.record_changes([change_for(home_loan), change_for(deposit_a)])
     return str(path)
+
+
+class _StubCollector:
+    """Returns pre-built records instead of parsing HTML.
+
+    Mirrors the helper of the same name in test_scheduled_collection_workflow.py
+    -- lets an off-default-category collection be built directly from records
+    rather than fragile HTML-fixture surgery.
+    """
+
+    def __init__(self, bank, records):
+        self.bank = bank
+        self._records = records
+
+    def collect_term_deposit_rates(self, captured_at_utc=None, persist_snapshot=True):
+        return BankCollectionResult(
+            bank=self.bank,
+            product_type=ProductType.TERM_DEPOSIT,
+            status=CollectionStatus.SUCCESS,
+            source_url=f"https://www.example-bank.co.nz/{self.bank.lower()}/deposits",
+            records=tuple(self._records),
+        )
 
 
 def run(argv):
@@ -509,6 +535,36 @@ def test_collect_handler_fails_when_validation_rejects_every_record(
         ),
     ) as service:
         args = argparse.Namespace(no_persist=False, no_snapshot=True, alerts=False)
+        exit_code = cli._collect(service, args)
+
+    assert exit_code == 1
+
+
+def test_collect_handler_fails_when_deposit_rows_are_all_off_default_category(
+    tmp_path, make_record, capsys
+):
+    """The interactive ``--product term_deposit`` path must apply the same
+    comparable-category check the scheduled workflow uses (see
+    scripts/collect_market_rates_workflow.py's ``_comparable_rate_count``):
+    a collection that accepts only ``pie_term_deposit`` rows -- a real,
+    non-``non_comparable`` category -- while missing every ordinary
+    ``term_deposit`` row leaves the default deposit market snapshot empty,
+    even though ``any_success`` is true and ``rate_count`` is positive."""
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "observations.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    pie_record = make_record(
+        bank="ANZ", product_type=ProductType.TERM_DEPOSIT, rate_category="pie_term_deposit"
+    )
+    with PricingIntelligenceService(
+        config=config,
+        store=ObservationStore(config.database_path),
+        collectors=[_StubCollector("ANZ", [pie_record])],
+    ) as service:
+        args = argparse.Namespace(
+            no_persist=False, no_snapshot=True, alerts=False, product=ProductType.TERM_DEPOSIT.value
+        )
         exit_code = cli._collect(service, args)
 
     assert exit_code == 1

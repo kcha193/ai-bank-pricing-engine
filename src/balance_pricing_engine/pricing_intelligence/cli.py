@@ -243,8 +243,18 @@ def _collect(service: PricingIntelligenceService, args: argparse.Namespace) -> i
 
     # A run where every bank failed to fetch is a failure, and so is one where
     # pages parsed but validation rejected every record -- either way nothing
-    # usable was stored, and a scheduler must not treat that as success.
-    if not outcome.report.any_success or outcome.rate_count == 0:
+    # usable was stored, and a scheduler must not treat that as success. Not
+    # sufficient on its own, though: a term-deposit run can validation-accept
+    # only non_comparable audit-only rows, or a real but off-default category
+    # like pie_term_deposit, while missing every ordinary term_deposit row --
+    # rate_count is positive but the default market snapshot this same
+    # invocation just queried above is empty. Mirrors
+    # scripts/collect_market_rates_workflow.py's _comparable_rate_count().
+    comparable_category = _default_category(args)
+    comparable_count = sum(
+        1 for record in outcome.validation.accepted if record.rate_category == comparable_category
+    )
+    if not outcome.report.any_success or outcome.rate_count == 0 or comparable_count == 0:
         return 1
     return 0
 
