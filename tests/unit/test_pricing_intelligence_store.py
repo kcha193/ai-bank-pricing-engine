@@ -355,6 +355,35 @@ def test_retrying_a_run_id_does_not_reorder_it_after_a_later_run(store, make_rec
     assert store.latest_run_id() == "run-later"
 
 
+def test_retrying_a_run_id_does_not_replay_its_observations(store, make_record):
+    """Preserving collection_runs' row position on a retried run_id (see
+    test_retrying_a_run_id_does_not_reorder_it_after_a_later_run) is not
+    enough on its own: replaying the same records through
+    _upsert_observation() would still drag last_seen_run_id on an unchanged
+    row backwards to the retried (older) run, even though a genuinely later
+    run has since confirmed it. get_latest_rates() filters on an exact
+    last_seen_run_id match against latest_run_id(), so a naive replay would
+    leave latest_run_id() correctly pointing at the later run while
+    get_latest_rates() finds no row at all -- the exact scenario this
+    idempotent short-circuit exists to prevent."""
+    anz_record = make_record(bank="ANZ", rate_pct=4.79)
+    original = store.record_observations([anz_record], run_id="run-earlier", observed_at=DAY_TWO)
+    # The rate is unchanged, so this later run only refreshes last_seen_run_id.
+    store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.79, observed_at=DAY_TWO)],
+        run_id="run-later",
+        observed_at=DAY_TWO,
+    )
+
+    retried = store.record_observations(
+        [anz_record], run_id="run-earlier", observed_at=DAY_TWO
+    )
+
+    assert store.latest_run_id() == "run-later"
+    assert [record.bank for record in store.get_latest_rates()] == ["ANZ"]
+    assert retried == original, "a retry must report the same outcome as the original call"
+
+
 def test_latest_run_id_is_scoped_per_product(store, make_record):
     """Home-loan and term-deposit collections share one collection_runs
     table, so an unscoped latest_run_id() can return either product's run --
@@ -719,9 +748,12 @@ def test_a_legacy_run_that_mixed_both_products_stays_findable_under_either(store
         run_id=shared_run_id,
         observed_at=DAY_ONE,
     )
-    # INSERT OR REPLACE on the same run_id overwrites collection_runs'
-    # stored product_type to term_deposit here -- exactly the ambiguity a
-    # genuinely mixed legacy run leaves behind for the home-loan side.
+    # The upsert on this same run_id overwrites collection_runs' stored
+    # product_type to term_deposit here -- exactly the ambiguity a
+    # genuinely mixed legacy run leaves behind for the home-loan side. A
+    # different product_type than the run's existing row is what keeps
+    # record_observations()'s idempotency short-circuit from treating this
+    # as a same-run retry and dropping it instead.
     store.record_observations(
         [make_record(product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")],
         run_id=shared_run_id,

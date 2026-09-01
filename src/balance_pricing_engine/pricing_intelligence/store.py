@@ -679,6 +679,37 @@ class ObservationStore:
         record's own ``product_type``, catching a caller's mismatch rather
         than silently trusting the explicit value over genuinely conflicting
         records.
+
+        Idempotent when ``run_id`` names a run this store has already
+        recorded *for this same product*: returns that run's
+        originally-recorded counts immediately, without touching
+        ``observations`` at all. Preserving ``collection_runs``' row
+        position on a retried ``run_id`` (see the upsert below) is not
+        sufficient on its own -- replaying the same records through
+        :meth:`_upsert_observation` would still move ``last_seen_run_id`` on
+        every unchanged one back to the retried (older) run, even though a
+        genuinely later run has since touched it. :meth:`get_latest_rates`
+        filters on an exact ``last_seen_run_id`` match against
+        :meth:`latest_run_id`, so that alone would empty its result for a key
+        whose true latest state is correct but whose ``last_seen_run_id`` was
+        just dragged backwards. A changed retry payload is worse: it would
+        insert a fresh row stamped with the retried run's (older) timestamp,
+        which :meth:`get_current_observations` -- keyed on the highest
+        ``id`` per ``observation_key`` -- would then read as the newest
+        state, silently reviving stale content over whatever the later run
+        genuinely recorded. Short-circuiting keeps the *first* recording of
+        any given ``run_id`` (for a given product) authoritative, and any
+        retry an inert no-op.
+
+        Scoped to matching ``product_type`` -- not just a bare ``run_id``
+        match -- because a legacy database can hold one physical run that
+        collected *both* products before this method rejected a mixed batch:
+        represented here as two ``record_observations()`` calls sharing one
+        ``run_id``, one per product (see e.g.
+        :meth:`_migrate_collection_runs_product_type`'s docstring and the
+        ``test_a_*_legacy_*``/``test_a_*_mixed_*`` tests). Short-circuiting
+        on a bare ``run_id`` match would silently drop the second product's
+        genuinely new records instead of recording them.
         """
         records = list(records)
         observed_at = observed_at or datetime.now(timezone.utc)
@@ -701,6 +732,18 @@ class ObservationStore:
                 )
         else:
             product_type = next(iter(record_product_types), ProductType.HOME_LOAN)
+
+        existing_run = self._connection.execute(
+            "SELECT product_type, inserted_count, unchanged_count "
+            "FROM collection_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if existing_run is not None and existing_run["product_type"] == product_type.value:
+            return WriteResult(
+                run_id=run_id,
+                inserted=existing_run["inserted_count"],
+                unchanged=existing_run["unchanged_count"],
+            )
 
         inserted = 0
         unchanged = 0
