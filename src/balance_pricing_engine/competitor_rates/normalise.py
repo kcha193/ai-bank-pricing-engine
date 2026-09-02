@@ -63,18 +63,24 @@ def normalise_term(label: str) -> NormalisedTerm:
 
 
 #: Matches "annual rate"/"annual interest rate"/"annual percentage rate"/
-#: "annualised rate"/"yearly rate" and similar -- a common column-header
-#: phrasing that describes the *rate's own annualised unit*, not a
-#: payment-frequency option. See normalise_frequency()'s docstring for why
-#: this must not count as "annually" the way a genuine "paid annually"/
-#: "monthly or annually" does. Allows up to two words between the
-#: annual/yearly adjective and "rate" (covering "annual interest rate",
-#: "annual percentage rate", ...) rather than special-casing just
-#: "interest" -- \w+ can't cross a table-cell separator like " | " in the
-#: already-flattened text, so this can't accidentally bridge an unrelated
-#: "annual" in one cell to a "rate" in another.
+#: "annualised rate"/"yearly rate"/"annual percentage yield"/"annual return"
+#: and similar -- a common column-header phrasing that describes the *rate's
+#: own annualised unit*, not a payment-frequency option. "Rate" is not the
+#: only word a bank uses for this: a managed-fund/PIE row commonly labels its
+#: figure "Annual Percentage Yield" (APY) or "Annual Return" instead (see
+#: also the "PIE effective rate of return" columns this codebase already
+#: excludes from market statistics elsewhere), so "yield"/"return" qualify
+#: here too. See normalise_frequency()'s docstring for why none of these must
+#: count as "annually" the way a genuine "paid annually"/"monthly or
+#: annually" does. Allows up to two words between the annual/yearly
+#: adjective and the ending word (covering "annual interest rate", "annual
+#: percentage rate", "annual percentage yield", ...) rather than
+#: special-casing just "interest"/"percentage" -- \w+ can't cross a
+#: table-cell separator like " | " in the already-flattened text, so this
+#: can't accidentally bridge an unrelated "annual" in one cell to a "rate"/
+#: "yield"/"return" in another.
 _ANNUAL_RATE_LABEL_PATTERN = re.compile(
-    r"(?:annual(?:ised|ized)?|yearly)(?:\s+\w+){0,2}\s+rate\b"
+    r"(?:annual(?:ised|ized)?|yearly)(?:\s+\w+){0,2}\s+(?:rate|yield|return)\b"
 )
 
 
