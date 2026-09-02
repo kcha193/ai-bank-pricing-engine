@@ -1038,6 +1038,49 @@ def test_simultaneous_single_product_runs_are_not_cross_contaminated(store, make
     ] == [deposit_record.bank]
 
 
+def test_migrating_collection_run_products_preserves_original_run_order(store, make_record):
+    """The migration's own backfill passes can distort relative ordering:
+    pass 1 processes collection_runs in one sweep (whichever product it
+    currently labels), and passes 2-4 append whatever the *other* product
+    of a mixed run needs in later sweeps -- so a mixed run's second product
+    can land in collection_run_products with a rowid that comes *after* a
+    genuinely later, single-product run's own row, even though the mixed
+    run's collection_runs.rowid (its one true insertion position) precedes
+    it. latest_run_id()/_previous_run_row() must order by
+    collection_runs.rowid, not collection_run_products' own, or reopening
+    such a database inverts the two runs' order."""
+    shared_run_id = "legacy-mixed-run"
+    store.record_observations(
+        [make_record(bank="ANZ", product_type=ProductType.HOME_LOAN, rate_pct=4.79)],
+        run_id=shared_run_id,
+        observed_at=DAY_ONE,
+    )
+    # Overwrites collection_runs.product_type to term_deposit -- ANZ's
+    # home-loan row is now only findable via last_seen_run_id/first_seen_run_id.
+    _reuse_run_id_for_another_product(
+        store,
+        shared_run_id,
+        [make_record(bank="ANZ", product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")],
+        DAY_ONE,
+        ProductType.TERM_DEPOSIT,
+    )
+
+    # A genuinely later home-loan run, sharing the exact same timestamp, for
+    # an unrelated bank -- so it never touches ANZ's own last_seen_run_id.
+    store.record_observations(
+        [make_record(bank="BNZ", product_type=ProductType.HOME_LOAN, rate_pct=4.99)],
+        run_id="later-home-loan-run",
+        observed_at=DAY_ONE,
+    )
+
+    # Simulate a database whose collection_run_products needs (re)backfilling
+    # from scratch -- e.g. one created before the table existed at all.
+    store._connection.execute("DELETE FROM collection_run_products")
+    store._create_schema()
+
+    assert store.latest_run_id(product_type=ProductType.HOME_LOAN) == "later-home-loan-run"
+
+
 def test_a_legacy_run_that_mixed_both_products_stays_findable_under_either(store, make_record):
     """Before record_observations() rejected a mixed batch, a database could
     hold a legacy run whose single collection_runs row ends up labelled with
