@@ -685,7 +685,7 @@ class ObservationStore:
 
         1. ``collection_runs.product_type``/``started_at`` themselves,
            together with the run's already-recorded ``inserted_count``/
-           ``unchanged_count`` -- the one pass that can recover the *real*
+           ``unchanged_count`` -- the one source that can recover the *real*
            original counts, for whichever product currently owns that
            single-value pair. If a second product later reused this
            ``run_id`` (see :meth:`record_observations`'s own docstring),
@@ -697,11 +697,41 @@ class ObservationStore:
         2. ``observations.last_seen_run_id``/``first_seen_run_id`` paired
            with ``product_type``, and ``rate_changes.run_id`` paired with
            ``product_type`` -- recovering the *other* product of a legacy
-           mixed run (or any run pass 1 missed), but with no way to recover
-           its real counts, so ``0, 0`` is recorded for these. Joined back to
-           ``collection_runs`` for ``started_at``, since neither
-           ``observations`` nor ``rate_changes`` records a run's own start
-           time.
+           mixed run (or any run source 1 missed), but with no way to
+           recover its real counts, so ``0, 0`` is recorded for these.
+           Joined back to ``collection_runs`` for ``started_at``, since
+           neither ``observations`` nor ``rate_changes`` records a run's own
+           start time.
+
+        All four sources are combined and inserted in a *single* statement,
+        ordered by ``collection_runs.rowid`` ascending -- not as four
+        separate ``INSERT`` passes, each scanning its own source table in
+        whatever order it naturally returns rows. :meth:`latest_run_id`/
+        :meth:`_previous_run_row` break a ``started_at`` tie using
+        ``collection_run_products.rowid`` (see their own docstrings for why
+        that -- not ``collection_runs.rowid`` -- is the one ordering source
+        that stays correct for a run_id genuinely reused across products via
+        *live* calls, from the database's transitional era between this
+        table's introduction and :meth:`record_observations` refusing that
+        outright). A backfilled row's own ``collection_run_products.rowid``
+        is otherwise just insertion order into *this* table, with no
+        relationship to real history on its own -- four separate passes
+        would append pass 2/3/4's rows after every one of pass 1's
+        regardless of which ``collection_runs.rowid`` each belongs to,
+        inverting a mixed run's second-product participation against a
+        genuinely later, single-product run sharing its ``started_at``.
+        Inserting in one ``rowid``-ordered sweep instead makes every
+        backfilled row's freshly-assigned ``collection_run_products.rowid``
+        agree, in relative order, with its source ``collection_runs.rowid``
+        -- which is all :meth:`latest_run_id` needs from it, without having
+        to distinguish "live" from "backfilled" rows at read time.
+
+        When more than one source names the same ``(run_id, product_type)``
+        pair (e.g. a normal, non-reused run appears via both source 1 and
+        source 2), only source 1's row -- carrying the real counts -- is
+        kept; a plain ``UNION``/``INSERT OR IGNORE`` cannot express that
+        priority (whichever row happens to reach the primary key first
+        would win), so a window function ranks candidates per pair first.
 
         Run unconditionally on every call rather than gated on "have I
         already migrated": ``INSERT OR IGNORE`` against this table's
@@ -717,9 +747,9 @@ class ObservationStore:
         *already* moved on to a later run by the time this migration runs
         cannot be recovered by any signal here -- there is nothing left to
         read it from. Every write going forward is recorded directly by
-        :meth:`record_observations`, with its own accurate ``started_at``,
-        so this gap cannot reopen once a database is running under this
-        schema.
+        :meth:`record_observations`, with its own accurate ``started_at``
+        and correctly-ordered ``rowid``, so this gap cannot reopen once a
+        database is running under this schema.
         """
         columns = {
             row["name"] for row in connection.execute("PRAGMA table_info('collection_run_products')")
@@ -729,30 +759,35 @@ class ObservationStore:
                 "ALTER TABLE collection_run_products ADD COLUMN started_at TEXT NOT NULL DEFAULT ''"
             )
         connection.execute(
+            "WITH candidates AS ("
+            "  SELECT cr.run_id AS run_id, cr.product_type AS product_type, "
+            "         cr.started_at AS started_at, cr.inserted_count AS inserted_count, "
+            "         cr.unchanged_count AS unchanged_count, cr.rowid AS source_rowid, 0 AS priority "
+            "  FROM collection_runs cr "
+            "  UNION ALL "
+            "  SELECT o.last_seen_run_id, o.product_type, cr.started_at, 0, 0, cr.rowid, 1 "
+            "  FROM observations o JOIN collection_runs cr ON cr.run_id = o.last_seen_run_id "
+            "  WHERE o.last_seen_run_id IS NOT NULL "
+            "  UNION ALL "
+            "  SELECT o.first_seen_run_id, o.product_type, cr.started_at, 0, 0, cr.rowid, 1 "
+            "  FROM observations o JOIN collection_runs cr ON cr.run_id = o.first_seen_run_id "
+            "  WHERE o.first_seen_run_id IS NOT NULL "
+            "  UNION ALL "
+            "  SELECT rc.run_id, rc.product_type, cr.started_at, 0, 0, cr.rowid, 1 "
+            "  FROM rate_changes rc JOIN collection_runs cr ON cr.run_id = rc.run_id"
+            "), ranked AS ("
+            "  SELECT *, ROW_NUMBER() OVER ("
+            "           PARTITION BY run_id, product_type ORDER BY priority ASC"
+            "         ) AS rn "
+            "  FROM candidates"
+            ") "
             "INSERT OR IGNORE INTO collection_run_products "
             "(run_id, product_type, started_at, inserted_count, unchanged_count) "
             "SELECT run_id, product_type, started_at, inserted_count, unchanged_count "
-            "FROM collection_runs"
-        )
-        connection.execute(
-            "INSERT OR IGNORE INTO collection_run_products (run_id, product_type, started_at) "
-            "SELECT DISTINCT o.last_seen_run_id, o.product_type, cr.started_at "
-            "FROM observations o JOIN collection_runs cr ON cr.run_id = o.last_seen_run_id "
-            "WHERE o.last_seen_run_id IS NOT NULL"
-        )
-        connection.execute(
-            "INSERT OR IGNORE INTO collection_run_products (run_id, product_type, started_at) "
-            "SELECT DISTINCT o.first_seen_run_id, o.product_type, cr.started_at "
-            "FROM observations o JOIN collection_runs cr ON cr.run_id = o.first_seen_run_id "
-            "WHERE o.first_seen_run_id IS NOT NULL"
-        )
-        connection.execute(
-            "INSERT OR IGNORE INTO collection_run_products (run_id, product_type, started_at) "
-            "SELECT DISTINCT rc.run_id, rc.product_type, cr.started_at "
-            "FROM rate_changes rc JOIN collection_runs cr ON cr.run_id = rc.run_id"
+            "FROM ranked WHERE rn = 1 ORDER BY source_rowid ASC"
         )
         # A row created by the ADD COLUMN default above, for a run_id/product
-        # none of the four passes touched (its only join target,
+        # none of the sources above touched (its only join target,
         # collection_runs, no longer has a matching row at all) -- keeps
         # this migration from leaving a placeholder value behind rather than
         # a real one it simply could not resolve. Mirrors the third pass of
@@ -1445,19 +1480,28 @@ class ObservationStore:
         and never touched again, so it alone still reflects when *this*
         product's data actually landed under this ``run_id``.
 
-        The *ordering* half is ``cr.rowid`` unconditionally, though, not
-        ``collection_run_products``' own rowid: that table's rowid reflects
-        whatever order rows were inserted *into it*, which for a
-        migration-backfilled legacy row is the migration's own fixed pass
-        order (see :meth:`_migrate_collection_run_products`), not the
-        run's real historical position. A backfilled row for a mixed run's
-        second product can land in a later pass than a genuinely later,
-        single-product run's own row, inverting their tie-break order
-        despite sharing a ``started_at``. ``collection_runs.rowid`` has no
-        such gap: preserved in place across every upsert (see the comment
-        below) for the run_id's entire lifetime, so it names the run's one
-        true insertion position regardless of which pass, or which live
-        call, is what most recently touched it.
+        The *ordering* half prefers ``collection_run_products.rowid`` too
+        (via the same ``LEFT JOIN``), falling back to ``collection_runs.rowid``
+        only when no ``collection_run_products`` row exists at all. Neither
+        source is safe to use *unconditionally* on its own:
+        ``collection_runs.rowid`` is preserved in place across every upsert
+        (see the comment below) for a run_id's *first* product, but a run_id
+        later reused for a *second* product via a live call -- from the
+        database's transitional era between this table's introduction and
+        :meth:`record_observations` refusing that outright -- has that
+        second product's real position recorded only by its own
+        ``collection_run_products`` row, genuinely later than some other,
+        single-product run that ``collection_runs.rowid`` alone would rank
+        higher. Conversely, a *migration-backfilled* row's own
+        ``collection_run_products.rowid`` reflects insertion order into
+        *that table*, not real history, on its own -- but
+        :meth:`_migrate_collection_run_products` backfills every row in one
+        sweep ordered by its source ``collection_runs.rowid``, so a
+        backfilled row's freshly-assigned ``collection_run_products.rowid``
+        already agrees, in relative order, with that source. Preferring
+        ``collection_run_products.rowid`` whenever it exists is correct for
+        both cases as a result, without this method needing to know which
+        one it is looking at.
 
         The three ``EXISTS`` fallbacks still mirror every signal
         :meth:`_migrate_collection_runs_product_type` backfills from, kept
@@ -1496,7 +1540,7 @@ class ObservationStore:
                 "OR EXISTS (SELECT 1 FROM observations o2 "
                 "           WHERE o2.first_seen_run_id = cr.run_id AND o2.product_type = ?) "
                 "ORDER BY COALESCE(crp.started_at, cr.started_at) DESC, "
-                "         cr.rowid DESC LIMIT 1",
+                "         COALESCE(crp.rowid, cr.rowid) DESC LIMIT 1",
                 (value, value, value, value, value),
             ).fetchone()
         return row["run_id"] if row else None
@@ -1888,7 +1932,7 @@ class ObservationStore:
             # product's own original timing (see the main query's comment).
             reference = self._connection.execute(
                 "SELECT COALESCE(crp.started_at, cr.started_at) AS started_at, "
-                "cr.rowid AS rowid "
+                "COALESCE(crp.rowid, cr.rowid) AS rowid "
                 "FROM collection_runs cr "
                 "LEFT JOIN collection_run_products crp "
                 "     ON crp.run_id = cr.run_id AND crp.product_type = ? "
@@ -1918,32 +1962,34 @@ class ObservationStore:
         # findable under either product, not just whichever one the
         # migration's single-column backfill happened to pick.
         # collection_run_products (see record_observations()) supplies both
-        # the match and (via the LEFT JOIN/COALESCE) the *started_at* half
-        # of the ordering as the only durable signal -- a mixed run whose
-        # side for this product merely reconfirmed pre-existing rows leaves
-        # none of the other three behind once a later run moves
-        # last_seen_run_id on, and collection_runs.started_at itself may
-        # already belong to a second product that later reused this run_id.
-        # The *rowid* half is always cr.rowid, though, never
-        # collection_run_products' own -- see latest_run_id()'s docstring
-        # for why a migration-backfilled row's rowid there (reflecting
-        # backfill pass order, not real history) is not a safe ordering
-        # source, while collection_runs.rowid, preserved in place across
-        # every upsert, always is. Those three EXISTS checks remain as a
-        # matching net (not an ordering one) for whatever a
-        # pre-collection_run_products database's own migration
-        # (_migrate_collection_run_products()) could not recover: every
-        # signal _migrate_collection_runs_product_type() backfills from,
-        # including a mixed bootstrap run's only surviving trace,
-        # first_seen_run_id (correlated by actual run_id, like
-        # last_seen_run_id/rate_changes.run_id above -- not by matching
-        # first_observed_at against started_at, which would also match
-        # an unrelated run captured at the same timestamp).
+        # the match and (via the LEFT JOIN/COALESCE) the ordering timing as
+        # the only durable signal -- a mixed run whose side for this product
+        # merely reconfirmed pre-existing rows leaves none of the other
+        # three behind once a later run moves last_seen_run_id on, and
+        # collection_runs.started_at/rowid themselves may already belong to
+        # a second product that later reused this run_id. See
+        # latest_run_id()'s docstring for why preferring
+        # collection_run_products' own rowid (falling back to
+        # collection_runs.rowid only when no such row exists) is correct for
+        # both a migration-backfilled row (backfilled in one sweep ordered
+        # by its source collection_runs.rowid, so the two agree in relative
+        # order) and a live-reused run_id from this store's transitional era
+        # (whose real position collection_runs.rowid alone cannot capture).
+        # Those three EXISTS checks remain as a matching net (not an
+        # ordering one) for whatever a pre-collection_run_products
+        # database's own migration (_migrate_collection_run_products())
+        # could not recover: every signal
+        # _migrate_collection_runs_product_type() backfills from, including
+        # a mixed bootstrap run's only surviving trace, first_seen_run_id
+        # (correlated by actual run_id, like last_seen_run_id/
+        # rate_changes.run_id above -- not by matching first_observed_at
+        # against started_at, which would also match an unrelated run
+        # captured at the same timestamp).
         value = _product_value(product_type)
         precedes = (
             "(COALESCE(crp.started_at, cr.started_at) < ? "
             "OR (COALESCE(crp.started_at, cr.started_at) = ? "
-            "    AND cr.rowid < ?))"
+            "    AND COALESCE(crp.rowid, cr.rowid) < ?))"
         )
         return self._connection.execute(
             "SELECT cr.run_id AS run_id, "
@@ -1960,7 +2006,7 @@ class ObservationStore:
             "     OR EXISTS (SELECT 1 FROM observations o2 "
             "                WHERE o2.first_seen_run_id = cr.run_id AND o2.product_type = ?)) "
             "ORDER BY COALESCE(crp.started_at, cr.started_at) DESC, "
-            "         cr.rowid DESC LIMIT 1",
+            "         COALESCE(crp.rowid, cr.rowid) DESC LIMIT 1",
             (
                 value,
                 reference_started_at,

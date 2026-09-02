@@ -1081,6 +1081,44 @@ def test_migrating_collection_run_products_preserves_original_run_order(store, m
     assert store.latest_run_id(product_type=ProductType.HOME_LOAN) == "later-home-loan-run"
 
 
+def test_live_participation_order_is_preserved_for_a_reused_run_id(store, make_record):
+    """From this store's transitional era -- collection_run_products
+    existed, but record_observations() had not yet refused reusing a run_id
+    for a second product (see
+    test_reusing_a_run_id_for_a_different_product_is_rejected): "shared" is
+    first used for home loans, "middle" records a deposit at the same
+    timestamp, then "shared" is reused for an unchanged reconfirmation of
+    that same deposit. collection_run_products' own rowid correctly orders
+    shared's deposit participation *after* middle's -- it was genuinely
+    recorded later -- even though collection_runs.rowid alone would rank
+    shared first (it was created earlier, for home loans). latest_run_id()
+    must prefer collection_run_products' own rowid whenever it has a row,
+    not fall back to collection_runs.rowid unconditionally, or it would
+    rank "middle" above "shared" and find no rows for
+    get_latest_rates(TERM_DEPOSIT) -- the deposit's actual last_seen_run_id
+    points at "shared", not "middle"."""
+    shared_run_id = "shared"
+    store.record_observations(
+        [make_record(bank="ANZ", product_type=ProductType.HOME_LOAN, rate_pct=4.79)],
+        run_id=shared_run_id,
+        observed_at=DAY_ONE,
+    )
+    deposit_record = make_record(
+        bank="ANZ", product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit"
+    )
+    store.record_observations([deposit_record], run_id="middle", observed_at=DAY_ONE)
+    # Simulates "shared" being reused for an unchanged deposit
+    # reconfirmation, from before record_observations() refused that.
+    _reuse_run_id_for_another_product(
+        store, shared_run_id, [deposit_record], DAY_ONE, ProductType.TERM_DEPOSIT
+    )
+
+    assert store.latest_run_id(product_type=ProductType.TERM_DEPOSIT) == shared_run_id
+    assert [
+        record.bank for record in store.get_latest_rates(product_type=ProductType.TERM_DEPOSIT)
+    ] == ["ANZ"]
+
+
 def test_a_legacy_run_that_mixed_both_products_stays_findable_under_either(store, make_record):
     """Before record_observations() rejected a mixed batch, a database could
     hold a legacy run whose single collection_runs row ends up labelled with
