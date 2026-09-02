@@ -180,14 +180,34 @@ as the interactive CLI. Without it, this falls back to
 `PricingIntelligenceConfig()` defaults and silently ignores anything
 configured there.
 
+`--product` selects which market this invocation collects (default:
+`home_loan`). **Term deposits are a separate market and need their own
+scheduled invocation** with `--product term_deposit` -- one schedule alone
+never refreshes both. Give each invocation its own `--lock-file` and
+`--summary-file`: sharing either between the two products makes the second
+one either get skipped (`EXIT_ALREADY_RUNNING`) or silently overwrite the
+other product's summary.
+
+```bash
+python3 scripts/collect_market_rates_workflow.py \
+    --config configs/base.yaml \
+    --product term_deposit \
+    --render-javascript \
+    --lock-file data/processed/pricing_intelligence/collection-term-deposit.lock \
+    --summary-file data/processed/pricing_intelligence/last_run_term_deposit.json
+```
+
 Ready-made schedules are in [`deploy/scheduling/`](../deploy/scheduling/):
 
-- `nz.pricing-intelligence.collect.plist` -- macOS launchd agent, daily at 07:30
-  local, with `RunAtLoad` so a machine asleep at the scheduled time collects on
-  next wake rather than skipping the day.
-- `crontab.example` -- the equivalent cron entry.
+- `nz.pricing-intelligence.collect.plist` -- macOS launchd agent for home
+  loans, daily at 07:30 local, with `RunAtLoad` so a machine asleep at the
+  scheduled time collects on next wake rather than skipping the day.
+- `nz.pricing-intelligence.collect-term-deposit.plist` -- the sibling agent
+  for term deposits, daily at 07:35 local. Install both to keep either
+  market fresh.
+- `crontab.example` -- the equivalent cron entries for both products.
 
-Both need their `REPLACE_ME` / `/path/to` paths edited before use.
+All three need their `REPLACE_ME` / `/path/to` paths edited before use.
 
 ### Where history lives
 
@@ -378,6 +398,53 @@ Best             4.75     4.95     5.29     5.39     5.39     5.39     5.49
 Spread bps          4        4       16       10       20       20       20
 ```
 
+## Term deposit market
+
+```bash
+python3 -m balance_pricing_engine.pricing_intelligence --product term_deposit collect --render-javascript
+python3 -m balance_pricing_engine.pricing_intelligence --product term_deposit snapshot
+```
+
+Observed 2026-08-27 (advertised term-deposit tier, PIE excluded):
+
+```text
+Bank               6M       1Y      18M       2Y       3Y       5Y
+------------------------------------------------------------------
+ANZ              3.55     3.90     4.20     4.30     4.40     4.70
+ASB              3.55     3.90     4.15     4.20     4.40     4.75
+BNZ              3.55     4.05     4.20     4.20     4.40     4.70
+Kiwibank         3.50     4.00        -     4.30     4.40     4.70
+Westpac          3.45     3.90     4.20     4.30     4.40     4.60
+------------------------------------------------------------------
+Median           3.55     3.90     4.20     4.30     4.40     4.70
+Best             3.55     4.05     4.20     4.30     4.40     4.75
+Spread bps         10       15        5       10        0       15
+```
+
+Deposit spreads (0-15 bps) are far tighter than mortgage spreads (4-20 bps at
+short terms, widening to 20 at five years), which is what a less
+broker-intermediated product looks like.
+
+Each product keeps its own baseline, change history, and bootstrap state, so
+collecting one is never read as the other being withdrawn.
+
+### Feeding deposits into the optimiser
+
+```python
+config = apply_market_strategy_to_config(
+    config,
+    strategy=CompetitorRateStrategy.MARKET_MEDIAN,
+    snapshot=loan_snapshot,
+    deposit_snapshot=deposit_snapshot,
+    deposit_strategy=CompetitorRateStrategy.MARKET_LEADER,
+)
+```
+
+Each side resolves independently: a market-derived loan rate with a manual
+deposit assumption is a legitimate scenario. Omitting `deposit_snapshot` leaves
+`market.competitor_deposit_rate` exactly as the config holds it, and `MANUAL` on
+both sides still returns the identical config object.
+
 ## Adding a sixth bank
 
 1. Create `competitor_rates/collectors/<bank>.py` with a subclass of
@@ -474,9 +541,21 @@ git-ignored. They are diagnostic material, not a permanent archive.
   against a standard rate is meaningless.
 - **A first collection reports no changes.** Everything being new is not market
   intelligence.
-- **Term deposits are phase 2.** The domain model, storage, and collector
-  plumbing support them, and `collect_term_deposit_rates` exists, but the
-  per-bank tuning and market logic target mortgages.
+- **Term deposits are live-verified as of 2026-08-27, with caveats.** All five
+  banks collect (ANZ 75, ASB 13, BNZ 46, Westpac 56, Kiwibank 34 raw rows).
+  Deposit pages are messier than mortgage pages, and two classes of row are
+  fenced into `non_comparable`:
+  - **Managed-fund and KiwiSaver returns.** BNZ lists these in the same tables;
+    a "1 year | 12.47% | Growth Fund" row was being read as a 12.47% one-year
+    term deposit.
+  - **PIE "effective rate of return" columns.** ANZ and Westpac publish
+    tax-adjusted returns beside the advertised rate, one per marginal tax band.
+    Because deposits rank highest-is-best, including these made both banks look
+    like market leaders by 70 bps when their advertised 1-year rate (3.90%) is
+    at parity with ASB.
+
+  Deposit elasticities and `rate_anchor` are **not yet recalibrated** — that is
+  the natural follow-up now that verified deposit data exists.
 - **This is decision-support/research software.** Public market data does not
   replace internal bank pricing governance, model risk review, or approval.
 

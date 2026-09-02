@@ -7,6 +7,12 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import yaml
 
+from balance_pricing_engine.competitor_rates.collectors import (
+    BankCollectionResult,
+    CollectionStatus,
+)
+from balance_pricing_engine.competitor_rates.models import ProductType
+from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange
 from balance_pricing_engine.pricing_intelligence import cli
 from balance_pricing_engine.pricing_intelligence.config import (
     CollectionConfig,
@@ -60,6 +66,76 @@ def repriced_database(tmp_path, fixture_fetcher):
         service._fetcher = fixture_fetcher(mutate=cut_anz_one_year)
         service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
     return str(path)
+
+
+@pytest.fixture
+def mixed_product_database(tmp_path, make_record):
+    """A current mortgage and deposit market with one change in each."""
+    path = tmp_path / "observations.db"
+    home_loan = make_record(bank="ANZ", rate_pct=4.79, observed_at=DAY_TWO)
+    deposit_a = make_record(
+        bank="ANZ",
+        product_type=ProductType.TERM_DEPOSIT,
+        product_name="Term Deposit",
+        rate_category="term_deposit",
+        rate_pct=3.50,
+        observed_at=DAY_TWO,
+    )
+    deposit_b = make_record(
+        bank="BNZ",
+        product_type=ProductType.TERM_DEPOSIT,
+        product_name="Term Deposit",
+        rate_category="term_deposit",
+        rate_pct=4.00,
+        observed_at=DAY_TWO,
+    )
+
+    def change_for(record):
+        return RateChange(
+            observation_key=record.observation_key(),
+            bank=record.bank,
+            product_type=ProductType(record.product_type),
+            product_name=record.product_name,
+            rate_category=record.rate_category,
+            term_months=record.term_months_normalised,
+            change_type=ChangeType.RATE_INCREASE,
+            detected_at=DAY_TWO,
+            previous_rate_pct=record.advertised_rate_pct - 0.10,
+            current_rate_pct=record.advertised_rate_pct,
+            change_bps=10.0,
+            run_id="test-run",
+        )
+
+    with ObservationStore(path) as store:
+        # One record_observations() call is one product's collection run --
+        # collection_runs.product_type (used to scope "the latest run" per
+        # market) cannot represent more than one product for a single run_id.
+        store.record_observations([home_loan], observed_at=DAY_TWO)
+        store.record_observations([deposit_a, deposit_b], observed_at=DAY_TWO)
+        store.record_changes([change_for(home_loan), change_for(deposit_a)])
+    return str(path)
+
+
+class _StubCollector:
+    """Returns pre-built records instead of parsing HTML.
+
+    Mirrors the helper of the same name in test_scheduled_collection_workflow.py
+    -- lets an off-default-category collection be built directly from records
+    rather than fragile HTML-fixture surgery.
+    """
+
+    def __init__(self, bank, records):
+        self.bank = bank
+        self._records = records
+
+    def collect_term_deposit_rates(self, captured_at_utc=None, persist_snapshot=True):
+        return BankCollectionResult(
+            bank=self.bank,
+            product_type=ProductType.TERM_DEPOSIT,
+            status=CollectionStatus.SUCCESS,
+            source_url=f"https://www.example-bank.co.nz/{self.bank.lower()}/deposits",
+            records=tuple(self._records),
+        )
 
 
 def run(argv):
@@ -142,6 +218,64 @@ def test_snapshot_details_a_single_term(populated_database, capsys):
     assert "Spread:" in output
 
 
+def test_deposit_snapshot_detail_uses_deposit_category_and_worst_rate(
+    mixed_product_database, capsys
+):
+    exit_code = run(
+        [
+            "--database",
+            mixed_product_database,
+            "--product",
+            "term_deposit",
+            "snapshot",
+            "--term",
+            "12",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "12 MONTH FIXED (term_deposit)" in output
+    assert "Best:   4.00" in output
+    assert "Worst:  3.50" in output
+
+
+def test_deposit_snapshot_honours_an_explicit_special_category(
+    tmp_path, make_record, capsys
+):
+    """--product term_deposit --category special must not be rewritten to
+    the term_deposit default: a bank can genuinely advertise a deposit
+    special, and --category claims to select the comparison category."""
+    path = tmp_path / "observations.db"
+    record = make_record(
+        bank="ANZ",
+        product_type=ProductType.TERM_DEPOSIT,
+        product_name="Term Deposit Special",
+        rate_category="special",
+        rate_pct=4.50,
+    )
+    config = PricingIntelligenceConfig(database_path=str(path))
+    with PricingIntelligenceService(config=config, store=ObservationStore(path)) as service:
+        service.store.record_observations([record])
+
+    exit_code = run(
+        [
+            "--database",
+            str(path),
+            "--product",
+            "term_deposit",
+            "snapshot",
+            "--category",
+            "special",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "NZ TERM DEPOSIT MARKET (special)" in output
+    assert "ANZ" in output
+
+
 def test_snapshot_reports_a_term_with_no_data(populated_database, capsys):
     exit_code = run(["--database", populated_database, "snapshot", "--term", "120"])
 
@@ -170,6 +304,131 @@ def test_changes_command_renders_detected_events(repriced_database, capsys):
     assert exit_code == 0
     assert "MARKET CHANGES" in output
     assert "ANZ" in output
+
+
+def test_changes_command_filters_to_the_selected_product(mixed_product_database, capsys):
+    exit_code = run(
+        ["--database", mixed_product_database, "--product", "term_deposit", "changes"]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "1 events" in output
+    assert "term_deposit" in output
+    assert "special" not in output
+
+
+def test_changes_alert_identifies_the_selected_deposit_market(mixed_product_database, capsys):
+    exit_code = run(
+        [
+            "--database",
+            mixed_product_database,
+            "--product",
+            "term_deposit",
+            "changes",
+            "--alerts",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "NZ TERM DEPOSIT RATE CHANGE" in output
+    assert "NZ MORTGAGE RATE CHANGE" not in output
+
+
+@pytest.fixture
+def standard_category_database(tmp_path, make_record):
+    """A mortgage market with one detected change recorded under a
+    non-default rate category ("standard", not "special")."""
+    path = tmp_path / "observations.db"
+    standard_record = make_record(rate_category="standard", observed_at=DAY_TWO)
+    change = RateChange(
+        observation_key=standard_record.observation_key(),
+        bank=standard_record.bank,
+        product_type=ProductType(standard_record.product_type),
+        product_name=standard_record.product_name,
+        rate_category=standard_record.rate_category,
+        term_months=standard_record.term_months_normalised,
+        change_type=ChangeType.RATE_INCREASE,
+        detected_at=DAY_TWO,
+        previous_rate_pct=standard_record.advertised_rate_pct - 0.10,
+        current_rate_pct=standard_record.advertised_rate_pct,
+        change_bps=10.0,
+        run_id="test-run",
+    )
+    with ObservationStore(path) as store:
+        store.record_observations([standard_record], observed_at=DAY_TWO)
+        store.record_changes([change])
+    return str(path)
+
+
+def test_changes_command_default_category_misses_a_standard_repricing(
+    standard_category_database, capsys
+):
+    exit_code = run(["--database", standard_category_database, "changes", "--days", "7"])
+
+    assert exit_code == 0
+    assert "No changes detected" in capsys.readouterr().out
+
+
+def test_changes_command_category_all_surfaces_a_standard_repricing(
+    standard_category_database, capsys
+):
+    exit_code = run(
+        ["--database", standard_category_database, "changes", "--days", "7", "--category", "all"]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "(1 events)" in output
+
+
+def test_changes_command_explicit_category_reaches_a_standard_repricing(
+    standard_category_database, capsys
+):
+    exit_code = run(
+        [
+            "--database",
+            standard_category_database,
+            "changes",
+            "--days",
+            "7",
+            "--category",
+            "standard",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "(1 events)" in output
+
+
+def test_changes_command_category_all_alerts_still_show_market_context(
+    standard_category_database, capsys
+):
+    """--category all resolves to rate_category=None, which get_market_snapshot()
+    now treats as the unfiltered view -- but format_alert()'s market-context
+    guard requires snapshot.rate_category == change.rate_category, which a
+    single None-category snapshot can never satisfy against a change's own
+    concrete category ("standard" here). Without a snapshot built for that
+    change's own category, every alert would silently lose its market
+    median/rank context."""
+    exit_code = run(
+        [
+            "--database",
+            standard_category_database,
+            "changes",
+            "--days",
+            "7",
+            "--category",
+            "all",
+            "--alerts",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Market median:" in output
 
 
 def test_changes_command_can_render_as_alerts(repriced_database, capsys):
@@ -283,6 +542,36 @@ def test_collect_handler_fails_when_validation_rejects_every_record(
     assert exit_code == 1
 
 
+def test_collect_handler_fails_when_deposit_rows_are_all_off_default_category(
+    tmp_path, make_record, capsys
+):
+    """The interactive ``--product term_deposit`` path must apply the same
+    comparable-category check the scheduled workflow uses (see
+    scripts/collect_market_rates_workflow.py's ``_comparable_rate_count``):
+    a collection that accepts only ``pie_term_deposit`` rows -- a real,
+    non-``non_comparable`` category -- while missing every ordinary
+    ``term_deposit`` row leaves the default deposit market snapshot empty,
+    even though ``any_success`` is true and ``rate_count`` is positive."""
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "observations.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    pie_record = make_record(
+        bank="ANZ", product_type=ProductType.TERM_DEPOSIT, rate_category="pie_term_deposit"
+    )
+    with PricingIntelligenceService(
+        config=config,
+        store=ObservationStore(config.database_path),
+        collectors=[_StubCollector("ANZ", [pie_record])],
+    ) as service:
+        args = argparse.Namespace(
+            no_persist=False, no_snapshot=True, alerts=False, product=ProductType.TERM_DEPOSIT.value
+        )
+        exit_code = cli._collect(service, args)
+
+    assert exit_code == 1
+
+
 def test_history_lists_observed_states(populated_database, capsys):
     exit_code = run(
         ["--database", populated_database, "history", "--bank", "ANZ", "--term", "12"]
@@ -293,6 +582,17 @@ def test_history_lists_observed_states(populated_database, capsys):
     assert "RATE HISTORY" in output
     assert "ANZ" in output
     assert "4.79" in output
+
+
+def test_history_defaults_to_the_selected_deposit_market(mixed_product_database, capsys):
+    exit_code = run(
+        ["--database", mixed_product_database, "--product", "term_deposit", "history"]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "term_deposit" in output
+    assert "special" not in output
 
 
 def test_history_reports_no_match(populated_database, capsys):
@@ -312,6 +612,16 @@ def test_market_state_reports_a_label_and_metrics(populated_database, capsys):
     assert "dominant_direction" in output
 
 
+def test_market_state_filters_to_the_selected_deposit_market(mixed_product_database, capsys):
+    exit_code = run(
+        ["--database", mixed_product_database, "--product", "term_deposit", "market-state"]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "changes_7d          1" in output
+
+
 def test_position_reports_competitive_features(populated_database, capsys):
     exit_code = run(
         ["--database", populated_database, "position", "--rate", "4.95", "--term", "12"]
@@ -324,6 +634,26 @@ def test_position_reports_competitive_features(populated_database, capsys):
     assert "market_rank" in output
 
 
+def test_position_uses_the_selected_deposit_market(mixed_product_database, capsys):
+    exit_code = run(
+        [
+            "--database",
+            mixed_product_database,
+            "--product",
+            "term_deposit",
+            "position",
+            "--rate",
+            "3.75",
+            "--term",
+            "12",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "market_best                 4.00" in output
+
+
 def test_strategy_resolves_a_market_median_assumption(populated_database, capsys):
     exit_code = run(
         ["--database", populated_database, "strategy", "--strategy", "MARKET_MEDIAN"]
@@ -333,6 +663,27 @@ def test_strategy_resolves_a_market_median_assumption(populated_database, capsys
     assert exit_code == 0
     assert "MARKET_MEDIAN" in output
     assert "competitor_loan_rate" in output
+
+
+def test_strategy_uses_the_selected_deposit_market(mixed_product_database, capsys):
+    exit_code = run(
+        [
+            "--database",
+            mixed_product_database,
+            "--product",
+            "term_deposit",
+            "strategy",
+            "--strategy",
+            "MARKET_LEADER",
+            "--term",
+            "12",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "advertised rate       4.000%" in output
+    assert "competitor_deposit_rate" in output
 
 
 def test_strategy_supports_a_leader_offset(populated_database, capsys):

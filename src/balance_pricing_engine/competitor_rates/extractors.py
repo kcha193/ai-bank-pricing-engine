@@ -4,17 +4,21 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import logging
 from html.parser import HTMLParser
 from pathlib import Path
 import re
 from typing import Iterable
 from urllib.request import Request, urlopen
 
+from pydantic import ValidationError
+
 from balance_pricing_engine.competitor_rates.models import (
     PARSER_VERSION,
     CompetitorRateRecord,
     ProductType,
     SourceAttempt,
+    category_agnostic_key,
 )
 from balance_pricing_engine.competitor_rates.normalise import (
     normalise_balance,
@@ -24,6 +28,9 @@ from balance_pricing_engine.competitor_rates.normalise import (
     normalise_term,
 )
 from balance_pricing_engine.competitor_rates.sources import RateSource
+
+
+logger = logging.getLogger(__name__)
 
 
 class _TableTextParser(HTMLParser):
@@ -209,12 +216,20 @@ def parse_html_rates(
     source_url: str,
     html: str,
     captured_at_utc: datetime,
+    skipped_row_keys: list[str] | None = None,
 ) -> list[CompetitorRateRecord]:
     """Parse percentage-bearing rows from bank HTML into canonical records.
 
     This intentionally favours precision over recall. It parses table rows and nearby labels with
     recognisable terms, frequencies, balances, and mortgage conditions. Rows that include a
     percentage but no recognisable product term are skipped.
+
+    When ``skipped_row_keys`` is given, a row that parses a term and rate but
+    then fails :class:`CompetitorRateRecord` construction outright has its
+    :func:`~balance_pricing_engine.competitor_rates.models.category_agnostic_key`
+    appended to it, rather than being dropped with no trace: a caller with a
+    stored baseline (``pricing_intelligence``) can use this to recognise that
+    the row's predecessor is unknown this run, not withdrawn.
     """
     product = ProductType(product_type)
     parser = _TableTextParser()
@@ -260,8 +275,13 @@ def parse_html_rates(
                 if product == ProductType.TERM_DEPOSIT
                 else (None, None)
             )
-            records.append(
-                CompetitorRateRecord(
+            interest_frequency = (
+                normalise_frequency(_strip_term_label(raw_text_context, term.raw_label))
+                if product == ProductType.TERM_DEPOSIT
+                else "unknown"
+            )
+            try:
+                record = CompetitorRateRecord(
                     bank=bank,
                     product_type=product,
                     product_name=_product_name(product, row, category),
@@ -270,11 +290,7 @@ def parse_html_rates(
                     term_months_normalised=term.months,
                     term_days_raw=term.days,
                     advertised_rate_pct=rate,
-                    interest_payment_frequency=(
-                        normalise_frequency(raw_text_context)
-                        if product == ProductType.TERM_DEPOSIT
-                        else "unknown"
-                    ),
+                    interest_payment_frequency=interest_frequency,
                     min_balance_or_deposit=min_balance,
                     max_balance_or_deposit=max_balance,
                     lvr_condition=(
@@ -290,7 +306,34 @@ def parse_html_rates(
                     raw_html_sha256=raw_hash,
                     parser_version=PARSER_VERSION,
                 )
-            )
+            except ValidationError as exc:
+                # One unparseable row must not cost the whole bank. Kiwibank's
+                # term-deposit page produced a single invalid record and
+                # returned zero rates instead of its other 36 -- the same
+                # failure-isolation principle already applied per bank, missing
+                # here per row. Logged rather than silently dropped, so a parser
+                # regression is still visible.
+                logger.warning(
+                    "%s %s: skipping unparseable row (%s): %s",
+                    bank,
+                    product.value,
+                    exc.error_count() if hasattr(exc, "error_count") else "invalid",
+                    raw_text_context[:160],
+                )
+                if skipped_row_keys is not None:
+                    skipped_row_keys.append(
+                        category_agnostic_key(
+                            bank,
+                            product,
+                            term.months,
+                            term.raw_label,
+                            interest_frequency,
+                            min_balance,
+                            max_balance,
+                        )
+                    )
+                continue
+            records.append(record)
     return _dedupe_records(records)
 
 
@@ -318,6 +361,33 @@ def extract_all_sources(
 
 def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace("\xa0", " ")).strip()
+
+
+def _strip_term_label(text: str, term_label: str) -> str:
+    """Remove the row's own term phrase before frequency normalisation.
+
+    ``raw_text_context`` includes every cell in the row, including the term
+    label itself (e.g. "6 months"). :func:`~.normalise.normalise_frequency`
+    checks for the word "month" anywhere in its input, so an unstripped term
+    label alone would misclassify a row that never actually published a
+    payment frequency as "monthly" -- while a "1 year"/"2 years" row (matching
+    none of its keywords by coincidence) correctly falls back to "unknown",
+    the same absence of information reported inconsistently depending on the
+    term. ``interest_payment_frequency`` also participates in every
+    observation identity, so this inconsistency isn't just cosmetic: a page
+    later adding a genuine "at maturity" label would change the key and read
+    as a withdrawal-plus-new-product rather than an ordinary update.
+
+    Only the matched term phrase within ``term_label`` is removed, via
+    :data:`_TERM_PHRASE_PATTERN` -- not the whole string. ``term_label`` can
+    be a combined cell like "6 months, interest paid monthly" when a bank
+    publishes term and frequency together (:func:`_find_term_label` returns
+    the entire cell, not just the term substring); stripping the whole thing
+    would destroy that genuine frequency information along with the term.
+    """
+    match = _TERM_PHRASE_PATTERN.search(term_label)
+    phrase = match.group(0) if match else term_label
+    return re.sub(re.escape(phrase), "", text, flags=re.IGNORECASE)
 
 
 def _is_header_row(row: list[str]) -> bool:
@@ -536,18 +606,27 @@ def _extract_rates_with_categories(
     return results
 
 
+#: Matches just the term phrase itself (e.g. "6 months", "one year"), not a
+#: whole cell -- shared by _find_term_label() (which cell has a term at all)
+#: and _strip_term_label() (which narrower substring to remove before
+#: frequency normalisation). A bank publishing term and frequency in one
+#: combined cell, e.g. "6 months, interest paid monthly", means the cell
+#: _find_term_label() returns is not just the term: stripping the whole cell
+#: there would destroy the genuine frequency information along with it.
+_TERM_PHRASE_PATTERN = re.compile(
+    r"\b\d+\s*(?:day|days|month|months|year|years)\b"
+    r"|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+"
+    r"(?:month|months|year|years)\b",
+    re.IGNORECASE,
+)
+
+
 def _find_term_label(row: list[str], product: ProductType) -> str | None:
     for cell in row:
         text = cell.lower()
         if product == ProductType.HOME_LOAN and ("floating" in text or "variable" in text):
             return cell
-        if re.search(r"\b\d+\s*(?:day|days|month|months|year|years)\b", text):
-            return _strip_product_prefix(cell)
-        if re.search(
-            r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+"
-            r"(?:month|months|year|years)\b",
-            text,
-        ):
+        if _TERM_PHRASE_PATTERN.search(text):
             return _strip_product_prefix(cell)
     return None
 

@@ -14,7 +14,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from balance_pricing_engine.competitor_rates.collectors import BankCollectionResult, CollectionStatus
+from balance_pricing_engine.competitor_rates.collectors import (
+    ANZCollector,
+    BankCollectionResult,
+    CollectionStatus,
+)
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.config import (
     CollectionConfig,
@@ -40,9 +44,10 @@ class _StubCollector:
     fragile HTML-fixture surgery.
     """
 
-    def __init__(self, bank, records):
+    def __init__(self, bank, records, skipped_row_keys=()):
         self.bank = bank
         self._records = records
+        self._skipped_row_keys = skipped_row_keys
 
     def collect_mortgage_rates(self, captured_at_utc=None, persist_snapshot=True):
         return BankCollectionResult(
@@ -51,6 +56,17 @@ class _StubCollector:
             status=CollectionStatus.SUCCESS,
             source_url=f"https://www.example-bank.co.nz/{self.bank.lower()}/rates",
             records=tuple(self._records),
+            skipped_row_keys=tuple(self._skipped_row_keys),
+        )
+
+    def collect_term_deposit_rates(self, captured_at_utc=None, persist_snapshot=True):
+        return BankCollectionResult(
+            bank=self.bank,
+            product_type=ProductType.TERM_DEPOSIT,
+            status=CollectionStatus.SUCCESS,
+            source_url=f"https://www.example-bank.co.nz/{self.bank.lower()}/deposits",
+            records=tuple(self._records),
+            skipped_row_keys=tuple(self._skipped_row_keys),
         )
 
 
@@ -226,6 +242,111 @@ def test_summary_reflects_partial_rejection_within_a_bank(workflow, fixture_fetc
     assert anz_failures[0]["error_type"] == "validation_rejected"
 
 
+def test_bootstrap_run_with_only_non_comparable_rates_is_a_total_failure(
+    workflow, make_record, tmp_path
+):
+    """A bootstrap run whose only accepted rows are all non_comparable (e.g.
+    managed-fund returns, PIE effective rates) must not report success.
+
+    Those rows are genuinely validation-accepted (rate_count > 0), so the
+    plain rate_count == 0 guard misses this -- but pricing_intelligence.snapshot
+    excludes every non_comparable record from a market snapshot, so the
+    usable market view this run actually produced is empty. With no prior
+    baseline (a bootstrap run), low_coverage_banks stays empty too: there is
+    nothing to compare coverage against yet. Only a comparable-rate-count
+    check catches this."""
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    non_comparable_record = make_record(bank="ANZ", rate_category="non_comparable")
+    with PricingIntelligenceService(
+        config=config,
+        store=ObservationStore(config.database_path),
+        collectors=[_StubCollector("ANZ", [non_comparable_record])],
+    ) as service:
+        outcome = service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    assert not outcome.report.failed
+    assert not outcome.validation.rejected
+    assert outcome.rate_count > 0
+    assert not outcome.low_coverage_banks
+    assert workflow._comparable_rate_count(outcome) == 0
+    assert workflow.exit_code_for(outcome) == workflow.EXIT_TOTAL_FAILURE
+
+
+def test_bank_with_only_non_comparable_rates_is_a_partial_failure_among_others(
+    workflow, make_record, tmp_path
+):
+    """Scoped to one bank: ANZ's accepted rows are all non_comparable while
+    ASB collects normally, so the run as a whole has comparable rates and
+    must not be a total failure -- but ANZ contributed nothing usable and
+    must still be flagged, not silently folded into banks_succeeded."""
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    with PricingIntelligenceService(
+        config=config,
+        store=ObservationStore(config.database_path),
+        collectors=[
+            _StubCollector("ANZ", [make_record(bank="ANZ", rate_category="non_comparable")]),
+            _StubCollector("ASB", [make_record(bank="ASB")]),
+        ],
+    ) as service:
+        outcome = service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    assert workflow._comparable_rate_count(outcome) > 0
+    assert "ANZ" in workflow._banks_with_zero_comparable_rates(outcome)
+    assert workflow.exit_code_for(outcome) == workflow.EXIT_PARTIAL_FAILURE
+
+    summary = workflow.build_summary(outcome)
+    assert "ANZ" not in summary["banks_succeeded"]
+    assert "ASB" in summary["banks_succeeded"]
+    anz_failures = [f for f in summary["failures"] if f["bank"] == "ANZ"]
+    assert len(anz_failures) == 1
+    assert anz_failures[0]["error_type"] == "no_comparable_rates"
+
+
+def test_bootstrap_deposit_run_with_only_pie_rates_is_a_total_failure(
+    workflow, make_record, tmp_path
+):
+    """A term-deposit bootstrap run whose parser only matches the PIE table
+    (rate_category="pie_term_deposit") while missing every ordinary
+    term_deposit row must not report success.
+
+    pie_term_deposit is a real, validation-accepted category -- not
+    non_comparable -- so the round-42 fix (which only excluded
+    non_comparable) is not enough on its own: the service's default deposit
+    snapshot filters to rate_category="term_deposit" specifically, so these
+    PIE rows can never enter it. The comparable-rate check must resolve the
+    product's actual default category, not just exclude non_comparable."""
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    pie_record = make_record(
+        bank="ANZ", product_type=ProductType.TERM_DEPOSIT, rate_category="pie_term_deposit"
+    )
+    with PricingIntelligenceService(
+        config=config,
+        store=ObservationStore(config.database_path),
+        collectors=[_StubCollector("ANZ", [pie_record])],
+    ) as service:
+        outcome = service.collect(
+            captured_at_utc=DAY_ONE, product_type=ProductType.TERM_DEPOSIT, persist_snapshot=False
+        )
+
+    assert not outcome.report.failed
+    assert not outcome.validation.rejected
+    assert outcome.rate_count > 0
+    assert not outcome.low_coverage_banks
+    assert workflow._comparable_rate_count(outcome, ProductType.TERM_DEPOSIT) == 0
+    assert (
+        workflow.exit_code_for(outcome, ProductType.TERM_DEPOSIT) == workflow.EXIT_TOTAL_FAILURE
+    )
+
+
 def test_low_coverage_bank_is_a_partial_failure(workflow, make_record, tmp_path):
     """A page-layout regression that leaves one row parseable while silently
     dropping the rest of a bank's table.
@@ -270,6 +391,49 @@ def test_low_coverage_bank_is_a_partial_failure(workflow, make_record, tmp_path)
     anz_failures = [f for f in summary["failures"] if f["bank"] == "ANZ"]
     assert len(anz_failures) == 1
     assert anz_failures[0]["error_type"] == "low_coverage"
+
+
+def test_hard_skipped_row_is_a_partial_failure(workflow, make_record, tmp_path):
+    """A row that fails CompetitorRateRecord construction outright (see
+    parse_html_rates()'s skipped_row_keys) never reaches
+    validate_observations() at all, so it shows up in neither report.failed
+    nor validation.rejected. On a bootstrap run there is not even a stored
+    predecessor for the row to fall back on -- without surfacing this,
+    exit_code_for() could return success while a market-derived snapshot and
+    pricing assumption were built from an incomplete bank range."""
+    from balance_pricing_engine.competitor_rates.models import category_agnostic_key
+
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    skipped_key = category_agnostic_key(
+        "ANZ", ProductType.HOME_LOAN, 12, "1 year", "unknown", None, None
+    )
+    with PricingIntelligenceService(
+        config=config,
+        store=ObservationStore(config.database_path),
+        collectors=[
+            _StubCollector(
+                "ANZ", [make_record(bank="ANZ")], skipped_row_keys=[skipped_key]
+            )
+        ],
+    ) as service:
+        outcome = service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    assert not outcome.report.failed
+    assert not outcome.validation.rejected
+    assert outcome.rate_count > 0
+    assert outcome.report.skipped_row_keys
+    assert workflow.exit_code_for(outcome) == workflow.EXIT_PARTIAL_FAILURE
+
+    summary = workflow.build_summary(outcome)
+    assert summary["rows_skipped"] == 1
+    assert "ANZ" not in summary["banks_succeeded"]
+    assert "ANZ" in summary["banks_failed"]
+    anz_failures = [f for f in summary["failures"] if f["bank"] == "ANZ"]
+    assert len(anz_failures) == 1
+    assert anz_failures[0]["error_type"] == "row_skipped"
 
 
 def test_summary_reflects_bank_wide_validation_rejection(workflow, fixture_fetcher, tmp_path):
@@ -400,6 +564,42 @@ def test_run_collection_writes_a_summary_file(workflow, fixture_fetcher, tmp_pat
 
     assert code == workflow.EXIT_OK
     assert json.loads(summary_path.read_text())["rates_accepted"] == summary["rates_accepted"]
+
+
+def test_product_flag_lets_the_workflow_collect_term_deposits(
+    workflow, tmp_path, monkeypatch
+):
+    """Without --product, run_collection() always defaulted to home_loan, so
+    a scheduled deployment never refreshed term-deposit observations no
+    matter how it was configured. product_type must actually reach
+    service.collect() and produce a deposit-scoped summary."""
+    fixtures = Path("tests/fixtures/pricing_intelligence")
+    term_deposit_html = (fixtures / "anz_term_deposits.html").read_bytes()
+
+    def fetch(url: str) -> bytes:
+        assert url == ANZCollector.term_deposit_url
+        return term_deposit_html
+
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        selected_banks=["ANZ"],
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    monkeypatch.setattr(
+        workflow,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"], store=kwargs["store"], fetcher=fetch
+        ),
+    )
+
+    code, summary = workflow.run_collection(
+        config, render_javascript=False, product_type=ProductType.TERM_DEPOSIT
+    )
+
+    assert code == workflow.EXIT_OK
+    assert summary["product_type"] == "term_deposit"
+    assert summary["rates_accepted"] > 0
 
 
 def test_run_collection_logs_partial_failure_at_warning(

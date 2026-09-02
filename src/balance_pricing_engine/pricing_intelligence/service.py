@@ -23,7 +23,7 @@ from balance_pricing_engine.competitor_rates.collectors import (
     CollectionReport,
     Fetcher,
     build_collectors,
-    collect_all_mortgage_rates,
+    collect_all_rates,
 )
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
 from balance_pricing_engine.pricing_intelligence.changes import (
@@ -241,6 +241,54 @@ def _rejected_predecessor_keys(
     return suppressed
 
 
+def _skipped_row_predecessor_keys(
+    baseline: Sequence[CompetitorRateRecord],
+    accepted: Sequence[CompetitorRateRecord],
+    skipped_group_keys: Sequence[str],
+) -> set:
+    """Baseline keys that must not be reported as withdrawn this run because
+    they are the unmatched :meth:`~.models.CompetitorRateRecord.category_agnostic_group_key`
+    predecessor of a row that failed :class:`~.models.CompetitorRateRecord`
+    construction outright during extraction.
+
+    Mirrors :func:`_rejected_predecessor_keys` for a row that never became a
+    ``CompetitorRateRecord`` at all -- so it never reached
+    :func:`~.validation.validate_observations` to land in ``validation.rejected``
+    -- see ``competitor_rates.extractors.parse_html_rates``'s ``skipped_row_keys``
+    parameter. Without this, a row dropped by a parser fault this run would
+    read as its predecessor having been withdrawn, even though enough of the
+    bank's other rows passed validation for it to stay in scope for
+    withdrawal detection at all.
+
+    Unlike :func:`_rejected_predecessor_keys`/:func:`_suspicious_predecessor_keys`
+    (which only suppress an unambiguous single match, since an ambiguous
+    group there merely means "this specific record's predecessor can't be
+    pinned down" -- there is no independent proof any of them actually
+    failed), a name in ``skipped_group_keys`` is proof-positive that
+    extraction failed for *some* row sharing that exact group this run. When
+    more than one baseline record shares that same coarse group, we cannot
+    tell *which* one the failure belongs to, but we know it belongs to one
+    of them -- so every candidate in the group is suppressed, not just an
+    unambiguous singleton, or a genuinely withdrawn sibling could be spared
+    the ``REMOVED_PRODUCT`` event to which it merely happens to share a
+    category-agnostic key with the row that actually failed.
+    """
+    if not skipped_group_keys:
+        return set()
+    pairs = resolve_pairing(baseline, accepted)
+    claimed_baseline_keys = {p.observation_key() for p in pairs.values()}
+    unclaimed: dict[str, list[CompetitorRateRecord]] = {}
+    for p in baseline:
+        if p.observation_key() not in claimed_baseline_keys:
+            unclaimed.setdefault(p.category_agnostic_group_key(), []).append(p)
+
+    suppressed: set = set()
+    for group_key in skipped_group_keys:
+        for candidate in unclaimed.get(group_key, []):
+            suppressed.add(candidate.observation_key())
+    return suppressed
+
+
 def _last_confirmed_predecessors(
     last_confirmed: Sequence[CompetitorRateRecord],
     accepted: Sequence[CompetitorRateRecord],
@@ -292,6 +340,46 @@ def _exclude_stale(
     return [record for record in records if record.captured_at_utc >= cutoff]
 
 
+def _resolve_rate_category(
+    product_type: ProductType | str, rate_category: Optional[str]
+) -> str:
+    """Comparable category for the selected market when the caller didn't
+    supply one explicitly.
+
+    Mirrors ``pricing_intelligence.cli``'s own ``_default_category()``:
+    mortgages compare on advertised specials (where front-book competition
+    happens); deposits on the plain term-deposit tier, excluding PIE
+    variants. ``None`` is the sentinel for "not supplied" -- every market-
+    view method below defaults to it rather than to a literal ``"special"``,
+    so a caller that only sets ``product_type=TERM_DEPOSIT`` still resolves
+    against the deposit market instead of a mortgage-specific default that
+    happens to match no deposit records at all. An explicitly requested
+    category (even one that equals the other product's default) is honoured
+    as-is.
+    """
+    if rate_category is not None:
+        return rate_category
+    if ProductType(product_type) is ProductType.TERM_DEPOSIT:
+        return "term_deposit"
+    return "special"
+
+
+#: Distinguishes "rate_category not supplied" from an explicit
+#: rate_category=None on get_market_snapshot()/get_previous_market_snapshot()
+#: specifically. Those two build their result via build_market_snapshot(),
+#: whose own contract already treats rate_category=None as "unfiltered,
+#: every category" -- collapsing that onto the same None _resolve_rate_category()
+#: treats as "not supplied, resolve the product's default" would silently
+#: turn an explicit request for the unfiltered view into a filtered one for
+#: any caller relying on that contract. The other market-view methods below
+#: (get_market_state, get_competitive_position, resolve_competitor_assumption)
+#: have no unfiltered mode of their own -- comparing across categories has no
+#: coherent meaning for a market-state classification or a single resolved
+#: rate -- so they keep the simpler None-is-not-supplied convention
+#: _resolve_rate_category() documents.
+_RATE_CATEGORY_OMITTED = object()
+
+
 def _reliably_collected_banks(
     report: CollectionReport,
     accepted: Sequence[CompetitorRateRecord],
@@ -314,13 +402,25 @@ def _reliably_collected_banks(
     plausible but wrongly-identified ones would otherwise satisfy the
     baseline count while matching none of the actual known keys, still
     reading every one of them as withdrawn.
+
+    ``non_comparable`` identities are excluded from both sides of the ratio:
+    they are audit-only (never a market statistic, see
+    :mod:`~.validation`'s disambiguation), and a bank can accumulate more of
+    them than genuinely comparable rows. Counting them here would let a page
+    that stops publishing (or a parser that stops extracting) just the
+    audit-only rows drag a bank below the coverage threshold even though
+    every comparable term-deposit rate collected cleanly -- and because that
+    then excludes the bank from withdrawal detection entirely, those stale
+    identities never get pruned either, so every later run stays low-coverage
+    too.
     """
+    comparable_baseline = [record for record in baseline if record.rate_category != "non_comparable"]
     baseline_keys: dict[str, set[str]] = {}
-    for record in baseline:
+    for record in comparable_baseline:
         baseline_keys.setdefault(record.bank, set()).add(record.observation_key())
 
     matched_keys: dict[str, set[str]] = {}
-    for predecessor in resolve_pairing(baseline, accepted).values():
+    for predecessor in resolve_pairing(comparable_baseline, accepted).values():
         matched_keys.setdefault(predecessor.bank, set()).add(predecessor.observation_key())
 
     reliable: list[str] = []
@@ -330,6 +430,72 @@ def _reliably_collected_banks(
         if not known or len(matched) >= len(known) * min_coverage_ratio:
             reliable.append(bank)
     return tuple(reliable)
+
+
+def _low_coverage_category_predecessor_keys_to_suppress(
+    accepted: Sequence[CompetitorRateRecord],
+    baseline: Sequence[CompetitorRateRecord],
+    min_coverage_ratio: float,
+) -> set[str]:
+    """Baseline keys to exempt from withdrawal detection for a
+    ``(bank, rate_category)`` pair whose coverage this run fell below
+    ``min_coverage_ratio``, even when the bank's *overall* comparable
+    coverage (lumped across every non-``non_comparable`` category -- see
+    :func:`_reliably_collected_banks`) still clears the threshold.
+
+    A bank's aggregate ratio can stay healthy while one specific category
+    silently collapses -- e.g. a term-deposit bank whose ordinary
+    ``term_deposit`` rows a parser regression now misses entirely, while
+    its ``pie_term_deposit`` rows keep collecting cleanly, can still clear
+    the default 50% *combined* threshold and reach ``detect_changes()`` as
+    a ``banks_collected`` bank. Without this, every one of that category's
+    now-missing keys reads as a genuine ``REMOVED_PRODUCT`` at write time --
+    silently removing the bank's last-known rates in that category from
+    every future default market snapshot, before any post-hoc scheduled-
+    health check (e.g. the workflow's zero-comparable-rate exit code) could
+    even run to flag it.
+
+    Computed per ``(bank, rate_category)``, covering every category
+    including ``non_comparable`` (this subsumes the former
+    non_comparable-only version of this check), the same way
+    :func:`_reliably_collected_banks` computes its own lumped ratio -- just
+    scoped one category at a time instead of combined -- so a category-scoped
+    regression is caught regardless of which category it hits, while a
+    single identity genuinely closing within an otherwise-healthy category
+    still reports as withdrawn.
+
+    Skips a ``(bank, category)`` pair with exactly one known key: a size-1
+    category can only ever show 0-of-1 or 1-of-1 matched, so "0 of 1" gives
+    the ratio check nothing to distinguish a genuine sole closure from a
+    parser regression -- ``0 < 1 * min_coverage_ratio`` is true for *any*
+    positive ratio, so every such disappearance would be suppressed
+    unconditionally, permanently hiding that category's stale rate from
+    ``get_current_observations()``/market snapshots instead of letting the
+    normal, single-key withdrawal path report it. A size-2-or-more category
+    still needs the ratio check: with only a *raw* missing-key count, a
+    parser fault dropping every row in a large category would report each
+    one as an individually "genuine" withdrawal instead of the coverage
+    regression it actually is.
+    """
+    categories = {record.rate_category for record in baseline}
+    suppressed: set[str] = set()
+    for category in categories:
+        category_baseline = [record for record in baseline if record.rate_category == category]
+        baseline_keys: dict[str, set[str]] = {}
+        for record in category_baseline:
+            baseline_keys.setdefault(record.bank, set()).add(record.observation_key())
+
+        matched_keys: dict[str, set[str]] = {}
+        for predecessor in resolve_pairing(category_baseline, accepted).values():
+            matched_keys.setdefault(predecessor.bank, set()).add(predecessor.observation_key())
+
+        for bank, known in baseline_keys.items():
+            if len(known) <= 1:
+                continue
+            matched = matched_keys.get(bank, set())
+            if len(matched) < len(known) * min_coverage_ratio:
+                suppressed.update(known - matched)
+    return suppressed
 
 
 @dataclass(frozen=True)
@@ -411,6 +577,7 @@ class PricingIntelligenceService:
         captured_at_utc: Optional[datetime] = None,
         persist: bool = True,
         persist_snapshot: bool = True,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
     ) -> CollectionOutcome:
         """Run a full collection: fetch, validate, store, and detect changes.
 
@@ -418,10 +585,16 @@ class PricingIntelligenceService:
         continues and the remaining banks are still stored. Records failing
         validation are rejected before storage, so a parser fault cannot enter
         the history.
+
+        ``product_type`` selects home loans (the default) or term deposits.
+        Each product keeps its own baseline, change history, and bootstrap
+        state, so collecting one is never read as the other being withdrawn.
         """
+        product_type = ProductType(product_type)
         captured_at_utc = captured_at_utc or datetime.now(timezone.utc)
-        report = collect_all_mortgage_rates(
+        report = collect_all_rates(
             self.collectors,
+            product_type=product_type,
             captured_at_utc=captured_at_utc,
             persist_snapshot=persist_snapshot,
             inter_request_delay_seconds=self.config.collection.inter_request_delay_seconds,
@@ -435,19 +608,19 @@ class PricingIntelligenceService:
         # whether some other bank already has a long history, so a bank that
         # failed every prior run and only now recovers is still treated as
         # bootstrapping, not a burst of genuine new products.
-        previously_seen_banks = set(self.store.get_banks(product_type=ProductType.HOME_LOAN))
+        previously_seen_banks = set(self.store.get_banks(product_type=product_type))
 
         # The last known state per key, not scoped to the latest completed
         # run: a bank that failed a prior run would otherwise fall out of the
         # baseline entirely, making its next (unchanged) collection look like
         # every advertised line is new.
-        baseline = self.store.get_current_observations(product_type=ProductType.HOME_LOAN)
+        baseline = self.store.get_current_observations(product_type=product_type)
         # Also captured before this run's write, for the suspicious-confirmation
         # check below: the last state that was actually confirmed (not just the
         # immediately-preceding baseline record, which can itself still be an
         # unconfirmed warning-tagged reading).
         last_confirmed_before_run = self.store.get_last_confirmed_observations(
-            product_type=ProductType.HOME_LOAN
+            product_type=product_type
         )
         validation = validate_observations(
             report.records, thresholds=self.config.validation, previous=baseline
@@ -484,7 +657,9 @@ class PricingIntelligenceService:
             # against the stored baseline -- otherwise --no-persist could not be
             # used to preview what a real collection would do.
             write_result = (
-                self.store.record_observations(accepted, observed_at=captured_at_utc)
+                self.store.record_observations(
+                    accepted, observed_at=captured_at_utc, product_type=product_type
+                )
                 if persist
                 else None
             )
@@ -572,11 +747,33 @@ class PricingIntelligenceService:
                     }
                     | _rejected_predecessor_keys(baseline, validation.rejected)
                     | _suspicious_predecessor_keys(baseline, accepted, suspicious_keys)
+                    # A row that failed CompetitorRateRecord construction
+                    # outright this run (a parser fault, before the row could
+                    # even reach validate_observations) is unknown, not
+                    # withdrawn, same as a rejected-but-constructed record
+                    # just above.
+                    | _skipped_row_predecessor_keys(
+                        baseline, accepted, tuple(report.skipped_row_keys)
+                    )
                     | {
                         last_confirmed_pairs[key].observation_key()
                         for key in confirming_keys
                         if key in last_confirmed_pairs
                     }
+                    # A bank counted as reliably_collected_banks above only
+                    # because that check lumps every non-non_comparable
+                    # category into one combined ratio -- one specific
+                    # category (non_comparable, or a real but non-default
+                    # category like pie_term_deposit) can still have
+                    # regressed on its own while the lumped total stays
+                    # healthy. Without this, every now-missing key in that
+                    # category reads as a genuine withdrawal instead of the
+                    # same "unknown, not withdrawn" treatment
+                    # _reliably_collected_banks() gives a whole-bank
+                    # coverage regression.
+                    | _low_coverage_category_predecessor_keys_to_suppress(
+                        accepted, baseline, self.config.validation.min_bank_coverage_ratio
+                    )
                 ),
             )
             # A bank's first-ever successful collection would otherwise report
@@ -660,11 +857,17 @@ class PricingIntelligenceService:
     def get_market_snapshot(
         self,
         product_type: ProductType | str = ProductType.HOME_LOAN,
-        rate_category: Optional[str] = "special",
+        rate_category: Optional[str] = _RATE_CATEGORY_OMITTED,
         as_of_run_id: Optional[str] = None,
         now: Optional[datetime] = None,
     ) -> MarketSnapshot:
         """Return the currently-advertised market across tracked terms.
+
+        ``rate_category`` defaults to the product's comparable category (see
+        :func:`_resolve_rate_category`) when omitted. Pass ``rate_category=None``
+        explicitly for the unfiltered view across every category, matching
+        :func:`~.snapshot.build_market_snapshot`'s own contract -- see
+        :data:`_RATE_CATEGORY_OMITTED`.
 
         Uses the last known state per key (via ``get_current_observations()``),
         not a strict "last run" filter: a bank's rate that failed to fetch, or
@@ -687,19 +890,28 @@ class PricingIntelligenceService:
         unchanged re-observation, so it cannot answer for a run that isn't
         the latest one.
         """
+        if rate_category is _RATE_CATEGORY_OMITTED:
+            rate_category = _resolve_rate_category(product_type, None)
         as_of: Optional[datetime] = None
         if as_of_run_id is not None:
             as_of = self.store.get_run_started_at(as_of_run_id)
             if as_of is None:
                 records = []
             else:
+                # before_run_id=as_of_run_id anchors the reconstruction to
+                # this specific run's own (started_at, rowid) position, not
+                # just its timestamp -- two runs for the same product can
+                # share started_at, and without this a later same-timestamp
+                # run's state would still win the per-key selection even when
+                # this run_id explicitly names the earlier one. See
+                # ObservationStore._as_of_cutoff()'s docstring.
                 records = self.store.get_observations_as_of(
-                    as_of=as_of, product_type=product_type
+                    as_of=as_of, product_type=product_type, before_run_id=as_of_run_id
                 )
                 records = _resolve_suspicious_if_present(
                     records,
                     lambda: self.store.get_confirmed_observations_as_of(
-                        as_of=as_of, product_type=product_type
+                        as_of=as_of, product_type=product_type, before_run_id=as_of_run_id
                     ),
                 )
         else:
@@ -726,19 +938,40 @@ class PricingIntelligenceService:
     def get_previous_market_snapshot(
         self,
         product_type: ProductType | str = ProductType.HOME_LOAN,
-        rate_category: Optional[str] = "special",
+        rate_category: Optional[str] = _RATE_CATEGORY_OMITTED,
     ) -> Optional[MarketSnapshot]:
-        """Return the snapshot from the run before the latest, if there is one."""
-        as_of = self.store.get_previous_run_started_at()
-        if as_of is None:
+        """Return the snapshot from the run before the latest, if there is one.
+
+        ``rate_category`` defaults to the product's comparable category when
+        omitted; pass ``rate_category=None`` explicitly for the unfiltered
+        view across every category -- see :data:`_RATE_CATEGORY_OMITTED`.
+        """
+        if rate_category is _RATE_CATEGORY_OMITTED:
+            rate_category = _resolve_rate_category(product_type, None)
+        # Resolved together from one store lookup, not as two separate
+        # get_previous_run_started_at()/get_previous_run_id() calls: another
+        # same-product collection committing between two separate calls
+        # would shift which run each one resolves "previous" relative to,
+        # so the timestamp and run_id could end up naming two different
+        # runs -- see ObservationStore.get_previous_run()'s docstring.
+        previous_run = self.store.get_previous_run(product_type=product_type)
+        if previous_run is None:
             return None
-        records = self.store.get_observations_as_of(as_of=as_of, product_type=product_type)
+        as_of = previous_run.started_at
+        # Anchored to the resolved run's own identity, not just its
+        # timestamp: two runs for the same product can share observed_at, and
+        # a timestamp-only reconstruction can't tell which of them to stop
+        # at -- see ObservationStore._as_of_cutoff()'s docstring.
+        before_run_id = previous_run.run_id
+        records = self.store.get_observations_as_of(
+            as_of=as_of, product_type=product_type, before_run_id=before_run_id
+        )
         if not records:
             return None
         records = _resolve_suspicious_if_present(
             records,
             lambda: self.store.get_confirmed_observations_as_of(
-                as_of=as_of, product_type=product_type
+                as_of=as_of, product_type=product_type, before_run_id=before_run_id
             ),
         )
         return build_market_snapshot(
@@ -758,6 +991,8 @@ class PricingIntelligenceService:
         term_months: Optional[int] = None,
         now: Optional[datetime] = None,
         scope_to_market: bool = False,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        rate_category: Optional[str] = None,
     ) -> list[RateChange]:
         """Return detected changes inside a lookback window, newest first.
 
@@ -771,7 +1006,12 @@ class PricingIntelligenceService:
         activity for a bank or term the rest of the market view doesn't show.
         """
         rows = self.store.get_changes_since(
-            days=days, bank=bank, term_months=term_months, now=now
+            days=days,
+            bank=bank,
+            term_months=term_months,
+            product_type=product_type,
+            rate_category=rate_category,
+            now=now,
         )
         changes = load_changes(rows)
         if scope_to_market:
@@ -812,7 +1052,7 @@ class PricingIntelligenceService:
     def get_rate_history_series(
         self,
         term_months: int,
-        rate_category: str = "special",
+        rate_category: Optional[str] = None,
         product_type: ProductType | str = ProductType.HOME_LOAN,
     ) -> list[tuple[date, dict[str, float]]]:
         """Each bank's representative advertised rate at ``term_months``, one
@@ -831,11 +1071,17 @@ class PricingIntelligenceService:
         forward-fill its last rate through every later date some other bank's
         change happens to introduce.
         """
+        rate_category = _resolve_rate_category(product_type, rate_category)
         history = self.store.get_rate_history(
             term_months=term_months, product_type=product_type, rate_category=rate_category
         )
         change_dates = {record.captured_at_utc.date() for record in history}
-        for change in self.get_changes(days=None, term_months=term_months):
+        for change in self.get_changes(
+            days=None,
+            term_months=term_months,
+            product_type=product_type,
+            rate_category=rate_category,
+        ):
             if change.change_type is ChangeType.REMOVED_PRODUCT and (
                 change.rate_category == rate_category
             ):
@@ -871,7 +1117,11 @@ class PricingIntelligenceService:
         return series
 
     def get_market_activity(
-        self, days: Optional[int] = None, now: Optional[datetime] = None
+        self,
+        days: Optional[int] = None,
+        now: Optional[datetime] = None,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        rate_category: Optional[str] = None,
     ) -> MarketActivity:
         """Summarise repricing activity over a lookback window.
 
@@ -880,9 +1130,16 @@ class PricingIntelligenceService:
         holding observations from an earlier or broader configuration must
         not alter this public market summary via an excluded bank or term.
         """
+        rate_category = _resolve_rate_category(product_type, rate_category)
         days = days or self.config.market_state.lookback_days
         return compute_market_activity(
-            self.get_changes(days=days, now=now, scope_to_market=True),
+            self.get_changes(
+                days=days,
+                now=now,
+                scope_to_market=True,
+                product_type=product_type,
+                rate_category=rate_category,
+            ),
             lookback_days=days,
             now=now,
             directional_dominance_ratio=(
@@ -890,7 +1147,12 @@ class PricingIntelligenceService:
             ),
         )
 
-    def get_market_state(self, now: Optional[datetime] = None) -> MarketStateAssessment:
+    def get_market_state(
+        self,
+        now: Optional[datetime] = None,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        rate_category: Optional[str] = None,
+    ) -> MarketStateAssessment:
         """Classify how competitively active the market currently is.
 
         Scoped to ``selected_banks``/``tracked_terms_months``: a database
@@ -899,8 +1161,13 @@ class PricingIntelligenceService:
         the classification, even though the snapshot it accompanies is
         already scoped to those same settings.
         """
+        rate_category = _resolve_rate_category(product_type, rate_category)
         changes = self.get_changes(
-            days=self.config.market_state.lookback_days, now=now, scope_to_market=True
+            days=self.config.market_state.lookback_days,
+            now=now,
+            scope_to_market=True,
+            product_type=product_type,
+            rate_category=rate_category,
         )
         return classify_market_state(
             changes, thresholds=self.config.market_state, now=now
@@ -910,11 +1177,28 @@ class PricingIntelligenceService:
         self,
         our_rate: float,
         term_months: int = 12,
-        rate_category: Optional[str] = "special",
+        rate_category: Optional[str] = None,
         now: Optional[datetime] = None,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
     ) -> CompetitivePosition:
-        """Position a rate (in advertised percent) against the current market."""
-        snapshot = self.get_market_snapshot(rate_category=rate_category, now=now)
+        """Position a rate (in advertised percent) against the current market.
+
+        ``rate_category`` defaults to the product-appropriate comparison tier
+        (via :func:`_resolve_rate_category`) rather than a mortgage-specific
+        literal, so a deposit position resolves against the deposit market
+        instead of a snapshot with no matching rates. Resolved here, before
+        calling :meth:`get_market_snapshot`, rather than forwarding ``None``
+        straight through: that method's own ``rate_category=None`` means the
+        *unfiltered* view across every category (see
+        :data:`_RATE_CATEGORY_OMITTED`) -- a position against a single,
+        comparable market has no coherent "unfiltered" reading, so this
+        method's own ``None`` must resolve to a concrete category before it
+        ever reaches that call.
+        """
+        rate_category = _resolve_rate_category(product_type, rate_category)
+        snapshot = self.get_market_snapshot(
+            product_type=product_type, rate_category=rate_category, now=now
+        )
         term_market = snapshot.term(term_months)
         if term_market is None:
             raise ValueError(
@@ -933,11 +1217,29 @@ class PricingIntelligenceService:
         term_months: int = 12,
         manual_rate: Optional[float] = None,
         offset_bps: float = 0.0,
-        rate_category: Optional[str] = "special",
+        rate_category: Optional[str] = None,
         now: Optional[datetime] = None,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
     ) -> ResolvedCompetitorAssumption:
-        """Resolve the competitor assumption the optimiser should run with."""
-        snapshot = self.get_market_snapshot(rate_category=rate_category, now=now)
+        """Resolve the competitor assumption the optimiser should run with.
+
+        ``rate_category`` defaults to the product-appropriate comparison tier
+        (via :func:`_resolve_rate_category`) rather than a mortgage-specific
+        literal, so a deposit assumption resolves against the deposit market
+        instead of a snapshot with no matching rates. Resolved here, before
+        calling :meth:`get_market_snapshot`, rather than forwarding ``None``
+        straight through: that method's own ``rate_category=None`` means the
+        *unfiltered* view across every category (see
+        :data:`_RATE_CATEGORY_OMITTED`), which would let a
+        ``MARKET_MEDIAN``/``MARKET_AVERAGE``/etc. strategy silently blend a
+        mortgage's ``special``/``standard`` tiers -- or a deposit's
+        ``term_deposit``/PIE rows -- into one competitor assumption fed
+        straight into the optimiser.
+        """
+        rate_category = _resolve_rate_category(product_type, rate_category)
+        snapshot = self.get_market_snapshot(
+            product_type=product_type, rate_category=rate_category, now=now
+        )
         return resolve_competitor_rate(
             strategy=strategy,
             snapshot=snapshot,

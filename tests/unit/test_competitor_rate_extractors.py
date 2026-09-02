@@ -14,7 +14,7 @@ from balance_pricing_engine.competitor_rates.extractors import (
 )
 from balance_pricing_engine.competitor_rates.models import SourceAttempt
 from balance_pricing_engine.competitor_rates.sources import RateSource
-from balance_pricing_engine.competitor_rates.models import ProductType
+from balance_pricing_engine.competitor_rates.models import ProductType, category_agnostic_key
 
 
 FIXTURE_DIR = Path("tests/fixtures/competitor_rates")
@@ -41,6 +41,72 @@ def test_parse_home_loan_fixture_extracts_special_standard_and_floating_rates():
     assert "Floating" in records[2].raw_text_context
 
 
+def test_parse_html_rates_reports_a_hard_skipped_rows_group_key(monkeypatch):
+    """A row that parses a term and rate but then fails CompetitorRateRecord
+    construction outright must not vanish untraceably: its
+    category_agnostic_key() is appended to skipped_row_keys, so a caller with
+    a stored baseline (pricing_intelligence) can recognise the row's
+    predecessor as unknown this run rather than withdrawn."""
+    html = (FIXTURE_DIR / "sample_bank_home_loan.html").read_text(encoding="utf-8")
+    real_record_cls = extractors.CompetitorRateRecord
+
+    def flaky_record(*args, **kwargs):
+        if kwargs.get("term_label_raw") == "1 year":
+            # A deliberately invalid balance range forces a real
+            # pydantic.ValidationError, the same as parse_html_rates() would
+            # hit from a genuine parser fault.
+            kwargs = {
+                **kwargs,
+                "min_balance_or_deposit": 500.0,
+                "max_balance_or_deposit": 100.0,
+            }
+        return real_record_cls(*args, **kwargs)
+
+    monkeypatch.setattr(extractors, "CompetitorRateRecord", flaky_record)
+
+    skipped_row_keys: list[str] = []
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+        skipped_row_keys=skipped_row_keys,
+    )
+
+    assert [record.term_label_raw for record in records] == ["2 years", "Floating"]
+    assert skipped_row_keys == [
+        category_agnostic_key("ANZ", ProductType.HOME_LOAN, 12, "1 year", "unknown", None, None)
+    ]
+
+
+def test_parse_html_rates_without_skipped_row_keys_still_drops_the_row(monkeypatch):
+    """The parameter is opt-in: omitting it must not change existing behaviour."""
+    html = (FIXTURE_DIR / "sample_bank_home_loan.html").read_text(encoding="utf-8")
+    real_record_cls = extractors.CompetitorRateRecord
+
+    def flaky_record(*args, **kwargs):
+        if kwargs.get("term_label_raw") == "1 year":
+            kwargs = {
+                **kwargs,
+                "min_balance_or_deposit": 500.0,
+                "max_balance_or_deposit": 100.0,
+            }
+        return real_record_cls(*args, **kwargs)
+
+    monkeypatch.setattr(extractors, "CompetitorRateRecord", flaky_record)
+
+    records = parse_html_rates(
+        bank="ANZ",
+        product_type="home_loan",
+        source_url="https://example.test/home",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert [record.term_label_raw for record in records] == ["2 years", "Floating"]
+
+
 def test_parse_term_deposit_fixture_extracts_terms_tiers_and_frequency_variants():
     html = (FIXTURE_DIR / "sample_bank_term_deposit.html").read_text(encoding="utf-8")
 
@@ -60,6 +126,106 @@ def test_parse_term_deposit_fixture_extracts_terms_tiers_and_frequency_variants(
     assert records[0].interest_payment_frequency == "at_maturity"
     assert records[2].interest_payment_frequency == "monthly"
     assert records[3].rate_category == "pie_term_deposit"
+
+
+def test_parse_html_rates_does_not_infer_monthly_frequency_from_a_six_month_term():
+    """The term label itself contains "months" (e.g. "6 months"), which must
+    not be read as an explicit "paid monthly" statement -- a comparable
+    "1 year" row with the same missing frequency information correctly
+    falls back to "unknown", so the same absence of information must be
+    reported consistently regardless of the term. interest_payment_frequency
+    also participates in every observation identity, so this isn't just
+    cosmetic: a page later adding a genuine explicit frequency label would
+    change the key and read as a withdrawal-plus-new-product rather than an
+    ordinary update."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Rate</th></tr>
+      <tr><td>6 months</td><td>3.55% p.a.</td></tr>
+      <tr><td>1 year</td><td>3.90% p.a.</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="BNZ",
+        product_type="term_deposit",
+        source_url="https://example.test/td",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert {r.term_label_raw for r in records} == {"6 months", "1 year"}
+    assert all(r.interest_payment_frequency == "unknown" for r in records)
+
+
+def test_parse_html_rates_distinguishes_two_multi_option_frequency_rows():
+    """Same bank/term/category rows offering different payment-frequency
+    choices (e.g. "Monthly or at maturity" vs "Quarterly or at maturity")
+    must not collapse onto the same identity: a term deposit's product_name
+    is a fixed generic string ("Term deposit"), so interest_payment_frequency
+    can be the only field distinguishing them. Both are genuinely comparable
+    advertised rates, so both must validate cleanly rather than being
+    rejected as a conflicting observation."""
+    from balance_pricing_engine.pricing_intelligence.validation import (
+        validate_observations,
+    )
+
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Frequency</th><th>Rate</th></tr>
+      <tr><td>1 year</td><td>Monthly or at maturity</td><td>4.50% p.a.</td></tr>
+      <tr><td>1 year</td><td>Quarterly or at maturity</td><td>4.60% p.a.</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="BNZ",
+        product_type="term_deposit",
+        source_url="https://example.test/td",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 2
+    assert {r.interest_payment_frequency for r in records} == {
+        "at_maturity+monthly",
+        "at_maturity+quarterly",
+    }
+    assert records[0].observation_key() != records[1].observation_key()
+
+    outcome = validate_observations(records)
+    assert outcome.rejected == []
+    assert len(outcome.accepted) == 2
+
+
+def test_parse_html_rates_preserves_frequency_published_in_the_same_cell_as_the_term():
+    """_find_term_label() returns the whole cell it matched in, not just the
+    term substring, when a bank combines term and frequency in one cell
+    (e.g. "6 months, interest paid monthly"). Stripping that whole cell
+    before frequency normalisation -- rather than just the "6 months"
+    phrase within it -- would destroy the genuine "monthly" text along with
+    the term, storing the row as "unknown" even though it does publish a
+    frequency. interest_payment_frequency also participates in every
+    observation identity, so a later page change that moves the same
+    frequency into its own cell would then look like a false new/withdrawn
+    pair instead of an unchanged row."""
+    html = """
+    <html><body><table>
+      <tr><th>Term</th><th>Rate</th></tr>
+      <tr><td>6 months, interest paid monthly</td><td>3.55% p.a.</td></tr>
+    </table></body></html>
+    """
+
+    records = parse_html_rates(
+        bank="BNZ",
+        product_type="term_deposit",
+        source_url="https://example.test/td",
+        html=html,
+        captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+    )
+
+    assert len(records) == 1
+    assert records[0].interest_payment_frequency == "monthly"
 
 
 def test_parse_html_rates_skips_rows_without_rates_or_terms():

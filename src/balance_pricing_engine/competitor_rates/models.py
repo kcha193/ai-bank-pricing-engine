@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Literal, Optional
+from typing import Literal, Optional, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -35,6 +35,44 @@ InterestPaymentFrequency = Literal[
 ]
 ValidationStatus = Literal["unvalidated", "valid", "warning", "failed"]
 
+#: The canonical vocabulary a combined interest_payment_frequency value (see
+#: CompetitorRateRecord.interest_payment_frequency) is built from -- every
+#: "+"-separated token must be one of these, so a typo from strict source
+#: JSON or a third-party collector ("montly") can't slip past the field's
+#: str type and silently defeat _select_frequency()'s preference matching.
+_CANONICAL_INTEREST_FREQUENCIES = frozenset(get_args(InterestPaymentFrequency))
+
+
+def category_agnostic_key(
+    bank: str,
+    product_type: "ProductType | str",
+    term_months_normalised: Optional[int],
+    term_label_raw: str,
+    interest_payment_frequency: str,
+    min_balance_or_deposit: Optional[float],
+    max_balance_or_deposit: Optional[float],
+) -> str:
+    """Standalone form of :meth:`CompetitorRateRecord.category_agnostic_group_key`.
+
+    Takes raw field values rather than a validated instance so a row that
+    fails :class:`CompetitorRateRecord` construction entirely -- and so never
+    becomes an instance to call the method on -- can still be matched against
+    a stored predecessor for withdrawal suppression (see
+    ``competitor_rates.extractors.parse_html_rates``).
+    """
+    return "|".join(
+        [
+            bank,
+            ProductType(product_type).value,
+            str(term_months_normalised)
+            if term_months_normalised is not None
+            else term_label_raw.lower(),
+            interest_payment_frequency,
+            _numeric_band(min_balance_or_deposit),
+            _numeric_band(max_balance_or_deposit),
+        ]
+    )
+
 
 class CompetitorRateRecord(BaseModel):
     """One advertised competitor rate with source and parser audit metadata."""
@@ -49,7 +87,16 @@ class CompetitorRateRecord(BaseModel):
     term_months_normalised: Optional[int] = Field(default=None, ge=0)
     term_days_raw: Optional[int] = Field(default=None, ge=0)
     advertised_rate_pct: float
-    interest_payment_frequency: InterestPaymentFrequency = "unknown"
+    #: Not typed as InterestPaymentFrequency: normalise_frequency() returns a
+    #: stable combined value (e.g. "at_maturity+monthly") for a row
+    #: advertising a genuine multiple-option choice, since
+    #: interest_payment_frequency is identity-bearing and collapsing every
+    #: such row to one of the five canonical values would make two rows
+    #: offering different option sets collide on observation_key(). Config
+    #: policy (e.g. TermDepositStrategyConfig.interest_payment_frequency_preference)
+    #: stays the closed InterestPaymentFrequency vocabulary -- only the
+    #: as-observed value on a record needs to accommodate a combination.
+    interest_payment_frequency: str = "unknown"
     min_balance_or_deposit: Optional[float] = Field(default=None, ge=0)
     max_balance_or_deposit: Optional[float] = Field(default=None, ge=0)
     lvr_condition: Optional[str] = None
@@ -94,6 +141,34 @@ class CompetitorRateRecord(BaseModel):
         if value.tzinfo is None:
             raise ValueError("captured_at_utc must be timezone-aware")
         return value.astimezone(timezone.utc)
+
+    @field_validator("interest_payment_frequency")
+    @classmethod
+    def validate_interest_payment_frequency(cls, value: str) -> str:
+        tokens = value.split("+")
+        if (
+            len(tokens) != len(set(tokens))
+            or not all(token in _CANONICAL_INTEREST_FREQUENCIES for token in tokens)
+            # "unknown" means no frequency was published at all -- mutually
+            # exclusive with a real one. normalise_frequency() only ever
+            # returns it alone (never alongside a matched keyword), so
+            # "unknown+monthly" is not a legitimate combination: it would
+            # make _select_frequency() treat the row as offering monthly
+            # payments it never actually advertised.
+            or ("unknown" in tokens and len(tokens) > 1)
+        ):
+            raise ValueError(
+                "interest_payment_frequency must be a '+'-joined combination of "
+                f"{sorted(_CANONICAL_INTEREST_FREQUENCIES)} with no duplicates, and 'unknown' "
+                f"only on its own, got {value!r}"
+            )
+        # Sorted to match normalise_frequency()'s own canonical ordering: this
+        # field participates in observation_key(), so "monthly+at_maturity"
+        # and "at_maturity+monthly" -- the same option set, differently
+        # ordered by a strict source or a third-party collector -- must
+        # collapse onto one identity rather than reading as a withdrawal and
+        # a new product appearing.
+        return "+".join(sorted(tokens))
 
     @field_validator("raw_html_sha256")
     @classmethod
@@ -180,18 +255,21 @@ class CompetitorRateRecord(BaseModel):
         the very fallback this key exists for. The remaining fields are
         deliberately coarse; ambiguity is handled by every caller's
         "exactly one unclaimed candidate" guard, not by this key.
+
+        Delegates to the standalone :func:`category_agnostic_key` so a row
+        that never became a validated instance (see
+        ``competitor_rates.extractors.parse_html_rates``) can still compute
+        the identical key from its raw field values.
         """
-        parts = [
+        return category_agnostic_key(
             self.bank,
-            str(self.product_type),
-            str(self.term_months_normalised)
-            if self.term_months_normalised is not None
-            else self.term_label_raw.lower(),
+            self.product_type,
+            self.term_months_normalised,
+            self.term_label_raw,
             self.interest_payment_frequency,
-            _numeric_band(self.min_balance_or_deposit),
-            _numeric_band(self.max_balance_or_deposit),
-        ]
-        return "|".join(parts)
+            self.min_balance_or_deposit,
+            self.max_balance_or_deposit,
+        )
 
     @model_validator(mode="after")
     def validate_identity_and_range(self) -> "CompetitorRateRecord":

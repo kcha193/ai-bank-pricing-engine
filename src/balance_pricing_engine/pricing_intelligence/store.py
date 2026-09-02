@@ -29,7 +29,7 @@ import json
 import logging
 from pathlib import Path
 import sqlite3
-from typing import Iterable, Iterator, Mapping, Optional, Sequence
+from typing import Iterable, Iterator, Mapping, NamedTuple, Optional, Sequence
 import uuid
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
@@ -40,6 +40,40 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 
+#: Uniqueness is scoped to run_id (not just observation_key/change_type/
+#: detected_at) so a genuinely new event from a later run is never silently
+#: dropped just because an earlier run's event happened to share the exact
+#: same detected_at -- e.g. four runs sharing one started_at (observed,
+#: withdrawn, returned, withdrawn again) each get their own REMOVED_PRODUCT
+#: row instead of the second withdrawal colliding with the first's. Shared
+#: with :meth:`ObservationStore._migrate_rate_changes_run_scoped_uniqueness`,
+#: which recreates this table with the same definition for a database
+#: created before run_id joined the constraint.
+_RATE_CHANGES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS rate_changes (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    observation_key     TEXT NOT NULL,
+    bank                TEXT NOT NULL,
+    product_type        TEXT NOT NULL,
+    product_name        TEXT NOT NULL,
+    rate_category       TEXT NOT NULL,
+    term_months         INTEGER,
+    change_type         TEXT NOT NULL,
+    previous_rate_pct   REAL,
+    current_rate_pct    REAL,
+    change_bps          REAL,
+    previous_observed_at TEXT,
+    detected_at         TEXT NOT NULL,
+    run_id              TEXT NOT NULL,
+    suspicious          INTEGER NOT NULL DEFAULT 0,
+    detail              TEXT,
+    source_url          TEXT,
+    UNIQUE (observation_key, change_type, detected_at, run_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_changes_detected_at ON rate_changes (detected_at);
+"""
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 
@@ -47,10 +81,39 @@ CREATE TABLE IF NOT EXISTS collection_runs (
     run_id              TEXT PRIMARY KEY,
     started_at          TEXT NOT NULL,
     banks               TEXT NOT NULL,
+    product_type        TEXT NOT NULL DEFAULT 'home_loan',
     record_count        INTEGER NOT NULL DEFAULT 0,
     inserted_count      INTEGER NOT NULL DEFAULT 0,
     unchanged_count     INTEGER NOT NULL DEFAULT 0,
     report_json         TEXT
+);
+
+-- A durable, write-once ledger of which (run_id, product_type) pairs
+-- record_observations() has actually processed -- the sole source of truth
+-- for its idempotent-retry short-circuit, and (via its own started_at/rowid)
+-- for per-product run ordering in latest_run_id()/_previous_run_row().
+-- collection_runs.product_type/started_at alone cannot serve either: they
+-- hold only one value each, so a legacy run_id reused for a second product
+-- (two calls sharing one run_id, one per product, each with its own
+-- observed_at) overwrites both -- retroactively changing the *first*
+-- product's recorded start time to the second call's, not just losing which
+-- product owns the label. Falling back to observations.last_seen_run_id/
+-- first_seen_run_id or rate_changes.run_id (each paired with product_type)
+-- isn't reliable either: a quiet reconfirmation-only call leaves no
+-- rate_changes row at all, and last_seen_run_id/first_seen_run_id can each
+-- move on to a later run, erasing the only trace this run_id ever touched
+-- that product. This table is never updated after its row is first
+-- written, so both traces -- that the pair happened, and when -- survive
+-- regardless of what any later call (same run_id, other product; or a
+-- separate, later run) subsequently does to collection_runs/observations/
+-- rate_changes.
+CREATE TABLE IF NOT EXISTS collection_run_products (
+    run_id              TEXT NOT NULL,
+    product_type        TEXT NOT NULL,
+    started_at          TEXT NOT NULL,
+    inserted_count      INTEGER NOT NULL DEFAULT 0,
+    unchanged_count     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (run_id, product_type)
 );
 
 CREATE TABLE IF NOT EXISTS observations (
@@ -84,6 +147,7 @@ CREATE TABLE IF NOT EXISTS observations (
     validation_status   TEXT NOT NULL DEFAULT 'unvalidated',
     validation_warnings TEXT NOT NULL DEFAULT '[]',
     first_observed_at   TEXT NOT NULL,
+    first_seen_run_id   TEXT,
     last_seen_at        TEXT NOT NULL,
     last_seen_run_id    TEXT NOT NULL,
     observation_count   INTEGER NOT NULL DEFAULT 1
@@ -95,30 +159,7 @@ CREATE INDEX IF NOT EXISTS idx_observations_bank_term
     ON observations (bank, product_type, term_months);
 CREATE INDEX IF NOT EXISTS idx_observations_last_seen
     ON observations (last_seen_run_id);
-
-CREATE TABLE IF NOT EXISTS rate_changes (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    observation_key     TEXT NOT NULL,
-    bank                TEXT NOT NULL,
-    product_type        TEXT NOT NULL,
-    product_name        TEXT NOT NULL,
-    rate_category       TEXT NOT NULL,
-    term_months         INTEGER,
-    change_type         TEXT NOT NULL,
-    previous_rate_pct   REAL,
-    current_rate_pct    REAL,
-    change_bps          REAL,
-    previous_observed_at TEXT,
-    detected_at         TEXT NOT NULL,
-    run_id              TEXT NOT NULL,
-    suspicious          INTEGER NOT NULL DEFAULT 0,
-    detail              TEXT,
-    source_url          TEXT,
-    UNIQUE (observation_key, change_type, detected_at)
-);
-
-CREATE INDEX IF NOT EXISTS idx_changes_detected_at ON rate_changes (detected_at);
-"""
+""" + _RATE_CHANGES_SCHEMA
 
 # Fields whose movement makes an observation a genuinely new advertised state.
 # Provenance fields (hashes, page titles, raw text) are deliberately excluded:
@@ -152,16 +193,65 @@ _SAME_TERM_IDENTITY = (
     ")"
 )
 
+def _run_ordered_after(
+    later_run_column: str,
+    later_timestamp_column: str,
+    earlier_run_column: str,
+    earlier_timestamp_column: str,
+) -> str:
+    """SQL fragment: true when the run named by ``later_run_column`` comes
+    strictly after the run named by ``earlier_run_column``.
+
+    Compares each side's ``collection_runs`` row by ``(started_at, rowid)``
+    -- the same ordering :meth:`ObservationStore.latest_run_id` and
+    :meth:`ObservationStore._as_of_cutoff` use -- when both correlate to a
+    stored run, so two events sharing a timestamp are still ordered
+    correctly by which run actually happened first. Falls back to comparing
+    ``later_timestamp_column``/``earlier_timestamp_column`` directly when
+    either run_id does not correlate to a stored run at all (matching this
+    comparison's original, timestamp-only behaviour for that case -- see
+    :meth:`ObservationStore._as_of_cutoff`'s docstring for why an
+    unresolvable run_id needs this fallback).
+
+    Unlike ``_as_of_cutoff()``'s fragments (which compare one row's
+    introducing run against a single fixed reference run, supplied via query
+    params), this compares two run_id *columns* against each other directly
+    within the same query -- e.g. "did this withdrawal happen in a run
+    strictly after the one that introduced this state" or "did this
+    eligibility-superseding sibling first appear in a run strictly after the
+    one that last confirmed this row" -- so it takes no params of its own;
+    both operands are column references already present in the query.
+    """
+    return (
+        "("
+        f"EXISTS (SELECT 1 FROM collection_runs cr_later, collection_runs cr_earlier "
+        f"WHERE cr_later.run_id = {later_run_column} AND cr_earlier.run_id = {earlier_run_column} "
+        "AND (cr_later.started_at > cr_earlier.started_at "
+        "OR (cr_later.started_at = cr_earlier.started_at AND cr_later.rowid > cr_earlier.rowid))) "
+        "OR ("
+        f"(NOT EXISTS (SELECT 1 FROM collection_runs WHERE run_id = {later_run_column}) "
+        f"OR NOT EXISTS (SELECT 1 FROM collection_runs WHERE run_id = {earlier_run_column})) "
+        f"AND {later_timestamp_column} > {earlier_timestamp_column}"
+        ")"
+        ")"
+    )
+
+
 # Excludes row `o` when another key `o3` in the same eligibility group (same
 # bank/term/category/frequency/product_name/balance tier, i.e. the same
 # product under a different eligibility condition -- see
 # CompetitorRateRecord.eligibility_group_key()) first appeared after `o` was
 # last confirmed: that is the signature of an eligibility-edit transition,
 # where change detection deliberately leaves the old key's row untouched
-# (see changes.resolve_pairing()) rather than closing it out. `{extra}` lets
-# a caller reconstructing a historical point in time (get_observations_as_of)
-# additionally bound `o3` to have existed by that point too -- an eligibility
-# edit that happens after the reconstruction point does not apply.
+# (see changes.resolve_pairing()) rather than closing it out. Compared by run
+# position (see _run_ordered_after()), not a plain first_observed_at/
+# last_seen_at timestamp check: two runs sharing a timestamp -- the old key
+# last confirmed by one, the new key introduced by the other -- would
+# otherwise fail this test in whichever direction ties read as "not after".
+# `{extra}` lets a caller reconstructing a historical point in time
+# (get_observations_as_of) additionally bound `o3` to have existed by that
+# point too -- an eligibility edit that happens after the reconstruction
+# point does not apply.
 _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY = (
     "AND NOT EXISTS ("
     "  SELECT 1 FROM observations o3 WHERE o3.observation_key <> o.observation_key "
@@ -170,7 +260,11 @@ _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY = (
     "  AND o3.interest_payment_frequency = o.interest_payment_frequency "
     "  AND LOWER(o3.product_name) = LOWER(o.product_name) "
     "  AND o3.min_balance IS o.min_balance AND o3.max_balance IS o.max_balance "
-    "  AND o3.first_observed_at > o.last_seen_at{extra}"
+    "  AND "
+    + _run_ordered_after(
+        "o3.first_seen_run_id", "o3.first_observed_at", "o.last_seen_run_id", "o.last_seen_at"
+    )
+    + "{extra}"
     ") "
 )
 
@@ -186,6 +280,30 @@ class WriteResult:
     @property
     def total(self) -> int:
         return self.inserted + self.unchanged
+
+
+class PreviousRun(NamedTuple):
+    """The run immediately before a reference run, resolved atomically.
+
+    See :meth:`ObservationStore.get_previous_run` -- a caller needing both
+    the run_id and started_at of "the previous run" must resolve them
+    together from one lookup, not via two separate calls that could each
+    resolve "previous" relative to a different latest run.
+    """
+
+    run_id: str
+    started_at: datetime
+
+
+class _AsOfCutoff(NamedTuple):
+    """SQL fragments and params built by :meth:`ObservationStore._as_of_cutoff`."""
+
+    outer: str
+    inner: str
+    eligibility: str
+    withdrawal: str
+    observation_params: tuple
+    withdrawal_params: tuple
 
 
 def _iso(value: datetime) -> str:
@@ -270,11 +388,416 @@ class ObservationStore:
     def _create_schema(self) -> None:
         with self._transaction() as connection:
             connection.executescript(_SCHEMA)
+            self._migrate_collection_runs_product_type(connection)
+            self._migrate_observations_first_seen_run_id(connection)
+            self._migrate_rate_changes_run_scoped_uniqueness(connection)
+            self._migrate_collection_run_products(connection)
             row = connection.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
                 connection.execute(
                     "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
                 )
+
+    def _migrate_collection_runs_product_type(self, connection: sqlite3.Connection) -> None:
+        """Add ``collection_runs.product_type`` for a database created before
+        this column existed.
+
+        ``CREATE TABLE IF NOT EXISTS`` in ``_SCHEMA`` is a no-op against an
+        already-created table, so a database file from before this column
+        existed needs an explicit migration, not just an updated ``CREATE
+        TABLE`` statement.
+
+        The ``ALTER TABLE`` below defaults every existing row to
+        ``home_loan``, but that default is only a starting point, not the
+        answer: the ``--product`` CLI flag has collected term deposits since
+        before this column existed, so a database can already hold genuine
+        deposit runs that must not be mislabelled. All three ``UPDATE``s
+        below correct that from data the pre-existing schema already
+        recorded -- none of it is itself new:
+
+        * ``rate_changes.run_id``/``product_type`` are permanent (one row
+          per detected change, never overwritten), so they can recover a
+          historical run's product even once ``observations`` has moved
+          past it -- as long as that run detected at least one change.
+        * ``observations.last_seen_run_id`` is overwritten forward on every
+          later re-observation (even an unchanged one), so it can only
+          answer for whichever run most recently touched each still-current
+          row -- typically each key's latest run, not every historical one.
+        * ``observations.first_observed_at``, unlike ``last_seen_run_id``, is
+          frozen at insertion and never advanced forward -- it still equals
+          the introducing run's own ``started_at`` even once ``last_seen_run_id``
+          has moved past that run via later reconfirmations. This is what
+          recovers a bootstrapping first-ever collection (which, via
+          detect_changes()'s own bootstrap suppression, produced zero
+          ``NEW_PRODUCT`` events for the ``rate_changes`` pass to find) once
+          its rows have since been reconfirmed by a later run: the second
+          pass can no longer find it via ``last_seen_run_id``, but the third
+          still can via ``first_observed_at``.
+
+        The third pass matches on ``started_at`` value rather than
+        ``run_id`` -- ``observations`` has no column recording which run
+        first introduced a row, so this is a one-time, best-effort backfill
+        for a database that predates :meth:`_migrate_observations_first_seen_run_id`
+        (which adds exactly that column, and is what the *live* query
+        methods correlate through going forward -- see its own docstring for
+        why the ``started_at``-value approach is not safe to use there).
+        A run that shares its ``started_at`` with another run of a different
+        product (both migrated in the very same pass) could therefore still
+        be mislabelled here; this is an accepted, bounded imprecision for
+        one-time historical backfill, not an ongoing correctness bug -- but
+        only for a run neither of the first two, higher-confidence passes
+        could already resolve. The third pass is restricted to exactly those
+        runs (excluded from both ``WHERE run_id IN (...)`` conditions
+        above): applying it unconditionally would let its own unordered,
+        arbitrary ``LIMIT 1`` pick overwrite an *already-correct* label from
+        pass one or two whenever a same-timestamp different-product run
+        happens to be the one it picks.
+
+        A truly ancient run with no trace in any of the three -- superseded
+        in ``observations`` on both timestamps and with zero recorded
+        changes -- has no surviving way to recover its product, and keeps
+        the ``home_loan`` default.
+        """
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(collection_runs)")}
+        if "product_type" in columns:
+            return
+        connection.execute(
+            "ALTER TABLE collection_runs ADD COLUMN product_type TEXT NOT NULL DEFAULT 'home_loan'"
+        )
+        connection.execute(
+            "UPDATE collection_runs SET product_type = ("
+            "  SELECT rc.product_type FROM rate_changes rc "
+            "  WHERE rc.run_id = collection_runs.run_id LIMIT 1"
+            ") WHERE run_id IN (SELECT DISTINCT run_id FROM rate_changes)"
+        )
+        connection.execute(
+            "UPDATE collection_runs SET product_type = ("
+            "  SELECT o.product_type FROM observations o "
+            "  WHERE o.last_seen_run_id = collection_runs.run_id LIMIT 1"
+            ") WHERE run_id IN (SELECT DISTINCT last_seen_run_id FROM observations)"
+        )
+        connection.execute(
+            "UPDATE collection_runs SET product_type = ("
+            "  SELECT o.product_type FROM observations o "
+            "  WHERE o.first_observed_at = collection_runs.started_at LIMIT 1"
+            ") WHERE started_at IN (SELECT DISTINCT first_observed_at FROM observations) "
+            "AND run_id NOT IN (SELECT DISTINCT run_id FROM rate_changes) "
+            "AND run_id NOT IN (SELECT DISTINCT last_seen_run_id FROM observations)"
+        )
+
+    def _migrate_observations_first_seen_run_id(self, connection: sqlite3.Connection) -> None:
+        """Add ``observations.first_seen_run_id`` for a database created
+        before this column existed.
+
+        ``last_seen_run_id`` is overwritten forward on every re-observation,
+        so it cannot answer "which run first introduced this row" once a
+        later collection has reconfirmed it -- exactly the gap
+        :meth:`latest_run_id`/:meth:`get_previous_run_started_at` need
+        closed for a mixed-product or bootstrapping legacy run (see
+        :meth:`_migrate_collection_runs_product_type`'s docstring). This
+        column is the direct fix: set once at insertion in
+        :meth:`record_observations` and never touched again, so those
+        methods can correlate ``observations`` to the run that introduced
+        them by an actual ``run_id`` rather than by matching
+        ``first_observed_at`` against ``collection_runs.started_at`` --
+        matching on that shared *timestamp value* is unsafe as a live,
+        ongoing correlation: two different runs captured with the same
+        ``observed_at`` (e.g. a caller collecting home-loan and
+        term-deposit batches from one shared capture moment) would then
+        each appear to contain the other's rows too, and the query's own
+        ``ORDER BY ... rowid DESC`` tie-break could return the wrong run
+        for either product -- a live bug, not just a one-time migration
+        imprecision, because it would recur on every simultaneous
+        multi-product collection rather than being confined to backfilling
+        historical data once.
+
+        Three passes, in descending order of confidence, each only touching
+        what the previous one left ``NULL``:
+
+        1. An exact ``rate_changes`` match: a ``NEW_PRODUCT`` event recorded
+           for this exact ``observation_key`` at this exact
+           ``first_observed_at`` names the introducing ``run_id`` directly,
+           no timestamp-ordering guess needed. A bootstrapping first-ever
+           collection produces none of these (``detect_changes()``'s own
+           bootstrap suppression), so this pass only ever helps a later,
+           non-bootstrap introduction -- exactly the gap the two passes below
+           cannot resolve unambiguously.
+
+           Restricted to the highest-``id`` row per ``(observation_key,
+           first_observed_at)`` group: a legacy product bootstrapped, then
+           withdrawn, then returned across a run sharing the bootstrap run's
+           own ``started_at`` produces two ``observations`` rows tied on
+           that pair (the untouched bootstrap row and the fresh return row),
+           but only one ``NEW_PRODUCT`` event -- from the return -- exists at
+           that ``detected_at`` (a pre-existing legacy database's rows were
+           written while ``rate_changes`` was unique on ``(observation_key,
+           change_type, detected_at)`` alone, before :meth:`_migrate_rate_changes_run_scoped_uniqueness`
+           widened that to include ``run_id``, so at most one such row could
+           ever have been recorded for it). Without this restriction the
+           correlated subquery matches *both* tied rows and
+           assigns the return's ``run_id`` to the bootstrap row too, so a
+           later ``get_observations_as_of(before_run_id=<bootstrap run>)``
+           would see the bootstrap row as introduced by the return and
+           wrongly omit a product that was genuinely present. The excluded
+           (non-latest) row is left ``NULL`` here and resolved unambiguously
+           by pass two or three instead, which key off ``collection_runs``
+           row order rather than this event match.
+        2. The timestamp-and-product match below -- the same caveat as
+           :meth:`_migrate_collection_runs_product_type`'s own third pass
+           applies, and for the same reason: it is a one-time correction for
+           existing rows, not a live query path. It also runs after that
+           method, so ``collection_runs.product_type`` is already backfilled
+           and narrows the match to the correct product where two runs would
+           otherwise collide on ``started_at`` alone. Still ambiguous when
+           *two same-product* runs share a timestamp (picks the earliest by
+           ``rowid``), which is exactly why pass 1 is tried first wherever it
+           can answer precisely.
+
+           That product filter is itself only safe when the legacy run was
+           genuinely single-product. A pre-column bootstrap run that
+           collected *both* products at once has exactly one
+           ``collection_runs`` row, so
+           ``_migrate_collection_runs_product_type`` can only have backfilled
+           a single ``product_type`` label onto it -- whichever the priority
+           passes in its docstring recovered evidence for. That mislabels the
+           *other* product's observations from the same run: this pass finds
+           no ``collection_runs`` row at all for them and leaves
+           ``first_seen_run_id`` ``NULL``, making that run invisible to
+           :meth:`get_previous_run_started_at` for that product even though
+           it was genuinely present.
+        3. An unfiltered timestamp-only match, recovering the mixed-bootstrap
+           case pass 2 leaves ``NULL`` by relaxing the product filter.
+        """
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(observations)")}
+        if "first_seen_run_id" in columns:
+            return
+        connection.execute("ALTER TABLE observations ADD COLUMN first_seen_run_id TEXT")
+        connection.execute(
+            "UPDATE observations SET first_seen_run_id = ("
+            "  SELECT rc.run_id FROM rate_changes rc "
+            "  WHERE rc.observation_key = observations.observation_key "
+            "  AND rc.change_type = 'NEW_PRODUCT' "
+            "  AND rc.detected_at = observations.first_observed_at "
+            "  LIMIT 1"
+            ") WHERE EXISTS ("
+            "  SELECT 1 FROM rate_changes rc2 "
+            "  WHERE rc2.observation_key = observations.observation_key "
+            "  AND rc2.change_type = 'NEW_PRODUCT' "
+            "  AND rc2.detected_at = observations.first_observed_at"
+            ") AND observations.id = ("
+            "  SELECT MAX(o2.id) FROM observations o2 "
+            "  WHERE o2.observation_key = observations.observation_key "
+            "  AND o2.first_observed_at = observations.first_observed_at"
+            ")"
+        )
+        connection.execute(
+            "UPDATE observations SET first_seen_run_id = ("
+            "  SELECT cr.run_id FROM collection_runs cr "
+            "  WHERE cr.started_at = observations.first_observed_at "
+            "  AND cr.product_type = observations.product_type "
+            "  ORDER BY cr.rowid LIMIT 1"
+            ") WHERE first_seen_run_id IS NULL"
+        )
+        connection.execute(
+            "UPDATE observations SET first_seen_run_id = ("
+            "  SELECT cr.run_id FROM collection_runs cr "
+            "  WHERE cr.started_at = observations.first_observed_at "
+            "  ORDER BY cr.rowid LIMIT 1"
+            ") WHERE first_seen_run_id IS NULL"
+        )
+
+    def _migrate_rate_changes_run_scoped_uniqueness(self, connection: sqlite3.Connection) -> None:
+        """Widen ``rate_changes``' uniqueness to include ``run_id``, for a
+        database created before this column joined the constraint.
+
+        ``record_changes()`` relies on ``INSERT OR IGNORE`` plus this
+        uniqueness for idempotency: retrying the exact same detected changes
+        (the same objects, hence the same ``run_id``) must not create
+        duplicate rows. But scoped to only ``(observation_key, change_type,
+        detected_at)``, that same guard also silently drops a *genuinely new*
+        event from a *later* run whenever an earlier run's event happens to
+        share the exact same ``detected_at`` -- e.g. four runs sharing one
+        ``started_at`` (observed, withdrawn, returned, withdrawn again) each
+        try to record their own event for this key, but the second
+        ``REMOVED_PRODUCT`` collides with the first's and is discarded.
+        ``get_current_observations()`` then finds no ``REMOVED_PRODUCT``
+        run-ordered after the row's last touch and keeps serving the
+        withdrawn rate. Including ``run_id`` in the constraint keeps
+        same-run retries idempotent (they always share one run_id) while
+        letting every run's own event persist independently.
+
+        SQLite cannot ``ALTER`` a table-level ``UNIQUE`` constraint in place,
+        so this recreates the table under its new definition (identical to
+        :data:`_RATE_CHANGES_SCHEMA`, which ``_SCHEMA`` also uses) and copies
+        every existing row across -- safe because no two of them could have
+        ever violated the *new*, less restrictive constraint if they didn't
+        already violate the old one.
+
+        Explicitly drops ``idx_changes_detected_at`` right after the rename,
+        before creating the new table: ``ALTER TABLE ... RENAME`` carries an
+        index across onto the renamed table under its *original* name, so
+        without this, :data:`_RATE_CHANGES_SCHEMA`'s own ``CREATE INDEX IF
+        NOT EXISTS idx_changes_detected_at`` finds that name already taken
+        (by the old table) and silently skips creating one for the new
+        table -- then dropping the old table drops its now-orphaned index
+        along with it, leaving the new ``rate_changes`` with no index on
+        ``detected_at`` at all for :meth:`get_changes_since`'s window
+        queries.
+        """
+        already_run_scoped = any(
+            index["unique"]
+            and {
+                info["name"]
+                for info in connection.execute(f"PRAGMA index_info({index['name']!r})")
+            }
+            == {"observation_key", "change_type", "detected_at", "run_id"}
+            for index in connection.execute("PRAGMA index_list('rate_changes')")
+        )
+        if already_run_scoped:
+            return
+        columns = ", ".join(
+            row["name"] for row in connection.execute("PRAGMA table_info('rate_changes')")
+        )
+        connection.execute("ALTER TABLE rate_changes RENAME TO rate_changes_pre_run_scoped_unique")
+        connection.execute("DROP INDEX IF EXISTS idx_changes_detected_at")
+        connection.executescript(_RATE_CHANGES_SCHEMA)
+        connection.execute(
+            f"INSERT INTO rate_changes ({columns}) "
+            f"SELECT {columns} FROM rate_changes_pre_run_scoped_unique"
+        )
+        connection.execute("DROP TABLE rate_changes_pre_run_scoped_unique")
+
+    def _migrate_collection_run_products(self, connection: sqlite3.Connection) -> None:
+        """Backfill ``collection_run_products`` from whatever evidence of
+        historical (run_id, product_type) participation -- and its timing --
+        still survives.
+
+        ``CREATE TABLE IF NOT EXISTS`` in ``_SCHEMA`` already creates this
+        table (empty) for every database, new or pre-existing. A database
+        that already has the table but predates its ``started_at`` column
+        (this store's own previous revision) gets that column added here,
+        defaulting to ``''`` -- corrected immediately below by the same
+        backfill passes a genuinely pre-existing database needs, so no
+        row is left with the placeholder.
+
+        Recovers rows (and each one's ``started_at``) from the same three
+        signals :meth:`latest_run_id` correlates through:
+
+        1. ``collection_runs.product_type``/``started_at`` themselves,
+           together with the run's already-recorded ``inserted_count``/
+           ``unchanged_count`` -- the one source that can recover the *real*
+           original counts, for whichever product currently owns that
+           single-value pair. If a second product later reused this
+           ``run_id`` (see :meth:`record_observations`'s own docstring),
+           ``started_at`` here already reflects *that* later call, not this
+           product's own original timing -- an accepted, one-time-backfill
+           imprecision this migration cannot undo, the same way
+           :meth:`_migrate_collection_runs_product_type`'s docstring accepts
+           an equivalent one for its own third pass.
+        2. ``observations.last_seen_run_id``/``first_seen_run_id`` paired
+           with ``product_type``, and ``rate_changes.run_id`` paired with
+           ``product_type`` -- recovering the *other* product of a legacy
+           mixed run (or any run source 1 missed), but with no way to
+           recover its real counts, so ``0, 0`` is recorded for these.
+           Joined back to ``collection_runs`` for ``started_at``, since
+           neither ``observations`` nor ``rate_changes`` records a run's own
+           start time.
+
+        All four sources are combined and inserted in a *single* statement,
+        ordered by ``collection_runs.rowid`` ascending -- not as four
+        separate ``INSERT`` passes, each scanning its own source table in
+        whatever order it naturally returns rows. :meth:`latest_run_id`/
+        :meth:`_previous_run_row` break a ``started_at`` tie using
+        ``collection_run_products.rowid`` (see their own docstrings for why
+        that -- not ``collection_runs.rowid`` -- is the one ordering source
+        that stays correct for a run_id genuinely reused across products via
+        *live* calls, from the database's transitional era between this
+        table's introduction and :meth:`record_observations` refusing that
+        outright). A backfilled row's own ``collection_run_products.rowid``
+        is otherwise just insertion order into *this* table, with no
+        relationship to real history on its own -- four separate passes
+        would append pass 2/3/4's rows after every one of pass 1's
+        regardless of which ``collection_runs.rowid`` each belongs to,
+        inverting a mixed run's second-product participation against a
+        genuinely later, single-product run sharing its ``started_at``.
+        Inserting in one ``rowid``-ordered sweep instead makes every
+        backfilled row's freshly-assigned ``collection_run_products.rowid``
+        agree, in relative order, with its source ``collection_runs.rowid``
+        -- which is all :meth:`latest_run_id` needs from it, without having
+        to distinguish "live" from "backfilled" rows at read time.
+
+        When more than one source names the same ``(run_id, product_type)``
+        pair (e.g. a normal, non-reused run appears via both source 1 and
+        source 2), only source 1's row -- carrying the real counts -- is
+        kept; a plain ``UNION``/``INSERT OR IGNORE`` cannot express that
+        priority (whichever row happens to reach the primary key first
+        would win), so a window function ranks candidates per pair first.
+
+        Run unconditionally on every call rather than gated on "have I
+        already migrated": ``INSERT OR IGNORE`` against this table's
+        ``(run_id, product_type)`` primary key makes re-running it a no-op
+        wherever a row already exists (from a prior migration run, or from
+        normal write-time recording by :meth:`record_observations`), so
+        there is nothing to gain from a separate has-this-run-before check
+        and one fewer thing to keep in sync with the table's own definition.
+
+        This is still only a best-effort historical recovery: a *quiet*
+        legacy mixed run (one side merely reconfirmed pre-existing rows,
+        producing no ``rate_changes``) whose ``observations`` evidence has
+        *already* moved on to a later run by the time this migration runs
+        cannot be recovered by any signal here -- there is nothing left to
+        read it from. Every write going forward is recorded directly by
+        :meth:`record_observations`, with its own accurate ``started_at``
+        and correctly-ordered ``rowid``, so this gap cannot reopen once a
+        database is running under this schema.
+        """
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info('collection_run_products')")
+        }
+        if "started_at" not in columns:
+            connection.execute(
+                "ALTER TABLE collection_run_products ADD COLUMN started_at TEXT NOT NULL DEFAULT ''"
+            )
+        connection.execute(
+            "WITH candidates AS ("
+            "  SELECT cr.run_id AS run_id, cr.product_type AS product_type, "
+            "         cr.started_at AS started_at, cr.inserted_count AS inserted_count, "
+            "         cr.unchanged_count AS unchanged_count, cr.rowid AS source_rowid, 0 AS priority "
+            "  FROM collection_runs cr "
+            "  UNION ALL "
+            "  SELECT o.last_seen_run_id, o.product_type, cr.started_at, 0, 0, cr.rowid, 1 "
+            "  FROM observations o JOIN collection_runs cr ON cr.run_id = o.last_seen_run_id "
+            "  WHERE o.last_seen_run_id IS NOT NULL "
+            "  UNION ALL "
+            "  SELECT o.first_seen_run_id, o.product_type, cr.started_at, 0, 0, cr.rowid, 1 "
+            "  FROM observations o JOIN collection_runs cr ON cr.run_id = o.first_seen_run_id "
+            "  WHERE o.first_seen_run_id IS NOT NULL "
+            "  UNION ALL "
+            "  SELECT rc.run_id, rc.product_type, cr.started_at, 0, 0, cr.rowid, 1 "
+            "  FROM rate_changes rc JOIN collection_runs cr ON cr.run_id = rc.run_id"
+            "), ranked AS ("
+            "  SELECT *, ROW_NUMBER() OVER ("
+            "           PARTITION BY run_id, product_type ORDER BY priority ASC"
+            "         ) AS rn "
+            "  FROM candidates"
+            ") "
+            "INSERT OR IGNORE INTO collection_run_products "
+            "(run_id, product_type, started_at, inserted_count, unchanged_count) "
+            "SELECT run_id, product_type, started_at, inserted_count, unchanged_count "
+            "FROM ranked WHERE rn = 1 ORDER BY source_rowid ASC"
+        )
+        # A row created by the ADD COLUMN default above, for a run_id/product
+        # none of the sources above touched (its only join target,
+        # collection_runs, no longer has a matching row at all) -- keeps
+        # this migration from leaving a placeholder value behind rather than
+        # a real one it simply could not resolve. Mirrors the third pass of
+        # :meth:`_migrate_collection_runs_product_type`'s own accepted
+        # imprecision: no better timestamp survives for it.
+        connection.execute(
+            "UPDATE collection_run_products SET started_at = ("
+            "  SELECT cr.started_at FROM collection_runs cr WHERE cr.run_id = collection_run_products.run_id"
+            ") WHERE started_at = '' AND run_id IN (SELECT run_id FROM collection_runs)"
+        )
 
     # ----------------------------------------------------------------- writes
 
@@ -284,28 +807,185 @@ class ObservationStore:
         run_id: Optional[str] = None,
         observed_at: Optional[datetime] = None,
         report_json: Optional[str] = None,
+        product_type: Optional[ProductType | str] = None,
     ) -> WriteResult:
         """Persist one collection run, collapsing unchanged re-observations.
 
         Returns counts of newly-inserted advertised states versus unchanged
         re-observations, so a caller can tell a quiet day from a repricing day
         without querying further.
+
+        ``collection_runs.product_type`` is taken from the records themselves
+        when ``product_type`` is not supplied, defaulting to ``HOME_LOAN`` for
+        an empty ``records`` so a run is still recorded consistently with this
+        store's pre-term-deposit history. This is what lets
+        :meth:`latest_run_id`/:meth:`get_previous_run_started_at` resolve "the
+        latest run" *for a given product* now that home-loan and term-deposit
+        collections share one ``collection_runs`` table -- which only works if
+        every record in one call belongs to the same product: a caller seeding
+        a store directly must do the same, one call per product, rather than
+        passing a mixed batch that only one product's runs could ever be found
+        under.
+
+        Inferring solely from ``records`` silently mislabels a call with zero
+        records (e.g. a term-deposit collection where every bank withdrew, or
+        a failed attempt worth recording as an empty run) as ``HOME_LOAN``
+        regardless of which product was actually being collected -- it can
+        then surface as the latest home-loan run for previous-snapshot and
+        run-scoped history queries, while that product's own run history loses
+        all trace the attempt happened. A caller that already knows the
+        product -- :meth:`~.service.PricingIntelligenceService.collect` always
+        does -- should pass ``product_type`` explicitly instead of relying on
+        inference. When both are given, ``product_type`` must agree with every
+        record's own ``product_type``, catching a caller's mismatch rather
+        than silently trusting the explicit value over genuinely conflicting
+        records.
+
+        Idempotent when ``run_id`` names a run this store has already
+        recorded *for this same product*: returns that run's
+        originally-recorded counts immediately, without touching
+        ``observations`` at all. Preserving ``collection_runs``' row
+        position on a retried ``run_id`` (see the upsert below) is not
+        sufficient on its own -- replaying the same records through
+        :meth:`_upsert_observation` would still move ``last_seen_run_id`` on
+        every unchanged one back to the retried (older) run, even though a
+        genuinely later run has since touched it. :meth:`get_latest_rates`
+        filters on an exact ``last_seen_run_id`` match against
+        :meth:`latest_run_id`, so that alone would empty its result for a key
+        whose true latest state is correct but whose ``last_seen_run_id`` was
+        just dragged backwards. A changed retry payload is worse: it would
+        insert a fresh row stamped with the retried run's (older) timestamp,
+        which :meth:`get_current_observations` -- keyed on the highest
+        ``id`` per ``observation_key`` -- would then read as the newest
+        state, silently reviving stale content over whatever the later run
+        genuinely recorded. Short-circuiting keeps the *first* recording of
+        any given ``run_id`` (for a given product) authoritative, and any
+        retry an inert no-op.
+
+        Determined via ``collection_run_products`` -- a durable, write-once
+        ledger of every ``(run_id, product_type)`` pair this method has
+        processed -- not ``collection_runs.product_type`` (that single
+        column can only hold one value, so a legacy run_id that recorded
+        both products, one call per product, has it pinned to whichever call
+        happened last) nor the ``observations``/``rate_changes`` evidence an
+        earlier version of this check fell back to (a later run can move
+        ``last_seen_run_id``/``first_seen_run_id`` on, and a quiet
+        reconfirmation-only call leaves no ``rate_changes`` row at all --
+        either erases the only trace a given run_id ever touched a product).
+        See :meth:`_migrate_collection_run_products` for how a pre-existing
+        database recovers what it still can of that history.
+
+        Raises ``ValueError`` if ``run_id`` already names a run recorded for
+        a *different* product -- reusing one run_id across two calls for
+        different products is refused outright now, not just when their
+        ``observed_at`` values differ. Even matching timestamps aren't safe:
+        ``collection_runs`` holds one ``rowid`` per ``run_id``, preserved
+        across the upsert below at whichever position the *first* call
+        established it. A third, unrelated run sharing that same timestamp
+        and committing between the two calls for this run_id then sits, by
+        real insertion order, *between* the run_id's two products' calls --
+        but every ordering query that reads ``collection_runs.started_at``/
+        ``rowid`` directly (:meth:`_run_ordered_after`,
+        :meth:`_run_ordered_after_fixed_reference`, :meth:`_as_of_cutoff`,
+        :meth:`get_run_started_at`) still sees only the run_id's one fixed
+        position, misordering it against that third run for whichever
+        product's call happened second. :meth:`latest_run_id`/
+        :meth:`_previous_run_row` resolve their own ordering through
+        ``collection_run_products`` instead and would not be fooled, but
+        making every ordering path do the same is more places to keep in
+        sync than simply not allowing the ambiguity to exist. A ``run_id``
+        is meant to name one physical collection event with one position in
+        run order; each product's own collection -- even one genuinely
+        gathered at the same real-world moment -- gets its own ``run_id``.
+        A pre-existing (legacy) database can still hold a genuinely mixed
+        run_id from before this guard existed -- see
+        :meth:`_migrate_collection_run_products` for how its read-side
+        participation is recovered, and ``collection_run_products``'s own
+        module-level comment for why that recovery is necessary.
         """
         records = list(records)
         observed_at = observed_at or datetime.now(timezone.utc)
         run_id = run_id or str(uuid.uuid4())
         timestamp = _iso(observed_at)
+        record_product_types = {ProductType(record.product_type) for record in records}
+        if len(record_product_types) > 1:
+            raise ValueError(
+                "record_observations() received a mixed-product batch "
+                f"({sorted(p.value for p in record_product_types)}); one run must be a single "
+                "product's collection -- call it once per product instead."
+            )
+        if product_type is not None:
+            product_type = ProductType(product_type)
+            if record_product_types and product_type not in record_product_types:
+                raise ValueError(
+                    f"record_observations() received product_type={product_type.value!r} but "
+                    f"every record's own product_type is "
+                    f"{sorted(p.value for p in record_product_types)}"
+                )
+        else:
+            product_type = next(iter(record_product_types), ProductType.HOME_LOAN)
+
+        existing_participation = self._connection.execute(
+            "SELECT inserted_count, unchanged_count FROM collection_run_products "
+            "WHERE run_id = ? AND product_type = ?",
+            (run_id, product_type.value),
+        ).fetchone()
+        if existing_participation is not None:
+            return WriteResult(
+                run_id=run_id,
+                inserted=existing_participation["inserted_count"],
+                unchanged=existing_participation["unchanged_count"],
+            )
+
+        existing_run = self._connection.execute(
+            "SELECT started_at FROM collection_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if existing_run is not None:
+            raise ValueError(
+                f"record_observations() received run_id={run_id!r} for product="
+                f"{product_type.value!r}, but that run_id is already recorded "
+                f"(started_at={existing_run['started_at']!r}) for a different product -- "
+                "the same-product case is handled by the idempotent short-circuit above. "
+                "collection_runs holds one row (and one rowid) per run_id, which cannot "
+                "represent two products' relative ordering against other runs at once, so "
+                "reusing one run_id across separate calls for different products is not "
+                "supported; use a distinct run_id for each product's call."
+            )
 
         inserted = 0
         unchanged = 0
         banks = sorted({record.bank for record in records})
 
         with self._transaction() as connection:
+            # An upsert (UPDATE on conflict), not INSERT OR REPLACE: the
+            # latter deletes and reinserts on a run_id collision, handing the
+            # row a brand new (higher) rowid. _run_ordered_after()/
+            # _as_of_cutoff() break a started_at tie between two runs by
+            # comparing collection_runs.rowid as an insertion-order proxy --
+            # retrying an earlier run under its own run_id after a later,
+            # same-timestamp run has already committed would otherwise give
+            # the retried (semantically earlier) run the higher rowid,
+            # reordering it after the later run: latest_run_id() could then
+            # select the retried historical run, and run-anchored
+            # reconstructions would apply states/withdrawals out of order.
+            # UPDATE leaves the original row (and its original rowid) in
+            # place.
             connection.execute(
-                "INSERT OR REPLACE INTO collection_runs "
-                "(run_id, started_at, banks, record_count, inserted_count, unchanged_count, "
-                "report_json) VALUES (?, ?, ?, ?, 0, 0, ?)",
-                (run_id, timestamp, json.dumps(banks), len(records), report_json),
+                "INSERT INTO collection_runs "
+                "(run_id, started_at, banks, product_type, record_count, inserted_count, "
+                "unchanged_count, report_json) VALUES (?, ?, ?, ?, ?, 0, 0, ?) "
+                "ON CONFLICT(run_id) DO UPDATE SET "
+                "started_at = excluded.started_at, banks = excluded.banks, "
+                "product_type = excluded.product_type, record_count = excluded.record_count, "
+                "inserted_count = 0, unchanged_count = 0, report_json = excluded.report_json",
+                (
+                    run_id,
+                    timestamp,
+                    json.dumps(banks),
+                    product_type.value,
+                    len(records),
+                    report_json,
+                ),
             )
             for record in records:
                 if self._upsert_observation(connection, record, timestamp, run_id):
@@ -317,6 +997,17 @@ class ObservationStore:
                 "WHERE run_id = ?",
                 (inserted, unchanged, run_id),
             )
+            # Written once, here, and never updated again -- this row is the
+            # durable record that this exact (run_id, product_type) has been
+            # processed, checked by existing_participation above regardless
+            # of what any later run subsequently does to observations/
+            # rate_changes.
+            connection.execute(
+                "INSERT INTO collection_run_products "
+                "(run_id, product_type, started_at, inserted_count, unchanged_count) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (run_id, product_type.value, timestamp, inserted, unchanged),
+            )
 
         logger.info(
             "recorded run %s: %s records (%s new states, %s unchanged)",
@@ -326,6 +1017,137 @@ class ObservationStore:
             unchanged,
         )
         return WriteResult(run_id=run_id, inserted=inserted, unchanged=unchanged)
+
+    def _run_ordered_after_fixed_reference(
+        self,
+        connection: sqlite3.Connection,
+        reference_run_id: str,
+        reference_timestamp: str,
+        candidate_run_column: str,
+        candidate_timestamp_column: str,
+    ) -> tuple:
+        """SQL fragment + params: true when the run named by
+        ``candidate_run_column`` (a column in the caller's own query) comes
+        strictly after one fixed, already-known reference run.
+
+        Complements the module-level :func:`_run_ordered_after`, which
+        compares two run_id *columns* within the same query -- here the
+        "earlier" side is a single row (e.g. the observation currently being
+        upserted) resolved once, up front, rather than a second column.
+        Shared by both write-time checks that need exactly this comparison:
+        "did this REMOVED_PRODUCT event happen in a run after the one that
+        last confirmed this row" (:meth:`_returned_after_a_withdrawal`) and
+        "did this eligibility-superseding sibling first appear in a run
+        after the one that last confirmed this row" (the eligibility-return
+        check in :meth:`_upsert_observation`). Two runs sharing a timestamp
+        would otherwise tie under a plain ``timestamp > timestamp`` check,
+        merging a same-timestamp return into the stale pre-transition row
+        instead of starting a fresh state. Falls back to plain timestamp
+        comparison when ``reference_run_id`` itself does not correlate to a
+        stored ``collection_runs`` row.
+        """
+        reference = connection.execute(
+            "SELECT started_at, rowid FROM collection_runs WHERE run_id = ?",
+            (reference_run_id,),
+        ).fetchone()
+        if reference is None:
+            return f"{candidate_timestamp_column} > ?", (reference_timestamp,)
+        ordering = (
+            f"(EXISTS (SELECT 1 FROM collection_runs cr WHERE cr.run_id = {candidate_run_column} "
+            "AND (cr.started_at > ? OR (cr.started_at = ? AND cr.rowid > ?))) "
+            f"OR (NOT EXISTS (SELECT 1 FROM collection_runs WHERE run_id = {candidate_run_column}) "
+            f"AND {candidate_timestamp_column} > ?))"
+        )
+        params = (
+            reference["started_at"],
+            reference["started_at"],
+            reference["rowid"],
+            reference_timestamp,
+        )
+        return ordering, params
+
+    def _returned_after_a_withdrawal(
+        self, connection: sqlite3.Connection, observation_key: str, current: sqlite3.Row
+    ) -> bool:
+        """True when a ``REMOVED_PRODUCT`` event for ``observation_key`` was
+        recorded by a run strictly after the one that last touched ``current``.
+
+        Compared by run position (see
+        :meth:`_run_ordered_after_fixed_reference`), not a plain
+        ``detected_at > last_seen_at`` timestamp check: two runs sharing a
+        timestamp -- the row last confirmed by one, withdrawn and then
+        reappearing across a later one -- would otherwise tie, merging the
+        return into the stale pre-withdrawal row instead of starting a
+        fresh state. That corrupts the row's ``first_seen_run_id`` for every
+        later run-anchored reconstruction: ``get_market_snapshot(as_of_run_id=
+        <return run>)`` would keep seeing the withdrawal as coming after the
+        row's (unchanged, pre-withdrawal) introducing run and omit the
+        product even though it has genuinely returned.
+        """
+        ordering, params = self._run_ordered_after_fixed_reference(
+            connection, current["last_seen_run_id"], current["last_seen_at"], "rc.run_id", "rc.detected_at"
+        )
+        return (
+            connection.execute(
+                "SELECT 1 FROM rate_changes rc WHERE rc.observation_key = ? "
+                f"AND rc.change_type = 'REMOVED_PRODUCT' AND {ordering} LIMIT 1",
+                (observation_key, *params),
+            ).fetchone()
+            is not None
+        )
+
+    def _returned_after_an_eligibility_transition(
+        self, connection: sqlite3.Connection, payload: dict, current: sqlite3.Row
+    ) -> bool:
+        """True when a sibling key in this row's eligibility group first
+        appeared in a run strictly after the one that last touched ``current``.
+
+        Compared by run position (see
+        :meth:`_run_ordered_after_fixed_reference`), not a plain
+        ``first_observed_at > last_seen_at`` timestamp check: an eligibility
+        condition flipping A -> B -> A across three runs sharing one
+        timestamp would otherwise tie, since B's ``first_observed_at``
+        equals A's ``last_seen_at`` rather than exceeding it. That would
+        merge the returning A into its stale pre-transition row instead of
+        starting a fresh state, so a later run-anchored reconstruction of
+        the middle run would no longer see B as superseding A and both
+        eligibility states could appear in the same historical snapshot.
+        """
+        ordering, params = self._run_ordered_after_fixed_reference(
+            connection,
+            current["last_seen_run_id"],
+            current["last_seen_at"],
+            "first_seen_run_id",
+            "first_observed_at",
+        )
+        return (
+            connection.execute(
+                "SELECT 1 FROM observations WHERE observation_key <> ? "
+                "AND bank = ? AND product_type = ? AND rate_category = ? "
+                "AND ("
+                "  (term_months IS NOT NULL AND ? IS NOT NULL AND term_months = ?)"
+                "  OR (term_months IS NULL AND ? IS NULL AND LOWER(term_label_raw) = LOWER(?))"
+                ") "
+                "AND interest_payment_frequency = ? AND LOWER(product_name) = LOWER(?) "
+                f"AND min_balance IS ? AND max_balance IS ? AND {ordering} LIMIT 1",
+                (
+                    payload["observation_key"],
+                    payload["bank"],
+                    payload["product_type"],
+                    payload["rate_category"],
+                    payload["term_months"],
+                    payload["term_months"],
+                    payload["term_months"],
+                    payload["term_label_raw"],
+                    payload["interest_payment_frequency"],
+                    payload["product_name"],
+                    payload["min_balance"],
+                    payload["max_balance"],
+                    *params,
+                ),
+            ).fetchone()
+            is not None
+        )
 
     def _upsert_observation(
         self,
@@ -347,11 +1169,9 @@ class ObservationStore:
         # new state even if the content is identical, so first_observed_at
         # marks the return rather than get_observations_as_of() reading this
         # gap as unbroken presence.
-        returned_after_a_withdrawal = current is not None and connection.execute(
-            "SELECT 1 FROM rate_changes WHERE observation_key = ? "
-            "AND change_type = 'REMOVED_PRODUCT' AND detected_at > ? LIMIT 1",
-            (payload["observation_key"], current["last_seen_at"]),
-        ).fetchone() is not None
+        returned_after_a_withdrawal = current is not None and self._returned_after_a_withdrawal(
+            connection, payload["observation_key"], current
+        )
 
         # A product that reverts to an earlier eligibility condition (e.g.
         # 80% LVR -> 75% -> back to 80%) is not a withdrawal -- an
@@ -370,31 +1190,10 @@ class ObservationStore:
         # still the same term), regardless of the raw label -- a plain
         # term_label_raw equality check here would miss a transition that
         # eligibility_group_key() already pairs, leaving both rows current.
-        returned_after_an_eligibility_transition = current is not None and connection.execute(
-            "SELECT 1 FROM observations WHERE observation_key <> ? "
-            "AND bank = ? AND product_type = ? AND rate_category = ? "
-            "AND ("
-            "  (term_months IS NOT NULL AND ? IS NOT NULL AND term_months = ?)"
-            "  OR (term_months IS NULL AND ? IS NULL AND LOWER(term_label_raw) = LOWER(?))"
-            ") "
-            "AND interest_payment_frequency = ? AND LOWER(product_name) = LOWER(?) "
-            "AND min_balance IS ? AND max_balance IS ? AND first_observed_at > ? LIMIT 1",
-            (
-                payload["observation_key"],
-                payload["bank"],
-                payload["product_type"],
-                payload["rate_category"],
-                payload["term_months"],
-                payload["term_months"],
-                payload["term_months"],
-                payload["term_label_raw"],
-                payload["interest_payment_frequency"],
-                payload["product_name"],
-                payload["min_balance"],
-                payload["max_balance"],
-                current["last_seen_at"],
-            ),
-        ).fetchone() is not None
+        returned_after_an_eligibility_transition = (
+            current is not None
+            and self._returned_after_an_eligibility_transition(connection, payload, current)
+        )
 
         # A repeated suspicious value that is no longer independently flagged
         # this run (0 bps movement against its own warning-tagged baseline)
@@ -457,10 +1256,39 @@ class ObservationStore:
 
         Accepts ``RateChange`` objects (typed in ``changes.py``; kept structural
         here to avoid a circular import).
+
+        Relies on :data:`_RATE_CHANGES_SCHEMA`'s ``UNIQUE (observation_key,
+        change_type, detected_at, run_id)`` for idempotency: retrying this
+        call with the exact same ``changes`` (the same objects, hence the
+        same ``run_id`` on each) inserts nothing new. Scoped to ``run_id`` so
+        a genuinely different run's event is never mistaken for that same
+        retry just because it happens to share the same ``detected_at`` as an
+        earlier run's event for this key.
+
+        Requires every change to carry a real (truthy) ``run_id`` -- coercing
+        a missing one to a shared placeholder (e.g. ``""``) would make that
+        run-scoping meaningless: two genuinely different events that both
+        omitted ``run_id`` (``RateChange.run_id`` is optional at construction,
+        for callers that only need a change for display/alerting and never
+        persist it) would collide on the placeholder exactly as they used to
+        collide on a shared ``detected_at`` alone, silently dropping the
+        later one again. A caller that wants to persist a change must supply
+        its own ``run_id`` -- :meth:`~.service.PricingIntelligenceService.collect`
+        always does, via :meth:`record_observations`'s freshly generated one.
         """
         written = 0
         with self._transaction() as connection:
             for change in changes:
+                if not change.run_id:
+                    raise ValueError(
+                        "record_changes() requires every change to carry a real run_id "
+                        f"(got {change.run_id!r} for observation_key={change.observation_key!r}, "
+                        f"change_type={ChangeType(change.change_type).value!r}); rate_changes' "
+                        "uniqueness is scoped to run_id specifically so two distinct events "
+                        "sharing the same observation_key/change_type/detected_at (e.g. two "
+                        "same-timestamp withdrawals) don't collide -- a shared placeholder for "
+                        "every omitted run_id would defeat that."
+                    )
                 cursor = connection.execute(
                     "INSERT OR IGNORE INTO rate_changes ("
                     "observation_key, bank, product_type, product_name, rate_category, "
@@ -480,7 +1308,7 @@ class ObservationStore:
                         change.change_bps,
                         _iso(change.previous_observed_at) if change.previous_observed_at else None,
                         _iso(change.detected_at),
-                        change.run_id or "",
+                        change.run_id,
                         int(change.suspicious),
                         change.detail,
                         change.source_url,
@@ -611,10 +1439,110 @@ class ObservationStore:
 
     # ----------------------------------------------------------------- reads
 
-    def latest_run_id(self) -> Optional[str]:
-        row = self._connection.execute(
-            "SELECT run_id FROM collection_runs ORDER BY started_at DESC, rowid DESC LIMIT 1"
-        ).fetchone()
+    def latest_run_id(
+        self, product_type: Optional[ProductType | str] = None
+    ) -> Optional[str]:
+        """Resolve the most recent run, optionally scoped to one product.
+
+        Home-loan and term-deposit collections share this one
+        ``collection_runs`` table, so an unscoped call can return the other
+        product's run -- ``product_type`` is what lets a caller ask for "the
+        latest run *for this market*" instead of "the latest run, whichever
+        market it happened to be".
+
+        A scoped query matches a run whose stored ``product_type`` agrees
+        *or* whose ``collection_run_products``/``observations``/``rate_changes``
+        rows show the requested product, not the stored column alone:
+        ``record_observations()`` rejects a mixed-product batch now, but a
+        database from before that guard existed can still hold a legacy run
+        that mixed both products under one ``run_id`` (one row, so the
+        migration backfilling this column could only pick one). The extra
+        checks keep such a run findable under *either* product instead of
+        losing one of them -- which the stored value alone is still enough
+        to resolve for the overwhelmingly common case of a normal,
+        single-product run.
+
+        ``collection_run_products`` (see :meth:`record_observations`) is
+        checked first among the fallbacks because it is the only durable
+        one: a mixed run whose home-loan side merely reconfirmed pre-existing
+        rows produces no ``rate_changes``, and ``last_seen_run_id`` moves on
+        to whatever run next touches those rows -- ``first_seen_run_id``
+        would be the only surviving trace, but it was never this shared
+        run's to begin with (the rows already existed before it touched
+        them). It also supplies the *starting-time* half of the ordering key
+        (via a ``LEFT JOIN``, not just an ``EXISTS`` match) whenever it has a
+        row: a run_id reused for a second product before
+        :meth:`record_observations` refused that outright (a legacy
+        database only) could overwrite ``collection_runs.started_at`` with
+        the second call's timestamp, retroactively misdating the *first*
+        product's run if ordering fell back to that shared column --
+        ``collection_run_products.started_at`` is written once, per product,
+        and never touched again, so it alone still reflects when *this*
+        product's data actually landed under this ``run_id``.
+
+        The *ordering* half prefers ``collection_run_products.rowid`` too
+        (via the same ``LEFT JOIN``), falling back to ``collection_runs.rowid``
+        only when no ``collection_run_products`` row exists at all. Neither
+        source is safe to use *unconditionally* on its own:
+        ``collection_runs.rowid`` is preserved in place across every upsert
+        (see the comment below) for a run_id's *first* product, but a run_id
+        later reused for a *second* product via a live call -- from the
+        database's transitional era between this table's introduction and
+        :meth:`record_observations` refusing that outright -- has that
+        second product's real position recorded only by its own
+        ``collection_run_products`` row, genuinely later than some other,
+        single-product run that ``collection_runs.rowid`` alone would rank
+        higher. Conversely, a *migration-backfilled* row's own
+        ``collection_run_products.rowid`` reflects insertion order into
+        *that table*, not real history, on its own -- but
+        :meth:`_migrate_collection_run_products` backfills every row in one
+        sweep ordered by its source ``collection_runs.rowid``, so a
+        backfilled row's freshly-assigned ``collection_run_products.rowid``
+        already agrees, in relative order, with that source. Preferring
+        ``collection_run_products.rowid`` whenever it exists is correct for
+        both cases as a result, without this method needing to know which
+        one it is looking at.
+
+        The three ``EXISTS`` fallbacks still mirror every signal
+        :meth:`_migrate_collection_runs_product_type` backfills from, kept
+        as a matching net (not an ordering one -- always via
+        ``collection_runs.started_at``/``rowid``) for whatever a
+        pre-``collection_run_products`` database's own migration was unable
+        to recover: a mixed *bootstrap* run can have zero ``rate_changes``
+        for *either* product, and once both products' rows have since been
+        reconfirmed unchanged, neither still shows this run via
+        ``last_seen_run_id`` either -- ``observations.first_seen_run_id``
+        (frozen at insertion, unlike ``last_seen_run_id``; see
+        :meth:`_migrate_observations_first_seen_run_id`) is then the only
+        surviving trace for the product the migration's single-column
+        backfill didn't happen to pick. Correlated by that column's actual
+        ``run_id``, not by matching ``first_observed_at`` against
+        ``started_at`` -- two runs captured with the same timestamp (e.g. a
+        caller collecting both products from one shared capture moment)
+        would otherwise each appear to contain the other's rows too.
+        """
+        if product_type is None:
+            row = self._connection.execute(
+                "SELECT run_id FROM collection_runs ORDER BY started_at DESC, rowid DESC LIMIT 1"
+            ).fetchone()
+        else:
+            value = _product_value(product_type)
+            row = self._connection.execute(
+                "SELECT cr.run_id FROM collection_runs cr "
+                "LEFT JOIN collection_run_products crp "
+                "     ON crp.run_id = cr.run_id AND crp.product_type = ? "
+                "WHERE cr.product_type = ? "
+                "OR crp.run_id IS NOT NULL "
+                "OR EXISTS (SELECT 1 FROM observations o "
+                "           WHERE o.last_seen_run_id = cr.run_id AND o.product_type = ?) "
+                "OR EXISTS (SELECT 1 FROM rate_changes rc "
+                "           WHERE rc.run_id = cr.run_id AND rc.product_type = ?) "
+                "OR EXISTS (SELECT 1 FROM observations o2 "
+                "           WHERE o2.first_seen_run_id = cr.run_id AND o2.product_type = ?) "
+                "ORDER BY COALESCE(crp.started_at, cr.started_at) DESC, "
+                "         COALESCE(crp.rowid, cr.rowid) DESC LIMIT 1",
+                (value, value, value, value, value),
+            ).fetchone()
         return row["run_id"] if row else None
 
     def get_run_started_at(self, run_id: str) -> Optional[datetime]:
@@ -639,7 +1567,7 @@ class ObservationStore:
         Scoped to the latest run rather than to "most recent row per key", so a
         product a bank has withdrawn stops appearing.
         """
-        run_id = run_id or self.latest_run_id()
+        run_id = run_id or self.latest_run_id(product_type=product_type)
         if run_id is None:
             return []
         clauses = ["last_seen_run_id = ?", "product_type = ?"]
@@ -700,8 +1628,11 @@ class ObservationStore:
             "  ORDER BY first_observed_at DESC, id DESC LIMIT 1"
             ") AND NOT EXISTS ("
             "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
-            "  AND rc.change_type = 'REMOVED_PRODUCT' AND rc.detected_at > o.last_seen_at"
-            ") " + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra="") + "ORDER BY bank, term_months",
+            "  AND rc.change_type = 'REMOVED_PRODUCT' AND "
+            + _run_ordered_after("rc.run_id", "rc.detected_at", "o.last_seen_run_id", "o.last_seen_at")
+            + ") "
+            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra="")
+            + "ORDER BY bank, term_months",
             (_product_value(product_type),),
         ).fetchall()
         return [_row_to_record(row) for row in rows]
@@ -737,8 +1668,9 @@ class ObservationStore:
             "  ORDER BY first_observed_at DESC, id DESC LIMIT 1"
             ") AND NOT EXISTS ("
             "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
-            "  AND rc.change_type = 'REMOVED_PRODUCT' AND rc.detected_at > o.last_seen_at"
-            ") "
+            "  AND rc.change_type = 'REMOVED_PRODUCT' AND "
+            + _run_ordered_after("rc.run_id", "rc.detected_at", "o.last_seen_run_id", "o.last_seen_at")
+            + ") "
             + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(
                 extra=" AND o3.validation_status != 'warning'"
             )
@@ -781,10 +1713,82 @@ class ObservationStore:
         ).fetchall()
         return [_row_to_history_record(row) for row in rows]
 
+    def _as_of_cutoff(
+        self, before_run_id: Optional[str], timestamp: str
+    ) -> Optional["_AsOfCutoff"]:
+        """Build the SQL cutoff fragments and params for
+        :meth:`get_observations_as_of`/:meth:`get_confirmed_observations_as_of`.
+
+        Returns ``None`` when ``before_run_id`` was given but no longer
+        resolves to a stored run (an empty result is then correct, not an
+        unscoped fallback).
+
+        Plain ``first_observed_at <= ?`` / ``rc.detected_at <= ?`` when
+        ``before_run_id`` is omitted -- unchanged, timestamp-only behaviour.
+        When given, anchors every cutoff to that specific run's
+        ``(started_at, rowid)`` position instead: two runs for the same
+        product can share an identical ``started_at``
+        (:meth:`record_observations`'s public API allows an explicit
+        ``observed_at``), and a plain timestamp cutoff cannot tell which of
+        them a reconstruction should stop at -- a row (or a withdrawal event,
+        or an eligibility-superseding sibling) introduced by a *later*
+        same-timestamp run would still satisfy ``<= as_of`` (they're equal)
+        and either win the per-key selection, retroactively apply a
+        withdrawal, or retroactively supersede a row one run early, even when
+        the caller specifically wants the earlier run's state (see
+        :meth:`get_previous_run_rates`). ``outer``/``inner``/``eligibility``
+        all anchor via an observation row's ``first_seen_run_id``;
+        ``withdrawal`` anchors via ``rate_changes.run_id`` instead, since a
+        ``REMOVED_PRODUCT`` event needs the same run-order treatment as the
+        observation rows it excludes -- with a further fallback to
+        ``rc.detected_at`` for a ``rate_changes`` row whose ``run_id`` does
+        not correlate to any stored run at all (e.g. one written via
+        ``record_changes()`` from a caller that built its own ``RateChange``
+        without a real ``run_id`` -- :meth:`record_changes` stores that as
+        ``""``, not ``NULL``): such a row has no run position to anchor to,
+        so it falls back to being honoured by timestamp alone rather than
+        silently never excluding anything.
+        """
+        if before_run_id is None:
+            return _AsOfCutoff(
+                outer="o.first_observed_at <= ?",
+                inner="o2.first_observed_at <= ?",
+                eligibility="o3.first_observed_at <= ?",
+                withdrawal="rc.detected_at <= ?",
+                observation_params=(timestamp,),
+                withdrawal_params=(timestamp,),
+            )
+        reference = self._connection.execute(
+            "SELECT started_at, rowid FROM collection_runs WHERE run_id = ?",
+            (before_run_id,),
+        ).fetchone()
+        if reference is None:
+            return None
+        observation_params = (reference["started_at"], reference["started_at"], reference["rowid"])
+        ordering = "(cr_row.started_at < ? OR (cr_row.started_at = ? AND cr_row.rowid <= ?))"
+        observation_cutoff = (
+            f"EXISTS (SELECT 1 FROM collection_runs cr_row WHERE cr_row.run_id = {{alias}}.first_seen_run_id "
+            f"AND {ordering})"
+        )
+        withdrawal_cutoff = (
+            f"(EXISTS (SELECT 1 FROM collection_runs cr_row WHERE cr_row.run_id = rc.run_id AND {ordering}) "
+            "OR (NOT EXISTS (SELECT 1 FROM collection_runs cr_check WHERE cr_check.run_id = rc.run_id) "
+            "AND rc.detected_at <= ?))"
+        )
+        return _AsOfCutoff(
+            outer=observation_cutoff.format(alias="o"),
+            inner=observation_cutoff.format(alias="o2"),
+            eligibility=observation_cutoff.format(alias="o3"),
+            withdrawal=withdrawal_cutoff,
+            observation_params=observation_params,
+            withdrawal_params=(*observation_params, timestamp),
+        )
+
     def get_observations_as_of(
         self,
         as_of: datetime,
         product_type: ProductType | str = ProductType.HOME_LOAN,
+        before_run_id: Optional[str] = None,
     ) -> list[CompetitorRateRecord]:
         """Reconstruct the advertised state of every key as of a given time.
 
@@ -793,6 +1797,10 @@ class ObservationStore:
         like at an earlier run once a later run has touched it. This instead
         picks, per key, the most recent row whose ``first_observed_at`` is at
         or before ``as_of`` -- the state that was actually current then.
+
+        ``before_run_id``, when given, anchors that per-key selection to a
+        specific run's position rather than ``as_of`` alone -- see
+        :meth:`_as_of_cutoff` for why a timestamp alone can be ambiguous.
 
         A key withdrawn before ``as_of`` and never re-added must not be
         resurrected just because its last row predates the cutoff. The
@@ -813,20 +1821,30 @@ class ObservationStore:
         predecessor from a reconstruction of an earlier point in time.
         """
         timestamp = _iso(as_of)
+        cutoff = self._as_of_cutoff(before_run_id, timestamp)
+        if cutoff is None:
+            return []
         rows = self._connection.execute(
-            "SELECT * FROM observations o WHERE product_type = ? AND first_observed_at <= ? "
+            f"SELECT * FROM observations o WHERE product_type = ? AND {cutoff.outer} "
             "AND id = ("
-            "  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
-            "  AND o2.first_observed_at <= ? ORDER BY first_observed_at DESC, id DESC LIMIT 1"
+            f"  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
+            f"  AND {cutoff.inner} ORDER BY first_observed_at DESC, id DESC LIMIT 1"
             ") "
             "AND NOT EXISTS ("
             "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
-            "  AND rc.change_type = 'REMOVED_PRODUCT' AND rc.detected_at <= ? "
-            "  AND rc.detected_at > o.first_observed_at"
-            ") "
-            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra=" AND o3.first_observed_at <= ?")
+            f"  AND rc.change_type = 'REMOVED_PRODUCT' AND {cutoff.withdrawal} "
+            "  AND "
+            + _run_ordered_after("rc.run_id", "rc.detected_at", "o.first_seen_run_id", "o.first_observed_at")
+            + ") "
+            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra=f" AND {cutoff.eligibility}")
             + "ORDER BY bank, term_months",
-            (_product_value(product_type), timestamp, timestamp, timestamp, timestamp),
+            (
+                _product_value(product_type),
+                *cutoff.observation_params,
+                *cutoff.observation_params,
+                *cutoff.withdrawal_params,
+                *cutoff.observation_params,
+            ),
         ).fetchall()
         return [_row_to_history_record(row) for row in rows]
 
@@ -834,6 +1852,7 @@ class ObservationStore:
         self,
         as_of: datetime,
         product_type: ProductType | str = ProductType.HOME_LOAN,
+        before_run_id: Optional[str] = None,
     ) -> list[CompetitorRateRecord]:
         """Like :meth:`get_observations_as_of`, but skips a "warning"-tagged
         row to find the last confirmed state per key as of a point in time.
@@ -850,46 +1869,233 @@ class ObservationStore:
         that should retire this row's candidacy as the fallback.
         """
         timestamp = _iso(as_of)
+        cutoff = self._as_of_cutoff(before_run_id, timestamp)
+        if cutoff is None:
+            return []
         rows = self._connection.execute(
-            "SELECT * FROM observations o WHERE product_type = ? AND first_observed_at <= ? "
+            f"SELECT * FROM observations o WHERE product_type = ? AND {cutoff.outer} "
             "AND validation_status != 'warning' "
             "AND id = ("
-            "  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
-            "  AND o2.first_observed_at <= ? AND o2.validation_status != 'warning' "
+            f"  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
+            f"  AND {cutoff.inner} AND o2.validation_status != 'warning' "
             "  ORDER BY first_observed_at DESC, id DESC LIMIT 1"
             ") "
             "AND NOT EXISTS ("
             "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
-            "  AND rc.change_type = 'REMOVED_PRODUCT' AND rc.detected_at <= ? "
-            "  AND rc.detected_at > o.first_observed_at"
-            ") "
+            f"  AND rc.change_type = 'REMOVED_PRODUCT' AND {cutoff.withdrawal} "
+            "  AND "
+            + _run_ordered_after("rc.run_id", "rc.detected_at", "o.first_seen_run_id", "o.first_observed_at")
+            + ") "
             + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(
-                extra=" AND o3.first_observed_at <= ? AND o3.validation_status != 'warning'"
+                extra=f" AND {cutoff.eligibility} AND o3.validation_status != 'warning'"
             )
             + "ORDER BY bank, term_months",
-            (_product_value(product_type), timestamp, timestamp, timestamp, timestamp),
+            (
+                _product_value(product_type),
+                *cutoff.observation_params,
+                *cutoff.observation_params,
+                *cutoff.withdrawal_params,
+                *cutoff.observation_params,
+            ),
         ).fetchall()
         return [_row_to_history_record(row) for row in rows]
 
-    def get_previous_run_started_at(self, before_run_id: Optional[str] = None) -> Optional[datetime]:
-        """Resolve the start time of the run before ``before_run_id`` (default: the latest run).
+    def _previous_run_row(
+        self,
+        before_run_id: Optional[str],
+        product_type: Optional[ProductType | str],
+    ) -> Optional[sqlite3.Row]:
+        """Resolve the run immediately before ``before_run_id`` (default: the
+        latest run), optionally scoped to one product.
+
+        Shared by :meth:`get_previous_run_started_at` (which only needs the
+        timestamp) and :meth:`get_previous_run_rates` (which also needs the
+        ``run_id`` to anchor :meth:`get_observations_as_of`'s reconstruction
+        to this specific run rather than to its timestamp alone -- see that
+        method's own docstring for why the two are not interchangeable when
+        two runs share a timestamp).
+        """
+        before_run_id = before_run_id or self.latest_run_id(product_type=product_type)
+        if before_run_id is None:
+            return None
+        if product_type is None:
+            reference = self._connection.execute(
+                "SELECT started_at, rowid FROM collection_runs WHERE run_id = ?",
+                (before_run_id,),
+            ).fetchone()
+        else:
+            # Resolved the same product-aware way as the main query below --
+            # reference_started_at/reference_rowid anchor the "precedes"
+            # comparison, so if before_run_id is itself a run_id later
+            # reused for a second product, its collection_runs.started_at
+            # may already reflect that later call rather than this
+            # product's own original timing (see the main query's comment).
+            reference = self._connection.execute(
+                "SELECT COALESCE(crp.started_at, cr.started_at) AS started_at, "
+                "COALESCE(crp.rowid, cr.rowid) AS rowid "
+                "FROM collection_runs cr "
+                "LEFT JOIN collection_run_products crp "
+                "     ON crp.run_id = cr.run_id AND crp.product_type = ? "
+                "WHERE cr.run_id = ?",
+                (_product_value(product_type), before_run_id),
+            ).fetchone()
+        if reference is None:
+            return None
+        # Two runs for the same product can share started_at -- record_observations()'s
+        # public API allows an explicit observed_at, and latest_run_id() already
+        # breaks such ties on rowid. Matching only "started_at < reference" (not
+        # this same (started_at, rowid) pair) would treat a same-timestamp
+        # earlier-inserted run as not preceding the reference at all, skipping it
+        # entirely rather than returning it as the correct predecessor.
+        reference_started_at = reference["started_at"]
+        reference_rowid = reference["rowid"]
+        if product_type is None:
+            precedes = "(cr.started_at < ? OR (cr.started_at = ? AND cr.rowid < ?))"
+            return self._connection.execute(
+                f"SELECT run_id, started_at FROM collection_runs cr WHERE {precedes} "
+                "ORDER BY cr.started_at DESC, cr.rowid DESC LIMIT 1",
+                (reference_started_at, reference_started_at, reference_rowid),
+            ).fetchone()
+        # Same stored-value-or-EXISTS matching as latest_run_id(), for the
+        # same reason: a legacy run that mixed both products under one
+        # run_id (before record_observations() rejected that) must stay
+        # findable under either product, not just whichever one the
+        # migration's single-column backfill happened to pick.
+        # collection_run_products (see record_observations()) supplies both
+        # the match and (via the LEFT JOIN/COALESCE) the ordering timing as
+        # the only durable signal -- a mixed run whose side for this product
+        # merely reconfirmed pre-existing rows leaves none of the other
+        # three behind once a later run moves last_seen_run_id on, and
+        # collection_runs.started_at/rowid themselves may already belong to
+        # a second product that later reused this run_id. See
+        # latest_run_id()'s docstring for why preferring
+        # collection_run_products' own rowid (falling back to
+        # collection_runs.rowid only when no such row exists) is correct for
+        # both a migration-backfilled row (backfilled in one sweep ordered
+        # by its source collection_runs.rowid, so the two agree in relative
+        # order) and a live-reused run_id from this store's transitional era
+        # (whose real position collection_runs.rowid alone cannot capture).
+        # Those three EXISTS checks remain as a matching net (not an
+        # ordering one) for whatever a pre-collection_run_products
+        # database's own migration (_migrate_collection_run_products())
+        # could not recover: every signal
+        # _migrate_collection_runs_product_type() backfills from, including
+        # a mixed bootstrap run's only surviving trace, first_seen_run_id
+        # (correlated by actual run_id, like last_seen_run_id/
+        # rate_changes.run_id above -- not by matching first_observed_at
+        # against started_at, which would also match an unrelated run
+        # captured at the same timestamp).
+        value = _product_value(product_type)
+        precedes = (
+            "(COALESCE(crp.started_at, cr.started_at) < ? "
+            "OR (COALESCE(crp.started_at, cr.started_at) = ? "
+            "    AND COALESCE(crp.rowid, cr.rowid) < ?))"
+        )
+        return self._connection.execute(
+            "SELECT cr.run_id AS run_id, "
+            "COALESCE(crp.started_at, cr.started_at) AS started_at "
+            "FROM collection_runs cr "
+            "LEFT JOIN collection_run_products crp "
+            f"     ON crp.run_id = cr.run_id AND crp.product_type = ? WHERE {precedes} "
+            "AND (cr.product_type = ? "
+            "     OR crp.run_id IS NOT NULL "
+            "     OR EXISTS (SELECT 1 FROM observations o "
+            "                WHERE o.last_seen_run_id = cr.run_id AND o.product_type = ?) "
+            "     OR EXISTS (SELECT 1 FROM rate_changes rc "
+            "                WHERE rc.run_id = cr.run_id AND rc.product_type = ?) "
+            "     OR EXISTS (SELECT 1 FROM observations o2 "
+            "                WHERE o2.first_seen_run_id = cr.run_id AND o2.product_type = ?)) "
+            "ORDER BY COALESCE(crp.started_at, cr.started_at) DESC, "
+            "         COALESCE(crp.rowid, cr.rowid) DESC LIMIT 1",
+            (
+                value,
+                reference_started_at,
+                reference_started_at,
+                reference_rowid,
+                value,
+                value,
+                value,
+                value,
+            ),
+        ).fetchone()
+
+    def get_previous_run_started_at(
+        self,
+        before_run_id: Optional[str] = None,
+        product_type: Optional[ProductType | str] = None,
+    ) -> Optional[datetime]:
+        """Resolve the start time of the run before ``before_run_id``
+        (default: the latest run), optionally scoped to one product.
+
+        Home-loan and term-deposit collections share this one
+        ``collection_runs`` table, so an unscoped call can resolve either
+        endpoint -- the default "latest run" or the "previous" run found from
+        it -- to the other product's run. ``product_type`` is what lets a
+        caller ask for the run before the latest *for this market*, e.g. so a
+        deposit run sandwiched between two mortgage runs is not skipped over
+        (or, without scoping ``before_run_id`` itself, mistaken for the
+        mortgage market's own previous state).
 
         Exposed separately from :meth:`get_previous_run_rates` so a caller can
         also pass this timestamp on as the snapshot's ``as_of``, rather than
         letting it be inferred from the reconstructed records themselves.
         """
-        before_run_id = before_run_id or self.latest_run_id()
-        if before_run_id is None:
-            return None
-        started_at = self.get_run_started_at(before_run_id)
-        if started_at is None:
-            return None
-        previous = self._connection.execute(
-            "SELECT started_at FROM collection_runs WHERE started_at < ? "
-            "ORDER BY started_at DESC, rowid DESC LIMIT 1",
-            (_iso(started_at),),
-        ).fetchone()
+        previous = self._previous_run_row(before_run_id, product_type)
         return _parse_iso(previous["started_at"]) if previous is not None else None
+
+    def get_previous_run_id(
+        self,
+        before_run_id: Optional[str] = None,
+        product_type: Optional[ProductType | str] = None,
+    ) -> Optional[str]:
+        """Resolve the ``run_id`` of the run before ``before_run_id``
+        (default: the latest run), optionally scoped to one product.
+
+        A caller reconstructing that run's state (e.g.
+        ``get_previous_market_snapshot()``) needs this alongside
+        :meth:`get_previous_run_started_at`'s timestamp, to pass on as
+        :meth:`get_observations_as_of`'s ``before_run_id`` -- see that
+        method's docstring for why the timestamp alone is not always enough
+        to identify the right run when two runs share a timestamp.
+
+        Calling this and :meth:`get_previous_run_started_at` as two separate
+        store round-trips is unsafe when both values are needed for the
+        *same* reconstruction: a collection commit landing between the two
+        calls can shift which run is "the latest", so each call resolves
+        "the previous run" relative to a different reference and returns a
+        run_id/started_at pair that do not name the same run. Use
+        :meth:`get_previous_run` instead for that case.
+        """
+        previous = self._previous_run_row(before_run_id, product_type)
+        return previous["run_id"] if previous is not None else None
+
+    def get_previous_run(
+        self,
+        before_run_id: Optional[str] = None,
+        product_type: Optional[ProductType | str] = None,
+    ) -> Optional[PreviousRun]:
+        """Resolve the run before ``before_run_id`` (default: the latest
+        run), returning its ``run_id`` and ``started_at`` together from one
+        lookup.
+
+        :meth:`get_previous_run_started_at` and :meth:`get_previous_run_id`
+        each independently call :meth:`_previous_run_row`. A caller needing
+        both values for one reconstruction (e.g.
+        :meth:`~.service.PricingIntelligenceService.get_previous_market_snapshot`,
+        which anchors :meth:`get_observations_as_of` to both the timestamp
+        *and* the run_id) must not call them as two separate store
+        round-trips: another same-product collection committing between the
+        two calls shifts which run each one resolves "previous" relative to,
+        so the resulting timestamp and run_id can name two different runs --
+        the snapshot would then reconstruct one run's state while labelling
+        it with another run's ``as_of``. This method resolves both from a
+        single :meth:`_previous_run_row` call, so they always name the same
+        run.
+        """
+        previous = self._previous_run_row(before_run_id, product_type)
+        if previous is None:
+            return None
+        return PreviousRun(run_id=previous["run_id"], started_at=_parse_iso(previous["started_at"]))
 
     def get_previous_run_rates(
         self,
@@ -897,10 +2103,14 @@ class ObservationStore:
         before_run_id: Optional[str] = None,
     ) -> list[CompetitorRateRecord]:
         """Return the advertised rates from the run before ``before_run_id``."""
-        as_of = self.get_previous_run_started_at(before_run_id)
-        if as_of is None:
+        previous_run = self._previous_run_row(before_run_id, product_type)
+        if previous_run is None:
             return []
-        return self.get_observations_as_of(as_of=as_of, product_type=product_type)
+        return self.get_observations_as_of(
+            as_of=_parse_iso(previous_run["started_at"]),
+            product_type=product_type,
+            before_run_id=previous_run["run_id"],
+        )
 
     def get_changes_since(
         self,
@@ -910,6 +2120,8 @@ class ObservationStore:
         term_months: Optional[int] = None,
         include_suspicious: bool = True,
         now: Optional[datetime] = None,
+        product_type: Optional[ProductType | str] = None,
+        rate_category: Optional[str] = None,
     ) -> list[dict]:
         """Return stored change events in a window, newest first.
 
@@ -933,6 +2145,12 @@ class ObservationStore:
         if term_months is not None:
             clauses.append("term_months = ?")
             params.append(term_months)
+        if product_type is not None:
+            clauses.append("product_type = ?")
+            params.append(_product_value(product_type))
+        if rate_category is not None:
+            clauses.append("rate_category = ?")
+            params.append(rate_category)
         if not include_suspicious:
             clauses.append("suspicious = 0")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -1014,6 +2232,7 @@ def _record_to_row(record: CompetitorRateRecord, timestamp: str, run_id: str) ->
         "validation_status": record.validation_status,
         "validation_warnings": json.dumps(record.validation_warnings),
         "first_observed_at": timestamp,
+        "first_seen_run_id": run_id,
         "last_seen_at": timestamp,
         "last_seen_run_id": run_id,
         "observation_count": 1,

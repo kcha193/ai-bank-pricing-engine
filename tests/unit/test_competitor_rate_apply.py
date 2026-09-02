@@ -4,6 +4,7 @@ from balance_pricing_engine.competitor_rates.apply import (
     CompetitorRateResolutionError,
     _filter_mortgage_records,
     _resolve_strategy,
+    _select_frequency,
     apply_competitor_rates_to_config,
     load_and_resolve_competitor_rates,
 )
@@ -201,6 +202,67 @@ def test_term_deposit_frequency_selection_falls_back_to_first_available():
 
     assert resolved.term_deposit_records[0].bank == "Kiwibank"
     assert resolved.term_deposit_records[0].interest_payment_frequency == "monthly"
+
+
+@pytest.mark.parametrize("preferred_frequency", ["monthly", "at_maturity"])
+def test_term_deposit_frequency_selection_prefers_each_frequency_offered_by_combined_option(
+    make_record, preferred_frequency
+):
+    """A combined option must satisfy each frequency it explicitly offers.
+
+    If selection only uses exact equality, ``monthly`` does not match
+    ``at_maturity+monthly`` and the later ``quarterly`` preference wins
+    instead.
+    """
+    monthly_or_maturity = make_record(
+        bank="ANZ",
+        product_type="term_deposit",
+        rate_category="term_deposit",
+        interest_payment_frequency="at_maturity+monthly",
+    )
+    quarterly = make_record(
+        bank="ANZ",
+        product_type="term_deposit",
+        rate_category="term_deposit",
+        interest_payment_frequency="quarterly",
+    )
+
+    selected = _select_frequency([monthly_or_maturity, quarterly], [preferred_frequency, "quarterly"])
+
+    assert selected is monthly_or_maturity
+    assert selected.interest_payment_frequency == "at_maturity+monthly"
+
+
+@pytest.mark.parametrize("order", [(0, 1), (1, 0)])
+def test_term_deposit_frequency_selection_prefers_an_exact_match_over_a_combined_option(
+    make_record, order
+):
+    """An exact "monthly" row is a closer fit for a "monthly" preference than
+    a combined "at_maturity+monthly" row that merely offers monthly
+    alongside another frequency. Selection must not depend on which one
+    happened to parse first from the source HTML -- tested in both list
+    orders -- since that arbitrary ordering would otherwise decide the
+    bank's representative deposit rate and the market aggregate it feeds."""
+    exact_monthly = make_record(
+        bank="ANZ",
+        product_type="term_deposit",
+        rate_category="term_deposit",
+        interest_payment_frequency="monthly",
+        rate_pct=4.00,
+    )
+    combined = make_record(
+        bank="ANZ",
+        product_type="term_deposit",
+        rate_category="term_deposit",
+        interest_payment_frequency="at_maturity+monthly",
+        rate_pct=3.90,
+    )
+    candidates = [exact_monthly, combined]
+    records = [candidates[order[0]], candidates[order[1]]]
+
+    selected = _select_frequency(records, ["monthly", "at_maturity", "quarterly"])
+
+    assert selected is exact_monthly
 
 
 def test_mortgage_filter_can_exclude_special_rates():

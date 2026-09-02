@@ -238,6 +238,7 @@ def test_history_chart_is_not_blanked_by_a_different_products_withdrawal(
                     term_months=12,
                     change_type=ChangeType.REMOVED_PRODUCT,
                     detected_at=DAY_TWO,
+                    run_id="test-run",
                 )
             ]
         )

@@ -11,12 +11,73 @@ so a caller always knows what was dropped and why.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+import re
 from typing import Iterable, Optional, Sequence
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
 from balance_pricing_engine.pricing_intelligence.changes import resolve_pairing
 from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
+
+#: Matches any percentage token (e.g. "4.01%") in raw_text_context. Used two
+#: ways by _disambiguate_non_comparable_identities() and its helpers
+#: _match_previous_non_comparable_precise()/_permissive():
+#: _strip_all_percentage_tokens() removes every occurrence outright (immune
+#: to an unrelated mutable figure, e.g. a fund's "since inception" return,
+#: but loses a percentage that is itself the only thing telling two rows
+#: apart, e.g. a PIR/tax-band label such as "PIR 28%: 4.01%");
+#: _strip_advertised_rate_token() instead inspects each occurrence's
+#: numeric value and removes only the one matching the record's own
+#: advertised rate, leaving a structural qualifier like that PIR label
+#: untouched.
+_PERCENTAGE_TOKEN_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+
+
+def _strip_all_percentage_tokens(raw_text_context: str) -> str:
+    """Remove every percentage token from ``raw_text_context``.
+
+    The permissive fallback match in :func:`_match_previous_non_comparable`,
+    used only when the precise (advertised-rate-only) match finds nothing:
+    most non_comparable rows are already distinguished by non-numeric label
+    text (a fund name, a product description), so a row can still be
+    recognised as continuing its predecessor even when some *other*
+    percentage in the same text mutated independently, such as a fund's
+    "since inception" return alongside its (separately parsed) "Return"
+    column.
+    """
+    return _PERCENTAGE_TOKEN_PATTERN.sub("", raw_text_context)
+
+
+def _strip_advertised_rate_token(raw_text_context: str, advertised_rate_pct: float) -> str:
+    """Remove only the record's own advertised rate from ``raw_text_context``.
+
+    Matched by numeric value rather than a fixed decimal-precision format, so
+    "4.01%" is found and removed whether the source page rendered it as
+    "4.01%", "4.010%", or "4.0100%" -- any other percentage in the text (a
+    PIR/tax-band qualifier, an unrelated fee) is left untouched.
+
+    Only the *last* value-matching occurrence is removed, mirroring
+    :func:`~.extractors._extract_rate`/:func:`~.extractors._extract_plausible_rate`,
+    which pick ``advertised_rate_pct`` itself as the *last* plausible
+    percentage in the row (``plausible[-1]``) -- not the first. A structural
+    qualifier that coincidentally shares the rate's value (e.g. "Growth Fund
+    | 4% allocation | 4% return", where "4% return" is the parsed rate) must
+    survive normalisation, or once the two values diverge (the return moves
+    to 4.1%, the allocation stays 4%) the qualifier would appear only on one
+    side, changing the identity for a row whose only genuine change was its
+    rate. Matching the extractor's own end of the row is a closer proxy for
+    "the rate's own token" than "every same-valued percentage" -- or than the
+    first occurrence, which is the *wrong* end here -- without needing
+    cell-boundary information this already-flattened text doesn't carry.
+    """
+    last_match: "re.Match[str] | None" = None
+    for match in _PERCENTAGE_TOKEN_PATTERN.finditer(raw_text_context):
+        if abs(float(match.group(1)) - advertised_rate_pct) < 1e-6:
+            last_match = match
+    if last_match is None:
+        return raw_text_context
+    return raw_text_context[: last_match.start()] + raw_text_context[last_match.end() :]
 
 
 @dataclass(frozen=True)
@@ -94,10 +155,31 @@ def validate_observations(
     would have no baseline to compare against and the movement would pass
     unflagged. Only applied when exactly one unclaimed predecessor shares the
     category-agnostic group -- an ambiguous match is not used as a baseline.
+
+    A deposit-side ``non_comparable`` record is given a stable per-row
+    identity (see :func:`_disambiguate_non_comparable_identities`) before any
+    of the above, so heterogeneous rows sharing the generic category never
+    collide on ``observation_key()`` in the first place. Scoped to deposits
+    only: a mortgage's non_comparable products (subsidised/green top-ups,
+    closed products) are already individually named by the extractor and
+    have never needed this, so leaving them untouched preserves every
+    already-stored mortgage identity rather than migrating it.
     """
     thresholds = thresholds or ValidationThresholds()
     records = list(records)
     previous = list(previous or [])
+    non_comparable_indices = [
+        i
+        for i, record in enumerate(records)
+        if record.rate_category == "non_comparable"
+        and ProductType(record.product_type) is ProductType.TERM_DEPOSIT
+    ]
+    if non_comparable_indices:
+        disambiguated = _disambiguate_non_comparable_identities(
+            [records[i] for i in non_comparable_indices], previous
+        )
+        for i, record in zip(non_comparable_indices, disambiguated):
+            records[i] = record
     pairs = resolve_pairing(previous, records)
 
     claimed_previous_keys = {p.observation_key() for p in pairs.values()}
@@ -115,6 +197,15 @@ def validate_observations(
         issues = _validate_record(record, thresholds, key)
 
         conflicting_rates = conflicting_rates_by_key.get(key)
+        # The conflict guard protects market statistics from an ambiguous
+        # identity silently resolving by insertion order. A non_comparable
+        # record no longer needs an exemption here: it was disambiguated by
+        # _disambiguate_non_comparable_identities() above, so two genuinely
+        # different heterogeneous rows (fund returns, PIE effective-rate
+        # columns) no longer share a key at all. A collision that still
+        # reaches this point (identical raw_text_context, different rates)
+        # means the same input somehow produced two different readings --
+        # a real parser fault worth rejecting loudly, not one to exempt.
         if conflicting_rates is not None:
             issues.append(
                 ObservationIssue(
@@ -149,6 +240,193 @@ def validate_observations(
             outcome.accepted.append(record)
 
     return outcome
+
+
+def _tagged(record: CompetitorRateRecord, discriminator_text: str) -> CompetitorRateRecord:
+    tag = hashlib.sha256(discriminator_text.encode("utf-8")).hexdigest()[:8]
+    return record.model_copy(update={"product_name": f"{record.product_name} [{tag}]"})
+
+
+def _non_comparable_base_group_key(record: CompetitorRateRecord) -> tuple:
+    """Identity fields a disambiguation tag never touches.
+
+    Deliberately excludes ``product_name`` (the field the tag is appended
+    to) and anything derived from ``raw_text_context``, so this key means
+    the same thing for an untagged current record and an already-tagged
+    ``previous`` record -- letting :func:`_disambiguate_non_comparable_identities`
+    group both sides for matching without caring which run tagged either one.
+    """
+    return (
+        record.bank,
+        str(ProductType(record.product_type)),
+        record.rate_category,
+        record.term_months_normalised
+        if record.term_months_normalised is not None
+        else record.term_label_raw.lower(),
+        record.interest_payment_frequency,
+    )
+
+
+def _match_previous_non_comparable_precise(
+    record: CompetitorRateRecord, candidates: Sequence[CompetitorRateRecord]
+) -> Optional[CompetitorRateRecord]:
+    """Find the one ``previous`` record ``record`` precisely continues, if any.
+
+    Only the record's own advertised rate is stripped, keeping a PIR/tax-band
+    qualifier or any other non-identity figure intact -- see
+    :func:`_disambiguate_non_comparable_identities` for why this must be
+    resolved for the whole batch before :func:`_match_previous_non_comparable_permissive`
+    is tried on any record. Returns a match only when it identifies exactly
+    one candidate: an ambiguous tie means "not confidently this one," not
+    "guess."
+    """
+    if not candidates:
+        return None
+    own_precise = _strip_advertised_rate_token(record.raw_text_context, record.advertised_rate_pct)
+    precise_matches = [
+        candidate
+        for candidate in candidates
+        if _strip_advertised_rate_token(candidate.raw_text_context, candidate.advertised_rate_pct)
+        == own_precise
+    ]
+    return precise_matches[0] if len(precise_matches) == 1 else None
+
+
+def _match_previous_non_comparable_permissive(
+    record: CompetitorRateRecord, candidates: Sequence[CompetitorRateRecord]
+) -> Optional[CompetitorRateRecord]:
+    """Find the one ``previous`` record ``record`` permissively continues, if any.
+
+    Every percentage is stripped, so a genuinely unrelated non-identity
+    figure drifting between runs (e.g. a fund's "since inception" return)
+    doesn't break continuity. Only tried, batch-wide, after
+    :func:`_match_previous_non_comparable_precise` -- see
+    :func:`_disambiguate_non_comparable_identities`. Returns a match only
+    when it identifies exactly one candidate.
+    """
+    if not candidates:
+        return None
+    own_permissive = _strip_all_percentage_tokens(record.raw_text_context)
+    permissive_matches = [
+        candidate
+        for candidate in candidates
+        if _strip_all_percentage_tokens(candidate.raw_text_context) == own_permissive
+    ]
+    return permissive_matches[0] if len(permissive_matches) == 1 else None
+
+
+def _disambiguate_non_comparable_identities(
+    records: Sequence[CompetitorRateRecord],
+    previous: Sequence[CompetitorRateRecord],
+) -> list[CompetitorRateRecord]:
+    """Give every ``non_comparable`` row a stable, content-derived identity.
+
+    ``rate_category="non_comparable"`` deliberately lumps heterogeneous rows
+    (fund returns, PIE effective-rate columns) into one category with no
+    identity-bearing distinction of their own, so several such rows can share
+    :meth:`~.models.CompetitorRateRecord.observation_key` while genuinely
+    representing different products at different rates. Exempting them from
+    the conflicting-observation guard let every one of them reach storage
+    unfiltered, but :meth:`~.store.ObservationStore.record_observations` then
+    read each simultaneous row as a *successive state of one product*: a
+    completely unchanged collection wrote every one of them again as a fresh
+    inserted state rather than unchanged, corrupting the audit history and
+    growing the database on every scheduled run -- 121 of 224 live deposit
+    records hit this.
+
+    Appending a short hash of a discriminator derived from
+    ``raw_text_context`` to ``product_name`` -- already part of
+    :meth:`~.models.CompetitorRateRecord.eligibility_group_key`'s identity
+    formula -- gives each row its own stable-across-runs identity without
+    touching ``raw_text_context`` itself, which stays the untouched source
+    evidence.
+
+    A record's tag must not depend on which *sibling* rows happen to be in
+    this same batch: an earlier version disambiguated by whether two rows
+    collided once every percentage was stripped from their text, but that
+    made a surviving row's identity flip the moment a colliding sibling
+    stopped being collected (e.g. two rows told apart only by a PIR/tax-band
+    percentage -- "PIR 28%: 4.01%" vs "PIR 33%: 4.19%" -- one of them
+    disappearing let the survivor resolve to a different, sibling-free tag),
+    reading a completely unchanged row as withdrawn and a new one appearing.
+
+    Instead, each record first looks for the ``previous`` record it
+    continues, scoped to :func:`_non_comparable_base_group_key` so only rows
+    that could plausibly be the same position are compared, and inherits
+    that record's exact ``product_name`` (tag included) unchanged -- stable
+    across runs by construction, since it never depends on this batch's
+    siblings at all, only on history. A record with no continuing
+    predecessor (first time seen, or its old match was claimed by another
+    record in this same batch) gets a fresh tag from its own text with only
+    its own advertised rate stripped (see :func:`_strip_advertised_rate_token`):
+    distinct fresh rows are already told apart by their own content (a fund
+    name, a tax-band qualifier) without needing to know about each other,
+    and any future run re-establishes continuity through this same match.
+
+    Matching runs in two full batch-wide passes --
+    :func:`_match_previous_non_comparable_precise` for every record before
+    :func:`_match_previous_non_comparable_permissive` is tried on any of
+    them -- rather than trying both tiers per record as the batch is walked.
+    Interleaving them per record makes the outcome depend on iteration
+    order: with two prior rows told apart only by a PIR/tax-band percentage
+    ("PIR 28%: 4.01%" vs "PIR 33%: 4.19%"), a row whose own precise text has
+    since changed permissively matches *both* once every percentage is
+    stripped. Reached before its sibling's unchanged row has precisely
+    claimed its own predecessor, that permissive lookup sees both
+    candidates still available, calls the tie ambiguous, and mints a
+    needless fresh identity -- reached after, only one candidate remains
+    and the match succeeds. Resolving every precise match first removes
+    that dependency: the unchanged row always claims its own predecessor
+    before any permissive lookup runs, so the changed row's permissive
+    match is judged against the batch's true leftover candidates no matter
+    which record was visited first.
+    """
+    previous_by_base: dict[tuple, list[CompetitorRateRecord]] = {}
+    for candidate in previous:
+        if candidate.rate_category == "non_comparable" and ProductType(
+            candidate.product_type
+        ) is ProductType.TERM_DEPOSIT:
+            previous_by_base.setdefault(_non_comparable_base_group_key(candidate), []).append(
+                candidate
+            )
+
+    claimed_previous_ids: set[int] = set()
+
+    def _available(record: CompetitorRateRecord) -> list[CompetitorRateRecord]:
+        return [
+            candidate
+            for candidate in previous_by_base.get(_non_comparable_base_group_key(record), [])
+            if id(candidate) not in claimed_previous_ids
+        ]
+
+    matches: dict[int, CompetitorRateRecord] = {}
+    for index, record in enumerate(records):
+        match = _match_previous_non_comparable_precise(record, _available(record))
+        if match is not None:
+            claimed_previous_ids.add(id(match))
+            matches[index] = match
+
+    for index, record in enumerate(records):
+        if index in matches:
+            continue
+        match = _match_previous_non_comparable_permissive(record, _available(record))
+        if match is not None:
+            claimed_previous_ids.add(id(match))
+            matches[index] = match
+
+    tagged: list[CompetitorRateRecord] = []
+    for index, record in enumerate(records):
+        match = matches.get(index)
+        if match is not None:
+            tagged.append(record.model_copy(update={"product_name": match.product_name}))
+        else:
+            tagged.append(
+                _tagged(
+                    record,
+                    _strip_advertised_rate_token(record.raw_text_context, record.advertised_rate_pct),
+                )
+            )
+    return tagged
 
 
 def _conflicting_rates_within_batch(

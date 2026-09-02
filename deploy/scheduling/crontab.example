@@ -5,8 +5,14 @@
 # The workflow script takes its own single-instance lock, so an overrunning
 # browser-rendered collection cannot interleave with the next schedule.
 #
+# --product defaults to home_loan. Term deposits are a SEPARATE market and
+# need their own scheduled invocation -- see the second line below. Each
+# invocation's --lock-file and --summary-file must be distinct per product:
+# sharing either would make the second product's run either get skipped
+# (EXIT_ALREADY_RUNNING) or silently overwrite the other product's summary.
+#
 # Exit codes:
-#   0  all five banks collected
+#   0  every selected bank collected
 #   1  no bank collected -- the run produced nothing
 #   2  partial: at least one bank failed, market view incomplete
 #   3  skipped, another collection was already running
@@ -23,4 +29,6 @@
 # pricing_intelligence block (selected banks, validation thresholds,
 # collection delays, database path) configured there.
 
-30 7 * * * cd /path/to/ai-bank-pricing-engine && mkdir -p data/processed/pricing_intelligence && ( .venv/bin/python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --render-javascript --quiet --summary-file data/processed/pricing_intelligence/last_run.json >> data/processed/pricing_intelligence/collect.log 2>&1; code=$?; [ "$code" -eq 0 ] || echo "NZ rate collection exited $code $(date)" >> data/processed/pricing_intelligence/collect.err.log; exit "$code" )
+30 7 * * * cd /path/to/ai-bank-pricing-engine && mkdir -p data/processed/pricing_intelligence && ( .venv/bin/python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --render-javascript --quiet --lock-file data/processed/pricing_intelligence/collection-home-loan.lock --summary-file data/processed/pricing_intelligence/last_run_home_loan.json >> data/processed/pricing_intelligence/collect.log 2>&1; code=$?; [ "$code" -eq 0 ] || echo "NZ home-loan rate collection exited $code $(date)" >> data/processed/pricing_intelligence/collect.err.log; exit "$code" )
+
+35 7 * * * cd /path/to/ai-bank-pricing-engine && mkdir -p data/processed/pricing_intelligence && ( .venv/bin/python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --product term_deposit --render-javascript --quiet --lock-file data/processed/pricing_intelligence/collection-term-deposit.lock --summary-file data/processed/pricing_intelligence/last_run_term_deposit.json >> data/processed/pricing_intelligence/collect.log 2>&1; code=$?; [ "$code" -eq 0 ] || echo "NZ term-deposit rate collection exited $code $(date)" >> data/processed/pricing_intelligence/collect.err.log; exit "$code" )

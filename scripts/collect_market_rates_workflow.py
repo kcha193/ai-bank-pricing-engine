@@ -27,12 +27,14 @@ from pathlib import Path
 import sys
 from typing import Optional
 
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.observability.logging import configure_json_logging, log_event
 from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
 from balance_pricing_engine.pricing_intelligence.service import (
     CollectionOutcome,
     PricingIntelligenceService,
+    _resolve_rate_category,
 )
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 
@@ -97,6 +99,59 @@ def _banks_with_zero_accepted_rates(outcome: CollectionOutcome) -> set[str]:
     return {bank for bank in outcome.succeeded_banks if bank not in accepted_banks}
 
 
+def _comparable_rate_count(
+    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
+) -> int:
+    """Accepted rows in the product's default scheduled comparison category.
+
+    Not "every accepted row that isn't ``non_comparable``": a term-deposit
+    collection can validation-accept a real, non-``non_comparable`` category
+    such as ``pie_term_deposit`` while missing every ordinary
+    ``term_deposit`` row entirely (e.g. a parser regression that only
+    matches the PIE table) -- those PIE rows are genuine data, but the
+    service's default deposit snapshot filters to ``rate_category=
+    "term_deposit"`` specifically (see :func:`_resolve_rate_category`), so
+    they can never enter it. The same applies to home loans: a bank
+    contributing only its ``standard`` tier while missing ``special``
+    leaves the default comparison view empty for that bank even though
+    ``rate_count`` is positive. Resolved via the same
+    :func:`_resolve_rate_category` the market snapshot itself uses, so this
+    cannot drift from what "usable" actually means for a given product.
+    """
+    target_category = _resolve_rate_category(product_type, None)
+    return sum(
+        1 for record in outcome.validation.accepted if record.rate_category == target_category
+    )
+
+
+def _banks_with_zero_comparable_rates(
+    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
+) -> set[str]:
+    """Banks that fetched and had rows accepted, but none in the product's
+    default scheduled comparison category (see :func:`_comparable_rate_count`).
+
+    One step further down the pipeline than :func:`_banks_with_zero_accepted_rates`:
+    a bank whose only accepted rows fall outside the default comparison
+    category contributed nothing the scheduled market view can use, the
+    same as a bank with zero accepted rows at all -- just not yet caught,
+    since validation genuinely accepted the rows. Banks with zero accepted
+    rows at all are excluded here; :func:`_validation_only_failures`
+    already reports those.
+    """
+    zero_accepted = _banks_with_zero_accepted_rates(outcome)
+    target_category = _resolve_rate_category(product_type, None)
+    comparable_banks = {
+        record.bank
+        for record in outcome.validation.accepted
+        if record.rate_category == target_category
+    }
+    return {
+        bank
+        for bank in outcome.succeeded_banks
+        if bank not in zero_accepted and bank not in comparable_banks
+    }
+
+
 def _validation_only_failures(outcome: CollectionOutcome) -> list[dict]:
     """Banks that fetched successfully but contributed zero accepted rows.
 
@@ -126,6 +181,27 @@ def _validation_only_failures(outcome: CollectionOutcome) -> list[dict]:
             }
         )
     return failures
+
+
+def _zero_comparable_rate_failures(
+    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
+) -> list[dict]:
+    """Banks with no accepted row in the product's default comparison category.
+
+    See :func:`_banks_with_zero_comparable_rates` -- a bank in this state
+    reads as succeeded everywhere else (it fetched, and validation genuinely
+    accepted its rows), but contributed nothing a market snapshot or pricing
+    assumption can use.
+    """
+    target_category = _resolve_rate_category(product_type, None)
+    return [
+        {
+            "bank": bank,
+            "error_type": "no_comparable_rates",
+            "error": f"no accepted row in the default comparison category ({target_category})",
+        }
+        for bank in sorted(_banks_with_zero_comparable_rates(outcome, product_type))
+    ]
 
 
 def _low_coverage_failures(outcome: CollectionOutcome) -> list[dict]:
@@ -192,27 +268,83 @@ def _partial_rejection_failures(outcome: CollectionOutcome, already_flagged: set
     return failures
 
 
-def _bank_scoped_failures(outcome: CollectionOutcome) -> list[dict]:
+def _hard_skipped_row_failures(outcome: CollectionOutcome, already_flagged: set[str]) -> list[dict]:
+    """Banks with at least one row that failed record construction outright,
+    not already flagged more specifically.
+
+    A row that fails ``CompetitorRateRecord`` construction (see
+    ``competitor_rates.extractors.parse_html_rates``'s ``skipped_row_keys``)
+    never reaches ``validate_observations()`` at all, so it shows up in
+    neither ``report.failed`` nor ``validation.rejected`` -- previously
+    ``exit_code_for()`` could return success while a market-derived snapshot
+    and pricing assumption were built from an incomplete bank range. On a
+    bootstrap run there is not even a stored predecessor for the skipped row
+    to fall back on, so this is the only place the gap is visible at all.
+    """
+    failures = []
+    for result in outcome.report.results:
+        if result.bank in already_flagged or not result.skipped_row_keys:
+            continue
+        failures.append(
+            {
+                "bank": result.bank,
+                "error_type": "row_skipped",
+                "error": (
+                    f"{len(result.skipped_row_keys)} row(s) failed to parse into a "
+                    "record and were skipped"
+                ),
+            }
+        )
+    return failures
+
+
+def _bank_scoped_failures(
+    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
+) -> list[dict]:
     """Every bank-scoped failure not already visible in report.failed.
 
     Checked in order of specificity so a bank is reported once, under its
-    most informative category: zero accepted rows, then coverage below
-    threshold, then any remaining bank with at least one rejected row.
+    most informative category: zero accepted rows, then zero comparable
+    rows, then coverage below threshold, then any remaining bank with at
+    least one rejected row, then any remaining bank with at least one
+    hard-skipped row.
     """
     zero_accepted_failures = _validation_only_failures(outcome)
+    zero_comparable_failures = _zero_comparable_rate_failures(outcome, product_type)
     low_coverage_failures = _low_coverage_failures(outcome)
-    already_flagged = {failure["bank"] for failure in zero_accepted_failures} | {
-        failure["bank"] for failure in low_coverage_failures
-    }
+    already_flagged = (
+        {failure["bank"] for failure in zero_accepted_failures}
+        | {failure["bank"] for failure in zero_comparable_failures}
+        | {failure["bank"] for failure in low_coverage_failures}
+    )
     partial_rejection_failures = _partial_rejection_failures(outcome, already_flagged)
-    return zero_accepted_failures + low_coverage_failures + partial_rejection_failures
+    already_flagged |= {failure["bank"] for failure in partial_rejection_failures}
+    hard_skipped_row_failures = _hard_skipped_row_failures(outcome, already_flagged)
+    return (
+        zero_accepted_failures
+        + zero_comparable_failures
+        + low_coverage_failures
+        + partial_rejection_failures
+        + hard_skipped_row_failures
+    )
 
 
-def build_summary(outcome: CollectionOutcome) -> dict:
-    """Machine-readable summary of one collection run."""
-    bank_scoped_failures = _bank_scoped_failures(outcome)
+def build_summary(
+    outcome: CollectionOutcome,
+    product_type: ProductType | str = ProductType.HOME_LOAN,
+) -> dict:
+    """Machine-readable summary of one collection run.
+
+    ``product_type`` is embedded so a summary file can be told apart from
+    the other product's when both are scheduled -- see ``--product`` and
+    ``run_collection()``. Defaults to ``HOME_LOAN`` to match this module's
+    other single-product defaults; every existing caller collecting the
+    default product keeps working unchanged.
+    """
+    bank_scoped_failures = _bank_scoped_failures(outcome, product_type)
     bank_scoped_failed_banks = {failure["bank"] for failure in bank_scoped_failures}
     return {
+        "product_type": ProductType(product_type).value,
         "collected_at_utc": outcome.report.captured_at_utc.isoformat(),
         "banks_succeeded": [
             bank for bank in outcome.succeeded_banks if bank not in bank_scoped_failed_banks
@@ -220,6 +352,7 @@ def build_summary(outcome: CollectionOutcome) -> dict:
         "banks_failed": list(outcome.failed_banks) + sorted(bank_scoped_failed_banks),
         "rates_accepted": outcome.rate_count,
         "rates_rejected": len(outcome.validation.rejected),
+        "rows_skipped": len(outcome.report.skipped_row_keys),
         "validation_errors": len(outcome.validation.errors),
         "validation_warnings": len(outcome.validation.warnings),
         "new_states_stored": (
@@ -239,20 +372,47 @@ def build_summary(outcome: CollectionOutcome) -> dict:
     }
 
 
-def exit_code_for(outcome: CollectionOutcome) -> int:
+def exit_code_for(
+    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
+) -> int:
     # A run where every bank failed to fetch is a failure, and so is one where
     # pages parsed but validation rejected every record -- either way nothing
-    # usable was stored, and a scheduler must not treat that as success.
-    if not outcome.report.any_success or outcome.rate_count == 0:
+    # usable was stored, and a scheduler must not treat that as success. Zero
+    # rows in the product's default *comparison category* is the same failure
+    # one step further down the pipeline: a run whose only accepted rows fall
+    # outside that category (non_comparable audit-only rows, or a real but
+    # off-default category like pie_term_deposit) passes rate_count > 0 while
+    # the market snapshot it can actually build is empty -- see
+    # _comparable_rate_count()'s docstring.
+    if (
+        not outcome.report.any_success
+        or outcome.rate_count == 0
+        or _comparable_rate_count(outcome, product_type) == 0
+    ):
         return EXIT_TOTAL_FAILURE
     # Any rejected observation -- not just a bank where every row was
     # rejected -- means the collection is incomplete: a term-specific parser
     # regression can silently drop one product from an otherwise-healthy
     # bank. A low-coverage bank catches the case validation can't: rows that
     # were never parsed at all (not rejected -- simply missing) because a
-    # page-layout regression silently dropped most of a bank's table.
-    # Warnings (e.g. a suspicious but plausible movement) stay non-fatal.
-    if outcome.report.failed or outcome.validation.rejected or outcome.low_coverage_banks:
+    # page-layout regression silently dropped most of a bank's table. A bank
+    # whose accepted rows fall entirely outside the default comparison
+    # category is the same gap as a zero-accepted bank, just caught one step
+    # later in the pipeline (see _banks_with_zero_comparable_rates()) --
+    # most relevant on a bootstrap run, where there is no prior baseline for
+    # low_coverage_banks to compare against at all. A hard-skipped row
+    # (failed CompetitorRateRecord construction outright, before
+    # validate_observations() ever saw it) is the same kind of gap as a
+    # rejected observation, just one step earlier in the pipeline, and must
+    # not let a run with an incomplete bank range report success. Warnings
+    # (e.g. a suspicious but plausible movement) stay non-fatal.
+    if (
+        outcome.report.failed
+        or outcome.validation.rejected
+        or outcome.low_coverage_banks
+        or outcome.report.skipped_row_keys
+        or _banks_with_zero_comparable_rates(outcome, product_type)
+    ):
         return EXIT_PARTIAL_FAILURE
     return EXIT_OK
 
@@ -261,17 +421,26 @@ def run_collection(
     config: PricingIntelligenceConfig,
     render_javascript: bool,
     summary_path: Optional[Path] = None,
+    product_type: ProductType | str = ProductType.HOME_LOAN,
 ) -> tuple[int, dict]:
-    """Run one collection and return ``(exit_code, summary)``."""
+    """Run one collection and return ``(exit_code, summary)``.
+
+    ``product_type`` defaults to ``HOME_LOAN``, matching ``service.collect()``'s
+    own default, so an existing scheduled deployment collects exactly what it
+    always has. Collecting term deposits too needs a second scheduled
+    invocation with ``--product term_deposit`` (and its own ``--lock-file``/
+    ``--summary-file``, so it does not collide with the home-loan run) -- see
+    ``docs/pricing_intelligence.md``.
+    """
     with PricingIntelligenceService(
         config=config,
         store=ObservationStore(config.database_path),
         render_javascript=render_javascript,
     ) as service:
-        outcome = service.collect()
+        outcome = service.collect(product_type=product_type)
 
-    summary = build_summary(outcome)
-    code = exit_code_for(outcome)
+    summary = build_summary(outcome, product_type)
+    code = exit_code_for(outcome, product_type)
 
     if code == EXIT_TOTAL_FAILURE:
         completion_level = logging.ERROR
@@ -334,6 +503,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument("--database", default=None, help="Observation store path")
     parser.add_argument(
+        "--product",
+        default=ProductType.HOME_LOAN.value,
+        choices=[ProductType.HOME_LOAN.value, ProductType.TERM_DEPOSIT.value],
+        help=(
+            "Which market to collect (default: home_loan). Term deposits need "
+            "a separate scheduled invocation with --product term_deposit and "
+            "its own --lock-file/--summary-file, so it does not collide with "
+            "the home-loan schedule -- see docs/pricing_intelligence.md."
+        ),
+    )
+    parser.add_argument(
         "--render-javascript",
         action="store_true",
         help="Render pages in a headless browser. Required for live collection.",
@@ -370,6 +550,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 config,
                 render_javascript=args.render_javascript,
                 summary_path=Path(args.summary_file) if args.summary_file else None,
+                product_type=args.product,
             )
     except AlreadyRunningError as exc:
         log_event(logger, "collection skipped", level=logging.WARNING, reason=str(exc))

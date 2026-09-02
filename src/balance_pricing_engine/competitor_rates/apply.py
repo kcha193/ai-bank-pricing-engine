@@ -169,11 +169,31 @@ def _select_frequency(
     records: list[CompetitorRateRecord],
     preference: list[str],
 ) -> CompetitorRateRecord:
+    """Pick one record per bank by frequency preference, deterministically.
+
+    A combined option (e.g. "at_maturity+monthly", see
+    ``normalise_frequency()``) can tie with a plain single-frequency record
+    at the same preference rank -- both offer "monthly". Returning whichever
+    happened to come first in ``records`` would let arbitrary source-HTML
+    ordering decide the bank's representative deposit rate (and therefore
+    the market aggregate and pricing assumption it feeds). An exact match is
+    a closer fit for the preference than a combined option that merely
+    offers it alongside another frequency, so it wins first; any remaining
+    tie (including no preference matching at all) is broken by
+    ``observation_key()``, which depends only on the record's own content,
+    not parse order.
+    """
     for frequency in preference:
-        for record in records:
-            if record.interest_payment_frequency == frequency:
-                return record
-    return records[0]
+        matches = [
+            record for record in records if frequency in record.interest_payment_frequency.split("+")
+        ]
+        if not matches:
+            continue
+        exact_matches = [
+            record for record in matches if record.interest_payment_frequency == frequency
+        ]
+        return min(exact_matches or matches, key=lambda record: record.observation_key())
+    return min(records, key=lambda record: record.observation_key())
 
 
 def _resolve_strategy(

@@ -62,20 +62,73 @@ def normalise_term(label: str) -> NormalisedTerm:
     return NormalisedTerm(raw_label=raw_label, months=None, days=None)
 
 
+#: Matches "annual rate"/"annual interest rate"/"annual percentage rate"/
+#: "annualised rate"/"yearly rate"/"annual percentage yield"/"annual return"
+#: and similar -- a common column-header phrasing that describes the *rate's
+#: own annualised unit*, not a payment-frequency option. "Rate" is not the
+#: only word a bank uses for this: a managed-fund/PIE row commonly labels its
+#: figure "Annual Percentage Yield" (APY) or "Annual Return" instead (see
+#: also the "PIE effective rate of return" columns this codebase already
+#: excludes from market statistics elsewhere), so "yield"/"return" qualify
+#: here too. See normalise_frequency()'s docstring for why none of these must
+#: count as "annually" the way a genuine "paid annually"/"monthly or
+#: annually" does. Allows up to two words between the annual/yearly
+#: adjective and the ending word (covering "annual interest rate", "annual
+#: percentage rate", "annual percentage yield", ...) rather than
+#: special-casing just "interest"/"percentage" -- \w+ can't cross a
+#: table-cell separator like " | " in the already-flattened text, so this
+#: can't accidentally bridge an unrelated "annual" in one cell to a "rate"/
+#: "yield"/"return" in another.
+_ANNUAL_RATE_LABEL_PATTERN = re.compile(
+    r"(?:annual(?:ised|ized)?|yearly)(?:\s+\w+){0,2}\s+(?:rate|yield|return)\b"
+)
+
+
 def normalise_frequency(label: str | None) -> str:
-    """Map an advertised interest payment frequency to the canonical vocabulary."""
+    """Map an advertised interest payment frequency to the canonical vocabulary.
+
+    A row offering the depositor a choice between multiple payment options
+    (e.g. "Monthly or at maturity") resolves to a stable combination of the
+    matched keywords (sorted and joined, e.g. "at_maturity+monthly"), not to
+    one of them picked confidently by an unordered if-chain, nor collapsed
+    to plain "unknown": interest_payment_frequency is identity-bearing (see
+    :meth:`~.models.CompetitorRateRecord.eligibility_group_key`), and a
+    deposit row's ``product_name`` is often a fixed generic string ("Term
+    deposit") with no other field to distinguish it -- either shortcut would
+    collapse two rows offering genuinely different option sets (e.g.
+    "Monthly or at maturity" vs "Quarterly or at maturity") onto the same
+    identity, and a rate difference between them would then read as a
+    conflicting observation and reject both instead of keeping two valid
+    comparable rates. Sorting before joining keeps the value stable
+    regardless of the order the source page happens to list the options in.
+    Plain "unknown" is kept only for a row that publishes no frequency at
+    all -- the same fallback as before.
+
+    "annual"/"yearly" is matched after stripping any "annual (interest)
+    rate" phrase from the text first: a deposit table commonly labels its
+    rate column "Annual Interest Rate" or "Annual Rate" to describe the
+    rate's own annualised unit, not a payment option -- counting that as a
+    genuine "annually" would let the extractor's aligned column header
+    fabricate a payment frequency the row never actually advertised, while
+    a real "paid annually"/"monthly or annually" mention elsewhere in the
+    same text survives the strip untouched.
+    """
     if not label:
         return "unknown"
     text = label.lower()
+    matches = set()
     if "maturity" in text:
-        return "at_maturity"
+        matches.add("at_maturity")
     if "month" in text:
-        return "monthly"
+        matches.add("monthly")
     if "quarter" in text:
-        return "quarterly"
-    if "annual" in text or "yearly" in text:
-        return "annually"
-    return "unknown"
+        matches.add("quarterly")
+    annual_text = _ANNUAL_RATE_LABEL_PATTERN.sub("", text)
+    if "annual" in annual_text or "yearly" in annual_text:
+        matches.add("annually")
+    if not matches:
+        return "unknown"
+    return "+".join(sorted(matches))
 
 
 def normalise_lvr_condition(label: str | None) -> str:
@@ -92,19 +145,61 @@ def normalise_lvr_condition(label: str | None) -> str:
     return "standard"
 
 
+#: An explicit range separator directly between two dollar amounts (only
+#: whitespace either side), e.g. "$10,000 to $49,999" or "$10,000-$49,999".
+#: See normalise_balance()'s docstring for why ascending order alone is not
+#: enough to infer a range.
+_BALANCE_RANGE_SEPARATOR_PATTERN = re.compile(
+    r"\$\s*[0-9][0-9,]*(?:\.\d+)?\s*(?:to|-|–|—)\s*\$"
+)
+
+
 def normalise_balance(label: str | None) -> tuple[float | None, float | None]:
-    """Extract min/max currency amounts from a displayed balance tier."""
+    """Extract min/max currency amounts from a displayed balance tier.
+
+    Two dollar figures in one string are not necessarily a range. A term-deposit
+    row often carries its own minimum *and* the product-wide minimum inherited
+    from the table heading, e.g.::
+
+        "30 days Minimum balance $5,000 | 1.90% p.a. | Term Deposit Minimum balance $1,000"
+
+    Reading those in document order gives min=5,000/max=1,000 -- an invalid
+    record that the model rejects, which previously aborted the whole bank's
+    parse. Two unrelated minimums can also happen to ascend, though -- e.g. a
+    product-wide "minimum $1,000" followed by a row-specific "minimum
+    $5,000" -- and ``max_balance_or_deposit`` is identity-bearing
+    (``eligibility_group_key()``), so inventing a maximum from numeric order
+    alone would let either boilerplate minimum changing turn an unchanged
+    advertised rate into false new/removed product events. Amounts are
+    therefore only treated as a range when an explicit range separator (a
+    "to"/hyphen directly between the two dollar amounts, nothing else in
+    between -- see :data:`_BALANCE_RANGE_SEPARATOR_PATTERN`) confirms it.
+
+    Confirming a separator exists *somewhere* in the text is not enough,
+    though: an unrelated leading amount before a genuine, unconnected range
+    (e.g. "Minimum $1,000 | Balance $5,000 to $9,999") would otherwise still
+    pair the first two amounts found -- ``$1,000``/``$5,000`` -- as if the
+    range began at the leading minimum, fabricating a maximum the text never
+    associated with it. The separator match is therefore anchored to start
+    exactly where the first dollar amount does, so it can only confirm a
+    range whose own two endpoints *are* the first two amounts found;
+    otherwise the first (most specific, row-level) figure is the minimum and
+    the maximum is left unknown rather than invented.
+    """
     if not label:
         return None, None
-    amounts = [
-        float(value.replace(",", ""))
-        for value in re.findall(r"\$\s*([0-9][0-9,]*(?:\.\d+)?)", label)
-    ]
-    if not amounts:
+    figures = list(re.finditer(r"\$\s*([0-9][0-9,]*(?:\.\d+)?)", label))
+    if not figures:
         return None, None
+    amounts = [float(figure.group(1).replace(",", "")) for figure in figures]
     if len(amounts) == 1:
         return amounts[0], None
-    return amounts[0], amounts[1]
+    range_begins_at_first_amount = _BALANCE_RANGE_SEPARATOR_PATTERN.match(
+        label, figures[0].start()
+    )
+    if amounts[1] > amounts[0] and range_begins_at_first_amount:
+        return amounts[0], amounts[1]
+    return amounts[0], None
 
 
 _LVR_PATTERN = re.compile(r"(\d{2,3}(?:\.\d+)?)\s*%\s*(?:or\s+less\s+)?lvr", re.I)

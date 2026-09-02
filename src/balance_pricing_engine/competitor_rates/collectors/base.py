@@ -13,8 +13,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
+import inspect
 import logging
 from pathlib import Path
+import re
 import time
 from typing import Callable, ClassVar, Optional, Sequence
 from urllib.request import Request, urlopen
@@ -53,6 +55,26 @@ class CollectionStatus(str, Enum):
     FAILED = "FAILED"
 
 
+def _accepts_skipped_row_keys(parser: Callable[..., list[CompetitorRateRecord]]) -> bool:
+    """Whether ``parser`` (a bound ``parse_mortgage_html``/``parse_term_deposit_html``)
+    will accept the ``skipped_row_keys`` keyword.
+
+    A bank collector outside this codebase may still override the documented
+    two-argument extension point (``html``, ``captured_at_utc``) from before
+    this parameter existed. Introspecting the bound method, rather than
+    always passing the keyword, keeps such an override working -- it simply
+    does not participate in skipped-row tracking -- instead of failing the
+    whole bank collection with a ``TypeError``.
+    """
+    try:
+        parameters = inspect.signature(parser).parameters
+    except (TypeError, ValueError):
+        return False
+    return "skipped_row_keys" in parameters or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    )
+
+
 @dataclass(frozen=True)
 class BankCollectionResult:
     """Structured outcome for one bank/product collection attempt."""
@@ -66,6 +88,12 @@ class BankCollectionResult:
     error_type: Optional[str] = None
     snapshot_path: Optional[str] = None
     content_sha256: Optional[str] = None
+    #: category_agnostic_key() of every row this run that parsed a term and
+    #: rate but then failed CompetitorRateRecord construction outright -- see
+    #: parse_html_rates(). Surfaced here (rather than only logged) so
+    #: PricingIntelligenceService.collect() can exclude each row's stored
+    #: predecessor from withdrawal detection instead of reporting it REMOVED.
+    skipped_row_keys: tuple[str, ...] = ()
 
     @property
     def succeeded(self) -> bool:
@@ -105,6 +133,14 @@ class CollectionReport:
     @property
     def any_success(self) -> bool:
         return bool(self.succeeded)
+
+    @property
+    def skipped_row_keys(self) -> set[str]:
+        """Union of every attempt's hard-skipped row keys.
+
+        See :attr:`BankCollectionResult.skipped_row_keys`.
+        """
+        return {key for result in self.results for key in result.skipped_row_keys}
 
     def render(self) -> str:
         """Render the fixed-width status table used by the CLI."""
@@ -262,6 +298,42 @@ class BankPricingCollector(abc.ABC):
         "closed to new application",
     )
 
+    #: Deposit-page rows that are not term deposits at all. Bank investment
+    #: pages list managed-fund and KiwiSaver returns in the same tables: BNZ
+    #: advertises a "1 year | 12.47% | Growth Fund" row that the generic parser
+    #: reads as a 12.47% one-year term deposit. NZ term deposits sit near 4%, so
+    #: a fund return entering a market median would destroy it.
+    excluded_deposit_product_markers: ClassVar[tuple[str, ...]] = (
+        "growth fund",
+        "balanced fund",
+        "conservative fund",
+        "moderate fund",
+        "cash fund",
+        "income fund",
+        "managed fund",
+        "kiwisaver",
+        # Tax-adjusted PIE "effective rate of return" columns. ANZ and Westpac
+        # publish these beside the advertised rate, one per marginal tax band:
+        #   "1 year | 4.60 % p.a. | Effective rate 39%"
+        # They are not advertised rates. Because deposits rank highest-is-best,
+        # including them made both banks look like market leaders by 70 bps when
+        # their actual advertised 1-year rate (3.90%) is at parity with ASB.
+        "effective rate",
+        "income tax rate",
+        "after tax",
+        "prescribed investor rate",
+    )
+
+    #: Word-boundary-matched counterpart to excluded_deposit_product_markers,
+    #: for a marker too short to check as a plain substring without risking a
+    #: false positive inside an unrelated word (e.g. bare "pir" also matching
+    #: "special rate ex-PIR-es 30 September"). Banks commonly abbreviate
+    #: "prescribed investor rate" to "PIR" on the page itself (e.g. "PIR 28%:
+    #: 4.01%"), one row per tax band -- without recognising it, an abbreviated
+    #: row matches no marker, keeps the generic "term_deposit" category, and
+    #: can outrank every genuinely advertised rate for MARKET_LEADER.
+    excluded_deposit_product_word_markers: ClassVar[tuple[str, ...]] = ("pir",)
+
     def __init__(
         self,
         config: Optional[CollectionConfig] = None,
@@ -330,7 +402,10 @@ class BankPricingCollector(abc.ABC):
     # ------------------------------------------------------------- overridable
 
     def parse_mortgage_html(
-        self, html: str, captured_at_utc: datetime
+        self,
+        html: str,
+        captured_at_utc: datetime,
+        skipped_row_keys: Optional[list[str]] = None,
     ) -> list[CompetitorRateRecord]:
         """Parse advertised mortgage rates from this bank's page HTML.
 
@@ -344,20 +419,45 @@ class BankPricingCollector(abc.ABC):
             source_url=self.home_loan_url,
             html=html,
             captured_at_utc=captured_at_utc,
+            skipped_row_keys=skipped_row_keys,
         )
         return [self.enrich_mortgage_record(record) for record in records]
 
     def parse_term_deposit_html(
-        self, html: str, captured_at_utc: datetime
+        self,
+        html: str,
+        captured_at_utc: datetime,
+        skipped_row_keys: Optional[list[str]] = None,
     ) -> list[CompetitorRateRecord]:
         """Parse advertised term-deposit rates from this bank's page HTML."""
-        return parse_html_rates(
+        records = parse_html_rates(
             bank=self.bank,
             product_type=ProductType.TERM_DEPOSIT,
             source_url=self.term_deposit_url or "",
             html=html,
             captured_at_utc=captured_at_utc,
+            skipped_row_keys=skipped_row_keys,
         )
+        return [self.enrich_term_deposit_record(record) for record in records]
+
+    def enrich_term_deposit_record(
+        self, record: CompetitorRateRecord
+    ) -> CompetitorRateRecord:
+        """Fence non-deposit products out of the comparable term-deposit set.
+
+        Kept with full provenance under ``non_comparable`` rather than dropped,
+        mirroring the mortgage treatment of subsidised and closed products.
+        """
+        lowered = record.raw_text_context.lower()
+        excluded = any(
+            marker in lowered for marker in self.excluded_deposit_product_markers
+        ) or any(
+            re.search(rf"\b{re.escape(marker)}\b", lowered)
+            for marker in self.excluded_deposit_product_word_markers
+        )
+        if excluded:
+            return record.model_copy(update={"rate_category": "non_comparable"})
+        return record
 
     def enrich_mortgage_record(self, record: CompetitorRateRecord) -> CompetitorRateRecord:
         """Derive optional eligibility/promotion fields from the row's own text.
@@ -430,7 +530,7 @@ class BankPricingCollector(abc.ABC):
         self,
         product_type: ProductType,
         url: str,
-        parser: Callable[[str, datetime], list[CompetitorRateRecord]],
+        parser: Callable[..., list[CompetitorRateRecord]],
         captured_at_utc: Optional[datetime],
         persist_snapshot: bool,
     ) -> BankCollectionResult:
@@ -456,8 +556,12 @@ class BankPricingCollector(abc.ABC):
             else None
         )
 
+        skipped_row_keys: list[str] = []
         try:
-            records = parser(html, captured_at_utc)
+            if _accepts_skipped_row_keys(parser):
+                records = parser(html, captured_at_utc, skipped_row_keys=skipped_row_keys)
+            else:
+                records = parser(html, captured_at_utc)
         except Exception as exc:  # noqa: BLE001 - isolated into a FAILED result
             logger.warning("%s %s parse failed: %s", self.bank, product_type.value, exc)
             return BankCollectionResult(
@@ -469,6 +573,7 @@ class BankPricingCollector(abc.ABC):
                 error_type=type(exc).__name__,
                 snapshot_path=snapshot_path,
                 content_sha256=content_hash,
+                skipped_row_keys=tuple(skipped_row_keys),
             )
 
         if not records:
@@ -481,6 +586,7 @@ class BankPricingCollector(abc.ABC):
                 error_type="ParserError",
                 snapshot_path=snapshot_path,
                 content_sha256=content_hash,
+                skipped_row_keys=tuple(skipped_row_keys),
             )
 
         return BankCollectionResult(
@@ -491,6 +597,7 @@ class BankPricingCollector(abc.ABC):
             records=tuple(records),
             snapshot_path=snapshot_path,
             content_sha256=content_hash,
+            skipped_row_keys=tuple(skipped_row_keys),
         )
 
     def _write_snapshot(
@@ -507,8 +614,9 @@ class BankPricingCollector(abc.ABC):
         return str(path)
 
 
-def collect_all_mortgage_rates(
+def collect_all_rates(
     collectors: Sequence[BankPricingCollector],
+    product_type: ProductType = ProductType.HOME_LOAN,
     captured_at_utc: Optional[datetime] = None,
     persist_snapshot: bool = True,
     inter_request_delay_seconds: Optional[float] = None,
@@ -523,9 +631,14 @@ def collect_all_mortgage_rates(
     for index, collector in enumerate(collectors):
         if index and inter_request_delay_seconds:
             time.sleep(inter_request_delay_seconds)
+        collect = (
+            collector.collect_mortgage_rates
+            if product_type is ProductType.HOME_LOAN
+            else collector.collect_term_deposit_rates
+        )
         try:
             results.append(
-                collector.collect_mortgage_rates(
+                collect(
                     captured_at_utc=captured_at_utc, persist_snapshot=persist_snapshot
                 )
             )
@@ -534,11 +647,38 @@ def collect_all_mortgage_rates(
             results.append(
                 BankCollectionResult(
                     bank=collector.bank,
-                    product_type=ProductType.HOME_LOAN,
+                    product_type=product_type,
                     status=CollectionStatus.FAILED,
-                    source_url=getattr(collector, "home_loan_url", ""),
+                    source_url=getattr(
+                        collector,
+                        "home_loan_url"
+                        if product_type is ProductType.HOME_LOAN
+                        else "term_deposit_url",
+                        "",
+                    )
+                    or "",
                     error=str(exc),
                     error_type=type(exc).__name__,
                 )
             )
     return CollectionReport(results=tuple(results), captured_at_utc=captured_at_utc)
+
+
+def collect_all_mortgage_rates(
+    collectors: Sequence[BankPricingCollector],
+    captured_at_utc: Optional[datetime] = None,
+    persist_snapshot: bool = True,
+    inter_request_delay_seconds: Optional[float] = None,
+) -> CollectionReport:
+    """Collect mortgage rates from every collector, isolating per-bank failures.
+
+    Thin wrapper over :func:`collect_all_rates`, kept because existing callers
+    and tests use this name.
+    """
+    return collect_all_rates(
+        collectors,
+        product_type=ProductType.HOME_LOAN,
+        captured_at_utc=captured_at_utc,
+        persist_snapshot=persist_snapshot,
+        inter_request_delay_seconds=inter_request_delay_seconds,
+    )

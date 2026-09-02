@@ -19,6 +19,7 @@ import logging
 from typing import Optional
 
 from balance_pricing_engine.config import load_config
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.alerts import (
     ConsoleAlertSink,
     dispatch_alerts,
@@ -90,6 +91,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--database", default=None, help="Path to the observation store")
     parser.add_argument("--verbose", action="store_true", help="Verbose logging")
+    parser.add_argument(
+        "--product",
+        default=ProductType.HOME_LOAN.value,
+        choices=[ProductType.HOME_LOAN.value, ProductType.TERM_DEPOSIT.value],
+        help="Which market to act on (default: home_loan)",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     collect = subparsers.add_parser(
@@ -114,13 +121,27 @@ def _build_parser() -> argparse.ArgumentParser:
 
     snapshot = subparsers.add_parser("snapshot", help="Show the current advertised market")
     snapshot.add_argument("--term", type=int, default=None, help="Detail one term, in months")
-    snapshot.add_argument("--category", default="special", help="Rate category to compare")
+    snapshot.add_argument(
+        "--category",
+        default=None,
+        help="Rate category to compare (default: 'special' for home loans, "
+        "'term_deposit' for term deposits)",
+    )
 
     changes = subparsers.add_parser("changes", help="Show detected market changes")
     changes.add_argument("--days", type=int, default=7)
     changes.add_argument("--bank", default=None)
     changes.add_argument("--term", type=int, default=None)
     changes.add_argument("--alerts", action="store_true", help="Render as formatted alerts")
+    changes.add_argument(
+        "--category",
+        default=None,
+        help=(
+            "Rate category to filter to (default: 'special' for home loans, "
+            "'term_deposit' for term deposits). Pass '--category all' to see "
+            "every stored category, e.g. a mortgage 'standard' repricing."
+        ),
+    )
 
     history = subparsers.add_parser("history", help="Show advertised rate history")
     history.add_argument("--bank", default=None)
@@ -153,9 +174,34 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _product(args: argparse.Namespace) -> ProductType:
+    return ProductType(getattr(args, "product", ProductType.HOME_LOAN.value))
+
+
+def _default_category(args: argparse.Namespace) -> str:
+    """Comparable category for the selected market.
+
+    Mortgages are compared on advertised specials (where front-book competition
+    happens); deposits on the plain term-deposit tier, excluding PIE variants.
+
+    ``None`` is the only sentinel for "not supplied": both ``snapshot`` and
+    ``history`` default ``--category`` to ``None``, so an explicit
+    ``--category special`` is honoured as-is rather than being mistaken for
+    the omitted case and rewritten to the other product's default.
+    """
+    supplied = getattr(args, "category", None)
+    if supplied is not None:
+        return supplied
+    if _product(args) is ProductType.TERM_DEPOSIT:
+        return "term_deposit"
+    return "special"
+
+
 def _collect(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
     outcome = service.collect(
-        persist=not args.no_persist, persist_snapshot=not args.no_snapshot
+        persist=not args.no_persist,
+        persist_snapshot=not args.no_snapshot,
+        product_type=_product(args),
     )
     print(outcome.render())
 
@@ -180,8 +226,12 @@ def _collect(service: PricingIntelligenceService, args: argparse.Namespace) -> i
             # preview; omit it rather than compare against stale data.
             snapshot, previous_snapshot = None, None
         else:
-            snapshot = service.get_market_snapshot()
-            previous_snapshot = service.get_previous_market_snapshot()
+            snapshot = service.get_market_snapshot(
+                product_type=_product(args), rate_category=_default_category(args)
+            )
+            previous_snapshot = service.get_previous_market_snapshot(
+                product_type=_product(args), rate_category=_default_category(args)
+            )
         dispatch_alerts(
             format_alerts(
                 [change for change in outcome.changes if change.is_rate_move],
@@ -193,20 +243,33 @@ def _collect(service: PricingIntelligenceService, args: argparse.Namespace) -> i
 
     # A run where every bank failed to fetch is a failure, and so is one where
     # pages parsed but validation rejected every record -- either way nothing
-    # usable was stored, and a scheduler must not treat that as success.
-    if not outcome.report.any_success or outcome.rate_count == 0:
+    # usable was stored, and a scheduler must not treat that as success. Not
+    # sufficient on its own, though: a term-deposit run can validation-accept
+    # only non_comparable audit-only rows, or a real but off-default category
+    # like pie_term_deposit, while missing every ordinary term_deposit row --
+    # rate_count is positive but the default market snapshot this same
+    # invocation just queried above is empty. Mirrors
+    # scripts/collect_market_rates_workflow.py's _comparable_rate_count().
+    comparable_category = _default_category(args)
+    comparable_count = sum(
+        1 for record in outcome.validation.accepted if record.rate_category == comparable_category
+    )
+    if not outcome.report.any_success or outcome.rate_count == 0 or comparable_count == 0:
         return 1
     return 0
 
 
 def _snapshot(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
-    snapshot = service.get_market_snapshot(rate_category=args.category)
+    snapshot = service.get_market_snapshot(
+        product_type=_product(args), rate_category=_default_category(args)
+    )
     if not snapshot.terms:
         print("No market data. Run 'collect' first.")
         return 1
 
     if args.term is None:
-        print(f"NZ MORTGAGE MARKET ({args.category}) as at {snapshot.as_of:%d %b %Y}")
+        label = "TERM DEPOSIT" if _product(args) is ProductType.TERM_DEPOSIT else "MORTGAGE"
+        print(f"NZ {label} MARKET ({_default_category(args)}) as at {snapshot.as_of:%d %b %Y}")
         print()
         print(snapshot.render())
         return 0
@@ -215,7 +278,7 @@ def _snapshot(service: PricingIntelligenceService, args: argparse.Namespace) -> 
     if market is None:
         print(f"No data at {args.term} months. Available: {list(snapshot.term_months)}")
         return 1
-    print(f"{args.term} MONTH FIXED ({args.category})")
+    print(f"{args.term} MONTH FIXED ({_default_category(args)})")
     print()
     for entry in market.ranking():
         print(f"  {entry.bank:<12}{entry.rate_pct:>6.2f}   #{entry.rank}")
@@ -223,21 +286,62 @@ def _snapshot(service: PricingIntelligenceService, args: argparse.Namespace) -> 
     print(f"  Best:   {market.best_rate:.2f}  ({', '.join(market.market_leaders)})")
     print(f"  Median: {market.median_rate:.2f}")
     print(f"  Mean:   {market.mean_rate:.2f}")
-    print(f"  Worst:  {market.highest_rate:.2f}")
+    worst_rate = (
+        market.highest_rate
+        if market.product_type is ProductType.HOME_LOAN
+        else market.lowest_rate
+    )
+    print(f"  Worst:  {worst_rate:.2f}")
     print(f"  Spread: {market.spread_bps:.0f} bps across {market.bank_count} banks")
     return 0
 
 
 def _changes(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
-    changes = service.get_changes(days=args.days, bank=args.bank, term_months=args.term)
+    # Unlike snapshot/history, "changes" lists discrete events rather than a
+    # ranked comparison table, so unlike _default_category()'s other callers
+    # it also accepts "all" to mean no category filter at all (get_changes()
+    # already treats rate_category=None that way) -- without this, a
+    # non-default category such as a mortgage "standard" repricing or a
+    # deposit "special" was unreachable through this command.
+    rate_category = None if args.category == "all" else _default_category(args)
+    changes = service.get_changes(
+        days=args.days,
+        bank=args.bank,
+        term_months=args.term,
+        product_type=_product(args),
+        rate_category=rate_category,
+    )
     if not changes:
         print(f"No changes detected in the last {args.days} days.")
         return 0
 
     if args.alerts:
-        dispatch_alerts(
-            format_alerts(changes, service.get_market_snapshot()), ConsoleAlertSink()
-        )
+        if rate_category is None:
+            # "all" categories: format_alert()'s market-context guard
+            # (snapshot.rate_category == change.rate_category) can never
+            # match a single unfiltered (rate_category=None) snapshot --
+            # None never equals a change's own concrete category -- which
+            # would silently drop market-median/rank context from every
+            # alert. Build one concrete-category snapshot per distinct
+            # category actually present among these changes instead, so
+            # each group of changes gets a snapshot the guard can match.
+            alerts = [
+                alert
+                for category in sorted({change.rate_category for change in changes})
+                for alert in format_alerts(
+                    [change for change in changes if change.rate_category == category],
+                    service.get_market_snapshot(product_type=_product(args), rate_category=category),
+                )
+            ]
+            alerts.sort(key=lambda alert: (-abs(alert.change.change_bps or 0), alert.change.bank))
+        else:
+            alerts = format_alerts(
+                changes,
+                service.get_market_snapshot(
+                    product_type=_product(args), rate_category=rate_category
+                ),
+            )
+        dispatch_alerts(alerts, ConsoleAlertSink())
         return 0
 
     print(f"MARKET CHANGES - last {args.days} days ({len(changes)} events)")
@@ -252,7 +356,8 @@ def _history(service: PricingIntelligenceService, args: argparse.Namespace) -> i
     records = service.get_rate_history(
         bank=args.bank,
         term_months=args.term,
-        rate_category=args.category,
+        product_type=_product(args),
+        rate_category=_default_category(args),
         days=args.days,
     )
     if not records:
@@ -274,7 +379,9 @@ def _history(service: PricingIntelligenceService, args: argparse.Namespace) -> i
 
 
 def _market_state(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
-    assessment = service.get_market_state()
+    assessment = service.get_market_state(
+        product_type=_product(args), rate_category=_default_category(args)
+    )
     payload = assessment.as_dict()
     print(f"MARKET STATE: {payload['state']}")
     print()
@@ -292,7 +399,12 @@ def _market_state(service: PricingIntelligenceService, args: argparse.Namespace)
 
 
 def _position(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
-    position = service.get_competitive_position(our_rate=args.rate, term_months=args.term)
+    position = service.get_competitive_position(
+        our_rate=args.rate,
+        term_months=args.term,
+        product_type=_product(args),
+        rate_category=_default_category(args),
+    )
     print(f"COMPETITIVE POSITION  {args.rate:.2f}% at {args.term} months")
     print()
     for key, value in position.as_features().items():
@@ -307,13 +419,20 @@ def _strategy(service: PricingIntelligenceService, args: argparse.Namespace) -> 
         term_months=args.term,
         manual_rate=args.manual_rate,
         offset_bps=args.offset_bps,
+        product_type=_product(args),
+        rate_category=_default_category(args),
     )
     print("COMPETITOR ASSUMPTION FOR THE PRICING ENGINE")
     print()
     print(f"  strategy              {assumption.strategy.value}")
     print(f"  term_months           {assumption.term_months}")
     print(f"  advertised rate       {assumption.rate_pct:.3f}%")
-    print(f"  competitor_loan_rate  {assumption.competitor_loan_rate}")
+    rate_label = (
+        "competitor_deposit_rate"
+        if _product(args) is ProductType.TERM_DEPOSIT
+        else "competitor_loan_rate"
+    )
+    print(f"  {rate_label:<22}{assumption.competitor_loan_rate}")
     print(f"  offset_bps            {assumption.offset_bps:+.0f}")
     print(f"  source banks          {', '.join(assumption.source_banks) or 'n/a'}")
     print(f"  rationale             {assumption.rationale}")

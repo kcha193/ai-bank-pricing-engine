@@ -1,6 +1,7 @@
 """Validates the deployment configuration files without requiring a Docker daemon."""
 
 import plistlib
+import re
 from pathlib import Path
 
 import yaml
@@ -82,6 +83,59 @@ def test_launchd_plist_is_well_formed_xml():
         data = plistlib.load(handle)
 
     assert data["Label"] == "nz.pricing-intelligence.collect"
+
+
+def test_term_deposit_launchd_plist_is_well_formed_xml():
+    """Sibling of test_launchd_plist_is_well_formed_xml() for the term-deposit
+    schedule -- see its docstring for why a stray "--" is fatal here."""
+    plist_path = (
+        REPO_ROOT / "deploy" / "scheduling" / "nz.pricing-intelligence.collect-term-deposit.plist"
+    )
+
+    with plist_path.open("rb") as handle:
+        data = plistlib.load(handle)
+
+    assert data["Label"] == "nz.pricing-intelligence.collect-term-deposit"
+
+
+def test_scheduling_recipes_collect_both_products_with_distinct_paths():
+    """Without --product, the workflow always defaulted to home_loan, so one
+    schedule alone never refreshed term-deposit observations. Both the plist
+    pair and the crontab example must select term_deposit for the second
+    schedule, and every --lock-file/--summary-file must be unique across both
+    products -- sharing either would make the second invocation get skipped
+    (EXIT_ALREADY_RUNNING) or silently overwrite the first product's summary."""
+    home_loan_plist = REPO_ROOT / "deploy" / "scheduling" / "nz.pricing-intelligence.collect.plist"
+    deposit_plist = (
+        REPO_ROOT / "deploy" / "scheduling" / "nz.pricing-intelligence.collect-term-deposit.plist"
+    )
+    with home_loan_plist.open("rb") as handle:
+        home_loan_args = plistlib.load(handle)["ProgramArguments"]
+    with deposit_plist.open("rb") as handle:
+        deposit_args = plistlib.load(handle)["ProgramArguments"]
+
+    assert "--product" not in home_loan_args, "home-loan schedule relies on the default"
+    deposit_product_index = deposit_args.index("--product")
+    assert deposit_args[deposit_product_index + 1] == "term_deposit"
+
+    def _paths_after(args, flag):
+        return {args[i + 1] for i, value in enumerate(args) if value == flag}
+
+    for flag in ("--lock-file", "--summary-file"):
+        home_loan_paths = _paths_after(home_loan_args, flag)
+        deposit_paths = _paths_after(deposit_args, flag)
+        assert home_loan_paths, f"home-loan plist must set {flag} explicitly"
+        assert deposit_paths, f"term-deposit plist must set {flag} explicitly"
+        assert not home_loan_paths & deposit_paths, f"{flag} must differ between products"
+
+    crontab_example = (
+        REPO_ROOT / "deploy" / "scheduling" / "crontab.example"
+    ).read_text(encoding="utf-8")
+    assert "--product term_deposit" in crontab_example
+    lock_file_paths = set(re.findall(r"--lock-file (\S+/\S+)", crontab_example))
+    summary_file_paths = set(re.findall(r"--summary-file (\S+/\S+)", crontab_example))
+    assert len(lock_file_paths) == 2, "each product's cron line needs its own --lock-file"
+    assert len(summary_file_paths) == 2, "each product's cron line needs its own --summary-file"
 
 
 def test_scheduling_recipes_pass_config_flag():

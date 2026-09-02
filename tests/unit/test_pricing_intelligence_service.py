@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from balance_pricing_engine.competitor_rates.collectors import BankCollectionResult, CollectionStatus
-from balance_pricing_engine.competitor_rates.models import ProductType
+from balance_pricing_engine.competitor_rates.models import ProductType, category_agnostic_key
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange, detect_changes
 from balance_pricing_engine.pricing_intelligence.config import (
     CollectionConfig,
@@ -15,9 +15,11 @@ from balance_pricing_engine.pricing_intelligence.config import (
 from balance_pricing_engine.pricing_intelligence.market_state import MarketState
 from balance_pricing_engine.pricing_intelligence.service import (
     PricingIntelligenceService,
+    _resolve_rate_category,
     _resolve_suspicious,
 )
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
+from balance_pricing_engine.pricing_intelligence.strategy import CompetitorRateStrategy
 
 # Collection timestamps are dated relative to "now", not pinned to a calendar
 # date. Market snapshots exclude observations older than
@@ -58,9 +60,10 @@ class _StubCollector:
     fallback exists for -- while going through the real collect() pipeline.
     """
 
-    def __init__(self, bank, records):
+    def __init__(self, bank, records, skipped_row_keys=()):
         self.bank = bank
         self._records = records
+        self._skipped_row_keys = skipped_row_keys
 
     def collect_mortgage_rates(self, captured_at_utc=None, persist_snapshot=True):
         return BankCollectionResult(
@@ -69,6 +72,17 @@ class _StubCollector:
             status=CollectionStatus.SUCCESS,
             source_url=f"https://www.example-bank.co.nz/{self.bank.lower()}/rates",
             records=tuple(self._records),
+            skipped_row_keys=tuple(self._skipped_row_keys),
+        )
+
+    def collect_term_deposit_rates(self, captured_at_utc=None, persist_snapshot=True):
+        return BankCollectionResult(
+            bank=self.bank,
+            product_type=ProductType.TERM_DEPOSIT,
+            status=CollectionStatus.SUCCESS,
+            source_url=f"https://www.example-bank.co.nz/{self.bank.lower()}/deposits",
+            records=tuple(self._records),
+            skipped_row_keys=tuple(self._skipped_row_keys),
         )
 
 
@@ -113,6 +127,7 @@ def test_new_products_are_reported_after_the_market_goes_fully_quiet(fixture_fet
             current=[],
             detected_at=DAY_TWO,
             banks_collected=[record.bank for record in baseline],
+            run_id="withdraw-everything",
         )
         service.store.record_changes(withdrawal)
         assert service.store.get_current_observations() == [], "sanity check"
@@ -321,6 +336,184 @@ def test_bogus_rows_matching_the_baseline_count_are_not_a_reliable_collection(ma
     assert anz_withdrawals == []
 
 
+def test_non_comparable_rows_do_not_count_against_coverage(make_record):
+    """A bank whose non_comparable (audit-only) rows fail to (re-)extract
+    must not be read as low-coverage from that alone: coverage is measured
+    over comparable rows only, or a bank whose non_comparable rows outnumber
+    its comparable ones would be permanently excluded from withdrawal
+    detection even though every comparable rate collected cleanly -- and
+    because that exclusion is permanent, those stale non_comparable rows
+    would never get pruned either."""
+    comparable = make_record(bank="ANZ", term_months=12, product_name="Fixed 12m")
+    non_comparable = [
+        make_record(bank="ANZ", rate_category="non_comparable", product_name=f"PIE Fund {i}")
+        for i in range(5)
+    ]
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", [comparable] + non_comparable)],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    # This run: only the comparable row is re-collected -- a stand-in for a
+    # parser fault (or a page change) that stops extracting just the
+    # audit-only rows while every genuine advertised rate collects cleanly.
+    service._collectors = [_StubCollector("ANZ", [comparable])]
+    outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    assert "ANZ" not in outcome.low_coverage_banks
+
+
+def test_non_comparable_rows_missing_coverage_does_not_emit_withdrawals(make_record):
+    """The other half of the guard test_non_comparable_rows_do_not_count_against_coverage
+    checks: a bank whose non_comparable extraction alone regresses still
+    counts as reliably collected (comparable coverage is fine), so
+    detect_changes() would otherwise read every now-missing non_comparable
+    identity as a genuine REMOVED_PRODUCT -- persisting the exact
+    parser-failure scenario as change events instead of merely dropping the
+    coverage ratio the way _reliably_collected_banks() already does for a
+    comparable-coverage regression."""
+    comparable = make_record(bank="ANZ", term_months=12, product_name="Fixed 12m")
+    non_comparable = [
+        make_record(bank="ANZ", rate_category="non_comparable", product_name=f"PIE Fund {i}")
+        for i in range(5)
+    ]
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", [comparable] + non_comparable)],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    # Same stand-in as the coverage test: only the comparable row re-collects.
+    service._collectors = [_StubCollector("ANZ", [comparable])]
+    outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    non_comparable_withdrawals = [
+        change
+        for change in outcome.changes
+        if change.change_type is ChangeType.REMOVED_PRODUCT
+        and change.rate_category == "non_comparable"
+    ]
+    assert non_comparable_withdrawals == []
+
+
+def test_a_sole_category_row_can_still_be_reported_withdrawn(make_record):
+    """A category with exactly one known row can only ever show 0-of-1 or
+    1-of-1 matched this run -- "0 of 1" gives
+    _low_coverage_category_predecessor_keys_to_suppress()'s ratio check
+    nothing to distinguish a genuine sole closure from a parser regression
+    (0 < 1 * any positive ratio is always true), so it must not suppress
+    that disappearance unconditionally. ANZ's sole "special" row genuinely
+    disappearing while its "standard" rows keep collecting cleanly (overall
+    lumped coverage 2/3, comfortably above the default 50% threshold) must
+    still emit REMOVED_PRODUCT for the special row -- not hide it in the
+    default market snapshot forever because a category of size one can
+    never legitimately clear a coverage ratio check."""
+    special_baseline = [
+        make_record(bank="ANZ", term_months=12, rate_category="special", product_name="Fixed Special")
+    ]
+    standard_baseline = [
+        make_record(
+            bank="ANZ", term_months=months, rate_category="standard", product_name="Fixed Standard"
+        )
+        for months in (12, 24)
+    ]
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", special_baseline + standard_baseline)],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    # This run: the sole special row is genuinely gone; both standard rows
+    # still collect cleanly.
+    service._collectors = [_StubCollector("ANZ", standard_baseline)]
+    outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    assert "ANZ" not in outcome.low_coverage_banks, (
+        "sanity check: the lumped ratio (2/3 ~ 67%) still clears the default threshold"
+    )
+    special_withdrawals = [
+        change
+        for change in outcome.changes
+        if change.change_type is ChangeType.REMOVED_PRODUCT and change.rate_category == "special"
+    ]
+    assert len(special_withdrawals) == 1
+
+
+def test_a_regressed_non_default_category_does_not_hide_behind_healthy_lumped_coverage(
+    make_record,
+):
+    """A term-deposit bank whose ordinary term_deposit rows a parser
+    regression now misses entirely, while its pie_term_deposit rows keep
+    collecting cleanly, must not have every missing term_deposit key read
+    as a genuine REMOVED_PRODUCT.
+
+    _reliably_collected_banks() lumps every non-non_comparable category
+    into one combined ratio: 0/3 term_deposit + 3/3 pie_term_deposit = 3/6
+    matched, exactly the default 50% threshold, so the bank stays in
+    banks_collected and reaches detect_changes() normally. Without
+    per-category suppression, that would read as three genuine withdrawals
+    of the bank's default-category rates -- removing them from every
+    future default market snapshot -- purely because a healthy but
+    off-default category masked the regression in the combined ratio."""
+    term_deposit_baseline = [
+        make_record(
+            bank="ANZ",
+            product_type=ProductType.TERM_DEPOSIT,
+            rate_category="term_deposit",
+            term_months=months,
+        )
+        for months in (3, 6, 12)
+    ]
+    pie_baseline = [
+        make_record(
+            bank="ANZ",
+            product_type=ProductType.TERM_DEPOSIT,
+            rate_category="pie_term_deposit",
+            term_months=months,
+        )
+        for months in (3, 6, 12)
+    ]
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", term_deposit_baseline + pie_baseline)],
+    )
+    service.collect(
+        captured_at_utc=DAY_ONE, product_type=ProductType.TERM_DEPOSIT, persist_snapshot=False
+    )
+
+    # This run: only the pie_term_deposit rows re-collect -- a stand-in for
+    # a parser regression that stops matching the ordinary term_deposit
+    # table while the PIE table keeps extracting cleanly.
+    service._collectors = [_StubCollector("ANZ", pie_baseline)]
+    outcome = service.collect(
+        captured_at_utc=DAY_TWO, product_type=ProductType.TERM_DEPOSIT, persist_snapshot=False
+    )
+
+    assert "ANZ" not in outcome.low_coverage_banks, (
+        "sanity check: the lumped ratio (3/6 = 50%) still clears the default threshold"
+    )
+    term_deposit_withdrawals = [
+        change
+        for change in outcome.changes
+        if change.change_type is ChangeType.REMOVED_PRODUCT
+        and change.rate_category == "term_deposit"
+    ]
+    assert term_deposit_withdrawals == []
+
+
 def test_a_validation_rejected_record_is_not_reported_as_a_withdrawal(fixture_fetcher):
     """A single implausible rate must not read as the bank withdrawing that line."""
 
@@ -339,6 +532,107 @@ def test_a_validation_rejected_record_is_not_reported_as_a_withdrawal(fixture_fe
         change for change in outcome.changes if change.change_type is ChangeType.REMOVED_PRODUCT
     ]
     assert withdrawals == []
+
+
+def test_a_hard_skipped_row_is_not_reported_as_a_withdrawal(make_record):
+    """A row that fails CompetitorRateRecord construction outright during
+    extraction -- before it can even reach validate_observations() to land in
+    validation.rejected -- must not read as its predecessor having been
+    withdrawn, the same protection test_a_validation_rejected_record_is_not_
+    reported_as_a_withdrawal gives a row that fails validation afterwards."""
+    baseline = [
+        make_record(bank="ANZ", term_months=12, product_name="Fixed 12m"),
+        make_record(bank="ANZ", term_months=24, product_name="Fixed 24m"),
+    ]
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", baseline)],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    # This run: the 12m row parsed fine, but the 24m row failed
+    # CompetitorRateRecord construction entirely -- represented here exactly
+    # as parse_html_rates() would report it, via its own skipped_row_keys
+    # parameter (see test_competitor_rate_extractors.py for that unit test).
+    surviving = [make_record(bank="ANZ", term_months=12, product_name="Fixed 12m")]
+    skipped_key = category_agnostic_key(
+        bank="ANZ",
+        product_type=ProductType.HOME_LOAN,
+        term_months_normalised=24,
+        term_label_raw="24 months",
+        interest_payment_frequency="unknown",
+        min_balance_or_deposit=None,
+        max_balance_or_deposit=None,
+    )
+    service._collectors = [_StubCollector("ANZ", surviving, skipped_row_keys=[skipped_key])]
+    outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    anz_withdrawals = [
+        change
+        for change in outcome.changes
+        if change.change_type is ChangeType.REMOVED_PRODUCT and change.bank == "ANZ"
+    ]
+    assert anz_withdrawals == []
+
+
+def test_ambiguous_skipped_rows_suppress_every_candidate_not_just_a_singleton(make_record):
+    """category_agnostic_group_key() deliberately ignores rate_category, so a
+    bank's simultaneous "special" and "standard" rows at the same term share
+    one group -- if both fail CompetitorRateRecord construction this run
+    (e.g. a page-layout regression hitting that term generally, not one
+    category specifically), _skipped_row_predecessor_keys() must suppress
+    *both* unclaimed baseline candidates, even though it cannot tell which
+    one the reported failure belongs to. Suppressing only an unambiguous
+    singleton would let one of the two -- whichever survived some other
+    disambiguation -- be reported REMOVED_PRODUCT purely because it happens
+    to share a coarse group key with the row that actually failed. Each
+    category keeps its own 24m sibling surviving normally, so neither the
+    bank's lumped coverage ratio nor the per-category one falls below the
+    50% default threshold and masks this via a different suppression path."""
+    baseline = [
+        make_record(bank="ANZ", term_months=12, rate_category="special", product_name="Fixed Special"),
+        make_record(bank="ANZ", term_months=24, rate_category="special", product_name="Fixed Special"),
+        make_record(bank="ANZ", term_months=12, rate_category="standard", product_name="Fixed Standard"),
+        make_record(bank="ANZ", term_months=24, rate_category="standard", product_name="Fixed Standard"),
+    ]
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", baseline)],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    # This run: both 24m rows survive (one per category), but the 12m term
+    # fails CompetitorRateRecord construction entirely regardless of
+    # category -- reported once via skipped_row_keys, exactly as
+    # parse_html_rates() would for a term-wide extraction fault.
+    surviving = [
+        make_record(bank="ANZ", term_months=24, rate_category="special", product_name="Fixed Special"),
+        make_record(bank="ANZ", term_months=24, rate_category="standard", product_name="Fixed Standard"),
+    ]
+    skipped_key = category_agnostic_key(
+        bank="ANZ",
+        product_type=ProductType.HOME_LOAN,
+        term_months_normalised=12,
+        term_label_raw="12 months",
+        interest_payment_frequency="unknown",
+        min_balance_or_deposit=None,
+        max_balance_or_deposit=None,
+    )
+    service._collectors = [_StubCollector("ANZ", surviving, skipped_row_keys=[skipped_key])]
+    outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    anz_withdrawals = [
+        change
+        for change in outcome.changes
+        if change.change_type is ChangeType.REMOVED_PRODUCT and change.bank == "ANZ"
+    ]
+    assert anz_withdrawals == []
 
 
 def test_a_validation_rejected_line_keeps_its_last_known_rate_in_the_snapshot(fixture_fetcher):
@@ -400,6 +694,7 @@ def test_market_state_ignores_changes_outside_the_configured_market():
         previous_rate_pct=5.00,
         current_rate_pct=4.50,
         change_bps=-50.0,
+        run_id="test-run",
     )
     service.store.record_changes([out_of_scope_change])
 
@@ -431,6 +726,7 @@ def test_get_changes_scope_to_market_filters_by_selected_banks_and_terms():
         previous_rate_pct=5.00,
         current_rate_pct=4.90,
         change_bps=-10.0,
+        run_id="test-run",
     )
     out_of_scope = RateChange(
         observation_key="BNZ|home_loan|special|24|unknown|fixed special",
@@ -444,6 +740,7 @@ def test_get_changes_scope_to_market_filters_by_selected_banks_and_terms():
         previous_rate_pct=5.00,
         current_rate_pct=4.50,
         change_bps=-50.0,
+        run_id="test-run",
     )
     service.store.record_changes([in_scope, out_of_scope])
 
@@ -1145,6 +1442,108 @@ def test_a_stale_observation_is_excluded_from_the_market_snapshot(fixture_fetche
     assert fresh_snapshot.term(12) is not None
 
 
+@pytest.mark.parametrize(
+    ("product_type", "supplied", "expected"),
+    [
+        (ProductType.HOME_LOAN, None, "special"),
+        (ProductType.TERM_DEPOSIT, None, "term_deposit"),
+        (ProductType.HOME_LOAN, "standard", "standard"),
+        (ProductType.TERM_DEPOSIT, "special", "special"),
+    ],
+)
+def test_resolve_rate_category_defaults_per_product_but_honours_an_explicit_value(
+    product_type, supplied, expected
+):
+    assert _resolve_rate_category(product_type, supplied) == expected
+
+
+def _deposit_service(make_record, *records_kwargs):
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+    )
+    service.store.record_observations(
+        [
+            make_record(product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit", **kw)
+            for kw in records_kwargs
+        ]
+    )
+    return service
+
+
+def test_resolve_competitor_assumption_defaults_to_the_deposit_category(make_record):
+    """product_type=TERM_DEPOSIT alone, with no explicit rate_category, must
+    resolve against the deposit market's own default category rather than
+    the mortgage-specific "special" literal, which matches no deposit
+    records and previously made this raise "requires advertised rates"."""
+    service = _deposit_service(
+        make_record,
+        {"bank": "ANZ", "rate_pct": 4.00},
+        {"bank": "BNZ", "rate_pct": 4.20},
+    )
+
+    assumption = service.resolve_competitor_assumption(
+        strategy=CompetitorRateStrategy.MARKET_MEDIAN, product_type=ProductType.TERM_DEPOSIT
+    )
+
+    assert assumption.rate_pct == pytest.approx(4.10)
+
+
+def test_get_competitive_position_defaults_to_the_deposit_category(make_record):
+    """Same bug via get_competitive_position(): previously raised
+    ValueError("no advertised market data...") for a deposit position with
+    no explicit rate_category."""
+    service = _deposit_service(make_record, {"bank": "ANZ", "rate_pct": 4.00})
+
+    position = service.get_competitive_position(
+        our_rate=4.10, product_type=ProductType.TERM_DEPOSIT
+    )
+
+    assert position.market_best == 4.00
+
+
+def test_resolve_competitor_assumption_does_not_blend_categories(service, make_record):
+    """rate_category=None (this method's own default) must resolve to the
+    product's comparable category before reaching get_market_snapshot(),
+    not forward None straight through -- that method's own None now means
+    the unfiltered view across every category (see _RATE_CATEGORY_OMITTED),
+    which would let MARKET_MEDIAN silently blend special and standard
+    mortgage tiers into one competitor assumption fed straight into the
+    optimiser."""
+    service.store.record_observations(
+        [
+            make_record(bank="ANZ", rate_category="special", rate_pct=4.00),
+            make_record(bank="BNZ", rate_category="standard", rate_pct=6.00),
+        ],
+        observed_at=DAY_ONE,
+    )
+
+    assumption = service.resolve_competitor_assumption(strategy=CompetitorRateStrategy.MARKET_MEDIAN)
+
+    assert assumption.rate_pct == pytest.approx(4.00)
+
+
+def test_get_competitive_position_does_not_blend_categories(service, make_record):
+    """Same fix as resolve_competitor_assumption(), for get_competitive_position().
+    Asserted via market_worst (6.00 from BNZ's standard rate would leak in
+    unfiltered), not market_best: the lower "special" rate would win either
+    way and so would not, by itself, expose the blending bug."""
+    service.store.record_observations(
+        [
+            make_record(bank="ANZ", rate_category="special", rate_pct=4.00),
+            make_record(bank="BNZ", rate_category="standard", rate_pct=6.00),
+        ],
+        observed_at=DAY_ONE,
+    )
+
+    position = service.get_competitive_position(our_rate=4.10)
+
+    assert position.market_best == 4.00
+    assert position.market_worst == 4.00
+
+
 def test_the_market_snapshot_covers_every_bank(service):
     service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
     snapshot = service.get_market_snapshot(now=DAY_ONE)
@@ -1154,6 +1553,80 @@ def test_the_market_snapshot_covers_every_bank(service):
     assert market.best_rate == 4.79
     assert market.market_leader == "ANZ"
     assert market.bank_count == 5
+
+
+def test_market_snapshot_rate_category_none_is_unfiltered(service, make_record):
+    """rate_category=None, passed explicitly, must give the unfiltered view
+    across every category -- matching build_market_snapshot()'s own
+    contract -- not the smart per-product default _resolve_rate_category()
+    applies when the argument is omitted entirely."""
+    service.store.record_observations(
+        [
+            make_record(bank="ANZ", rate_category="special", rate_pct=4.79),
+            make_record(bank="BNZ", rate_category="standard", rate_pct=5.39),
+        ],
+        observed_at=DAY_ONE,
+    )
+
+    default_snapshot = service.get_market_snapshot(now=DAY_ONE)
+    unfiltered_snapshot = service.get_market_snapshot(rate_category=None, now=DAY_ONE)
+
+    assert set(default_snapshot.banks) == {"ANZ"}
+    assert set(unfiltered_snapshot.banks) == {"ANZ", "BNZ"}
+
+
+def test_previous_market_snapshot_rate_category_none_is_unfiltered(service, make_record):
+    """Same fix as get_market_snapshot(), for the previous-run snapshot."""
+    service.store.record_observations(
+        [
+            make_record(bank="ANZ", rate_category="special", rate_pct=4.79),
+            make_record(bank="BNZ", rate_category="standard", rate_pct=5.39),
+        ],
+        observed_at=DAY_ONE,
+    )
+    service.store.record_observations(
+        [make_record(bank="ANZ", rate_category="special", rate_pct=4.89)], observed_at=DAY_TWO
+    )
+
+    default_snapshot = service.get_previous_market_snapshot()
+    unfiltered_snapshot = service.get_previous_market_snapshot(rate_category=None)
+
+    assert set(default_snapshot.banks) == {"ANZ"}
+    assert set(unfiltered_snapshot.banks) == {"ANZ", "BNZ"}
+
+
+def test_previous_market_snapshot_resolves_run_id_and_timestamp_atomically(service, make_record):
+    """get_previous_market_snapshot() must resolve the previous run's
+    started_at and run_id from a single store lookup, not as two separate
+    calls a concurrent collection could straddle: the old code called
+    get_previous_run_started_at() then get_previous_run_id() separately,
+    each independently resolving "the previous run" relative to whatever
+    was the latest run *at the time of that call*. A same-product
+    collection committing between the two calls becomes the new latest
+    run, so the second call resolves a different predecessor than the
+    first -- the resulting (as_of, before_run_id) pair then names two
+    different runs, and get_observations_as_of() reconstructs the state as
+    of the run_id (which can be later than the reported as_of), leaking a
+    newer rate into a snapshot labelled with an older timestamp."""
+    service.store.record_observations([make_record(bank="ANZ", rate_pct=4.79)], observed_at=DAY_ONE)
+    service.store.record_observations([make_record(bank="ANZ", rate_pct=4.89)], observed_at=DAY_TWO)
+
+    original_started_at = service.store.get_previous_run_started_at
+
+    def started_at_then_concurrent_commit(*args, **kwargs):
+        result = original_started_at(*args, **kwargs)
+        # Simulates a same-product collection committing between what the
+        # old code treated as its two separate store lookups.
+        service.store.record_observations(
+            [make_record(bank="ANZ", rate_pct=4.99)], observed_at=DAY_THREE
+        )
+        return result
+
+    service.store.get_previous_run_started_at = started_at_then_concurrent_commit
+
+    snapshot = service.get_previous_market_snapshot()
+
+    assert snapshot.term(12).rate_for("ANZ") == 4.79
 
 
 def test_market_snapshot_reconstructs_an_older_run_by_id(fixture_fetcher):
@@ -1169,6 +1642,22 @@ def test_market_snapshot_reconstructs_an_older_run_by_id(fixture_fetcher):
         )
 
     assert snapshot_at_run_two.term(12).rate_for("ANZ") == 4.79
+
+
+def test_market_snapshot_as_of_run_id_resolves_a_same_timestamp_run(service, make_record):
+    """Two runs sharing observed_at, with the rate changing between them, must
+    let as_of_run_id reconstruct the specific run named -- not whichever
+    same-timestamp run a plain timestamp comparison happens to prefer."""
+    earlier = service.store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.60)], observed_at=DAY_TWO
+    )
+    service.store.record_observations(
+        [make_record(bank="ANZ", rate_pct=4.70)], observed_at=DAY_TWO
+    )
+
+    snapshot = service.get_market_snapshot(as_of_run_id=earlier.run_id)
+
+    assert snapshot.term(12).rate_for("ANZ") == 4.60
 
 
 def test_market_snapshot_as_of_a_suspicious_run_falls_back_to_the_confirmed_rate(
@@ -1204,6 +1693,25 @@ def test_previous_market_snapshot_falls_back_to_the_confirmed_rate(service, make
     snapshot = service.get_previous_market_snapshot()
 
     assert snapshot.term(12).rate_for("ANZ") == 4.79
+
+
+def test_previous_market_snapshot_is_scoped_to_its_own_product(service, make_record):
+    """Home-loan and term-deposit collections now share one collection_runs
+    table (the scheduled workflow can run both). A deposit run D1 followed
+    by an unrelated mortgage run M1 must not make
+    get_previous_market_snapshot(product_type=TERM_DEPOSIT) reconstruct
+    "as of D1" -- D1 is the only deposit run so far, so there is no previous
+    deposit snapshot yet, and the mortgage run in between must not be
+    mistaken for one."""
+    service.store.record_observations(
+        [make_record(product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")],
+        observed_at=DAY_ONE,
+    )
+    service.store.record_observations(
+        [make_record(product_type=ProductType.HOME_LOAN)], observed_at=DAY_TWO
+    )
+
+    assert service.get_previous_market_snapshot(product_type=ProductType.TERM_DEPOSIT) is None
 
 
 def test_history_is_queryable_after_a_reprice(fixture_fetcher):

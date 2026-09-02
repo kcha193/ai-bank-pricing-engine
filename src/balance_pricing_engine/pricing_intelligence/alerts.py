@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Protocol, Sequence, runtime_checkable
 
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange
 from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot
@@ -94,7 +95,12 @@ def format_alert(
     label = term_name(change.term_months)
     category = change.rate_category.replace("_", " ").title()
 
-    title = f"{marker} NZ MORTGAGE RATE CHANGE"
+    market_label = (
+        "TERM DEPOSIT"
+        if change.product_type is ProductType.TERM_DEPOSIT
+        else "MORTGAGE"
+    )
+    title = f"{marker} NZ {market_label} RATE CHANGE"
     lines = [f"{change.bank} — {label} Fixed {category}", ""]
 
     if change.is_rate_move:
@@ -136,6 +142,15 @@ def _rank_movement(
 ) -> Optional[str]:
     if snapshot is None or previous_snapshot is None or change.term_months is None:
         return None
+    # A snapshot built for a different product must not be borrowed from
+    # either: "special" exists as a category on both the mortgage and deposit
+    # markets, so a deposit change paired with a same-category mortgage
+    # snapshot would otherwise pass the rate_category guard below and render
+    # the wrong market's rank.
+    if ProductType(snapshot.product_type) is not change.product_type:
+        return None
+    if ProductType(previous_snapshot.product_type) is not change.product_type:
+        return None
     # A snapshot built for a different rate_category (e.g. the CLI's default
     # "special" snapshot passed alongside a "standard" change) ranks a
     # different market entirely; the rank shown must not be borrowed from it.
@@ -161,8 +176,11 @@ def _market_context(
 ) -> list[str]:
     if snapshot is None or change.term_months is None or change.current_rate_pct is None:
         return []
-    # Same guard as _rank_movement(): a snapshot built for a different
-    # rate_category compares this change against the wrong market's median.
+    # Same guards as _rank_movement(): a snapshot built for a different
+    # product or a different rate_category compares this change against the
+    # wrong market's median.
+    if ProductType(snapshot.product_type) is not change.product_type:
+        return []
     if snapshot.rate_category != change.rate_category:
         return []
     market = snapshot.term(change.term_months)
