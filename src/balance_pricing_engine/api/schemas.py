@@ -10,13 +10,13 @@ _EXAMPLE_CONFIG_YAML = (
     "random_seed: 42\n"
     "simulation: {n_loan_customers: 5000, n_deposit_customers: 5000}\n"
     "market: {cash_rate: 0.0425, wholesale_funding_spread: 0.012, "
-    "competitor_loan_rate: 0.0499, competitor_deposit_rate: 0.045, "
-    "home_loan_reference_rate: 0.0499, term_deposit_reference_rate: 0.04}\n"
+    "competitor_loan_rate: 0.0499, competitor_deposit_rate: 0.039, "
+    "home_loan_reference_rate: 0.0499, term_deposit_reference_rate: 0.039}\n"
     "pricing_strategy: {home_loan_spread_bps: {min: -50, max: 50, step: 5}, "
     "term_deposit_spread_bps: {min: -40, max: 40, step: 5}}\n"
     "balance_sheet: {required_deposit_funding_ratio: 0.65, funding_shortfall_penalty_rate: 0.018}\n"
     "response: {loan_rate_elasticity: -170.0, loan_competitor_gap_elasticity: -130.0, "
-    "deposit_rate_elasticity: 95.0, deposit_competitor_gap_elasticity: 75.0}\n"
+    "deposit_rate_elasticity: 140.0, deposit_competitor_gap_elasticity: 110.0}\n"
 )
 
 

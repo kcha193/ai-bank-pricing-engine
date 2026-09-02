@@ -92,3 +92,73 @@ volume from $540M to $182M.
 Recalibration should be revisited whenever the market moves materially away from
 the anchor. The anchor is a constant in config, not a live feed, so it will drift
 again -- that drift is what produced the 311 bps error above.
+
+## Deposit response calibration (2026-09-02)
+
+The term-deposit response was recalibrated once live-verified deposit market
+data existed (see [pricing_intelligence.md](pricing_intelligence.md)). This is
+the deferred half of the 2026-08-26 loan-side recalibration.
+
+The symptom was the same as the loan side, in mirror image: pricing **at** the
+market won only **31.5%** uptake. Offering exactly the market rate should win
+roughly a fair share, not a third. The cause was the same too -- a stale anchor.
+
+| Parameter | Was | Now | Why |
+| --- | --- | --- | --- |
+| `coefficients.deposit.rate_anchor` | 0.045 | 0.039 | The anchor is the reference price at which the own-rate term vanishes. At 4.50% the model treated paying 3.90% into a 3.90% market as unattractive. |
+| `coefficients.deposit.intercept` | -0.65 | -0.44 | Re-solved so pricing at market wins ~50% uptake. |
+| `deposit_rate_elasticity` | 95 | 140 | Combined own+gap raised from 170 to 250. |
+| `deposit_competitor_gap_elasticity` | 75 | 110 | Scaled with the own-rate term, preserving the documented own:gap ratio. |
+| `market.competitor_deposit_rate` | 0.045 | 0.039 | Stale default, 60 bps above the verified market. |
+| `market.term_deposit_reference_rate` | 0.0400 | 0.039 | Stale spread anchor. |
+
+Deposits are calibrated **less elastic than home loans** (combined 250 vs 300)
+on purpose. Term-deposit rates are openly compared, but deposits lack the broker
+channel that makes mortgage pricing so price-driven, and existing deposits tend
+to auto-roll.
+
+Resulting uptake curve (own 140, gap 110, anchor 3.90%):
+
+| Offered | vs market | Uptake |
+| --- | --- | --- |
+| 3.50% | -40 bps | 27.0% |
+| 3.90% | +0 bps | 49.9% |
+| 4.20% | +30 bps | 67.7% |
+| 4.50% | +60 bps | 81.6% |
+
+### Effect on the joint recommendation
+
+| | Before | After |
+| --- | --- | --- |
+| Home loan rate | 6.59% | 6.39% |
+| Term deposit rate | 4.20% | 4.00% |
+| Objective | $2,392,880 | $4,065,058 |
+| Loan volume | $182M | $311M |
+| Deposit volume | $182M | $312M |
+
+The **loan** rate moved even though only deposit parameters changed: cheaper
+deposit funding lowers the cost of funds, so the optimiser can price loans lower
+and win more volume. This is joint optimisation working as intended, and is the
+reason the two sides should not be calibrated in isolation.
+
+### Why deposits are raised to roughly 100% of the loan book
+
+`balance_sheet.required_deposit_funding_ratio` (0.65) is a **minimum, not a
+target**. Retail deposits at 4.00% substitute for wholesale funding at
+`cash_rate + wholesale_funding_spread` = 5.45%, a 145 bps saving, so the
+optimiser funds as much of the book with deposits as the response model allows.
+It stops near 100% of loan volume because beyond that, surplus deposits are only
+credited at `cash_rate` (4.25%), which is a far weaker incentive.
+
+This is economically coherent given the assumptions, but note what the model
+does **not** represent: retail deposit supply is unconstrained here, whereas a
+real bank faces a finite deposit market, liquidity and concentration limits, and
+a rising marginal cost of gathering deposits. Read the deposit volume as "the
+model would fund the book retail if it could", not as a raisable amount.
+
+### Still not recalibrated
+
+`cash_rate` (4.25%) and `wholesale_funding_spread` (1.2%) remain unverified.
+There is no RBNZ/OCR/swap-rate source in the engine yet, and guessing would be
+worse than leaving them explicit. This is the last unverified assumption in the
+funding curve.

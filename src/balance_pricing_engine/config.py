@@ -130,8 +130,14 @@ class LoanResponseCoefficientsConfig(BaseModel):
 
 
 class DepositResponseCoefficientsConfig(BaseModel):
-    intercept: float = -0.65
-    rate_anchor: float = 0.045
+    # Recalibrated 2026-09-02 against the live-verified NZ term-deposit market
+    # (1y median 3.90%). Same reasoning as the loan side: rate_anchor is the
+    # reference price at which the own-rate term vanishes, so leaving it at
+    # 4.50% told the model that paying 3.90% into a 3.90% market was
+    # unattractive, winning only 31.5% uptake at market.
+    # See docs/modelling_assumptions.md.
+    intercept: float = -0.44
+    rate_anchor: float = 0.039
     rate_sensitivity_coef: float = 0.60
     relationship_coef: float = 0.04
     digital_coef: float = -0.20
