@@ -463,6 +463,19 @@ def _low_coverage_category_predecessor_keys_to_suppress(
     regression is caught regardless of which category it hits, while a
     single identity genuinely closing within an otherwise-healthy category
     still reports as withdrawn.
+
+    Skips a ``(bank, category)`` pair with exactly one known key: a size-1
+    category can only ever show 0-of-1 or 1-of-1 matched, so "0 of 1" gives
+    the ratio check nothing to distinguish a genuine sole closure from a
+    parser regression -- ``0 < 1 * min_coverage_ratio`` is true for *any*
+    positive ratio, so every such disappearance would be suppressed
+    unconditionally, permanently hiding that category's stale rate from
+    ``get_current_observations()``/market snapshots instead of letting the
+    normal, single-key withdrawal path report it. A size-2-or-more category
+    still needs the ratio check: with only a *raw* missing-key count, a
+    parser fault dropping every row in a large category would report each
+    one as an individually "genuine" withdrawal instead of the coverage
+    regression it actually is.
     """
     categories = {record.rate_category for record in baseline}
     suppressed: set[str] = set()
@@ -477,6 +490,8 @@ def _low_coverage_category_predecessor_keys_to_suppress(
             matched_keys.setdefault(predecessor.bank, set()).add(predecessor.observation_key())
 
         for bank, known in baseline_keys.items():
+            if len(known) <= 1:
+                continue
             matched = matched_keys.get(bank, set())
             if len(matched) < len(known) * min_coverage_ratio:
                 suppressed.update(known - matched)

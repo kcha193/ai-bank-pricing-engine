@@ -403,6 +403,52 @@ def test_non_comparable_rows_missing_coverage_does_not_emit_withdrawals(make_rec
     assert non_comparable_withdrawals == []
 
 
+def test_a_sole_category_row_can_still_be_reported_withdrawn(make_record):
+    """A category with exactly one known row can only ever show 0-of-1 or
+    1-of-1 matched this run -- "0 of 1" gives
+    _low_coverage_category_predecessor_keys_to_suppress()'s ratio check
+    nothing to distinguish a genuine sole closure from a parser regression
+    (0 < 1 * any positive ratio is always true), so it must not suppress
+    that disappearance unconditionally. ANZ's sole "special" row genuinely
+    disappearing while its "standard" rows keep collecting cleanly (overall
+    lumped coverage 2/3, comfortably above the default 50% threshold) must
+    still emit REMOVED_PRODUCT for the special row -- not hide it in the
+    default market snapshot forever because a category of size one can
+    never legitimately clear a coverage ratio check."""
+    special_baseline = [
+        make_record(bank="ANZ", term_months=12, rate_category="special", product_name="Fixed Special")
+    ]
+    standard_baseline = [
+        make_record(
+            bank="ANZ", term_months=months, rate_category="standard", product_name="Fixed Standard"
+        )
+        for months in (12, 24)
+    ]
+    service = PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(":memory:"),
+        collectors=[_StubCollector("ANZ", special_baseline + standard_baseline)],
+    )
+    service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    # This run: the sole special row is genuinely gone; both standard rows
+    # still collect cleanly.
+    service._collectors = [_StubCollector("ANZ", standard_baseline)]
+    outcome = service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    assert "ANZ" not in outcome.low_coverage_banks, (
+        "sanity check: the lumped ratio (2/3 ~ 67%) still clears the default threshold"
+    )
+    special_withdrawals = [
+        change
+        for change in outcome.changes
+        if change.change_type is ChangeType.REMOVED_PRODUCT and change.rate_category == "special"
+    ]
+    assert len(special_withdrawals) == 1
+
+
 def test_a_regressed_non_default_category_does_not_hide_behind_healthy_lumped_coverage(
     make_record,
 ):
