@@ -1,15 +1,15 @@
 {
-  "best_deposit_rate": 0.042,
-  "best_loan_rate": 0.0659,
+  "best_deposit_rate": 0.04,
+  "best_loan_rate": 0.0639,
   "boundary_warning_flag": false,
-  "capital_charge": 764726.5043191442,
-  "excess_deposit_income": 6038.234924623147,
+  "capital_charge": 1305505.4706592902,
+  "excess_deposit_income": 50690.95819029272,
   "expansion_capped": false,
-  "expansion_rounds": 2,
-  "expected_deposit_volume": 182219815.23947924,
-  "expected_loan_volume": 182077739.12360576,
+  "expansion_rounds": 1,
+  "expected_deposit_volume": 312027364.29926646,
+  "expected_loan_volume": 310834635.87125957,
   "funding_shortfall": 0.0,
   "initial_boundary_warning_flag": true,
-  "objective_value": 2392880.256748049,
+  "objective_value": 4065057.8668547054,
   "policy_band_breached": true
 }

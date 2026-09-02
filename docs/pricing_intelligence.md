@@ -291,10 +291,10 @@ python3 examples/run_market_intelligence_scenarios.py --term 12
 ```text
    Scenario                  Competitor   Our rate       Objective        vs A
 ------------------------------------------------------------------------------
-A  No change (manual)             4.99%      6.59%      $2,392,880          $0
-B  Match market median            4.99%      6.59%      $2,392,880          $0
-C  Match market leader            4.95%      6.55%      $2,358,178    $-34,703
-D  Market leader -5 bps           4.90%      6.55%      $2,321,822    $-71,058
+A  No change (manual)             4.99%      6.39%      $4,065,058          $0
+B  Match market median            4.99%      6.39%      $4,065,058          $0
+C  Match market leader            4.95%      6.35%      $3,997,601    $-67,457
+D  Market leader -5 bps           4.90%      6.35%      $3,948,769   $-116,289
 ```
 
 Scenario E -- the economically optimal price -- is the `Our rate` column: the
@@ -554,8 +554,9 @@ git-ignored. They are diagnostic material, not a permanent archive.
     like market leaders by 70 bps when their advertised 1-year rate (3.90%) is
     at parity with ASB.
 
-  Deposit elasticities and `rate_anchor` are **not yet recalibrated** — that is
-  the natural follow-up now that verified deposit data exists.
+  Deposit elasticities and `rate_anchor` were recalibrated against this data on
+  2026-09-02; see
+  [modelling_assumptions.md](modelling_assumptions.md#deposit-response-calibration-2026-09-02).
 - **This is decision-support/research software.** Public market data does not
   replace internal bank pricing governance, model risk review, or approval.
 

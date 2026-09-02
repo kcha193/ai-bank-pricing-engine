@@ -3,7 +3,8 @@
 > **Numbers updated 2026-08-26.** The home-loan response coefficients were
 > recalibrated against the live-verified NZ market (see
 > [modelling_assumptions.md](modelling_assumptions.md#response-calibration-2026-08-26)).
-> The baseline recommendation moved from 8.10% to 6.59%. The stored outputs in
+> The baseline recommendation moved from 8.10% to 6.39% (the deposit side was
+> recalibrated on 2026-09-02, which also moved the loan rate). The stored outputs in
 > [the walkthrough notebook](../notebooks/bank_pricing_engine_walkthrough.ipynb)
 > still show pre-recalibration figures until it is re-executed.
 
@@ -96,8 +97,8 @@ Important fields:
 
 Rates are written as decimals:
 
-- `0.0659` means `6.59%`.
-- `0.042` means `4.20%`.
+- `0.0639` means `6.39%`.
+- `0.04` means `4.00%`.
 
 ### Step 3: Run The Baseline Report
 
@@ -124,8 +125,8 @@ config snapshot, all CSV/JSON artifacts, a pricing memo, and a governance checkl
 The current adaptive baseline result is:
 
 ```text
-Home loan rate:          6.59%
-Term deposit rate:       4.20%
+Home loan rate:          6.39%
+Term deposit rate:       4.00%
 Objective value:         about $2.39M
 Expected loan volume:    about $182.1M
 Expected deposit volume: about $182.2M
@@ -134,8 +135,8 @@ Funding shortfall:       $0
 
 Interpretation:
 
-- The model expects the best tested home loan rate to be `6.59%`.
-- The best tested term deposit rate is `4.20%`.
+- The model expects the best tested home loan rate to be `6.39%`.
+- The best tested term deposit rate is `4.00%`.
 - The expected economic objective is about `$2.39M`.
 - The adaptive follow-up widened the original grid and found a nearby deposit rate that removes the
   funding shortfall with a slightly better objective.
@@ -358,9 +359,9 @@ The baseline report currently starts with:
 
 ```text
 Best joint pricing decision
-  Home loan rate:          6.59%
-  Term deposit rate:       4.20%
-  Objective value:         $2,392,880
+  Home loan rate:          6.39%
+  Term deposit rate:       4.00%
+  Objective value:         $4,065,058
   Expected loan volume:    $182,077,739
   Expected deposit volume: $182,219,815
   Funding shortfall:       $0
@@ -369,7 +370,7 @@ Best joint pricing decision
 Plain-English interpretation:
 
 - The optimizer tested all configured home loan and term deposit rate pairs.
-- The best tested pair is a `6.59%` home loan rate and a `4.20%` term deposit rate.
+- The best tested pair is a `6.39%` home loan rate and a `4.00%` term deposit rate.
 - The expected economic value of that decision is about `$2.39M`.
 - The model expects about `$182.1M` of accepted home loans.
 - The model expects about `$182.2M` of term deposits raised.
@@ -389,7 +390,7 @@ Expected credit loss:      $1,194,122
 Deposit interest cost:     $7,653,232
 Wholesale funding cost:    $0
 Funding shortfall penalty: $0
-Total objective:           $2,392,880
+Total objective:           $4,065,058
 ```
 
 The arithmetic is:
@@ -406,7 +407,7 @@ $12.00M loan interest income
 = $2.39M total objective
 ```
 
-Economically, this means the model expects the `6.59%` home loan rate to generate enough margin to
+Economically, this means the model expects the `6.39%` home loan rate to generate enough margin to
 outweigh lower loan demand, credit loss, deposit interest expense, the capital/RWA charge, and the
 funding shortfall penalty. Wholesale funding cost is zero here because expected deposit volume
 already covers expected loan volume.
@@ -433,11 +434,11 @@ The top 5 section shows the nearest economic alternatives.
 
 Current interpretation:
 
-- Rank 1, `6.59%` loan and `4.20%` deposit, is best overall with objective `$2,392,880`, expected
+- Rank 1, `6.39%` loan and `4.00%` deposit, is best overall with objective `$4,065,058`, expected
   loans of `$182,077,739`, expected deposits of `$182,219,815`, and no funding shortfall.
 - Rank 2, `6.54%` loan and `4.30%` deposit, is close at `$2,366,587`, with higher expected loan and
   deposit volumes and no funding shortfall.
-- Rank 3, `6.59%` loan and `4.15%` deposit, keeps the winning loan volume but raises fewer deposits,
+- Rank 3, `6.39%` loan and `3.95%` deposit, keeps the winning loan volume but raises fewer deposits,
   giving a lower objective of `$2,353,076`.
 - Rank 4, `6.54%` loan and `4.25%` deposit, has the same higher loan volume as rank 2 but raises
   fewer deposits, giving a lower objective of `$2,339,023`.
