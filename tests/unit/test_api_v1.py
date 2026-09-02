@@ -61,11 +61,13 @@ def test_example_config_yaml_matches_recalibrated_defaults():
     post-recalibration values.
 
     _EXAMPLE_CONFIG_YAML omits response.coefficients, so a caller who copies
-    it verbatim inherits whatever LoanResponseCoefficientsConfig defaults to
-    (rate_anchor 0.0499, the post-2026-08-26-recalibration market anchor --
-    see docs/modelling_assumptions.md). Its explicitly-set market rate and
-    elasticities must track that same calibration, or a copy-pasted request
-    silently prices against an unintended hybrid of old and new assumptions.
+    it verbatim inherits whatever LoanResponseCoefficientsConfig and
+    DepositResponseCoefficientsConfig default to (rate_anchor 0.0499 for
+    loans from the 2026-08-26 recalibration, rate_anchor 0.039 for deposits
+    from the 2026-09-02 recalibration -- see docs/modelling_assumptions.md).
+    Its explicitly-set market rates and elasticities must track that same
+    calibration, or a copy-pasted request silently prices against an
+    unintended hybrid of old and new assumptions.
     """
     example_config = EngineConfig.model_validate(yaml.safe_load(_EXAMPLE_CONFIG_YAML))
     canonical_config = EngineConfig.model_validate(yaml.safe_load(CONFIG_YAML))
@@ -85,6 +87,22 @@ def test_example_config_yaml_matches_recalibrated_defaults():
     assert (
         example_config.response.loan_competitor_gap_elasticity
         == canonical_config.response.loan_competitor_gap_elasticity
+    )
+
+    # Same reasoning on the deposit side: rate_anchor must track the deposit
+    # market rate being priced into.
+    assert (
+        example_config.response.coefficients.deposit.rate_anchor
+        == example_config.market.competitor_deposit_rate
+        == example_config.market.term_deposit_reference_rate
+    )
+    assert (
+        example_config.response.deposit_rate_elasticity
+        == canonical_config.response.deposit_rate_elasticity
+    )
+    assert (
+        example_config.response.deposit_competitor_gap_elasticity
+        == canonical_config.response.deposit_competitor_gap_elasticity
     )
 
 
