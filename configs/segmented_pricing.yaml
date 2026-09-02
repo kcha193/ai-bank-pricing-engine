@@ -6,9 +6,9 @@ market:
   cash_rate: 0.0425
   wholesale_funding_spread: 0.012
   competitor_loan_rate: 0.0499
-  competitor_deposit_rate: 0.045
+  competitor_deposit_rate: 0.039
   home_loan_reference_rate: 0.0499
-  term_deposit_reference_rate: 0.0400
+  term_deposit_reference_rate: 0.039
 segmented_pricing:
   loan_tiers:
     - name: standard
@@ -61,8 +61,8 @@ balance_sheet:
 response:
   loan_rate_elasticity: -170.0
   loan_competitor_gap_elasticity: -130.0
-  deposit_rate_elasticity: 95.0
-  deposit_competitor_gap_elasticity: 75.0
+  deposit_rate_elasticity: 140.0
+  deposit_competitor_gap_elasticity: 110.0
   coefficients:
     loan:
       intercept: 2.39
@@ -71,8 +71,8 @@ response:
       credit_score_coef: 0.35
       lvr_coef: -0.25
     deposit:
-      intercept: -0.65
-      rate_anchor: 0.045
+      intercept: -0.44
+      rate_anchor: 0.039
       rate_sensitivity_coef: 0.60
       relationship_coef: 0.04
       digital_coef: -0.20
