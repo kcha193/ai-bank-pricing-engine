@@ -23,6 +23,7 @@ from balance_pricing_engine.competitor_rates.apply import (
 )
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.bps import bps_to_percent
+from balance_pricing_engine.pricing_intelligence.rbnz import OcrSeries
 from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot, TermMarket
 
 
@@ -285,3 +286,100 @@ def apply_market_strategy_to_config(
         update={"market": config.market.model_copy(update=updates)}
     )
     return revalidate_config(updated_config, context="market-intelligence overlay")
+
+
+class CashRateStrategy(str, Enum):
+    """How the optimiser's wholesale funding-cost anchor is sourced.
+
+    A second, independent seam from :class:`CompetitorRateStrategy`: the OCR
+    comes from RBNZ, not the bank collectors, and feeds a different
+    ``MarketConfig`` field (``cash_rate``, not a competitor rate). Kept as its
+    own strategy/resolver/overlay rather than folded into
+    :func:`apply_market_strategy_to_config` -- that function already has two
+    independent sides (loan, deposit); a third, unrelated data source belongs
+    in its own function, not a longer parameter list on that one.
+    """
+
+    #: Use the rate already in the config. Legacy behaviour, and the default.
+    MANUAL = "MANUAL"
+    #: The most recently published RBNZ Official Cash Rate.
+    RBNZ_OCR = "RBNZ_OCR"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class ResolvedCashRateAssumption:
+    """A cash-rate assumption plus the evidence behind it."""
+
+    strategy: CashRateStrategy
+    #: Decimal rate ready for ``MarketConfig.cash_rate`` (0.025 for 2.50%).
+    cash_rate: float
+    rate_pct: float
+    #: RBNZ's own period label for the observation this came from (e.g.
+    #: "Aug-2026"), or None under MANUAL.
+    as_of_period: Optional[str]
+    rationale: str
+
+    def summary(self) -> str:
+        return f"{self.strategy.value} -> {self.rate_pct:.2f}% ({self.rationale})"
+
+
+def resolve_cash_rate(
+    strategy: CashRateStrategy | str = CashRateStrategy.MANUAL,
+    ocr_series: Optional[OcrSeries] = None,
+    manual_rate: Optional[float] = None,
+) -> ResolvedCashRateAssumption:
+    """Resolve the cash-rate assumption the optimiser should run with."""
+    strategy = CashRateStrategy(strategy)
+
+    if strategy is CashRateStrategy.MANUAL:
+        if manual_rate is None:
+            raise MarketStrategyError("MANUAL cash-rate strategy requires manual_rate")
+        return ResolvedCashRateAssumption(
+            strategy=strategy,
+            cash_rate=manual_rate,
+            rate_pct=manual_rate * 100,
+            as_of_period=None,
+            rationale="manual scenario assumption; RBNZ data not consulted",
+        )
+
+    if ocr_series is None:
+        raise MarketStrategyError(f"{strategy.value} requires an OCR series")
+    current = ocr_series.current
+    return ResolvedCashRateAssumption(
+        strategy=strategy,
+        cash_rate=round(current.ocr_pct / 100, 8),
+        rate_pct=current.ocr_pct,
+        as_of_period=current.period,
+        rationale=f"RBNZ Official Cash Rate as at {current.period}",
+    )
+
+
+def apply_cash_rate_strategy_to_config(
+    config,
+    strategy: CashRateStrategy | str = CashRateStrategy.MANUAL,
+    ocr_series: Optional[OcrSeries] = None,
+):
+    """Return ``config`` with ``market.cash_rate`` resolved.
+
+    Under ``MANUAL`` the config is returned unchanged -- byte-for-byte the
+    existing behaviour, so manual scenarios are unaffected by this layer, the
+    same invariant :func:`apply_market_strategy_to_config` holds for
+    competitor rates.
+
+    Only ``cash_rate`` moves. ``wholesale_funding_spread`` is a separate,
+    still-unverified assumption -- see docs/modelling_assumptions.md -- and
+    is deliberately left untouched here rather than guessed at.
+    """
+    resolved = resolve_cash_rate(
+        strategy=strategy, ocr_series=ocr_series, manual_rate=config.market.cash_rate
+    )
+    if resolved.strategy is CashRateStrategy.MANUAL:
+        return config
+
+    updated_config = config.model_copy(
+        update={"market": config.market.model_copy(update={"cash_rate": resolved.cash_rate})}
+    )
+    return revalidate_config(updated_config, context="RBNZ OCR overlay")

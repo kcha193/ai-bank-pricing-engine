@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html><head><title>Exchange rates and Wholesale interest rates | RBNZ</title></head>
+<body>
+<h1>Exchange rates and Wholesale interest rates</h1>
+
+<!-- Decoy chart: same accessible-table column shape (Date | value | value),
+     numeric range (roughly 0-1) that would also pass a naive numeric-only
+     plausibility check for an OCR percentage. A parser that grabs the first
+     "Date"-headed table on the page, rather than anchoring on the OCR
+     heading, silently ingests this as if it were the cash rate. -->
+<div class="chart-widget">
+  <h2>NZD/USD Exchange Rate (Monthly average)    </h2>
+  <div class="chart__accessible-table">
+    <table>
+      <thead>
+        <tr class="chart__table-row">
+          <th class="chart__table-data-cell">Date</th>
+          <th class="chart__table-data-cell">NZD/USD</th>
+          <th class="chart__table-data-cell">TWI</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="chart__table-row">
+          <td class="chart__table-data-cell">Aug-2026</td>
+          <td class="chart__table-data-cell">0.59075</td>
+          <td class="chart__table-data-cell">71.2</td>
+        </tr>
+        <tr class="chart__table-row">
+          <td class="chart__table-data-cell">Jul-2026</td>
+          <td class="chart__table-data-cell">0.57759</td>
+          <td class="chart__table-data-cell">70.1</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- The real OCR chart. -->
+<div class="chart-widget">
+  <h2>
+90-day Bank Bill Rate (Monthly average) &amp; Official Cash Rate (OCR)  (End of Month)    </h2>
+  <div class="chart__accessible-table">
+    <table>
+      <thead>
+        <tr class="chart__table-row">
+          <th class="chart__table-data-cell">Date</th>
+          <th class="chart__table-data-cell">OCR</th>
+          <th class="chart__table-data-cell">90 day bank bill rate</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="chart__table-row">
+          <td class="chart__table-data-cell">Aug-2026</td>
+          <td class="chart__table-data-cell">2.5</td>
+          <td class="chart__table-data-cell">2.98</td>
+        </tr>
+        <tr class="chart__table-row">
+          <td class="chart__table-data-cell">Jul-2026</td>
+          <td class="chart__table-data-cell">2.5</td>
+          <td class="chart__table-data-cell">2.85</td>
+        </tr>
+        <tr class="chart__table-row">
+          <td class="chart__table-data-cell">Jun-2026</td>
+          <td class="chart__table-data-cell">2.25</td>
+          <td class="chart__table-data-cell">2.68</td>
+        </tr>
+        <tr class="chart__table-row">
+          <td class="chart__table-data-cell">May-2026</td>
+          <td class="chart__table-data-cell">2.25</td>
+          <td class="chart__table-data-cell">2.63</td>
+        </tr>
+        <tr class="chart__table-row">
+          <td class="chart__table-data-cell">Aug-2025</td>
+          <td class="chart__table-data-cell">3.0</td>
+          <td class="chart__table-data-cell">3.1</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- A chart AFTER the OCR one, to confirm row extraction stops at the next
+     heading rather than bleeding into whatever follows. -->
+<div class="chart-widget">
+  <h2>Real Trade Weighted Index (TWI)    </h2>
+  <div class="chart__accessible-table">
+    <table>
+      <thead>
+        <tr class="chart__table-row">
+          <th class="chart__table-data-cell">Date</th>
+          <th class="chart__table-data-cell">Real TWI</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="chart__table-row">
+          <td class="chart__table-data-cell">Aug-2026</td>
+          <td class="chart__table-data-cell">68.4</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+</body></html>

@@ -718,3 +718,62 @@ def test_an_error_is_reported_without_a_traceback(tmp_path, capsys):
 def test_an_unknown_strategy_is_rejected_by_the_parser(populated_database):
     with pytest.raises(SystemExit):
         run(["--database", populated_database, "strategy", "--strategy", "GUESSING"])
+
+
+def test_ocr_reports_the_current_rate_and_trend(tmp_path, capsys, monkeypatch):
+    from balance_pricing_engine.pricing_intelligence.rbnz import OcrObservation, OcrSeries
+
+    series = OcrSeries(
+        observations=(
+            OcrObservation("Aug-2026", 2.50, 2.98),
+            OcrObservation("Jul-2026", 2.50, 2.85),
+            OcrObservation("Jun-2026", 2.25, 2.68),
+            OcrObservation("May-2026", 2.25, 2.63),
+        ),
+        source_url="https://www.rbnz.govt.nz/statistics/key-statistics/x",
+        captured_at_utc=datetime.now(timezone.utc),
+    )
+    monkeypatch.setattr(cli, "fetch_ocr_series", lambda: series)
+
+    exit_code = run(["--database", str(tmp_path / "empty.db"), "ocr"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "2.50%" in output
+    assert "Aug-2026" in output
+    assert "2.98%" in output
+    assert "+25 bps" in output  # 3-month change: 2.50 vs 2.25
+    assert series.source_url in output
+
+
+def test_ocr_does_not_require_a_populated_database(tmp_path, capsys, monkeypatch):
+    """OCR is a separate data source; it must work even before any bank
+    collection has ever run against this database."""
+    from balance_pricing_engine.pricing_intelligence.rbnz import OcrObservation, OcrSeries
+
+    series = OcrSeries(
+        observations=(OcrObservation("Aug-2026", 2.50, 2.98),),
+        source_url="https://www.rbnz.govt.nz/statistics/key-statistics/x",
+        captured_at_utc=datetime.now(timezone.utc),
+    )
+    monkeypatch.setattr(cli, "fetch_ocr_series", lambda: series)
+
+    exit_code = run(["--database", str(tmp_path / "never-collected.db"), "ocr"])
+
+    assert exit_code == 0
+
+
+def test_ocr_reports_a_parser_error_without_a_traceback(tmp_path, capsys, monkeypatch):
+    from balance_pricing_engine.competitor_rates.collectors.base import ParserError
+
+    def broken(*args, **kwargs):
+        raise ParserError("the RBNZ page structure changed")
+
+    monkeypatch.setattr(cli, "fetch_ocr_series", broken)
+
+    exit_code = run(["--database", str(tmp_path / "empty.db"), "ocr"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert output.startswith("ERROR:")
+    assert "RBNZ page structure changed" in output

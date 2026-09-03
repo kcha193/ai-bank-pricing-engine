@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 _EXAMPLE_CONFIG_YAML = (
     "random_seed: 42\n"
     "simulation: {n_loan_customers: 5000, n_deposit_customers: 5000}\n"
-    "market: {cash_rate: 0.0425, wholesale_funding_spread: 0.012, "
+    "market: {cash_rate: 0.025, wholesale_funding_spread: 0.012, "
     "competitor_loan_rate: 0.0499, competitor_deposit_rate: 0.039, "
     "home_loan_reference_rate: 0.0499, term_deposit_reference_rate: 0.039}\n"
     "pricing_strategy: {home_loan_spread_bps: {min: -50, max: 50, step: 5}, "

@@ -28,6 +28,7 @@ from balance_pricing_engine.pricing_intelligence.alerts import (
 from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
 from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
+from balance_pricing_engine.pricing_intelligence.rbnz import fetch_ocr_series
 from balance_pricing_engine.pricing_intelligence.strategy import CompetitorRateStrategy
 
 
@@ -64,6 +65,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "market-state": _market_state,
                 "position": _position,
                 "strategy": _strategy,
+                "ocr": _ocr,
             }
             handler = handlers.get(args.command)
             if handler is None:
@@ -169,6 +171,14 @@ def _build_parser() -> argparse.ArgumentParser:
     strategy.add_argument("--offset-bps", type=float, default=0.0)
     strategy.add_argument(
         "--manual-rate", type=float, default=None, help="Decimal rate for MANUAL"
+    )
+
+    subparsers.add_parser(
+        "ocr",
+        help=(
+            "Show the current RBNZ Official Cash Rate and recent trend "
+            "(a separate data source from the bank collectors above)"
+        ),
     )
 
     return parser
@@ -436,6 +446,33 @@ def _strategy(service: PricingIntelligenceService, args: argparse.Namespace) -> 
     print(f"  offset_bps            {assumption.offset_bps:+.0f}")
     print(f"  source banks          {', '.join(assumption.source_banks) or 'n/a'}")
     print(f"  rationale             {assumption.rationale}")
+    return 0
+
+
+def _ocr(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
+    """Print the current RBNZ OCR and recent trend.
+
+    A separate data source from the bank collectors: RBNZ's own published
+    series already carries its full monthly history, so unlike ``collect``
+    for bank rates, this reads it fresh each call rather than through the
+    observation store -- ``service`` is accepted only to keep the CLI's
+    dispatch table uniform and is otherwise unused here.
+    """
+    del service
+    series = fetch_ocr_series()
+    current = series.current
+    print("RBNZ OFFICIAL CASH RATE")
+    print()
+    print(f"  OCR                    {current.ocr_pct:.2f}%")
+    if current.bank_bill_90d_pct is not None:
+        print(f"  90-day bank bill rate  {current.bank_bill_90d_pct:.2f}%")
+    print(f"  as at                  {current.period}")
+    for months in (1, 3, 12):
+        change = series.change_bps(months)
+        label = "month" if months == 1 else "months"
+        change_text = f"{change:+.0f} bps" if change is not None else "n/a"
+        print(f"  change over {months} {label:<7}{change_text}")
+    print(f"  source                 {series.source_url}")
     return 0
 
 

@@ -1,12 +1,15 @@
 # End-to-End Usage Guide
 
-> **Numbers updated 2026-08-26.** The home-loan response coefficients were
-> recalibrated against the live-verified NZ market (see
-> [modelling_assumptions.md](modelling_assumptions.md#response-calibration-2026-08-26)).
-> The baseline recommendation moved from 8.10% to 6.39% (the deposit side was
-> recalibrated on 2026-09-02, which also moved the loan rate). The stored outputs in
-> [the walkthrough notebook](../notebooks/bank_pricing_engine_walkthrough.ipynb)
-> still show pre-recalibration figures until it is re-executed.
+> **Numbers current as of 2026-09-03.** The loan (2026-08-26) and deposit
+> (2026-09-02) response coefficients were recalibrated against the
+> live-verified NZ market, and `market.cash_rate` was corrected against the
+> live-verified RBNZ Official Cash Rate (2026-09-03; see
+> [modelling_assumptions.md](modelling_assumptions.md#response-calibration-2026-08-26)
+> and
+> [the cash-rate correction](modelling_assumptions.md#cash-rate-correction-2026-09-03)).
+> The baseline recommendation is 6.19% loan / 4.05% deposit.
+> [The walkthrough notebook](../notebooks/bank_pricing_engine_walkthrough.ipynb)
+> has been re-executed against this baseline and its stored outputs match.
 
 
 This guide explains how to use the AI Balance Sheet Pricing Engine from start to finish.
@@ -97,8 +100,8 @@ Important fields:
 
 Rates are written as decimals:
 
-- `0.0639` means `6.39%`.
-- `0.04` means `4.00%`.
+- `0.0619` means `6.19%`.
+- `0.0405` means `4.05%`.
 
 ### Step 3: Run The Baseline Report
 
@@ -125,21 +128,22 @@ config snapshot, all CSV/JSON artifacts, a pricing memo, and a governance checkl
 The current adaptive baseline result is:
 
 ```text
-Home loan rate:          6.39%
-Term deposit rate:       4.00%
-Objective value:         about $4.07M
-Expected loan volume:    about $310.8M
-Expected deposit volume: about $312.0M
-Funding shortfall:       $0
+Home loan rate:          6.19%
+Term deposit rate:       4.05%
+Objective value:         about $5.92M
+Expected loan volume:    about $510.0M
+Expected deposit volume: about $328.9M
+Funding shortfall:       about $2.6M
 ```
 
 Interpretation:
 
-- The model expects the best tested home loan rate to be `6.39%`.
-- The best tested term deposit rate is `4.00%`.
-- The expected economic objective is about `$4.07M`.
-- The adaptive follow-up widened the original grid and found a nearby deposit rate that removes the
-  funding shortfall with a slightly better objective.
+- The model expects the best tested home loan rate to be `6.19%`.
+- The best tested term deposit rate is `4.05%`.
+- The expected economic objective is about `$5.92M`.
+- There is a residual funding shortfall of about `$2.6M`: with wholesale funding this cheap (see
+  [Step 6](#step-6-read-the-objective-decomposition)), raising the deposit rate further to close it
+  costs more than leaving it and paying the shortfall penalty plus wholesale funding cost instead.
 
 ### Step 5: Read The Top 5 Candidates
 
@@ -359,22 +363,27 @@ The baseline report currently starts with:
 
 ```text
 Best joint pricing decision
-  Home loan rate:          6.39%
-  Term deposit rate:       4.00%
-  Objective value:         $4,065,058
-  Expected loan volume:    $310,834,636
-  Expected deposit volume: $312,027,364
-  Funding shortfall:       $0
+  Home loan rate:          6.19%
+  Term deposit rate:       4.05%
+  Objective value:         $5,920,859
+  Expected loan volume:    $509,991,692
+  Expected deposit volume: $328,903,314
+  Funding shortfall:       $2,591,286
 ```
 
 Plain-English interpretation:
 
 - The optimizer tested all configured home loan and term deposit rate pairs.
-- The best tested pair is a `6.39%` home loan rate and a `4.00%` term deposit rate.
-- The expected economic value of that decision is about `$4.07M`.
-- The model expects about `$310.8M` of accepted home loans.
-- The model expects about `$312.0M` of term deposits raised.
-- There is no final funding shortfall after the adaptive boundary follow-up.
+- The best tested pair is a `6.19%` home loan rate and a `4.05%` term deposit rate.
+- The expected economic value of that decision is about `$5.92M`.
+- The model expects about `$510.0M` of accepted home loans.
+- The model expects about `$328.9M` of term deposits raised.
+- Deposits fall about `$2.6M` short of the required funding ratio; the gap is
+  funded on the wholesale market rather than eliminated, because wholesale
+  funding is currently cheap enough (`cash_rate` verified against the RBNZ OCR;
+  see [modelling_assumptions.md](modelling_assumptions.md#cash-rate-correction-2026-09-03))
+  that raising the deposit rate further to close it costs more than the
+  shortfall penalty itself.
 
 The recommendation is not saying "this is the true market price." It is saying "given the current
 synthetic customers, elasticity assumptions, competitor rates, funding costs, and configured search
@@ -385,32 +394,35 @@ grid, this rate pair has the highest objective."
 The winner decomposition currently looks like this:
 
 ```text
-Loan interest income:      $19,862,333
-Expected credit loss:      $2,061,366
-Deposit interest cost:     $12,481,095
-Wholesale funding cost:    $0
-Funding shortfall penalty: $0
-Total objective:           $4,065,058
+Loan interest income:      $31,568,486
+Expected credit loss:      $3,438,164
+Deposit interest cost:     $13,320,584
+Wholesale funding cost:    $6,700,270
+Funding shortfall penalty: $46,643
+Total objective:           $5,920,859
 ```
 
 The arithmetic is:
 
 ```text
-$19.86M loan interest income
-- $2.06M expected credit loss
-- $12.48M deposit interest cost
-- $0.00M wholesale funding cost
-- $0.00M funding shortfall penalty
-= $5.32M before the capital/RWA charge and excess-deposit-income credit
-- $1.31M capital/RWA charge
-+ $0.05M excess deposit income (deposit volume exceeds loan volume, credited at the cash rate)
-= $4.07M total objective
+$31.57M loan interest income
+- $3.44M expected credit loss
+- $13.32M deposit interest cost
+- $6.70M wholesale funding cost
+- $0.05M funding shortfall penalty
+= $8.06M before the capital/RWA charge and excess-deposit-income credit
+- $2.14M capital/RWA charge
++ $0.00M excess deposit income (loan volume exceeds deposit volume here, so none)
+= $5.92M total objective
 ```
 
-Economically, this means the model expects the `6.39%` home loan rate to generate enough margin to
-outweigh lower loan demand, credit loss, deposit interest expense, the capital/RWA charge, and the
-funding shortfall penalty. Wholesale funding cost is zero here because expected deposit volume
-already covers expected loan volume.
+Economically, this means the model expects the `6.19%` home loan rate to generate enough margin to
+outweigh lower loan demand, credit loss, deposit interest expense, wholesale funding cost, the
+funding shortfall penalty, and the capital/RWA charge. Wholesale funding cost is no longer zero: with
+`cash_rate` corrected against the verified RBNZ OCR (2.50%, see
+[modelling_assumptions.md](modelling_assumptions.md#cash-rate-correction-2026-09-03)), wholesale
+funding is cheap enough that the optimizer prefers a small residual shortfall funded on the wholesale
+market over raising the deposit rate further to close it.
 
 ### Funding Shortfall
 
@@ -419,14 +431,19 @@ The baseline requires deposits to fund `65%` of expected loan volume.
 For the winning result:
 
 ```text
-Expected loan volume:     about $310.8M
-Required deposit funding: about $202.0M
-Expected deposit volume:  about $312.0M
-Funding shortfall:        $0
+Expected loan volume:     about $510.0M
+Required deposit funding: about $331.5M
+Expected deposit volume:  about $328.9M
+Funding shortfall:        about $2.6M
 ```
 
-The adaptive follow-up found a slightly higher deposit rate that raises enough deposits to meet the
-funding-ratio target under the current assumptions.
+Deposits fall about `$2.6M` short of the funding-ratio target here. That is a genuine trade-off, not
+a search-grid artifact: with wholesale funding this cheap, paying enough on deposits to close the last
+`$2.6M` of the gap costs more (in extra deposit interest across the whole $328.9M base) than the
+`$46,643` shortfall penalty plus wholesale funding cost of closing it another way. The adaptive
+boundary follow-up ran and found no boundary warning at this result -- the shortfall is the
+economically preferred outcome under current assumptions, not evidence the optimizer needs a wider
+grid.
 
 ### Top 5 Candidates
 
@@ -434,16 +451,19 @@ The top 5 section shows the nearest economic alternatives.
 
 Current interpretation:
 
-- Rank 1, `6.39%` loan and `4.00%` deposit, is best overall with objective `$4,065,058`, expected
-  loans of `$310,834,636`, expected deposits of `$312,027,364`, and no funding shortfall.
-- Rank 2, `6.44%` loan and `3.90%` deposit, is close at `$3,996,947`, with lower expected loan and
-  deposit volumes and no funding shortfall.
-- Rank 3, `6.39%` loan and `3.95%` deposit, keeps the winning loan volume but raises fewer deposits,
-  giving a lower objective of `$3,978,433`.
-- Rank 4, `6.34%` loan and `4.10%` deposit, has higher expected loan and deposit volumes but a
-  lower objective of `$3,972,077`.
-- Rank 5, `6.39%` loan and `4.05%` deposit, keeps the winning loan volume but raises more deposits
-  than needed, giving the lowest objective of the top 5, `$3,942,796`.
+- Rank 1, `6.19%` loan and `4.05%` deposit, is best overall with objective `$5,920,859`, expected
+  loans of `$509,991,692`, expected deposits of `$328,903,314`, and a funding shortfall of about
+  `$2.6M`.
+- Rank 2, `6.14%` loan and `4.15%` deposit, is close at `$5,866,758`, with higher expected loan and
+  deposit volumes but a much larger shortfall of about `$10.8M`.
+- Rank 3, `6.19%` loan and `4.00%` deposit, keeps the winning loan volume but raises fewer deposits,
+  giving a lower objective of `$5,832,172` and a larger shortfall of about `$19.5M`.
+- Rank 4, `6.14%` loan and `4.10%` deposit, has higher expected loan and deposit volumes but a
+  lower objective of `$5,823,218` and a shortfall of about `$26.8M`.
+- Rank 5, `6.24%` loan and `3.95%` deposit, has lower expected loan and deposit volumes than the
+  winner, the lowest objective of the top 5 (`$5,821,637`), but no funding shortfall at all -- the
+  most conservative of the top 5 on funding risk, at a cost of about `$99K` of objective versus the
+  winner.
 
 This section is useful for business review because the mathematically best answer is not always the
 management-preferred answer. A lower-ranked candidate might be preferred if it has less funding risk
@@ -494,8 +514,8 @@ The sensitivity summary reruns the optimizer after changing one assumption at a 
 Important examples from the current adaptive output:
 
 ```text
-loan_elasticity_weaker: loan=6.59%, deposit=4.05%, boundary_warning=no
-competitor_loan_rate_higher: loan=6.59%, deposit=4.05%, boundary_warning=no
+loan_elasticity_weaker: loan=6.34%, deposit=4.15%, boundary_warning=no
+competitor_loan_rate_higher: loan=6.34%, deposit=4.20%, boundary_warning=no
 ```
 
 These cases initially put pressure on the configured grid, then the adaptive follow-up searches a

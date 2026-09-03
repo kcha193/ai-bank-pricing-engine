@@ -3,7 +3,7 @@ simulation:
   n_loan_customers: 5000
   n_deposit_customers: 5000
 market:
-  cash_rate: 0.0425
+  cash_rate: 0.025
   wholesale_funding_spread: 0.012
   competitor_loan_rate: 0.0499
   competitor_deposit_rate: 0.039
