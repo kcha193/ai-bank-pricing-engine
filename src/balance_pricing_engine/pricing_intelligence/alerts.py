@@ -12,7 +12,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
+import time
 from typing import Callable, Optional, Protocol, Sequence, runtime_checkable
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from balance_pricing_engine.competitor_rates.models import ProductType
@@ -90,19 +92,66 @@ class CollectingAlertSink:
         self.alerts.append(alert)
 
 
-def build_default_poster(timeout_seconds: float = 10.0) -> WebhookPoster:
+#: Fallback pause (seconds) for a 429 response that carries no usable
+#: ``Retry-After`` header. Slack's own webhook rate limiting always sends
+#: one, but a generic webhook consumer might not.
+DEFAULT_RETRY_AFTER_SECONDS = 1.0
+
+#: How many times ``build_default_poster`` will wait out a 429 before giving
+#: up and letting the caller's own failure handling (``dispatch_alerts_safely``)
+#: take over.
+DEFAULT_MAX_RATE_LIMIT_RETRIES = 3
+
+
+def _parse_retry_after_seconds(header_value: Optional[str]) -> float:
+    """Parse a ``Retry-After`` header value (seconds form only).
+
+    Webhook rate limiters (Slack included) send the delta-seconds form, not
+    the HTTP-date form, so that is all this needs to handle. Anything else
+    falls back to :data:`DEFAULT_RETRY_AFTER_SECONDS` rather than failing the
+    delivery over an unparseable header.
+    """
+    if header_value is None:
+        return DEFAULT_RETRY_AFTER_SECONDS
+    try:
+        return max(0.0, float(header_value))
+    except ValueError:
+        return DEFAULT_RETRY_AFTER_SECONDS
+
+
+def build_default_poster(
+    timeout_seconds: float = 10.0,
+    max_rate_limit_retries: int = DEFAULT_MAX_RATE_LIMIT_RETRIES,
+    sleep: Callable[[float], None] = time.sleep,
+) -> WebhookPoster:
     """Return a poster that sends a real HTTPS POST via the standard library.
 
     No third-party HTTP client dependency: urllib is enough for a single JSON
     POST, and this repository avoids adding one for a single call site.
+
+    A 429 response is retried after honoring the ``Retry-After`` header
+    (falling back to :data:`DEFAULT_RETRY_AFTER_SECONDS` when absent or
+    unparseable), up to ``max_rate_limit_retries`` times. Without this, a
+    burst of alerts for one repricing event -- several terms changing on the
+    same bank in one collection -- hits Slack's per-webhook rate limit after
+    the first message and silently loses the rest, since ``dispatch_alerts_safely``
+    logs delivery failures rather than retrying them on a later run.
     """
 
     def post(url: str, payload: bytes) -> None:
-        request = Request(
-            url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
-        )
-        with urlopen(request, timeout=timeout_seconds):
-            pass
+        attempt = 0
+        while True:
+            request = Request(
+                url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
+            )
+            try:
+                with urlopen(request, timeout=timeout_seconds):
+                    return
+            except HTTPError as exc:
+                if exc.code != 429 or attempt >= max_rate_limit_retries:
+                    raise
+                sleep(_parse_retry_after_seconds(exc.headers.get("Retry-After")))
+                attempt += 1
 
     return post
 

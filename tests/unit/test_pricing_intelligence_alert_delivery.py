@@ -156,6 +156,117 @@ def test_a_custom_secret_provider_can_use_a_different_env_var_name(monkeypatch):
     assert sink.webhook_url == "https://hooks.example/custom"
 
 
+def test_default_poster_retries_a_429_after_the_retry_after_delay(monkeypatch):
+    """A rate-limited Slack webhook must be retried, not dropped -- otherwise a
+    multi-term repricing burst loses every alert after the first 429."""
+    from urllib.error import HTTPError
+
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+    calls = []
+    slept = []
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(request)
+        if len(calls) == 1:
+            raise HTTPError(
+                request.full_url, 429, "Too Many Requests", {"Retry-After": "2"}, None
+            )
+        return FakeResponse()
+
+    monkeypatch.setattr(alerts_module, "urlopen", fake_urlopen)
+
+    poster = alerts_module.build_default_poster(sleep=slept.append)
+    poster("https://hooks.example/x", b'{"text": "hi"}')
+
+    assert len(calls) == 2, "the request must be retried after the 429"
+    assert slept == [2.0]
+
+
+def test_default_poster_gives_up_after_max_retries(monkeypatch):
+    from urllib.error import HTTPError
+
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    calls = []
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(request)
+        raise HTTPError(request.full_url, 429, "Too Many Requests", {}, None)
+
+    monkeypatch.setattr(alerts_module, "urlopen", fake_urlopen)
+
+    poster = alerts_module.build_default_poster(max_rate_limit_retries=2, sleep=lambda s: None)
+
+    with pytest.raises(HTTPError):
+        poster("https://hooks.example/x", b'{"text": "hi"}')
+
+    assert len(calls) == 3, "the initial attempt plus 2 retries"
+
+
+def test_default_poster_does_not_retry_a_non_429_error(monkeypatch):
+    from urllib.error import HTTPError
+
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    calls = []
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(request)
+        raise HTTPError(request.full_url, 500, "Server Error", {}, None)
+
+    monkeypatch.setattr(alerts_module, "urlopen", fake_urlopen)
+
+    poster = alerts_module.build_default_poster(sleep=lambda s: None)
+
+    with pytest.raises(HTTPError):
+        poster("https://hooks.example/x", b'{"text": "hi"}')
+
+    assert len(calls) == 1, "a non-429 failure must not be retried"
+
+
+def test_default_poster_falls_back_to_the_default_delay_when_retry_after_is_missing(
+    monkeypatch,
+):
+    from urllib.error import HTTPError
+
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+    calls = []
+    slept = []
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(request)
+        if len(calls) == 1:
+            raise HTTPError(request.full_url, 429, "Too Many Requests", {}, None)
+        return FakeResponse()
+
+    monkeypatch.setattr(alerts_module, "urlopen", fake_urlopen)
+
+    poster = alerts_module.build_default_poster(sleep=slept.append)
+    poster("https://hooks.example/x", b'{"text": "hi"}')
+
+    assert slept == [alerts_module.DEFAULT_RETRY_AFTER_SECONDS]
+
+
 def test_default_poster_sends_a_real_http_post(monkeypatch):
     """The real (non-test-double) poster path, with urlopen substituted."""
     from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
