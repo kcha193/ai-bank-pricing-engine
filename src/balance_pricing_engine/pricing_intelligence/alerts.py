@@ -102,21 +102,30 @@ DEFAULT_RETRY_AFTER_SECONDS = 1.0
 #: take over.
 DEFAULT_MAX_RATE_LIMIT_RETRIES = 3
 
+#: Upper bound on how long a single retry will wait, regardless of what the
+#: ``Retry-After`` header claims. The header value comes from whatever server
+#: is on the other end of a URL read from an environment variable -- a
+#: misconfigured or malicious endpoint returning an enormous value must not be
+#: able to block a scheduled collection run's alert delivery indefinitely.
+MAX_RETRY_AFTER_SECONDS = 30.0
+
 
 def _parse_retry_after_seconds(header_value: Optional[str]) -> float:
-    """Parse a ``Retry-After`` header value (seconds form only).
+    """Parse a ``Retry-After`` header value (seconds form only), capped.
 
     Webhook rate limiters (Slack included) send the delta-seconds form, not
     the HTTP-date form, so that is all this needs to handle. Anything else
     falls back to :data:`DEFAULT_RETRY_AFTER_SECONDS` rather than failing the
-    delivery over an unparseable header.
+    delivery over an unparseable header. The result is always clamped to
+    :data:`MAX_RETRY_AFTER_SECONDS`.
     """
     if header_value is None:
         return DEFAULT_RETRY_AFTER_SECONDS
     try:
-        return max(0.0, float(header_value))
+        parsed = float(header_value)
     except ValueError:
         return DEFAULT_RETRY_AFTER_SECONDS
+    return min(MAX_RETRY_AFTER_SECONDS, max(0.0, parsed))
 
 
 def build_default_poster(
@@ -354,7 +363,21 @@ def dispatch_alerts(alerts: Sequence[Alert], sink: AlertSink) -> int:
     return len(alerts)
 
 
-def dispatch_alerts_safely(alerts: Sequence[Alert], sink: AlertSink) -> int:
+#: Total wall-clock budget for one ``dispatch_alerts_safely`` call, across
+#: every alert and its own retries. ``run_collection()`` calls this
+#: synchronously while its single-instance lock is held, before writing the
+#: run summary -- an unbounded run here would delay the next scheduled
+#: collection and leave monitoring without a completion record for however
+#: long a misbehaving webhook endpoint chose to stall.
+DEFAULT_ALERT_DISPATCH_DEADLINE_SECONDS = 30.0
+
+
+def dispatch_alerts_safely(
+    alerts: Sequence[Alert],
+    sink: AlertSink,
+    *,
+    deadline_seconds: float = DEFAULT_ALERT_DISPATCH_DEADLINE_SECONDS,
+) -> int:
     """Deliver alerts through a sink, never letting a delivery failure escape.
 
     Mirrors ``events.publisher.publish_safely()``: a broken or misconfigured
@@ -362,9 +385,24 @@ def dispatch_alerts_safely(alerts: Sequence[Alert], sink: AlertSink) -> int:
     interrupt the run it was reporting on. Each alert is attempted
     independently, so one failure does not cost the rest. Failures are logged,
     not silently dropped.
+
+    ``deadline_seconds`` bounds the total time spent across *all* alerts, the
+    same way ``publish_safely``'s deadline bounds one event: once exceeded,
+    remaining alerts are skipped (and logged) rather than attempted, so a
+    rate-limited or hung webhook can delay this call by at most that budget
+    no matter how many alerts or retries it would otherwise take.
     """
     sent = 0
+    deadline = time.monotonic() + deadline_seconds
     for alert in alerts:
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "alert delivery skipped for %s %s: dispatch deadline of %.0fs exceeded",
+                alert.change.bank,
+                alert.change.change_type.value,
+                deadline_seconds,
+            )
+            continue
         try:
             sink.send(alert)
             sent += 1

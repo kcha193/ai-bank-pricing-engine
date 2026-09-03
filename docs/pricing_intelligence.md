@@ -261,6 +261,15 @@ configured. `summary["alerts_sent"]` reports how many actually got through, so
 a silently-broken webhook is visible in the run summary even though it never
 turns into a failing exit code.
 
+A rate-limited webhook (HTTP 429) is retried after honoring its `Retry-After`
+header, up to three attempts, so a multi-term repricing burst is not silently
+truncated after the first message. Both the per-wait time and the total time
+spent across every alert in one `dispatch_alerts_safely()` call are capped
+(`MAX_RETRY_AFTER_SECONDS`, `DEFAULT_ALERT_DISPATCH_DEADLINE_SECONDS`) --
+`run_collection()` calls this synchronously while holding its single-instance
+lock, before writing the run summary, so a misbehaving endpoint must not be
+able to stall that indefinitely.
+
 Only rate moves are pushed -- a new or withdrawn product is a real market
 event but is not a reprice, and the CLI's own `--alerts` path (`collect
 --alerts`, `changes --alerts`) makes the same choice. Console output there

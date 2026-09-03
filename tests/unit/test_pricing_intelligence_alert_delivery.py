@@ -122,6 +122,41 @@ def test_dispatch_safely_isolates_one_bad_alert_from_the_rest(make_record):
     assert set(calls) == {"ANZ", "BNZ"}
 
 
+def test_dispatch_safely_stops_once_the_deadline_is_exceeded(make_record, monkeypatch):
+    """A hung or rate-limited webhook must not be able to block the collection
+    run indefinitely -- remaining alerts are skipped once the total time
+    budget for this call is used up."""
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    changes = [
+        build_change(make_record, previous=4.99, current=4.79),
+        detect_changes(
+            [make_record(bank="BNZ", rate_pct=4.95)],
+            [make_record(bank="BNZ", rate_pct=4.85, observed_at=DAY_TWO)],
+            detected_at=DAY_TWO,
+        )[0],
+    ]
+    alerts = format_alerts(changes)
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr(alerts_module.time, "monotonic", lambda: clock["now"])
+
+    calls = []
+
+    def slow_poster(url, payload_bytes):
+        import json
+
+        calls.append(json.loads(payload_bytes)["bank"])
+        clock["now"] += 100.0  # exceeds the deadline after the first alert
+
+    sink = WebhookAlertSink("https://hooks.example/x", poster=slow_poster)
+
+    sent = dispatch_alerts_safely(alerts, sink, deadline_seconds=30.0)
+
+    assert sent == 1, "only the alert attempted before the deadline was sent"
+    assert len(calls) == 1, "the second alert must not be attempted past the deadline"
+
+
 def test_dispatch_safely_still_reports_full_success(make_record):
     alerts = format_alerts([build_change(make_record)])
     sink = WebhookAlertSink("https://hooks.example/x", poster=lambda url, payload: None)
@@ -265,6 +300,45 @@ def test_default_poster_falls_back_to_the_default_delay_when_retry_after_is_miss
     poster("https://hooks.example/x", b'{"text": "hi"}')
 
     assert slept == [alerts_module.DEFAULT_RETRY_AFTER_SECONDS]
+
+
+def test_default_poster_caps_an_excessive_retry_after(monkeypatch):
+    """A malicious or misconfigured endpoint must not be able to block a run
+    indefinitely by returning an enormous Retry-After value."""
+    from urllib.error import HTTPError
+
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+    calls = []
+    slept = []
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(request)
+        if len(calls) == 1:
+            raise HTTPError(
+                request.full_url,
+                429,
+                "Too Many Requests",
+                {"Retry-After": "99999999"},
+                None,
+            )
+        return FakeResponse()
+
+    monkeypatch.setattr(alerts_module, "urlopen", fake_urlopen)
+
+    poster = alerts_module.build_default_poster(sleep=slept.append)
+    poster("https://hooks.example/x", b'{"text": "hi"}')
+
+    assert slept == [alerts_module.MAX_RETRY_AFTER_SECONDS]
 
 
 def test_default_poster_sends_a_real_http_post(monkeypatch):
