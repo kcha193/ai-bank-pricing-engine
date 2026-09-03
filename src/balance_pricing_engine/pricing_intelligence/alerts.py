@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
+import threading
 import time
 from typing import Callable, Optional, Protocol, Sequence, runtime_checkable
 from urllib.error import HTTPError
@@ -380,22 +381,28 @@ def dispatch_alerts_safely(
 ) -> int:
     """Deliver alerts through a sink, never letting a delivery failure escape.
 
-    Mirrors ``events.publisher.publish_safely()``: a broken or misconfigured
-    alert channel (an unreachable webhook, an expired URL) must never fail or
-    interrupt the run it was reporting on. Each alert is attempted
-    independently, so one failure does not cost the rest. Failures are logged,
-    not silently dropped.
+    Mirrors ``events.publisher.publish_safely()``, including its bounded-wait
+    mechanism: a broken or misconfigured alert channel (an unreachable
+    webhook, an expired URL, or one that is rate-limiting and retrying) must
+    never fail, or block past ``deadline_seconds``, the run it was reporting
+    on. Each alert is attempted independently, so one failure does not cost
+    the rest. Failures are logged, not silently dropped.
 
-    ``deadline_seconds`` bounds the total time spent across *all* alerts, the
-    same way ``publish_safely``'s deadline bounds one event: once exceeded,
-    remaining alerts are skipped (and logged) rather than attempted, so a
-    rate-limited or hung webhook can delay this call by at most that budget
-    no matter how many alerts or retries it would otherwise take.
+    Each ``sink.send()`` call runs on its own daemon thread, joined with
+    whatever time remains of ``deadline_seconds``. A per-alert deadline check
+    alone would not be enough: ``WebhookAlertSink``'s own 429 retries can
+    each wait as long as ``MAX_RETRY_AFTER_SECONDS``, so a single alert could
+    otherwise blow the whole budget before control ever returned to this
+    loop. If a send has not finished by the time its slice of the budget
+    runs out, this moves on without waiting further -- the thread is left to
+    finish (or not) in the background, the same trade-off ``publish_safely``
+    makes for a hung publisher.
     """
     sent = 0
     deadline = time.monotonic() + deadline_seconds
     for alert in alerts:
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             logger.warning(
                 "alert delivery skipped for %s %s: dispatch deadline of %.0fs exceeded",
                 alert.change.bank,
@@ -403,14 +410,34 @@ def dispatch_alerts_safely(
                 deadline_seconds,
             )
             continue
-        try:
-            sink.send(alert)
+
+        outcome: dict = {}
+
+        def _send(alert: Alert = alert, outcome: dict = outcome) -> None:
+            try:
+                sink.send(alert)
+                outcome["ok"] = True
+            except Exception as exc:  # noqa: BLE001 - reported on the calling thread
+                outcome["error"] = exc
+
+        worker = threading.Thread(target=_send, daemon=True)
+        worker.start()
+        worker.join(remaining)
+
+        if worker.is_alive():
+            logger.warning(
+                "alert delivery timed out for %s %s: exceeded dispatch deadline of %.0fs",
+                alert.change.bank,
+                alert.change.change_type.value,
+                deadline_seconds,
+            )
+        elif outcome.get("ok"):
             sent += 1
-        except Exception as exc:  # noqa: BLE001 - delivery must never propagate
+        else:
             logger.warning(
                 "alert delivery failed for %s %s: %s",
                 alert.change.bank,
                 alert.change.change_type.value,
-                exc,
+                outcome.get("error"),
             )
     return sent

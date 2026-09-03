@@ -1,6 +1,8 @@
 """Webhook alert delivery, driven entirely by injected posters -- no network."""
 
 from datetime import datetime, timezone
+import threading
+import time as time_module
 
 import pytest
 
@@ -155,6 +157,29 @@ def test_dispatch_safely_stops_once_the_deadline_is_exceeded(make_record, monkey
 
     assert sent == 1, "only the alert attempted before the deadline was sent"
     assert len(calls) == 1, "the second alert must not be attempted past the deadline"
+
+
+def test_dispatch_safely_bounds_a_single_slow_send_by_the_deadline(make_record):
+    """A per-alert check between sends is not enough: one webhook send whose
+    own 429 retries take a long time must not be allowed to block dispatch
+    past the deadline all on its own."""
+    alerts = format_alerts([build_change(make_record)])
+
+    release = threading.Event()
+
+    def slow_poster(url, payload_bytes):
+        release.wait(timeout=2.0)  # far longer than the deadline below
+
+    sink = WebhookAlertSink("https://hooks.example/x", poster=slow_poster)
+
+    start = time_module.perf_counter()
+    sent = dispatch_alerts_safely(alerts, sink, deadline_seconds=0.05)
+    elapsed = time_module.perf_counter() - start
+
+    release.set()  # let the background thread finish so it doesn't outlive the test
+
+    assert sent == 0, "the send had not completed before the deadline"
+    assert elapsed < 1.0, "dispatch must not wait out the full slow send"
 
 
 def test_dispatch_safely_still_reports_full_success(make_record):
