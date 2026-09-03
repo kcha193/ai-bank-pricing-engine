@@ -33,6 +33,25 @@
   silently ignores any pricing_intelligence block (selected banks,
   validation thresholds, collection delays, database path) configured
   there.
+
+  Optional alert delivery: environment variables are scoped per plist, so
+  the home-loan plist's EnvironmentVariables block does not extend to this
+  agent; add the same block here too if you also want term-deposit rate
+  moves pushed to Slack, Teams, or Discord. (launchd does not inherit your
+  shell's exported variables, so `export ...` before `launchctl load` has no
+  effect on the child process; it must go in the plist itself.)
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL</key>
+        <string>https://hooks.slack.com/services/T000/B000/xxxx</string>
+    </dict>
+
+  Add it as a sibling of ProgramArguments below. The webhook URL is a secret,
+  so keep it out of the copy of this file under version control; only the
+  installed copy in ~/Library/LaunchAgents/ should carry a real URL. Leave
+  the env var unset (the default) for no delivery; nothing else about
+  collection changes either way, and a broken webhook never fails the run.
 -->
 <plist version="1.0">
 <dict>

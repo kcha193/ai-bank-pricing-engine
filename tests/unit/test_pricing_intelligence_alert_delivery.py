@@ -231,6 +231,23 @@ def test_a_configured_webhook_url_builds_a_sink():
     assert sink.text_field == "text"
 
 
+def test_a_falsey_injected_secrets_provider_is_still_used(monkeypatch):
+    """A provider whose __bool__/__len__ makes it falsey (e.g. representing an
+    empty secret store) must not be silently swapped for EnvSecretsProvider --
+    that would let an ambient env var enable delivery the caller's provider
+    was deliberately overriding."""
+    monkeypatch.setenv(ALERT_WEBHOOK_URL_SECRET_NAME, "https://ambient.example/should-not-be-used")
+
+    class EmptyFalseyProvider:
+        def get_secret(self, name):
+            return None
+
+        def __len__(self):
+            return 0  # makes bool(self) False
+
+    assert build_webhook_sink_from_env(EmptyFalseyProvider()) is None
+
+
 def test_the_secret_name_matches_the_documented_env_var():
     """Locks the env var name as an interface, not an implementation detail."""
     assert ALERT_WEBHOOK_URL_SECRET_NAME == "PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL"

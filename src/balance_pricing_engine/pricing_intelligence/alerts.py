@@ -218,7 +218,13 @@ def build_webhook_sink_from_env(
     ``llm._client.is_llm_available`` and ``api.auth.require_api_key``: no
     delivery channel is the default, and nothing breaks when one is absent.
     """
-    secrets = secrets or EnvSecretsProvider()
+    # `is None`, not `or`: a caller-injected provider whose __bool__/__len__
+    # makes it falsey (e.g. one representing an empty secret store) must
+    # still be used -- `or` would silently discard it in favour of
+    # EnvSecretsProvider, potentially reading a real ambient webhook URL the
+    # caller's provider was deliberately overriding. Same pattern as
+    # llm._client.build_client.
+    secrets = EnvSecretsProvider() if secrets is None else secrets
     webhook_url = secrets.get_secret(secret_name)
     if not webhook_url:
         return None
