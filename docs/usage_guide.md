@@ -1,13 +1,12 @@
 # End-to-End Usage Guide
 
-> **Numbers updated 2026-08-26.** The home-loan response coefficients were
-> recalibrated against the live-verified NZ market (see
+> **Numbers current as of 2026-09-03.** The loan (2026-08-26) and deposit
+> (2026-09-02) response coefficients were recalibrated against the
+> live-verified NZ market (see
 > [modelling_assumptions.md](modelling_assumptions.md#response-calibration-2026-08-26)).
-> The baseline recommendation moved from 8.10% to 6.39% (the deposit side was
-> recalibrated on 2026-09-02, which also moved the loan rate). The stored outputs in
-> [the walkthrough notebook](../notebooks/bank_pricing_engine_walkthrough.ipynb)
-> still show pre-recalibration figures until it is re-executed.
-
+> The baseline recommendation is 6.39% loan / 4.00% deposit.
+> [The walkthrough notebook](../notebooks/bank_pricing_engine_walkthrough.ipynb)
+> has been re-executed against this baseline and its stored outputs match.
 
 This guide explains how to use the AI Balance Sheet Pricing Engine from start to finish.
 It is written for two audiences:
