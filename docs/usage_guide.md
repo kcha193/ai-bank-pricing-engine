@@ -823,8 +823,8 @@ Common changes:
 
 ```yaml
 market:
-  competitor_loan_rate: 0.0675
-  competitor_deposit_rate: 0.045
+  competitor_loan_rate: 0.0499
+  competitor_deposit_rate: 0.039
 ```
 
 - Change the search grid:
@@ -853,8 +853,8 @@ balance_sheet:
 
 ```yaml
 response:
-  loan_rate_elasticity: -85.0
-  deposit_rate_elasticity: 95.0
+  loan_rate_elasticity: -170.0
+  deposit_rate_elasticity: 140.0
 ```
 
 After changes, rerun:
