@@ -67,6 +67,39 @@ def test_text_field_is_configurable_for_discord(make_record):
     assert "text" not in captured[0]
 
 
+def test_a_falsey_injected_poster_is_still_used(make_record, monkeypatch):
+    """A poster whose __bool__/__len__ makes it falsey (e.g. an empty
+    recording adapter) must not be silently swapped for the real
+    urlopen-backed poster."""
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    def real_poster_should_not_be_called(*args, **kwargs):
+        raise AssertionError("build_default_poster() must not be used")
+
+    monkeypatch.setattr(
+        alerts_module, "build_default_poster", lambda: real_poster_should_not_be_called
+    )
+
+    class FalseyPoster:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, url, payload_bytes):
+            self.calls.append((url, payload_bytes))
+
+        def __len__(self):
+            return 0  # makes bool(self) False
+
+    poster = FalseyPoster()
+    change = build_change(make_record)
+    alert = format_alerts([change])[0]
+
+    sink = WebhookAlertSink("https://hooks.example/x", poster=poster)
+    sink.send(alert)
+
+    assert len(poster.calls) == 1
+
+
 def test_send_raises_when_the_poster_fails(make_record):
     change = build_change(make_record)
     alert = format_alerts([change])[0]

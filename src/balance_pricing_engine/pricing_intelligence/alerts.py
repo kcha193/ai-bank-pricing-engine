@@ -192,7 +192,12 @@ class WebhookAlertSink:
     ) -> None:
         self.webhook_url = webhook_url
         self.text_field = text_field
-        self._poster = poster or build_default_poster()
+        # `is not None`, not `or`: an injected poster whose __bool__/__len__
+        # makes it falsey (e.g. an empty recording adapter) must still be
+        # used -- `or` would silently discard it and send a real network
+        # request via build_default_poster() instead. Same pattern as
+        # build_webhook_sink_from_env()'s secrets-provider check.
+        self._poster = poster if poster is not None else build_default_poster()
 
     def send(self, alert: Alert) -> None:
         change = alert.change
