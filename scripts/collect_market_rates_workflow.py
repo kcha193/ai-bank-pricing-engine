@@ -8,6 +8,10 @@ needs and an interactive CLI session does not:
 * structured JSON logging, reusing ``observability.logging``
 * exit codes a scheduler can alert on (see EXIT_* below)
 * a machine-readable summary written to disk for the next job in a pipeline
+* alert delivery: detected rate moves are pushed to a webhook when
+  ``PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL`` is set (Slack/Teams/Discord-
+  compatible; see ``pricing_intelligence.alerts.WebhookAlertSink``). Unset by
+  default, and a broken webhook never fails the run.
 
 Collection history cannot be backfilled -- a day not collected is gone -- so
 this is written to fail loudly rather than exit quietly on a partial run.
@@ -30,6 +34,11 @@ from typing import Optional
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.observability.logging import configure_json_logging, log_event
+from balance_pricing_engine.pricing_intelligence.alerts import (
+    build_webhook_sink_from_env,
+    dispatch_alerts_safely,
+    format_alerts,
+)
 from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
 from balance_pricing_engine.pricing_intelligence.service import (
     CollectionOutcome,
@@ -422,6 +431,7 @@ def run_collection(
     render_javascript: bool,
     summary_path: Optional[Path] = None,
     product_type: ProductType | str = ProductType.HOME_LOAN,
+    webhook_text_field: str = "text",
 ) -> tuple[int, dict]:
     """Run one collection and return ``(exit_code, summary)``.
 
@@ -431,7 +441,12 @@ def run_collection(
     invocation with ``--product term_deposit`` (and its own ``--lock-file``/
     ``--summary-file``, so it does not collide with the home-loan run) -- see
     ``docs/pricing_intelligence.md``.
+
+    Detected rate moves are pushed to a webhook when
+    ``PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL`` is set in the environment; no
+    webhook configured is the default and changes anything.
     """
+    product_type = ProductType(product_type)
     with PricingIntelligenceService(
         config=config,
         store=ObservationStore(config.database_path),
@@ -439,7 +454,22 @@ def run_collection(
     ) as service:
         outcome = service.collect(product_type=product_type)
 
+        alerts_sent = 0
+        webhook_sink = build_webhook_sink_from_env(text_field=webhook_text_field)
+        rate_moves = [change for change in outcome.changes if change.is_rate_move]
+        if webhook_sink is not None and rate_moves:
+            # Fetched inside the `with` block: the service (and its store
+            # connection) is unusable once this scope exits.
+            snapshot = service.get_market_snapshot(product_type=product_type)
+            previous_snapshot = service.get_previous_market_snapshot(
+                product_type=product_type
+            )
+            alerts_sent = dispatch_alerts_safely(
+                format_alerts(rate_moves, snapshot, previous_snapshot), webhook_sink
+            )
+
     summary = build_summary(outcome, product_type)
+    summary["alerts_sent"] = alerts_sent
     code = exit_code_for(outcome, product_type)
 
     if code == EXIT_TOTAL_FAILURE:
@@ -468,6 +498,7 @@ def run_collection(
                 "new_states_stored",
                 "changes_detected",
                 "suspicious_changes",
+                "alerts_sent",
             )
         },
     )
@@ -527,6 +558,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--summary-file", default=None, help="Write a JSON run summary here"
     )
     parser.add_argument("--quiet", action="store_true", help="Suppress the text summary")
+    parser.add_argument(
+        "--webhook-text-field",
+        default="text",
+        help=(
+            "JSON field the webhook payload's message goes in when "
+            "PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL is set. The default "
+            "('text') is read directly by Slack and Teams webhooks; use "
+            "'content' for Discord."
+        ),
+    )
     args = parser.parse_args(argv)
 
     configure_json_logging()
@@ -551,6 +592,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 render_javascript=args.render_javascript,
                 summary_path=Path(args.summary_file) if args.summary_file else None,
                 product_type=args.product,
+                webhook_text_field=args.webhook_text_field,
             )
     except AlreadyRunningError as exc:
         log_event(logger, "collection skipped", level=logging.WARNING, reason=str(exc))
