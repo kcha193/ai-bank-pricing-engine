@@ -182,6 +182,34 @@ def test_dispatch_safely_bounds_a_single_slow_send_by_the_deadline(make_record):
     assert elapsed < 1.0, "dispatch must not wait out the full slow send"
 
 
+def test_dispatch_safely_survives_a_failure_to_start_the_delivery_thread(make_record, monkeypatch):
+    """Thread.start() can raise (e.g. the process is at its OS thread limit) --
+    that must be caught like any other delivery failure, not propagate out of
+    this 'never fails the run' helper."""
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    changes = [
+        build_change(make_record, previous=4.99, current=4.79),
+        detect_changes(
+            [make_record(bank="BNZ", rate_pct=4.95)],
+            [make_record(bank="BNZ", rate_pct=4.85, observed_at=DAY_TWO)],
+            detected_at=DAY_TWO,
+        )[0],
+    ]
+    alerts = format_alerts(changes)
+
+    def raising_start(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(alerts_module.threading.Thread, "start", raising_start)
+
+    sink = WebhookAlertSink("https://hooks.example/x", poster=lambda url, payload: None)
+
+    sent = dispatch_alerts_safely(alerts, sink)
+
+    assert sent == 0
+
+
 def test_dispatch_safely_still_reports_full_success(make_record):
     alerts = format_alerts([build_change(make_record)])
     sink = WebhookAlertSink("https://hooks.example/x", poster=lambda url, payload: None)

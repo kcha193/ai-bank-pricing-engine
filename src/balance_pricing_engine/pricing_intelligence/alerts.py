@@ -396,7 +396,10 @@ def dispatch_alerts_safely(
     loop. If a send has not finished by the time its slice of the budget
     runs out, this moves on without waiting further -- the thread is left to
     finish (or not) in the background, the same trade-off ``publish_safely``
-    makes for a hung publisher.
+    makes for a hung publisher. If starting that thread itself raises (e.g.
+    the process is at its OS thread limit), that is caught and logged the
+    same as any other delivery failure -- it must not propagate out of this
+    "never fails the run" helper either.
     """
     sent = 0
     deadline = time.monotonic() + deadline_seconds
@@ -421,7 +424,16 @@ def dispatch_alerts_safely(
                 outcome["error"] = exc
 
         worker = threading.Thread(target=_send, daemon=True)
-        worker.start()
+        try:
+            worker.start()
+        except Exception as exc:  # noqa: BLE001 - e.g. RuntimeError: can't start new thread
+            logger.warning(
+                "alert delivery failed for %s %s: could not start delivery thread: %s",
+                alert.change.bank,
+                alert.change.change_type.value,
+                exc,
+            )
+            continue
         worker.join(remaining)
 
         if worker.is_alive():
