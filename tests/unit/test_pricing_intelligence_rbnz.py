@@ -496,6 +496,38 @@ def test_a_malformed_period_label_on_the_newest_row_is_fatal():
         parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
 
 
+def test_out_of_order_rows_are_rejected_not_silently_trusted():
+    """The table is documented as newest-first, and OcrSeries.current relies
+    on that: whatever row is accepted first becomes "the current OCR". If a
+    later row turns out to be *newer* than an already-accepted row -- the
+    table isn't actually sorted the way this parser assumes -- the earlier
+    "current" choice can no longer be trusted, even though it may still be
+    well within the 70-day currency window on its own."""
+    html = """
+    <h2>Official Cash Rate (OCR)</h2>
+    <table>chart__table
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Date</td>
+        <td class="chart__table-data-cell">OCR</td>
+        <td class="chart__table-data-cell">90 day bank bill rate</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Jul-2026</td>
+        <td class="chart__table-data-cell">2.25</td>
+        <td class="chart__table-data-cell">2.68</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Aug-2026</td>
+        <td class="chart__table-data-cell">2.5</td>
+        <td class="chart__table-data-cell">2.98</td>
+      </tr>
+    </table>
+    """
+
+    with pytest.raises(ParserError, match="not strictly newest-first"):
+        parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
+
+
 def test_duplicate_periods_are_deduplicated_keeping_the_first():
     html = """
     <h2>Official Cash Rate (OCR)</h2>

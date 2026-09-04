@@ -386,6 +386,24 @@ def parse_ocr_series(html: str, captured_at_utc: datetime) -> OcrSeries:
                 MAX_PLAUSIBLE_OCR_PCT,
             )
             continue
+
+        # The table is documented -- and OcrSeries.current relies on it -- as
+        # newest-first: whatever accepted row lands first becomes "the
+        # current OCR". If a later row turns out not to be strictly older
+        # than the one before it, that assumption has already been violated,
+        # and the "current" choice already locked in from an earlier row may
+        # itself be stale relative to this one. This must fail loud rather
+        # than silently keep an earlier (possibly wrong) "current" while
+        # skipping the row that contradicts it.
+        if observations and _parse_period(period) >= _parse_period(observations[-1].period):
+            raise ParserError(
+                f"the OCR table is not strictly newest-first as documented: "
+                f"{period} is not older than the preceding accepted row "
+                f"({observations[-1].period}) -- refusing to trust "
+                f"{observations[0].period} as the current OCR when the "
+                "table's own ordering contradicts it"
+            )
+
         try:
             bank_bill_pct: Optional[float] = float(bank_bill_text)
         except ValueError:
