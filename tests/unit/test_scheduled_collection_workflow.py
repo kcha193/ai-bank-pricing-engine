@@ -692,3 +692,249 @@ def test_logger_is_under_the_configured_json_logging_hierarchy(workflow):
     monitoring would miss every scheduled-collection event.
     """
     assert workflow.logger.name.startswith("balance_pricing_engine.")
+
+
+# ------------------------------------------------------- webhook alert delivery
+
+
+def _reprice_fetcher(fixture_fetcher):
+    """A fetcher where ANZ's 1-year special has moved -20 bps."""
+    return fixture_fetcher(
+        mutate=lambda bank, html: html.replace(
+            "<td>1 year</td><td>4.79%", "<td>1 year</td><td>4.59%"
+        )
+        if bank == "ANZ"
+        else html
+    )
+
+
+def test_a_reprice_is_delivered_to_a_configured_webhook(
+    workflow, fixture_fetcher, tmp_path, monkeypatch
+):
+    monkeypatch.setenv(
+        "PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL", "https://hooks.example/x"
+    )
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    captured = []
+
+    def fake_urlopen(request, timeout=None):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+        captured.append((request.full_url, json.loads(request.data)))
+        return FakeResponse()
+
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    monkeypatch.setattr(alerts_module, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        workflow,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"],
+            store=kwargs["store"],
+            fetcher=_reprice_fetcher(fixture_fetcher),
+        ),
+    )
+
+    code, summary = workflow.run_collection(config, render_javascript=False)
+
+    assert code == workflow.EXIT_OK
+    assert summary["changes_detected"] == 1
+    assert summary["alerts_sent"] == 1
+    assert len(captured) == 1
+    url, payload = captured[0]
+    assert url == "https://hooks.example/x"
+    assert payload["bank"] == "ANZ"
+    assert payload["change_bps"] == -20.0
+    assert "text" in payload
+
+
+def test_no_webhook_configured_sends_nothing(
+    workflow, fixture_fetcher, tmp_path, monkeypatch
+):
+    """The default state: no delivery channel, nothing breaks."""
+    monkeypatch.delenv("PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL", raising=False)
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    called = []
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    monkeypatch.setattr(
+        alerts_module, "urlopen", lambda *a, **k: called.append(1) or (_ for _ in ()).throw(
+            AssertionError("urlopen must never be called with no webhook configured")
+        )
+    )
+    monkeypatch.setattr(
+        workflow,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"],
+            store=kwargs["store"],
+            fetcher=_reprice_fetcher(fixture_fetcher),
+        ),
+    )
+
+    code, summary = workflow.run_collection(config, render_javascript=False)
+
+    assert code == workflow.EXIT_OK
+    assert summary["changes_detected"] == 1
+    assert summary["alerts_sent"] == 0
+    assert called == []
+
+
+def test_a_broken_webhook_does_not_fail_the_collection(
+    workflow, fixture_fetcher, tmp_path, monkeypatch
+):
+    """A collection failure and a delivery failure must stay independent."""
+    monkeypatch.setenv(
+        "PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL", "https://dead.example/x"
+    )
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    def broken_urlopen(request, timeout=None):
+        raise ConnectionError("webhook host unreachable")
+
+    monkeypatch.setattr(alerts_module, "urlopen", broken_urlopen)
+    monkeypatch.setattr(
+        workflow,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"],
+            store=kwargs["store"],
+            fetcher=_reprice_fetcher(fixture_fetcher),
+        ),
+    )
+
+    code, summary = workflow.run_collection(config, render_javascript=False)
+
+    assert code == workflow.EXIT_OK, "collection succeeded; delivery failure must not change that"
+    assert summary["changes_detected"] == 1
+    assert summary["alerts_sent"] == 0
+
+
+def test_a_change_that_is_not_a_rate_move_is_not_pushed_to_the_webhook(
+    workflow, fixture_fetcher, tmp_path, monkeypatch
+):
+    """New/removed products are material changes but not rate moves; alerts
+    are currently scoped to rate moves, matching the CLI's own --alerts path."""
+    monkeypatch.setenv(
+        "PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL", "https://hooks.example/x"
+    )
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    called = []
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    monkeypatch.setattr(
+        alerts_module,
+        "urlopen",
+        lambda *a, **k: called.append(1),
+    )
+    monkeypatch.setattr(
+        workflow,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"],
+            store=kwargs["store"],
+            # Westpac withdrawn entirely: REMOVED_PRODUCT events, no rate moves.
+            fetcher=fixture_fetcher(failing_banks=["Westpac"]),
+        ),
+    )
+
+    code, summary = workflow.run_collection(config, render_javascript=False)
+
+    assert summary["alerts_sent"] == 0
+    assert called == [], "a withdrawal must not be pushed as a rate-move alert"
+
+
+def test_webhook_text_field_is_threaded_through_the_cli(
+    workflow, fixture_fetcher, tmp_path, monkeypatch
+):
+    monkeypatch.setenv(
+        "PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL", "https://discord.example/x"
+    )
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    captured = []
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    def fake_urlopen(request, timeout=None):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+        captured.append(json.loads(request.data))
+        return FakeResponse()
+
+    monkeypatch.setattr(alerts_module, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        workflow,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"],
+            store=kwargs["store"],
+            fetcher=_reprice_fetcher(fixture_fetcher),
+        ),
+    )
+
+    code = workflow.main(
+        [
+            "--database",
+            str(tmp_path / "obs.db"),
+            "--lock-file",
+            str(tmp_path / "collection.lock"),
+            "--quiet",
+            "--webhook-text-field",
+            "content",
+        ]
+    )
+
+    assert code == workflow.EXIT_OK
+    assert "content" in captured[0]
+    assert "text" not in captured[0]

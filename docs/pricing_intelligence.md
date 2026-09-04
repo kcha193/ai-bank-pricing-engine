@@ -45,7 +45,7 @@ What was added:
 | Market snapshot and ranking | `pricing_intelligence/snapshot.py` | New |
 | Positioning + activity features | `pricing_intelligence/positioning.py` | New |
 | Market-state classification | `pricing_intelligence/market_state.py` | New |
-| Alert formatting | `pricing_intelligence/alerts.py` | New |
+| Alert formatting and webhook delivery | `pricing_intelligence/alerts.py` | New |
 | Competitor-rate strategy | `pricing_intelligence/strategy.py` | New |
 
 ## Architecture
@@ -227,6 +227,68 @@ so it must never gate a pull request.
 If durable history ever needs to live somewhere shared, that is a real design
 decision (a committed text export, an object store, or a hosted database) and
 should be made explicitly rather than by letting CI accrete state.
+
+### Alert delivery
+
+A detected change sitting in the SQLite store is not the same as anyone
+knowing about it. Set an env var and the scheduled job pushes every rate move
+to a webhook:
+
+```bash
+export PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL="https://hooks.slack.com/services/T000/B000/xxxx"
+python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --render-javascript
+```
+
+The payload's message goes in a `"text"` field by default, which **Slack
+incoming webhooks** and the legacy **Microsoft Teams Office 365 connector**
+both render directly with no further setup. Pass `--webhook-text-field content`
+for a **Discord** webhook instead. Structured fields (`bank`, `change_type`,
+`change_bps`, `suspicious`, `detected_at`) ride alongside the message for any
+consumer that parses JSON rather than displaying it.
+
+The env var is unset by default -- **no delivery channel is the default
+state**, matching how `ANTHROPIC_API_KEY` and `PRICING_ENGINE_API_KEYS` are
+handled elsewhere in this repo (`secrets.SecretsProvider`, read once, absent
+means the feature is off). Nothing else changes when it is unset: the run
+summary and structured logs are unaffected either way.
+
+**A broken or unreachable webhook never fails the collection run.**
+`alerts.dispatch_alerts_safely()` mirrors
+`events.publisher.publish_safely()`: each alert is attempted independently, a
+failure is logged and the run continues, and the exit code reflects
+collection success or failure exactly as it did before any webhook was
+configured. `summary["alerts_sent"]` reports how many actually got through, so
+a silently-broken webhook is visible in the run summary even though it never
+turns into a failing exit code.
+
+A rate-limited webhook (HTTP 429) is retried after honoring its `Retry-After`
+header, up to three attempts, so a multi-term repricing burst is not silently
+truncated after the first message. `run_collection()` calls
+`dispatch_alerts_safely()` synchronously while holding its single-instance
+lock, before writing the run summary, so a misbehaving endpoint must not be
+able to stall that indefinitely: the per-wait time is capped
+(`MAX_RETRY_AFTER_SECONDS`), and each alert's `sink.send()` runs on its own
+thread joined against whatever remains of the overall
+`DEFAULT_ALERT_DISPATCH_DEADLINE_SECONDS` budget -- a per-alert check alone
+would not be enough, since one alert's own retries could otherwise exhaust
+the whole budget before control returned to the dispatch loop. A send that is
+still running when its slice of the budget runs out is left to finish (or
+not) in the background rather than waited on further, the same trade-off
+`events.publisher.publish_safely()` makes for a hung publisher.
+
+Only rate moves are pushed -- a new or withdrawn product is a real market
+event but is not a reprice, and the CLI's own `--alerts` path (`collect
+--alerts`, `changes --alerts`) makes the same choice. Console output there
+stays console-only; a human running the CLI interactively is already looking
+at the terminal, so a duplicate webhook push would be noise. Webhook delivery
+is scheduled-job-only by design.
+
+To use a delivery channel with a different payload shape entirely (email, a
+paging system, the in-process event publisher), implement the two-method
+`AlertSink` protocol in
+[`pricing_intelligence/alerts.py`](../src/balance_pricing_engine/pricing_intelligence/alerts.py)
+and pass it to `dispatch_alerts_safely()` -- `WebhookAlertSink` is one concrete
+sink, not the only extension point.
 
 ### Inspect the market
 
