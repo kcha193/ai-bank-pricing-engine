@@ -733,7 +733,7 @@ def test_ocr_reports_the_current_rate_and_trend(tmp_path, capsys, monkeypatch):
         source_url="https://www.rbnz.govt.nz/statistics/key-statistics/x",
         captured_at_utc=datetime.now(timezone.utc),
     )
-    monkeypatch.setattr(cli, "fetch_ocr_series", lambda: series)
+    monkeypatch.setattr(cli, "fetch_ocr_series", lambda **kwargs: series)
 
     exit_code = run(["--database", str(tmp_path / "empty.db"), "ocr"])
     output = capsys.readouterr().out
@@ -756,7 +756,7 @@ def test_ocr_does_not_require_a_populated_database(tmp_path, capsys, monkeypatch
         source_url="https://www.rbnz.govt.nz/statistics/key-statistics/x",
         captured_at_utc=datetime.now(timezone.utc),
     )
-    monkeypatch.setattr(cli, "fetch_ocr_series", lambda: series)
+    monkeypatch.setattr(cli, "fetch_ocr_series", lambda **kwargs: series)
 
     database_path = tmp_path / "never-collected.db"
     exit_code = run(["--database", str(database_path), "ocr"])
@@ -782,3 +782,38 @@ def test_ocr_reports_a_parser_error_without_a_traceback(tmp_path, capsys, monkey
     assert exit_code == 1
     assert output.startswith("ERROR:")
     assert "RBNZ page structure changed" in output
+
+
+def test_ocr_uses_the_collection_settings_loaded_from_config(tmp_path, capsys, monkeypatch):
+    """A --config's pricing_intelligence.collection settings (timeout,
+    retries, backoff, user agent) must reach the OCR fetch too -- store
+    independence is not fetch-configuration independence."""
+    from balance_pricing_engine.pricing_intelligence.rbnz import OcrObservation, OcrSeries
+
+    series = OcrSeries(
+        observations=(OcrObservation("Aug-2026", 2.50, 2.98),),
+        source_url="https://www.rbnz.govt.nz/statistics/key-statistics/x",
+        captured_at_utc=datetime.now(timezone.utc),
+    )
+    seen_configs = []
+
+    def fake_fetch_ocr_series(**kwargs):
+        seen_configs.append(kwargs.get("config"))
+        return series
+
+    monkeypatch.setattr(cli, "fetch_ocr_series", fake_fetch_ocr_series)
+
+    engine_config_path = tmp_path / "engine.yaml"
+    engine_config_path.write_text(
+        yaml.dump(
+            _minimal_engine_config(collection={"max_retries": 7, "retry_backoff_seconds": 3.5})
+        )
+    )
+
+    exit_code = run(["--config", str(engine_config_path), "ocr"])
+
+    assert exit_code == 0
+    assert len(seen_configs) == 1
+    assert seen_configs[0] is not None
+    assert seen_configs[0].max_retries == 7
+    assert seen_configs[0].retry_backoff_seconds == 3.5

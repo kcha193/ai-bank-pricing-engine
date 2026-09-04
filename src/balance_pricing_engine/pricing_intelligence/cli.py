@@ -18,6 +18,7 @@ import argparse
 import logging
 from typing import Optional
 
+from balance_pricing_engine.competitor_rates.collection_config import CollectionConfig
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.alerts import (
@@ -58,8 +59,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             # entered, so a read-only deployment or an unavailable
             # --database path can't block this command, and a successful
             # invocation doesn't needlessly create/migrate a SQLite database
-            # it will never touch.
-            return _ocr()
+            # it will never touch. Still store-dependent config (timeout,
+            # retries, backoff, user agent) that --config loaded above,
+            # though -- store independence isn't fetch-configuration
+            # independence.
+            return _ocr(config.collection)
 
         with PricingIntelligenceService(
             config=config,
@@ -457,7 +461,7 @@ def _strategy(service: PricingIntelligenceService, args: argparse.Namespace) -> 
     return 0
 
 
-def _ocr() -> int:
+def _ocr(collection_config: CollectionConfig) -> int:
     """Print the current RBNZ OCR and recent trend.
 
     A separate data source from the bank collectors: RBNZ's own published
@@ -465,9 +469,11 @@ def _ocr() -> int:
     for bank rates, this reads it fresh each call rather than through the
     observation store. Dispatched from ``main()`` before the
     ObservationStore/PricingIntelligenceService context is entered -- this
-    command needs neither.
+    command needs neither the store nor the service, but it still needs the
+    ``--config``-loaded fetch settings (timeout, retries, backoff, user
+    agent): store independence is not fetch-configuration independence.
     """
-    series = fetch_ocr_series()
+    series = fetch_ocr_series(config=collection_config)
     current = series.current
     print("RBNZ OFFICIAL CASH RATE")
     print()

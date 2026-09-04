@@ -68,6 +68,21 @@ _ROW_PATTERN = re.compile(
 )
 _CELL_PATTERN = re.compile(r"<t[dh][^>]*>([^<]*)</t[dh]>")
 
+#: Format of ``OcrObservation.period`` as RBNZ labels it, e.g. "Aug-2026".
+_PERIOD_FORMAT = "%b-%Y"
+
+
+def _parse_period(period: str) -> tuple[int, int]:
+    """``OcrObservation.period`` (e.g. "Aug-2026") as a ``(year, month)`` pair."""
+    parsed = datetime.strptime(period, _PERIOD_FORMAT)
+    return parsed.year, parsed.month
+
+
+def _shift_year_month(year: int, month: int, delta_months: int) -> tuple[int, int]:
+    """``(year, month)`` shifted by ``delta_months`` (negative moves earlier)."""
+    total_months = year * 12 + (month - 1) + delta_months
+    return total_months // 12, total_months % 12 + 1
+
 
 @dataclass(frozen=True)
 class OcrObservation:
@@ -93,17 +108,27 @@ class OcrSeries:
         return self.observations[0]
 
     def change_bps(self, months_back: int = 1) -> Optional[float]:
-        """Movement in bps from ``months_back`` months ago to the current reading.
+        """Movement in bps from ``months_back`` calendar months ago to the
+        current reading.
 
-        None when the series is too short to answer -- callers should treat
-        that as "unknown", not as a zero move.
+        Looks up the observation whose *period* is exactly ``months_back``
+        calendar months before ``current.period``, not the one ``months_back``
+        list positions back -- if any intermediate month was skipped during
+        parsing (an invalid or implausible row), a list-position offset would
+        silently compare the wrong months and mislabel the result (e.g. an
+        actual 2-month gap reported as "change over 1 month"). Returns None
+        when no observation matches that calendar month -- callers should
+        treat that as "unknown", not as a zero move.
         """
-        if len(self.observations) <= months_back:
+        if not self.observations:
             return None
         from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
 
-        previous = self.observations[months_back]
-        return rate_change_bps(previous.ocr_pct, self.current.ocr_pct)
+        target_year, target_month = _shift_year_month(*_parse_period(self.current.period), -months_back)
+        for observation in self.observations[1:]:
+            if _parse_period(observation.period) == (target_year, target_month):
+                return rate_change_bps(observation.ocr_pct, self.current.ocr_pct)
+        return None
 
 
 def build_dashboard_browser_fetcher(
@@ -214,11 +239,31 @@ def parse_ocr_series(html: str, captured_at_utc: datetime) -> OcrSeries:
         period, ocr_text, bank_bill_text = (cell.strip() for cell in cells)
         if period in ("Date", "") or period in seen_periods:
             continue
+        # The series is documented (and relied on by resolve_cash_rate) as
+        # newest-first: the first data row we accept *is* "the current OCR".
+        # An older row failing to parse is a one-off defect the rest of the
+        # table survives; the newest row failing means we cannot state the
+        # current OCR at all, and must not silently promote an older row into
+        # that role instead.
+        is_newest_row = not observations
         try:
             ocr_pct = float(ocr_text)
-        except ValueError:
+        except ValueError as exc:
+            if is_newest_row:
+                raise ParserError(
+                    f"the newest OCR row ({period}) has an unparsable rate "
+                    f"{ocr_text!r}; refusing to fall back to an older row as "
+                    "the current OCR"
+                ) from exc
             continue
         if not (MIN_PLAUSIBLE_OCR_PCT <= ocr_pct <= MAX_PLAUSIBLE_OCR_PCT):
+            if is_newest_row:
+                raise ParserError(
+                    f"the newest OCR row ({period}) is {ocr_pct:.3f}%, outside "
+                    f"the plausible {MIN_PLAUSIBLE_OCR_PCT:.1f}%-"
+                    f"{MAX_PLAUSIBLE_OCR_PCT:.1f}% band; refusing to fall back "
+                    "to an older row as the current OCR"
+                )
             logger.warning(
                 "skipping OCR row for %s: %.3f%% is outside the plausible "
                 "%.1f%%-%.1f%% band",

@@ -12,6 +12,7 @@ from balance_pricing_engine.pricing_intelligence.rbnz import (
     MIN_PLAUSIBLE_OCR_PCT,
     OCR_SOURCE_URL,
     OcrObservation,
+    OcrSeries,
     fetch_ocr_series,
     parse_ocr_series,
 )
@@ -67,9 +68,26 @@ def test_change_bps_is_none_when_the_series_is_too_short():
     assert series.change_bps(months_back=100) is None
 
 
-def test_current_raises_on_an_empty_series():
-    from balance_pricing_engine.pricing_intelligence.rbnz import OcrSeries
+def test_change_bps_resolves_by_calendar_period_not_list_position():
+    """If an intermediate month is missing (e.g. a skipped invalid row),
+    ``change_bps(1)`` must not compare against whatever row happens to sit
+    next in the list -- that could silently be two calendar months away and
+    get mislabelled as a one-month change."""
+    series = OcrSeries(
+        observations=(
+            OcrObservation("Aug-2026", 2.50, 2.98),
+            # Jul-2026 is missing entirely -- position 1 is really Jun-2026.
+            OcrObservation("Jun-2026", 2.25, 2.68),
+        ),
+        source_url=OCR_SOURCE_URL,
+        captured_at_utc=CAPTURED_AT,
+    )
 
+    assert series.change_bps(months_back=1) is None  # no Jul-2026 observation
+    assert series.change_bps(months_back=2) == 25.0  # Aug-2026 vs Jun-2026
+
+
+def test_current_raises_on_an_empty_series():
     empty = OcrSeries(observations=(), source_url=OCR_SOURCE_URL, captured_at_utc=CAPTURED_AT)
 
     with pytest.raises(ValueError, match="no observations"):
@@ -91,6 +109,10 @@ def test_heading_with_no_following_table_raises():
 
 
 def test_a_table_with_no_plausible_rows_raises():
+    """The sole data row is also the newest row, so this now surfaces through
+    the newest-row guard rather than the (now practically unreachable except
+    when every row is filtered out before parsing is even attempted)
+    end-of-loop "no plausible rows" fallback."""
     html = """
     <h2>Official Cash Rate (OCR)</h2>
     <table>
@@ -107,13 +129,70 @@ def test_a_table_with_no_plausible_rows_raises():
     </table>
     """
 
+    with pytest.raises(ParserError, match="the newest OCR row"):
+        parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
+
+
+def test_a_table_with_only_header_and_duplicate_rows_raises_no_plausible_rows():
+    """Every row is filtered out before a float parse is even attempted (a
+    repeated header, then a duplicate period) -- no row is ever a parse
+    candidate, so this is the one path that still reaches the end-of-loop
+    fallback rather than the newest-row guard."""
+    html = """
+    <h2>Official Cash Rate (OCR)</h2>
+    <table>chart__table
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Date</td>
+        <td class="chart__table-data-cell">OCR</td>
+        <td class="chart__table-data-cell">90 day bank bill rate</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Date</td>
+        <td class="chart__table-data-cell">OCR</td>
+        <td class="chart__table-data-cell">90 day bank bill rate</td>
+      </tr>
+    </table>
+    """
+
     with pytest.raises(ParserError, match="no plausible rows"):
         parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
 
 
-def test_an_implausible_rate_is_skipped_not_fatal():
-    """One bad row (e.g. a parser regression on one cell) does not cost the
-    whole series when the rest of the table is still readable."""
+def test_an_implausible_rate_in_an_older_row_is_skipped_not_fatal():
+    """One bad *older* row (e.g. a parser regression on one cell) does not
+    cost the whole series when the newest row and the rest of the table are
+    still readable."""
+    html = f"""
+    <h2>Official Cash Rate (OCR)</h2>
+    <table>chart__table
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Date</td>
+        <td class="chart__table-data-cell">OCR</td>
+        <td class="chart__table-data-cell">90 day bank bill rate</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Aug-2026</td>
+        <td class="chart__table-data-cell">2.5</td>
+        <td class="chart__table-data-cell">2.98</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Jul-2026</td>
+        <td class="chart__table-data-cell">{MAX_PLAUSIBLE_OCR_PCT + 5}</td>
+        <td class="chart__table-data-cell">2.85</td>
+      </tr>
+    </table>
+    """
+
+    series = parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
+
+    assert len(series.observations) == 1
+    assert series.current.period == "Aug-2026"
+
+
+def test_an_implausible_rate_in_the_newest_row_is_fatal():
+    """The newest row failing to parse must not silently promote an older
+    row to ``current`` -- that would report last month's OCR as if it were
+    the live one, with nothing to signal the substitution happened."""
     html = f"""
     <h2>Official Cash Rate (OCR)</h2>
     <table>chart__table
@@ -135,10 +214,34 @@ def test_an_implausible_rate_is_skipped_not_fatal():
     </table>
     """
 
-    series = parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
+    with pytest.raises(ParserError, match="the newest OCR row"):
+        parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
 
-    assert len(series.observations) == 1
-    assert series.current.period == "Jul-2026"
+
+def test_an_unparsable_rate_in_the_newest_row_is_fatal():
+    html = """
+    <h2>Official Cash Rate (OCR)</h2>
+    <table>chart__table
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Date</td>
+        <td class="chart__table-data-cell">OCR</td>
+        <td class="chart__table-data-cell">90 day bank bill rate</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Aug-2026</td>
+        <td class="chart__table-data-cell">not-a-number</td>
+        <td class="chart__table-data-cell">3.0</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Jul-2026</td>
+        <td class="chart__table-data-cell">2.5</td>
+        <td class="chart__table-data-cell">2.85</td>
+      </tr>
+    </table>
+    """
+
+    with pytest.raises(ParserError, match="the newest OCR row"):
+        parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
 
 
 def test_duplicate_periods_are_deduplicated_keeping_the_first():

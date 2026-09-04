@@ -25,6 +25,7 @@ from balance_pricing_engine.competitor_rates.apply import (
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.bps import bps_to_percent
 from balance_pricing_engine.pricing_intelligence.rbnz import OcrSeries
+from balance_pricing_engine.pricing_intelligence.rbnz import _parse_period as _parse_ocr_period
 from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot, TermMarket
 
 
@@ -324,11 +325,11 @@ MAX_OCR_OBSERVATION_AGE_DAYS = 70
 def _ocr_period_end(period: str) -> datetime:
     """The last calendar day of an ``OcrObservation.period`` (e.g. "Aug-2026")."""
     try:
-        month_start = datetime.strptime(period, "%b-%Y").replace(tzinfo=timezone.utc)
+        year, month = _parse_ocr_period(period)
     except ValueError as exc:
         raise MarketStrategyError(f"could not parse OCR observation period {period!r}") from exc
-    last_day = calendar.monthrange(month_start.year, month_start.month)[1]
-    return month_start.replace(day=last_day)
+    last_day = calendar.monthrange(year, month)[1]
+    return datetime(year, month, last_day, tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True)
