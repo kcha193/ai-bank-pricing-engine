@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from balance_pricing_engine.competitor_rates.collection_config import CollectionConfig
 from balance_pricing_engine.competitor_rates.collectors.base import ParserError
 from balance_pricing_engine.pricing_intelligence.rbnz import (
     MAX_PLAUSIBLE_OCR_PCT,
@@ -223,3 +224,25 @@ def test_ocr_observation_is_a_plain_immutable_value():
 
     with pytest.raises(AttributeError):
         obs.ocr_pct = 9.9  # type: ignore[misc]
+
+
+def test_dashboard_browser_fetcher_routes_through_the_shared_retry_helper(monkeypatch):
+    """The dashboard fetcher must honour configured max_retries/backoff, not
+    fail on the first transient browser launch/navigation/timeout error --
+    the same guarantee ``build_browser_fetcher`` gives the bank collectors."""
+    from balance_pricing_engine.pricing_intelligence import rbnz
+
+    seen = []
+
+    def fake_fetch_with_retries(config, url, attempt):
+        seen.append((config, url))
+        return b"<html>ok</html>"
+
+    monkeypatch.setattr(rbnz, "_fetch_with_retries", fake_fetch_with_retries)
+
+    config = CollectionConfig(max_retries=3, retry_backoff_seconds=1.5)
+    fetcher = rbnz.build_dashboard_browser_fetcher(config)
+    html = fetcher(rbnz.OCR_SOURCE_URL)
+
+    assert html == b"<html>ok</html>"
+    assert seen == [(config, rbnz.OCR_SOURCE_URL)]

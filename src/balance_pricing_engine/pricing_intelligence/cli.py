@@ -52,6 +52,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         config = config.model_copy(update={"database_path": args.database})
 
     try:
+        if args.command == "ocr":
+            # Store-independent (see _ocr's docstring): dispatch before the
+            # ObservationStore/PricingIntelligenceService context below is
+            # entered, so a read-only deployment or an unavailable
+            # --database path can't block this command, and a successful
+            # invocation doesn't needlessly create/migrate a SQLite database
+            # it will never touch.
+            return _ocr()
+
         with PricingIntelligenceService(
             config=config,
             store=ObservationStore(config.database_path),
@@ -65,7 +74,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "market-state": _market_state,
                 "position": _position,
                 "strategy": _strategy,
-                "ocr": _ocr,
             }
             handler = handlers.get(args.command)
             if handler is None:
@@ -449,16 +457,16 @@ def _strategy(service: PricingIntelligenceService, args: argparse.Namespace) -> 
     return 0
 
 
-def _ocr(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
+def _ocr() -> int:
     """Print the current RBNZ OCR and recent trend.
 
     A separate data source from the bank collectors: RBNZ's own published
     series already carries its full monthly history, so unlike ``collect``
     for bank rates, this reads it fresh each call rather than through the
-    observation store -- ``service`` is accepted only to keep the CLI's
-    dispatch table uniform and is otherwise unused here.
+    observation store. Dispatched from ``main()`` before the
+    ObservationStore/PricingIntelligenceService context is entered -- this
+    command needs neither.
     """
-    del service
     series = fetch_ocr_series()
     current = series.current
     print("RBNZ OFFICIAL CASH RATE")

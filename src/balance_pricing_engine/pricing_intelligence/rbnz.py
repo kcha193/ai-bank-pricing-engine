@@ -39,6 +39,7 @@ from balance_pricing_engine.competitor_rates.collectors.base import (
     Fetcher,
     FetchError,
     ParserError,
+    _fetch_with_retries,
     build_default_fetcher,
 )
 
@@ -117,6 +118,12 @@ def build_dashboard_browser_fetcher(
     for the DOM, then gives the chart widget a fixed settle window to render --
     confirmed against the live page to be enough for the accessible data table
     this parser reads to appear.
+
+    Routes attempts through the shared :func:`_fetch_with_retries` helper, the
+    same as ``build_browser_fetcher`` and ``build_default_fetcher``, so a
+    transient browser launch/navigation/timeout failure here gets the
+    configured ``max_retries``/``retry_backoff_seconds`` resilience too,
+    instead of failing on the first attempt.
     """
     config = config or CollectionConfig()
 
@@ -130,7 +137,7 @@ def build_dashboard_browser_fetcher(
                 "&& python3 -m playwright install chromium"
             ) from exc
 
-        try:  # pragma: no cover - exercised only against the live page
+        def attempt() -> bytes:  # pragma: no cover - exercised only against the live page
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch(headless=True)
                 page = browser.new_page(user_agent=config.user_agent)
@@ -143,10 +150,8 @@ def build_dashboard_browser_fetcher(
                 html = page.content()
                 browser.close()
             return html.encode("utf-8")
-        except FetchError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - normalised into FetchError
-            raise FetchError(f"browser rendering failed for {url}: {exc}") from exc
+
+        return _fetch_with_retries(config, url, attempt)
 
     return fetch
 

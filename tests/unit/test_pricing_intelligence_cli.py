@@ -758,9 +758,14 @@ def test_ocr_does_not_require_a_populated_database(tmp_path, capsys, monkeypatch
     )
     monkeypatch.setattr(cli, "fetch_ocr_series", lambda: series)
 
-    exit_code = run(["--database", str(tmp_path / "never-collected.db"), "ocr"])
+    database_path = tmp_path / "never-collected.db"
+    exit_code = run(["--database", str(database_path), "ocr"])
 
     assert exit_code == 0
+    # A store-independent command must never create/migrate a database it
+    # will never touch, and must not require a read-only --database path to
+    # even be writable.
+    assert not database_path.exists()
 
 
 def test_ocr_reports_a_parser_error_without_a_traceback(tmp_path, capsys, monkeypatch):
