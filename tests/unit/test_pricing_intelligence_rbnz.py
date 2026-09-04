@@ -528,6 +528,37 @@ def test_out_of_order_rows_are_rejected_not_silently_trusted():
         parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
 
 
+def test_out_of_order_row_is_caught_even_when_its_own_rate_is_unparsable():
+    """The ordering check must run as soon as a later row's *period* is known
+    to be newer than an already-accepted row, before any rate-related
+    skip/continue -- a partially rendered newer row (valid period, bad rate)
+    must not be silently skipped in a way that leaves an already-proven-wrong
+    earlier row as `current`."""
+    html = """
+    <h2>Official Cash Rate (OCR)</h2>
+    <table>chart__table
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Date</td>
+        <td class="chart__table-data-cell">OCR</td>
+        <td class="chart__table-data-cell">90 day bank bill rate</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Jul-2026</td>
+        <td class="chart__table-data-cell">2.25</td>
+        <td class="chart__table-data-cell">2.68</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Aug-2026</td>
+        <td class="chart__table-data-cell">not-a-number</td>
+        <td class="chart__table-data-cell">2.98</td>
+      </tr>
+    </table>
+    """
+
+    with pytest.raises(ParserError, match="not strictly newest-first"):
+        parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
+
+
 def test_duplicate_periods_are_deduplicated_keeping_the_first():
     html = """
     <h2>Official Cash Rate (OCR)</h2>
