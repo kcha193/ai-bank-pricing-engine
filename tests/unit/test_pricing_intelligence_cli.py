@@ -720,18 +720,34 @@ def test_an_unknown_strategy_is_rejected_by_the_parser(populated_database):
         run(["--database", populated_database, "strategy", "--strategy", "GUESSING"])
 
 
+def _month_label(base: datetime, months_back: int) -> str:
+    """RBNZ's "%b-%Y" period label ``months_back`` months before ``base`` --
+    used so ocr-command test fixtures stay fresh relative to the wall clock
+    instead of pinning a calendar date that will eventually read as stale
+    against resolve_cash_rate()'s currency check (see
+    test_no_wallclock_timebombs)."""
+    total_months = base.year * 12 + (base.month - 1) - months_back
+    year, month = divmod(total_months, 12)
+    return datetime(year, month + 1, 1).strftime("%b-%Y")
+
+
 def test_ocr_reports_the_current_rate_and_trend(tmp_path, capsys, monkeypatch):
     from balance_pricing_engine.pricing_intelligence.rbnz import OcrObservation, OcrSeries
 
+    now = datetime.now(timezone.utc)
+    # months_back starts at 1, not 0: an "End of Month" reading can't exist
+    # for the current, still-in-progress month -- the newest real
+    # observation is always the most recently *closed* month.
+    current_period = _month_label(now, 1)
     series = OcrSeries(
         observations=(
-            OcrObservation("Aug-2026", 2.50, 2.98),
-            OcrObservation("Jul-2026", 2.50, 2.85),
-            OcrObservation("Jun-2026", 2.25, 2.68),
-            OcrObservation("May-2026", 2.25, 2.63),
+            OcrObservation(current_period, 2.50, 2.98),
+            OcrObservation(_month_label(now, 2), 2.50, 2.85),
+            OcrObservation(_month_label(now, 3), 2.25, 2.68),
+            OcrObservation(_month_label(now, 4), 2.25, 2.63),
         ),
         source_url="https://www.rbnz.govt.nz/statistics/key-statistics/x",
-        captured_at_utc=datetime.now(timezone.utc),
+        captured_at_utc=now,
     )
     monkeypatch.setattr(cli, "fetch_ocr_series", lambda **kwargs: series)
 
@@ -740,7 +756,7 @@ def test_ocr_reports_the_current_rate_and_trend(tmp_path, capsys, monkeypatch):
 
     assert exit_code == 0
     assert "2.50%" in output
-    assert "Aug-2026" in output
+    assert current_period in output
     assert "2.98%" in output
     assert "+25 bps" in output  # 3-month change: 2.50 vs 2.25
     assert series.source_url in output
@@ -751,10 +767,11 @@ def test_ocr_does_not_require_a_populated_database(tmp_path, capsys, monkeypatch
     collection has ever run against this database."""
     from balance_pricing_engine.pricing_intelligence.rbnz import OcrObservation, OcrSeries
 
+    now = datetime.now(timezone.utc)
     series = OcrSeries(
-        observations=(OcrObservation("Aug-2026", 2.50, 2.98),),
+        observations=(OcrObservation(_month_label(now, 1), 2.50, 2.98),),
         source_url="https://www.rbnz.govt.nz/statistics/key-statistics/x",
-        captured_at_utc=datetime.now(timezone.utc),
+        captured_at_utc=now,
     )
     monkeypatch.setattr(cli, "fetch_ocr_series", lambda **kwargs: series)
 
@@ -816,10 +833,11 @@ def test_ocr_uses_the_collection_settings_loaded_from_config(tmp_path, capsys, m
     independence is not fetch-configuration independence."""
     from balance_pricing_engine.pricing_intelligence.rbnz import OcrObservation, OcrSeries
 
+    now = datetime.now(timezone.utc)
     series = OcrSeries(
-        observations=(OcrObservation("Aug-2026", 2.50, 2.98),),
+        observations=(OcrObservation(_month_label(now, 1), 2.50, 2.98),),
         source_url="https://www.rbnz.govt.nz/statistics/key-statistics/x",
-        captured_at_utc=datetime.now(timezone.utc),
+        captured_at_utc=now,
     )
     seen_configs = []
 

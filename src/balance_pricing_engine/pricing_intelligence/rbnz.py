@@ -239,7 +239,18 @@ def parse_ocr_series(html: str, captured_at_utc: datetime) -> OcrSeries:
             "the page structure may have changed"
         )
 
-    table_index = html.find("chart__table", heading_index)
+    # Anchored on the "<table" tag itself, not the "chart__table" class name:
+    # on the live page that class first appears inside the header row's own
+    # class="chart__table-row" attribute, which is *after* that row's opening
+    # "<tr class=" -- anchoring there truncated the header row's opening tag
+    # out of the parse window, so it could never match _ROW_PATTERN at all
+    # (the "Date" skip below was consequently dead code against a real page;
+    # it only ever fired in hand-written test fixtures that additionally
+    # placed literal "chart__table" text before the header to route around
+    # this). "<table" always precedes every "<tr>" inside it structurally, so
+    # anchoring there keeps the header row intact for the column-order check
+    # below to actually run against.
+    table_index = html.find("<table", heading_index)
     if table_index == -1:
         raise ParserError(
             "found the OCR heading but no accessible data table followed it"
@@ -253,6 +264,7 @@ def parse_ocr_series(html: str, captured_at_utc: datetime) -> OcrSeries:
 
     observations: list[OcrObservation] = []
     seen_periods: set[str] = set()
+    header_validated = False
     for row_match in _ROW_PATTERN.finditer(window):
         cells = [cell.strip() for cell in _CELL_PATTERN.findall(row_match.group(1))]
         period = cells[0] if cells else ""
@@ -264,19 +276,31 @@ def parse_ocr_series(html: str, captured_at_utc: datetime) -> OcrSeries:
         # row (and therefore can never trip the newest-row guard below). But
         # every row after it is parsed by column *position*, not by label, so
         # a header this parser is willing to accept must actually confirm
-        # that position: a 3-cell header is fatal, not skippable, if its
-        # columns aren't (OCR, 90-day bank bill) in that order -- both values
-        # are plausible-looking percentages, so a swap would otherwise be
-        # invisible to the plausibility check below.
+        # that position -- a header that doesn't (wrong cell count, wrong
+        # column order) is fatal, not silently skippable, and so is reaching
+        # a data row before any header has validated at all (a redesigned
+        # page that dropped the header while also reordering the columns):
+        # either way, both OCR and bank-bill values are plausible-looking
+        # percentages, so a swap would otherwise be invisible to the
+        # plausibility check below.
         if period == "Date":
-            if len(cells) == 3 and not _header_matches_expected_column_order(cells):
+            if not _header_matches_expected_column_order(cells):
                 raise ParserError(
                     "the OCR table's columns are not in the expected order "
-                    "(OCR, then 90-day bank bill rate); found headers "
-                    f"{cells[1]!r}, {cells[2]!r} -- refusing to parse data "
-                    "rows by position against a header that doesn't match"
+                    "(OCR, then 90-day bank bill rate); found header cells "
+                    f"{cells!r} -- refusing to parse data rows by position "
+                    "against a header that doesn't match"
                 )
+            header_validated = True
             continue
+
+        if not header_validated:
+            raise ParserError(
+                "no OCR table header confirming the expected column order "
+                "(OCR, then 90-day bank bill rate) was found before the "
+                "first data row; refusing to parse data rows by position "
+                "without a confirmed header"
+            )
 
         # The series is documented (and relied on by resolve_cash_rate) as
         # newest-first: the first non-header row we reach *is* "the current

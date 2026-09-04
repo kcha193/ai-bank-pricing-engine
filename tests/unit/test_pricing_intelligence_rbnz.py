@@ -33,6 +33,38 @@ def test_parses_the_real_ocr_table_not_the_decoy_fx_table():
     assert series.current.ocr_pct != 0.59075
 
 
+def test_the_header_row_is_captured_without_a_marker_workaround():
+    """A minimal reproduction of the real page's table shape -- no literal
+    "chart__table" text placed ahead of the header the way other synthetic
+    fixtures in this file do. The substring's first real occurrence here is
+    inside the header row's own class="chart__table-row" attribute, *after*
+    that row's opening "<tr class=" -- an anchor search that lands there
+    truncates the header's opening tag out of the parse window, so it would
+    never match the row regex at all, silently defeating both the "Date"
+    skip and the column-order validation. This must parse successfully, not
+    raise "no OCR table header"."""
+    html = """
+    <h2>Official Cash Rate (OCR)</h2>
+    <table>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Date</td>
+        <td class="chart__table-data-cell">OCR</td>
+        <td class="chart__table-data-cell">90 day bank bill rate</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Aug-2026</td>
+        <td class="chart__table-data-cell">2.5</td>
+        <td class="chart__table-data-cell">2.98</td>
+      </tr>
+    </table>
+    """
+
+    series = parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
+
+    assert series.current.period == "Aug-2026"
+    assert series.current.ocr_pct == 2.5
+
+
 def test_extraction_stops_before_the_next_chart():
     """Rows from the chart after OCR (Real TWI) must not leak in."""
     series = parse_ocr_series(FIXTURE, captured_at_utc=CAPTURED_AT)
@@ -157,6 +189,27 @@ def test_an_unrecognised_column_header_is_rejected():
     """
 
     with pytest.raises(ParserError, match="not in the expected order"):
+        parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
+
+
+def test_data_rows_are_rejected_without_a_validated_header():
+    """Reaching a data-shaped row before any header row has confirmed the
+    column order must be fatal -- a redesigned page that dropped the header
+    entirely while also reordering the columns would otherwise still parse
+    silently by position (both OCR and bank-bill values are plausible-looking
+    percentages)."""
+    html = """
+    <h2>Official Cash Rate (OCR)</h2>
+    <table>chart__table
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Aug-2026</td>
+        <td class="chart__table-data-cell">2.5</td>
+        <td class="chart__table-data-cell">2.98</td>
+      </tr>
+    </table>
+    """
+
+    with pytest.raises(ParserError, match="no OCR table header"):
         parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
 
 

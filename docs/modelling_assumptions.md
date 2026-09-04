@@ -258,3 +258,18 @@ PIE-effective-rate and managed-fund rows found during term-deposit live
 verification: two data series sharing a table shape are not the same series,
 and only a semantic anchor (a heading, a label) tells them apart, not a
 numeric plausibility check.
+
+A second, related lesson (2026-09-04): the parse window used to start at the
+first literal occurrence of the substring `"chart__table"` after the heading,
+intending to land inside the table. On the live page that substring first
+appears inside the *header row's own* `class="chart__table-row"` attribute --
+after that row's opening `<tr class="`, truncating it out of the window
+entirely. The header row therefore never matched the row regex at all on a
+real page (only hand-written test fixtures, which added a `"chart__table"`
+marker ahead of the header specifically to route around this, ever exercised
+it) -- silently defeating both the header-skip logic and, once added, the
+column-order validation described above. The window now anchors on the
+literal `"<table"` tag instead, which always precedes every row inside it
+structurally. The general shape of the mistake: an anchor string chosen for
+convenience turned out to also appear *inside* the very row it was meant to
+keep intact.
