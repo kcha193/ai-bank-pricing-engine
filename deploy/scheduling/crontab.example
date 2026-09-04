@@ -28,6 +28,17 @@
 # falls back to PricingIntelligenceConfig() defaults and silently ignores any
 # pricing_intelligence block (selected banks, validation thresholds,
 # collection delays, database path) configured there.
+#
+# Optional alert delivery: to push detected rate moves to Slack, Teams, or
+# Discord, set PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL. Unlike launchd, cron
+# lines below inherit a plain VAR=value assignment placed above them in the
+# same crontab, e.g.:
+#
+#   PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL=https://hooks.slack.com/services/T000/B000/xxxx
+#
+# Keep that line out of any copy of this file under version control; only
+# your installed crontab should carry a real URL. Unset is the default (no
+# delivery), and a broken webhook never fails the collection run.
 
 30 7 * * * cd /path/to/ai-bank-pricing-engine && mkdir -p data/processed/pricing_intelligence && ( .venv/bin/python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --render-javascript --quiet --lock-file data/processed/pricing_intelligence/collection-home-loan.lock --summary-file data/processed/pricing_intelligence/last_run_home_loan.json >> data/processed/pricing_intelligence/collect.log 2>&1; code=$?; [ "$code" -eq 0 ] || echo "NZ home-loan rate collection exited $code $(date)" >> data/processed/pricing_intelligence/collect.err.log; exit "$code" )
 

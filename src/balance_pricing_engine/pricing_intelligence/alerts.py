@@ -1,21 +1,40 @@
-"""Alert formatting for detected market changes.
+"""Alert formatting and delivery for detected market changes.
 
 Formatting is separated from delivery on purpose. This module turns a
-:class:`RateChange` into a rendered alert; where that alert goes -- console,
-Telegram, email, or the existing in-process event publisher -- is a sink's
-problem. No delivery integration exists in this repository yet, so the console
-sink is the only concrete one and the protocol is the extension point.
+:class:`RateChange` into a rendered alert; where that alert goes is a sink's
+problem. :class:`ConsoleAlertSink` and :class:`WebhookAlertSink` are the
+concrete sinks; the :class:`AlertSink` protocol is the extension point for
+anything else (email, a paging system, the in-process event publisher).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Protocol, Sequence, runtime_checkable
+import json
+import logging
+import threading
+import time
+from typing import Callable, Optional, Protocol, Sequence, runtime_checkable
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange
 from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot
+from balance_pricing_engine.secrets.provider import EnvSecretsProvider, SecretsProvider
+
+logger = logging.getLogger(__name__)
+
+#: Env var read for the outgoing webhook URL, matching the ANTHROPIC_API_KEY /
+#: PRICING_ENGINE_API_KEYS pattern: the secret lives in the environment, never
+#: in a config file. Unset means "no webhook delivery configured".
+ALERT_WEBHOOK_URL_SECRET_NAME = "PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL"
+
+#: Posts a JSON-encoded payload to a URL and returns nothing, raising on
+#: failure. Injectable so tests never reach the network -- the same pattern
+#: as the collector ``Fetcher`` type in ``collectors/base.py``.
+WebhookPoster = Callable[[str, bytes], None]
 
 _SEVERITY_MARKERS = {
     ChangeType.RATE_DECREASE: "🔴",
@@ -72,6 +91,149 @@ class CollectingAlertSink:
 
     def send(self, alert: Alert) -> None:
         self.alerts.append(alert)
+
+
+#: Fallback pause (seconds) for a 429 response that carries no usable
+#: ``Retry-After`` header. Slack's own webhook rate limiting always sends
+#: one, but a generic webhook consumer might not.
+DEFAULT_RETRY_AFTER_SECONDS = 1.0
+
+#: How many times ``build_default_poster`` will wait out a 429 before giving
+#: up and letting the caller's own failure handling (``dispatch_alerts_safely``)
+#: take over.
+DEFAULT_MAX_RATE_LIMIT_RETRIES = 3
+
+#: Upper bound on how long a single retry will wait, regardless of what the
+#: ``Retry-After`` header claims. The header value comes from whatever server
+#: is on the other end of a URL read from an environment variable -- a
+#: misconfigured or malicious endpoint returning an enormous value must not be
+#: able to block a scheduled collection run's alert delivery indefinitely.
+MAX_RETRY_AFTER_SECONDS = 30.0
+
+
+def _parse_retry_after_seconds(header_value: Optional[str]) -> float:
+    """Parse a ``Retry-After`` header value (seconds form only), capped.
+
+    Webhook rate limiters (Slack included) send the delta-seconds form, not
+    the HTTP-date form, so that is all this needs to handle. Anything else
+    falls back to :data:`DEFAULT_RETRY_AFTER_SECONDS` rather than failing the
+    delivery over an unparseable header. The result is always clamped to
+    :data:`MAX_RETRY_AFTER_SECONDS`.
+    """
+    if header_value is None:
+        return DEFAULT_RETRY_AFTER_SECONDS
+    try:
+        parsed = float(header_value)
+    except ValueError:
+        return DEFAULT_RETRY_AFTER_SECONDS
+    return min(MAX_RETRY_AFTER_SECONDS, max(0.0, parsed))
+
+
+def build_default_poster(
+    timeout_seconds: float = 10.0,
+    max_rate_limit_retries: int = DEFAULT_MAX_RATE_LIMIT_RETRIES,
+    sleep: Callable[[float], None] = time.sleep,
+) -> WebhookPoster:
+    """Return a poster that sends a real HTTPS POST via the standard library.
+
+    No third-party HTTP client dependency: urllib is enough for a single JSON
+    POST, and this repository avoids adding one for a single call site.
+
+    A 429 response is retried after honoring the ``Retry-After`` header
+    (falling back to :data:`DEFAULT_RETRY_AFTER_SECONDS` when absent or
+    unparseable), up to ``max_rate_limit_retries`` times. Without this, a
+    burst of alerts for one repricing event -- several terms changing on the
+    same bank in one collection -- hits Slack's per-webhook rate limit after
+    the first message and silently loses the rest, since ``dispatch_alerts_safely``
+    logs delivery failures rather than retrying them on a later run.
+    """
+
+    def post(url: str, payload: bytes) -> None:
+        attempt = 0
+        while True:
+            request = Request(
+                url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
+            )
+            try:
+                with urlopen(request, timeout=timeout_seconds):
+                    return
+            except HTTPError as exc:
+                if exc.code != 429 or attempt >= max_rate_limit_retries:
+                    raise
+                sleep(_parse_retry_after_seconds(exc.headers.get("Retry-After")))
+                attempt += 1
+
+    return post
+
+
+class WebhookAlertSink:
+    """POSTs a rendered alert as JSON to a generic webhook URL.
+
+    The payload's message field defaults to ``"text"``, which Slack incoming
+    webhooks and the legacy Microsoft Teams Office 365 connector both render
+    directly with no further configuration -- set ``text_field="content"`` for
+    a Discord webhook instead. Structured fields (``bank``, ``change_type``,
+    ``change_bps``, ``suspicious``, ``detected_at``) ride alongside the message
+    for any consumer that parses JSON rather than just displaying it; chat
+    webhooks ignore fields they don't recognise.
+
+    ``send()`` raises on failure rather than swallowing it -- callers that want
+    a broken webhook to never affect anything else (a scheduled collection run,
+    in particular) should go through :func:`dispatch_alerts_safely`, which is
+    to alert delivery what ``events.publisher.publish_safely()`` is to domain
+    events.
+    """
+
+    def __init__(
+        self,
+        webhook_url: str,
+        text_field: str = "text",
+        poster: Optional[WebhookPoster] = None,
+    ) -> None:
+        self.webhook_url = webhook_url
+        self.text_field = text_field
+        # `is not None`, not `or`: an injected poster whose __bool__/__len__
+        # makes it falsey (e.g. an empty recording adapter) must still be
+        # used -- `or` would silently discard it and send a real network
+        # request via build_default_poster() instead. Same pattern as
+        # build_webhook_sink_from_env()'s secrets-provider check.
+        self._poster = poster if poster is not None else build_default_poster()
+
+    def send(self, alert: Alert) -> None:
+        change = alert.change
+        payload = {
+            self.text_field: alert.render(),
+            "bank": change.bank,
+            "change_type": change.change_type.value,
+            "change_bps": change.change_bps,
+            "suspicious": change.suspicious,
+            "detected_at": change.detected_at.isoformat(),
+        }
+        self._poster(self.webhook_url, json.dumps(payload).encode("utf-8"))
+
+
+def build_webhook_sink_from_env(
+    secrets: Optional[SecretsProvider] = None,
+    text_field: str = "text",
+    secret_name: str = ALERT_WEBHOOK_URL_SECRET_NAME,
+) -> Optional[WebhookAlertSink]:
+    """Build a webhook sink from the configured secret, or None if unset.
+
+    The env-var-gated "None means not configured" shape matches
+    ``llm._client.is_llm_available`` and ``api.auth.require_api_key``: no
+    delivery channel is the default, and nothing breaks when one is absent.
+    """
+    # `is None`, not `or`: a caller-injected provider whose __bool__/__len__
+    # makes it falsey (e.g. one representing an empty secret store) must
+    # still be used -- `or` would silently discard it in favour of
+    # EnvSecretsProvider, potentially reading a real ambient webhook URL the
+    # caller's provider was deliberately overriding. Same pattern as
+    # llm._client.build_client.
+    secrets = EnvSecretsProvider() if secrets is None else secrets
+    webhook_url = secrets.get_secret(secret_name)
+    if not webhook_url:
+        return None
+    return WebhookAlertSink(webhook_url, text_field=text_field)
 
 
 def term_name(term_months: Optional[int]) -> str:
@@ -211,3 +373,94 @@ def dispatch_alerts(alerts: Sequence[Alert], sink: AlertSink) -> int:
     for alert in alerts:
         sink.send(alert)
     return len(alerts)
+
+
+#: Total wall-clock budget for one ``dispatch_alerts_safely`` call, across
+#: every alert and its own retries. ``run_collection()`` calls this
+#: synchronously while its single-instance lock is held, before writing the
+#: run summary -- an unbounded run here would delay the next scheduled
+#: collection and leave monitoring without a completion record for however
+#: long a misbehaving webhook endpoint chose to stall.
+DEFAULT_ALERT_DISPATCH_DEADLINE_SECONDS = 30.0
+
+
+def dispatch_alerts_safely(
+    alerts: Sequence[Alert],
+    sink: AlertSink,
+    *,
+    deadline_seconds: float = DEFAULT_ALERT_DISPATCH_DEADLINE_SECONDS,
+) -> int:
+    """Deliver alerts through a sink, never letting a delivery failure escape.
+
+    Mirrors ``events.publisher.publish_safely()``, including its bounded-wait
+    mechanism: a broken or misconfigured alert channel (an unreachable
+    webhook, an expired URL, or one that is rate-limiting and retrying) must
+    never fail, or block past ``deadline_seconds``, the run it was reporting
+    on. Each alert is attempted independently, so one failure does not cost
+    the rest. Failures are logged, not silently dropped.
+
+    Each ``sink.send()`` call runs on its own daemon thread, joined with
+    whatever time remains of ``deadline_seconds``. A per-alert deadline check
+    alone would not be enough: ``WebhookAlertSink``'s own 429 retries can
+    each wait as long as ``MAX_RETRY_AFTER_SECONDS``, so a single alert could
+    otherwise blow the whole budget before control ever returned to this
+    loop. If a send has not finished by the time its slice of the budget
+    runs out, this moves on without waiting further -- the thread is left to
+    finish (or not) in the background, the same trade-off ``publish_safely``
+    makes for a hung publisher. If starting that thread itself raises (e.g.
+    the process is at its OS thread limit), that is caught and logged the
+    same as any other delivery failure -- it must not propagate out of this
+    "never fails the run" helper either.
+    """
+    sent = 0
+    deadline = time.monotonic() + deadline_seconds
+    for alert in alerts:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning(
+                "alert delivery skipped for %s %s: dispatch deadline of %.0fs exceeded",
+                alert.change.bank,
+                alert.change.change_type.value,
+                deadline_seconds,
+            )
+            continue
+
+        outcome: dict = {}
+
+        def _send(alert: Alert = alert, outcome: dict = outcome) -> None:
+            try:
+                sink.send(alert)
+                outcome["ok"] = True
+            except Exception as exc:  # noqa: BLE001 - reported on the calling thread
+                outcome["error"] = exc
+
+        worker = threading.Thread(target=_send, daemon=True)
+        try:
+            worker.start()
+        except Exception as exc:  # noqa: BLE001 - e.g. RuntimeError: can't start new thread
+            logger.warning(
+                "alert delivery failed for %s %s: could not start delivery thread: %s",
+                alert.change.bank,
+                alert.change.change_type.value,
+                exc,
+            )
+            continue
+        worker.join(remaining)
+
+        if worker.is_alive():
+            logger.warning(
+                "alert delivery timed out for %s %s: exceeded dispatch deadline of %.0fs",
+                alert.change.bank,
+                alert.change.change_type.value,
+                deadline_seconds,
+            )
+        elif outcome.get("ok"):
+            sent += 1
+        else:
+            logger.warning(
+                "alert delivery failed for %s %s: %s",
+                alert.change.bank,
+                alert.change.change_type.value,
+                outcome.get("error"),
+            )
+    return sent

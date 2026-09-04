@@ -11,7 +11,6 @@
 > [The walkthrough notebook](../notebooks/bank_pricing_engine_walkthrough.ipynb)
 > has been re-executed against this baseline and its stored outputs match.
 
-
 This guide explains how to use the AI Balance Sheet Pricing Engine from start to finish.
 It is written for two audiences:
 
