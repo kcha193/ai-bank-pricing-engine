@@ -230,6 +230,11 @@ def test_dashboard_browser_fetcher_routes_through_the_shared_retry_helper(monkey
     """The dashboard fetcher must honour configured max_retries/backoff, not
     fail on the first transient browser launch/navigation/timeout error --
     the same guarantee ``build_browser_fetcher`` gives the bank collectors."""
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        pytest.skip("playwright is not installed; nothing to route through retries")
+
     from balance_pricing_engine.pricing_intelligence import rbnz
 
     seen = []
