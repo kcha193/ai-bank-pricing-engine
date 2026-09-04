@@ -784,6 +784,32 @@ def test_ocr_reports_a_parser_error_without_a_traceback(tmp_path, capsys, monkey
     assert "RBNZ page structure changed" in output
 
 
+def test_ocr_rejects_a_stale_series_instead_of_reporting_it(tmp_path, capsys, monkeypatch):
+    """The ocr command must apply the same currency check
+    resolve_cash_rate(RBNZ_OCR) applies before the pricing overlay would
+    accept a series -- it must not print a rate as "the current OCR" that
+    the pricing seam would reject as stale."""
+    from balance_pricing_engine.pricing_intelligence.rbnz import OcrObservation, OcrSeries
+
+    now = datetime.now(timezone.utc)
+    # ~220 days stale -- well past MAX_OCR_OBSERVATION_AGE_DAYS -- computed
+    # relative to now rather than a fixed calendar date, per
+    # test_no_wallclock_timebombs.
+    stale_series = OcrSeries(
+        observations=(OcrObservation((now - timedelta(days=220)).strftime("%b-%Y"), 5.50, 5.80),),
+        source_url="https://www.rbnz.govt.nz/statistics/key-statistics/x",
+        captured_at_utc=now,
+    )
+    monkeypatch.setattr(cli, "fetch_ocr_series", lambda **kwargs: stale_series)
+
+    exit_code = run(["--database", str(tmp_path / "empty.db"), "ocr"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert output.startswith("ERROR:")
+    assert "looks stale" in output
+
+
 def test_ocr_uses_the_collection_settings_loaded_from_config(tmp_path, capsys, monkeypatch):
     """A --config's pricing_intelligence.collection settings (timeout,
     retries, backoff, user agent) must reach the OCR fetch too -- store

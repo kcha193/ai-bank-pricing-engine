@@ -30,7 +30,11 @@ from balance_pricing_engine.pricing_intelligence.config import PricingIntelligen
 from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 from balance_pricing_engine.pricing_intelligence.rbnz import fetch_ocr_series
-from balance_pricing_engine.pricing_intelligence.strategy import CompetitorRateStrategy
+from balance_pricing_engine.pricing_intelligence.strategy import (
+    CashRateStrategy,
+    CompetitorRateStrategy,
+    resolve_cash_rate,
+)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -472,15 +476,23 @@ def _ocr(collection_config: CollectionConfig) -> int:
     command needs neither the store nor the service, but it still needs the
     ``--config``-loaded fetch settings (timeout, retries, backoff, user
     agent): store independence is not fetch-configuration independence.
+
+    Runs the series through the same currency check
+    ``resolve_cash_rate(RBNZ_OCR)`` applies before the pricing overlay would
+    accept it (rejects a series that's gone unrefreshed longer than an OCR
+    review cycle, or one with a future-dated newest observation) -- this
+    command must not report a rate as "the current OCR" that the pricing
+    seam would refuse to price off.
     """
     series = fetch_ocr_series(config=collection_config)
+    resolved = resolve_cash_rate(CashRateStrategy.RBNZ_OCR, ocr_series=series)
     current = series.current
     print("RBNZ OFFICIAL CASH RATE")
     print()
-    print(f"  OCR                    {current.ocr_pct:.2f}%")
+    print(f"  OCR                    {resolved.rate_pct:.2f}%")
     if current.bank_bill_90d_pct is not None:
         print(f"  90-day bank bill rate  {current.bank_bill_90d_pct:.2f}%")
-    print(f"  as at                  {current.period}")
+    print(f"  as at                  {resolved.as_of_period}")
     for months in (1, 3, 12):
         change = series.change_bps(months)
         label = "month" if months == 1 else "months"
