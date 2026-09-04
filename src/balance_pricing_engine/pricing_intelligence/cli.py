@@ -18,6 +18,7 @@ import argparse
 import logging
 from typing import Optional
 
+from balance_pricing_engine.competitor_rates.collection_config import CollectionConfig
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.alerts import (
@@ -28,7 +29,12 @@ from balance_pricing_engine.pricing_intelligence.alerts import (
 from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
 from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
-from balance_pricing_engine.pricing_intelligence.strategy import CompetitorRateStrategy
+from balance_pricing_engine.pricing_intelligence.rbnz import fetch_ocr_series
+from balance_pricing_engine.pricing_intelligence.strategy import (
+    CashRateStrategy,
+    CompetitorRateStrategy,
+    resolve_cash_rate,
+)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -51,6 +57,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         config = config.model_copy(update={"database_path": args.database})
 
     try:
+        if args.command == "ocr":
+            # Store-independent (see _ocr's docstring): dispatch before the
+            # ObservationStore/PricingIntelligenceService context below is
+            # entered, so a read-only deployment or an unavailable
+            # --database path can't block this command, and a successful
+            # invocation doesn't needlessly create/migrate a SQLite database
+            # it will never touch. Still store-dependent config (timeout,
+            # retries, backoff, user agent) that --config loaded above,
+            # though -- store independence isn't fetch-configuration
+            # independence.
+            return _ocr(config.collection)
+
         with PricingIntelligenceService(
             config=config,
             store=ObservationStore(config.database_path),
@@ -169,6 +187,14 @@ def _build_parser() -> argparse.ArgumentParser:
     strategy.add_argument("--offset-bps", type=float, default=0.0)
     strategy.add_argument(
         "--manual-rate", type=float, default=None, help="Decimal rate for MANUAL"
+    )
+
+    subparsers.add_parser(
+        "ocr",
+        help=(
+            "Show the current RBNZ Official Cash Rate and recent trend "
+            "(a separate data source from the bank collectors above)"
+        ),
     )
 
     return parser
@@ -436,6 +462,43 @@ def _strategy(service: PricingIntelligenceService, args: argparse.Namespace) -> 
     print(f"  offset_bps            {assumption.offset_bps:+.0f}")
     print(f"  source banks          {', '.join(assumption.source_banks) or 'n/a'}")
     print(f"  rationale             {assumption.rationale}")
+    return 0
+
+
+def _ocr(collection_config: CollectionConfig) -> int:
+    """Print the current RBNZ OCR and recent trend.
+
+    A separate data source from the bank collectors: RBNZ's own published
+    series already carries its full monthly history, so unlike ``collect``
+    for bank rates, this reads it fresh each call rather than through the
+    observation store. Dispatched from ``main()`` before the
+    ObservationStore/PricingIntelligenceService context is entered -- this
+    command needs neither the store nor the service, but it still needs the
+    ``--config``-loaded fetch settings (timeout, retries, backoff, user
+    agent): store independence is not fetch-configuration independence.
+
+    Runs the series through the same currency check
+    ``resolve_cash_rate(RBNZ_OCR)`` applies before the pricing overlay would
+    accept it (rejects a series that's gone unrefreshed longer than an OCR
+    review cycle, or one with a future-dated newest observation) -- this
+    command must not report a rate as "the current OCR" that the pricing
+    seam would refuse to price off.
+    """
+    series = fetch_ocr_series(config=collection_config)
+    resolved = resolve_cash_rate(CashRateStrategy.RBNZ_OCR, ocr_series=series)
+    current = series.current
+    print("RBNZ OFFICIAL CASH RATE")
+    print()
+    print(f"  OCR                    {resolved.rate_pct:.2f}%")
+    if current.bank_bill_90d_pct is not None:
+        print(f"  90-day bank bill rate  {current.bank_bill_90d_pct:.2f}%")
+    print(f"  as at                  {resolved.as_of_period}")
+    for months in (1, 3, 12):
+        change = series.change_bps(months)
+        label = "month" if months == 1 else "months"
+        change_text = f"{change:+.0f} bps" if change is not None else "n/a"
+        print(f"  change over {months} {label:<7}{change_text}")
+    print(f"  source                 {series.source_url}")
     return 0
 
 

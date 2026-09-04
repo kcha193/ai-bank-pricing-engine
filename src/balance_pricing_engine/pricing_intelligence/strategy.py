@@ -12,8 +12,9 @@ scenario, config file, and test keeps its current behaviour.
 
 from __future__ import annotations
 
+import calendar
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -23,6 +24,8 @@ from balance_pricing_engine.competitor_rates.apply import (
 )
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.bps import bps_to_percent
+from balance_pricing_engine.pricing_intelligence.rbnz import OcrSeries
+from balance_pricing_engine.pricing_intelligence.rbnz import _parse_period as _parse_ocr_period
 from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot, TermMarket
 
 
@@ -285,3 +288,140 @@ def apply_market_strategy_to_config(
         update={"market": config.market.model_copy(update=updates)}
     )
     return revalidate_config(updated_config, context="market-intelligence overlay")
+
+
+class CashRateStrategy(str, Enum):
+    """How the optimiser's wholesale funding-cost anchor is sourced.
+
+    A second, independent seam from :class:`CompetitorRateStrategy`: the OCR
+    comes from RBNZ, not the bank collectors, and feeds a different
+    ``MarketConfig`` field (``cash_rate``, not a competitor rate). Kept as its
+    own strategy/resolver/overlay rather than folded into
+    :func:`apply_market_strategy_to_config` -- that function already has two
+    independent sides (loan, deposit); a third, unrelated data source belongs
+    in its own function, not a longer parameter list on that one.
+    """
+
+    #: Use the rate already in the config. Legacy behaviour, and the default.
+    MANUAL = "MANUAL"
+    #: The most recently published RBNZ Official Cash Rate.
+    RBNZ_OCR = "RBNZ_OCR"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+# RBNZ's Monetary Policy Committee reviews the OCR roughly every six weeks
+# (seven times a year), and the dashboard's "End of Month" series is normally
+# refreshed within the first couple of weeks of the following month -- so the
+# newest observation is ordinarily well under a month old by the time it is
+# fetched. A gap much larger than that means the fetch didn't actually pick up
+# a current series (a stalled page, a parser that silently stopped updating),
+# and pricing off it would carry a rate that could already be one or more OCR
+# reviews out of date without any signal that it happened.
+MAX_OCR_OBSERVATION_AGE_DAYS = 70
+
+
+def _ocr_period_end(period: str) -> datetime:
+    """The last calendar day of an ``OcrObservation.period`` (e.g. "Aug-2026")."""
+    try:
+        year, month = _parse_ocr_period(period)
+    except ValueError as exc:
+        raise MarketStrategyError(f"could not parse OCR observation period {period!r}") from exc
+    last_day = calendar.monthrange(year, month)[1]
+    return datetime(year, month, last_day, tzinfo=timezone.utc)
+
+
+@dataclass(frozen=True)
+class ResolvedCashRateAssumption:
+    """A cash-rate assumption plus the evidence behind it."""
+
+    strategy: CashRateStrategy
+    #: Decimal rate ready for ``MarketConfig.cash_rate`` (0.025 for 2.50%).
+    cash_rate: float
+    rate_pct: float
+    #: RBNZ's own period label for the observation this came from (e.g.
+    #: "Aug-2026"), or None under MANUAL.
+    as_of_period: Optional[str]
+    rationale: str
+
+    def summary(self) -> str:
+        return f"{self.strategy.value} -> {self.rate_pct:.2f}% ({self.rationale})"
+
+
+def resolve_cash_rate(
+    strategy: CashRateStrategy | str = CashRateStrategy.MANUAL,
+    ocr_series: Optional[OcrSeries] = None,
+    manual_rate: Optional[float] = None,
+) -> ResolvedCashRateAssumption:
+    """Resolve the cash-rate assumption the optimiser should run with."""
+    strategy = CashRateStrategy(strategy)
+
+    if strategy is CashRateStrategy.MANUAL:
+        if manual_rate is None:
+            raise MarketStrategyError("MANUAL cash-rate strategy requires manual_rate")
+        return ResolvedCashRateAssumption(
+            strategy=strategy,
+            cash_rate=manual_rate,
+            rate_pct=manual_rate * 100,
+            as_of_period=None,
+            rationale="manual scenario assumption; RBNZ data not consulted",
+        )
+
+    if ocr_series is None:
+        raise MarketStrategyError(f"{strategy.value} requires an OCR series")
+    current = ocr_series.current
+    observation_age_days = (ocr_series.captured_at_utc - _ocr_period_end(current.period)).days
+    if observation_age_days < 0:
+        raise MarketStrategyError(
+            f"{strategy.value}: the newest OCR observation is for {current.period}, which "
+            f"ends after this fetch ({ocr_series.captured_at_utc:%Y-%m-%d}) -- a future-dated "
+            "observation means the series is malformed (bad markup, a partial chart update, "
+            "or an included projection row), not a genuinely current reading"
+        )
+    if observation_age_days > MAX_OCR_OBSERVATION_AGE_DAYS:
+        raise MarketStrategyError(
+            f"{strategy.value}: the newest OCR observation is for {current.period}, "
+            f"{observation_age_days} days before this fetch "
+            f"({ocr_series.captured_at_utc:%Y-%m-%d}) -- RBNZ's End-of-Month series looks "
+            "stale (unrefreshed for longer than an OCR review cycle); verify against RBNZ's "
+            "own OCR announcements before pricing off this feed"
+        )
+    return ResolvedCashRateAssumption(
+        strategy=strategy,
+        cash_rate=round(current.ocr_pct / 100, 8),
+        rate_pct=current.ocr_pct,
+        as_of_period=current.period,
+        rationale=(
+            f"RBNZ Official Cash Rate as at {current.period} (End of Month reading -- may "
+            "not yet reflect an OCR review decided after that month closed)"
+        ),
+    )
+
+
+def apply_cash_rate_strategy_to_config(
+    config,
+    strategy: CashRateStrategy | str = CashRateStrategy.MANUAL,
+    ocr_series: Optional[OcrSeries] = None,
+):
+    """Return ``config`` with ``market.cash_rate`` resolved.
+
+    Under ``MANUAL`` the config is returned unchanged -- byte-for-byte the
+    existing behaviour, so manual scenarios are unaffected by this layer, the
+    same invariant :func:`apply_market_strategy_to_config` holds for
+    competitor rates.
+
+    Only ``cash_rate`` moves. ``wholesale_funding_spread`` is a separate,
+    still-unverified assumption -- see docs/modelling_assumptions.md -- and
+    is deliberately left untouched here rather than guessed at.
+    """
+    resolved = resolve_cash_rate(
+        strategy=strategy, ocr_series=ocr_series, manual_rate=config.market.cash_rate
+    )
+    if resolved.strategy is CashRateStrategy.MANUAL:
+        return config
+
+    updated_config = config.model_copy(
+        update={"market": config.market.model_copy(update={"cash_rate": resolved.cash_rate})}
+    )
+    return revalidate_config(updated_config, context="RBNZ OCR overlay")

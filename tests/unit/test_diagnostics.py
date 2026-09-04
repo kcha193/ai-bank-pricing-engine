@@ -206,7 +206,27 @@ def test_boundary_expansion_handles_zero_clamp_without_invalid_grid_alignment():
 
 
 def test_baseline_diagnostics_runs_boundary_follow_up_before_accepting_result():
+    from balance_pricing_engine.config import SpreadGridConfigModel
+
+    # Narrowed the same way test_adaptive_grid_expands_when_boundary_hit()
+    # narrows its grid: this test needs a boundary hit on *both* loan and
+    # deposit sides at once, deterministically, rather than depending on
+    # configs/base.yaml's calibrated optimum happening to land on an edge --
+    # a recalibration (e.g. the cash_rate correction against the verified
+    # RBNZ OCR) legitimately moves the unconstrained optimum, and this test's
+    # purpose is the boundary-follow-up mechanism, not any particular
+    # calibration.
     config = load_config("configs/base.yaml")
+    config = config.model_copy(
+        update={
+            "pricing_strategy": config.pricing_strategy.model_copy(
+                update={
+                    "home_loan_spread_bps": SpreadGridConfigModel(min=-20, max=20, step=5),
+                    "term_deposit_spread_bps": SpreadGridConfigModel(min=-20, max=20, step=5),
+                }
+            )
+        }
+    )
     initial_loan_grid, initial_deposit_grid = build_configured_rate_grids(config)
 
     diagnostics = run_baseline_diagnostics(config, max_boundary_expansions=1)

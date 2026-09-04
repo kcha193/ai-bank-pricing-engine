@@ -46,7 +46,8 @@ What was added:
 | Positioning + activity features | `pricing_intelligence/positioning.py` | New |
 | Market-state classification | `pricing_intelligence/market_state.py` | New |
 | Alert formatting and webhook delivery | `pricing_intelligence/alerts.py` | New |
-| Competitor-rate strategy | `pricing_intelligence/strategy.py` | New |
+| Competitor-rate and cash-rate strategy | `pricing_intelligence/strategy.py` | New |
+| RBNZ Official Cash Rate intelligence | `pricing_intelligence/rbnz.py` | New |
 
 ## Architecture
 
@@ -353,10 +354,10 @@ python3 examples/run_market_intelligence_scenarios.py --term 12
 ```text
    Scenario                  Competitor   Our rate       Objective        vs A
 ------------------------------------------------------------------------------
-A  No change (manual)             4.99%      6.39%      $4,065,058          $0
-B  Match market median            4.99%      6.39%      $4,065,058          $0
-C  Match market leader            4.95%      6.35%      $3,997,601    $-67,457
-D  Market leader -5 bps           4.90%      6.35%      $3,948,769   $-116,289
+A  No change (manual)             4.99%      6.19%      $5,920,859          $0
+B  Match market median            4.99%      6.19%      $5,920,859          $0
+C  Match market leader            4.95%      6.15%      $5,826,903    $-93,956
+D  Market leader -5 bps           4.90%      6.15%      $5,718,761   $-202,099
 ```
 
 Scenario E -- the economically optimal price -- is the `Our rate` column: the
@@ -506,6 +507,88 @@ Each side resolves independently: a market-derived loan rate with a manual
 deposit assumption is a legitimate scenario. Omitting `deposit_snapshot` leaves
 `market.competitor_deposit_rate` exactly as the config holds it, and `MANUAL` on
 both sides still returns the identical config object.
+
+## RBNZ Official Cash Rate
+
+A separate data source from the five bank collectors above: the RBNZ's own
+published series for `market.cash_rate`, the one funding-cost input this engine
+had never verified until 2026-09-03. Live-verified against
+[the RBNZ's exchange-rates-and-wholesale-interest-rates page](https://www.rbnz.govt.nz/statistics/key-statistics/exchange-rates-and-wholesale-interest-rates):
+the current OCR is **2.50%**, alongside the 90-day bank bill rate (2.98% as at
+Aug-2026).
+
+```bash
+python3 -m balance_pricing_engine.pricing_intelligence ocr
+```
+
+```text
+RBNZ OFFICIAL CASH RATE
+
+  OCR                    2.50%
+  90-day bank bill rate  2.98%
+  as at                  Aug-2026
+  change over 1 month    +0 bps
+  change over 3 months   +25 bps
+  change over 12 months  -50 bps
+  source                 https://www.rbnz.govt.nz/statistics/key-statistics/exchange-rates-and-wholesale-interest-rates
+```
+
+**Shape difference from the bank collectors, on purpose.** RBNZ's own chart
+already carries the full monthly OCR history back to 1999 in a single page
+load, so unlike bank rates -- a fresh number that must be accumulated over many
+collections to build history -- there is nothing to accumulate here. Each call
+to `fetch_ocr_series()` returns the whole series. There is no local
+observation store, no change detection, and no scheduled collection for this
+module: a single point-in-time read is already as complete as the source
+itself.
+
+**Parsing anchor, and why it matters.** The RBNZ page renders several charts
+with an identical accessible-table shape (`Date | series | series`) as a
+sighted-user-equivalent companion to each visual chart: one for the OCR and
+90-day bank bill rate, others for exchange rates and the trade-weighted index.
+All of them look alike by column shape alone. An early version of this
+collector grabbed the first `Date`-headed table on the page and silently
+returned NZD/USD exchange-rate values (around 0.55-0.60) as if they were the
+OCR -- a plausible-looking float, and one a numeric range check would not have
+caught. The parser now anchors on the "Official Cash Rate" heading text and
+takes the table that follows it, never the first table matching the expected
+shape. The same category of defect as the PIE-effective-rate and managed-fund
+rows found during term-deposit live verification: two data series sharing a
+table shape are not the same series, and only a semantic anchor tells them
+apart.
+
+**Fetch strategy is dedicated, not shared.** The bank collectors'
+`build_browser_fetcher()` waits for the page to reach `networkidle`, which
+works for bank rate pages but never fires on this one -- the RBNZ statistics
+page keeps background network activity going indefinitely (chart telemetry,
+related-content widgets). `rbnz.build_dashboard_browser_fetcher()` waits only
+for the DOM, then gives the chart widget a fixed settle window to render;
+confirmed against the live page to be enough for the accessible data table to
+appear.
+
+### Feeding the OCR into the optimiser
+
+```python
+from balance_pricing_engine.pricing_intelligence.rbnz import fetch_ocr_series
+from balance_pricing_engine.pricing_intelligence.strategy import (
+    CashRateStrategy,
+    apply_cash_rate_strategy_to_config,
+)
+
+series = fetch_ocr_series()
+config = apply_cash_rate_strategy_to_config(
+    config, strategy=CashRateStrategy.RBNZ_OCR, ocr_series=series
+)
+```
+
+A second, independent seam from `apply_market_strategy_to_config`: the OCR
+comes from RBNZ, not the bank collectors, and feeds a different `MarketConfig`
+field. `CashRateStrategy.MANUAL` is the default and returns the config object
+completely unchanged, the same invariant the competitor-rate strategy holds.
+Only `cash_rate` moves -- `wholesale_funding_spread` is a separate, still
+unverified assumption (see
+[modelling_assumptions.md](modelling_assumptions.md#cash-rate-correction-2026-09-03))
+and is deliberately left alone rather than guessed at.
 
 ## Adding a sixth bank
 

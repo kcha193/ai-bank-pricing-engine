@@ -718,3 +718,146 @@ def test_an_error_is_reported_without_a_traceback(tmp_path, capsys):
 def test_an_unknown_strategy_is_rejected_by_the_parser(populated_database):
     with pytest.raises(SystemExit):
         run(["--database", populated_database, "strategy", "--strategy", "GUESSING"])
+
+
+def _month_label(base: datetime, months_back: int) -> str:
+    """RBNZ's "%b-%Y" period label ``months_back`` months before ``base`` --
+    used so ocr-command test fixtures stay fresh relative to the wall clock
+    instead of pinning a calendar date that will eventually read as stale
+    against resolve_cash_rate()'s currency check (see
+    test_no_wallclock_timebombs)."""
+    total_months = base.year * 12 + (base.month - 1) - months_back
+    year, month = divmod(total_months, 12)
+    return datetime(year, month + 1, 1).strftime("%b-%Y")
+
+
+def test_ocr_reports_the_current_rate_and_trend(tmp_path, capsys, monkeypatch):
+    from balance_pricing_engine.pricing_intelligence.rbnz import OcrObservation, OcrSeries
+
+    now = datetime.now(timezone.utc)
+    # months_back starts at 1, not 0: an "End of Month" reading can't exist
+    # for the current, still-in-progress month -- the newest real
+    # observation is always the most recently *closed* month.
+    current_period = _month_label(now, 1)
+    series = OcrSeries(
+        observations=(
+            OcrObservation(current_period, 2.50, 2.98),
+            OcrObservation(_month_label(now, 2), 2.50, 2.85),
+            OcrObservation(_month_label(now, 3), 2.25, 2.68),
+            OcrObservation(_month_label(now, 4), 2.25, 2.63),
+        ),
+        source_url="https://www.rbnz.govt.nz/statistics/key-statistics/x",
+        captured_at_utc=now,
+    )
+    monkeypatch.setattr(cli, "fetch_ocr_series", lambda **kwargs: series)
+
+    exit_code = run(["--database", str(tmp_path / "empty.db"), "ocr"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "2.50%" in output
+    assert current_period in output
+    assert "2.98%" in output
+    assert "+25 bps" in output  # 3-month change: 2.50 vs 2.25
+    assert series.source_url in output
+
+
+def test_ocr_does_not_require_a_populated_database(tmp_path, capsys, monkeypatch):
+    """OCR is a separate data source; it must work even before any bank
+    collection has ever run against this database."""
+    from balance_pricing_engine.pricing_intelligence.rbnz import OcrObservation, OcrSeries
+
+    now = datetime.now(timezone.utc)
+    series = OcrSeries(
+        observations=(OcrObservation(_month_label(now, 1), 2.50, 2.98),),
+        source_url="https://www.rbnz.govt.nz/statistics/key-statistics/x",
+        captured_at_utc=now,
+    )
+    monkeypatch.setattr(cli, "fetch_ocr_series", lambda **kwargs: series)
+
+    database_path = tmp_path / "never-collected.db"
+    exit_code = run(["--database", str(database_path), "ocr"])
+
+    assert exit_code == 0
+    # A store-independent command must never create/migrate a database it
+    # will never touch, and must not require a read-only --database path to
+    # even be writable.
+    assert not database_path.exists()
+
+
+def test_ocr_reports_a_parser_error_without_a_traceback(tmp_path, capsys, monkeypatch):
+    from balance_pricing_engine.competitor_rates.collectors.base import ParserError
+
+    def broken(*args, **kwargs):
+        raise ParserError("the RBNZ page structure changed")
+
+    monkeypatch.setattr(cli, "fetch_ocr_series", broken)
+
+    exit_code = run(["--database", str(tmp_path / "empty.db"), "ocr"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert output.startswith("ERROR:")
+    assert "RBNZ page structure changed" in output
+
+
+def test_ocr_rejects_a_stale_series_instead_of_reporting_it(tmp_path, capsys, monkeypatch):
+    """The ocr command must apply the same currency check
+    resolve_cash_rate(RBNZ_OCR) applies before the pricing overlay would
+    accept a series -- it must not print a rate as "the current OCR" that
+    the pricing seam would reject as stale."""
+    from balance_pricing_engine.pricing_intelligence.rbnz import OcrObservation, OcrSeries
+
+    now = datetime.now(timezone.utc)
+    # ~220 days stale -- well past MAX_OCR_OBSERVATION_AGE_DAYS -- computed
+    # relative to now rather than a fixed calendar date, per
+    # test_no_wallclock_timebombs.
+    stale_series = OcrSeries(
+        observations=(OcrObservation((now - timedelta(days=220)).strftime("%b-%Y"), 5.50, 5.80),),
+        source_url="https://www.rbnz.govt.nz/statistics/key-statistics/x",
+        captured_at_utc=now,
+    )
+    monkeypatch.setattr(cli, "fetch_ocr_series", lambda **kwargs: stale_series)
+
+    exit_code = run(["--database", str(tmp_path / "empty.db"), "ocr"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert output.startswith("ERROR:")
+    assert "looks stale" in output
+
+
+def test_ocr_uses_the_collection_settings_loaded_from_config(tmp_path, capsys, monkeypatch):
+    """A --config's pricing_intelligence.collection settings (timeout,
+    retries, backoff, user agent) must reach the OCR fetch too -- store
+    independence is not fetch-configuration independence."""
+    from balance_pricing_engine.pricing_intelligence.rbnz import OcrObservation, OcrSeries
+
+    now = datetime.now(timezone.utc)
+    series = OcrSeries(
+        observations=(OcrObservation(_month_label(now, 1), 2.50, 2.98),),
+        source_url="https://www.rbnz.govt.nz/statistics/key-statistics/x",
+        captured_at_utc=now,
+    )
+    seen_configs = []
+
+    def fake_fetch_ocr_series(**kwargs):
+        seen_configs.append(kwargs.get("config"))
+        return series
+
+    monkeypatch.setattr(cli, "fetch_ocr_series", fake_fetch_ocr_series)
+
+    engine_config_path = tmp_path / "engine.yaml"
+    engine_config_path.write_text(
+        yaml.dump(
+            _minimal_engine_config(collection={"max_retries": 7, "retry_backoff_seconds": 3.5})
+        )
+    )
+
+    exit_code = run(["--config", str(engine_config_path), "ocr"])
+
+    assert exit_code == 0
+    assert len(seen_configs) == 1
+    assert seen_configs[0] is not None
+    assert seen_configs[0].max_retries == 7
+    assert seen_configs[0].retry_backoff_seconds == 3.5

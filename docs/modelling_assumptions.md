@@ -156,9 +156,120 @@ real bank faces a finite deposit market, liquidity and concentration limits, and
 a rising marginal cost of gathering deposits. Read the deposit volume as "the
 model would fund the book retail if it could", not as a raisable amount.
 
-### Still not recalibrated
+### Still not recalibrated (at the time)
 
 `cash_rate` (4.25%) and `wholesale_funding_spread` (1.2%) remain unverified.
 There is no RBNZ/OCR/swap-rate source in the engine yet, and guessing would be
 worse than leaving them explicit. This is the last unverified assumption in the
 funding curve.
+
+## Cash-rate correction (2026-09-03)
+
+The gap above was closed the same day it was written. `pricing_intelligence.rbnz`
+adds a live-verified NZ data source outside the bank collectors: the RBNZ's own
+published Official Cash Rate series
+(`pricing_intelligence/rbnz.py`, `python3 -m balance_pricing_engine.pricing_intelligence ocr`).
+
+Verified 2026-09-03 against
+[the RBNZ's exchange-rates-and-wholesale-interest-rates page](https://www.rbnz.govt.nz/statistics/key-statistics/exchange-rates-and-wholesale-interest-rates):
+the current OCR is **2.50%**, not the 4.25% `configs/base.yaml` had been carrying.
+A 175 bps gap -- larger than the loan or deposit anchor corrections above.
+
+| Parameter | Was | Now | Why |
+| --- | --- | --- | --- |
+| `market.cash_rate` | 0.0425 | 0.025 | 175 bps above the live-verified RBNZ OCR |
+
+### What this changed
+
+Correcting `cash_rate` alone moved the baseline recommendation materially --
+more than the earlier informal estimate of "~25 bps" suggested, because that
+estimate was taken in isolation against a *different* (pre-deposit-recalibration)
+baseline. Against the current calibration, the effect is structural, not
+marginal:
+
+| | Before | After |
+| --- | --- | --- |
+| Home loan rate | 6.39% | **6.19%** |
+| Term deposit rate | 4.00% | **4.05%** |
+| Objective | $4,065,058 | **$5,920,859** |
+| Loan volume | $311M | **$510M** |
+| Deposit volume | $312M | **$329M** |
+| Funding shortfall | $0 | **$2.6M** |
+| Wholesale funding cost | $0 | **$6.7M** |
+
+A lower cash rate makes wholesale funding cheaper relative to deposits. The
+optimiser responds by leaning on wholesale funding at the margin instead of
+paying up for the last increment of deposits: a funding shortfall and a
+wholesale funding cost both reappear, where the previous (overstated) cash
+rate had pushed the optimum to a deposit-only-funded corner that does not
+represent the real trade-off. See "Why deposits are raised to roughly 100% of
+the loan book" above -- that section's numbers are now stale in the same way
+the earlier sections were before their own corrections; the mechanism it
+describes still holds, just at the corrected cash rate.
+
+### What the cash-rate correction deliberately left alone
+
+- **`wholesale_funding_spread` (1.2%) was left untouched.** RBNZ also publishes
+  the 90-day bank bill rate alongside the OCR (2.98% as at Aug-2026, an implied
+  ~48 bps spread over the OCR) -- a useful corroborating data point, but not a
+  directly comparable benchmark for `wholesale_funding_spread`, which is meant
+  to represent a bank's broader/longer-duration wholesale funding cost
+  (covered bonds, term funding, issuance costs), not the 90-day bank-bill
+  spread specifically. Changing it without a genuinely comparable verified
+  source would be guessing, the same discipline applied to the loan and
+  deposit sides above.
+- **The correction is not scheduled or persisted.** Unlike bank rates, RBNZ's
+  own published series already carries its full monthly history back to 1999
+  in a single page load, so there is nothing to accumulate locally -- see
+  `pricing_intelligence/rbnz.py`'s module docstring. `market.cash_rate` in
+  `configs/base.yaml` is a config constant, not a live feed, so it will drift
+  stale again exactly as it did before; revisit it the same way whenever the
+  OCR moves materially. `strategy.apply_cash_rate_strategy_to_config()`
+  (`CashRateStrategy.MANUAL` default, `RBNZ_OCR` to source it live) exists
+  precisely so a scenario run can pull the current rate on demand without
+  needing `configs/base.yaml` to be edited by hand each time.
+- **`RBNZ_OCR` can lag an in-month OCR review.** The dashboard chart this reads
+  is explicitly labelled "(End of Month)": each row is the OCR that applied at
+  a given month's close, not a live "as of right now" figure. If the RBNZ
+  Monetary Policy Committee changes the OCR partway through a month, that
+  change is not reflected in this series until the new month itself closes and
+  RBNZ republishes the chart -- so a scenario run in the days after an in-month
+  decision can still pick up the pre-decision rate. `resolve_cash_rate()`
+  rejects an observation that is implausibly old (more than
+  `MAX_OCR_OBSERVATION_AGE_DAYS`, i.e. longer than a normal OCR review cycle
+  plus publish lag) as a stale/stalled fetch, and its `rationale` always names
+  the "as at" month so this is visible in any pricing memo -- but neither
+  catches a genuine in-month change that simply hasn't reached the EOM series
+  yet. Treat `RBNZ_OCR` output as "the OCR as at the last closed month," and
+  cross-check against RBNZ's own OCR review calendar before pricing off it in
+  the days immediately following a scheduled review.
+
+### A parsing lesson worth keeping
+
+The RBNZ page renders several charts as an accessibility companion to visual
+charts it draws with JavaScript: each has a data table with an identical
+`Date | series | series` column shape. An early parse of this data grabbed the
+first such table on the page and returned NZD/USD exchange-rate values (around
+0.55-0.60) as if they were the OCR -- a plausible-looking float in roughly the
+right numeric neighbourhood, silently wrong. The parser now anchors on the
+"Official Cash Rate" heading text and takes the table that follows it, not the
+first table matching the expected shape -- the same category of defect as the
+PIE-effective-rate and managed-fund rows found during term-deposit live
+verification: two data series sharing a table shape are not the same series,
+and only a semantic anchor (a heading, a label) tells them apart, not a
+numeric plausibility check.
+
+A second, related lesson (2026-09-04): the parse window used to start at the
+first literal occurrence of the substring `"chart__table"` after the heading,
+intending to land inside the table. On the live page that substring first
+appears inside the *header row's own* `class="chart__table-row"` attribute --
+after that row's opening `<tr class="`, truncating it out of the window
+entirely. The header row therefore never matched the row regex at all on a
+real page (only hand-written test fixtures, which added a `"chart__table"`
+marker ahead of the header specifically to route around this, ever exercised
+it) -- silently defeating both the header-skip logic and, once added, the
+column-order validation described above. The window now anchors on the
+literal `"<table"` tag instead, which always precedes every row inside it
+structurally. The general shape of the mistake: an anchor string chosen for
+convenience turned out to also appear *inside* the very row it was meant to
+keep intact.
