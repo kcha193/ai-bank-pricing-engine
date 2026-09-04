@@ -244,6 +244,91 @@ def test_an_unparsable_rate_in_the_newest_row_is_fatal():
         parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
 
 
+def test_a_missing_cell_on_the_newest_row_is_fatal():
+    """A malformed newest row must fail loud even when the defect is a wrong
+    cell count (a missing/extra cell), not just a bad rate value -- the
+    cell-count filter must not silently `continue` past it before the
+    newest-row guard gets a chance to run."""
+    html = """
+    <h2>Official Cash Rate (OCR)</h2>
+    <table>chart__table
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Date</td>
+        <td class="chart__table-data-cell">OCR</td>
+        <td class="chart__table-data-cell">90 day bank bill rate</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Aug-2026</td>
+        <td class="chart__table-data-cell">2.5</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Jul-2026</td>
+        <td class="chart__table-data-cell">2.5</td>
+        <td class="chart__table-data-cell">2.85</td>
+      </tr>
+    </table>
+    """
+
+    with pytest.raises(ParserError, match="the newest OCR row"):
+        parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
+
+
+def test_an_empty_period_on_the_newest_row_is_fatal():
+    html = """
+    <h2>Official Cash Rate (OCR)</h2>
+    <table>chart__table
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Date</td>
+        <td class="chart__table-data-cell">OCR</td>
+        <td class="chart__table-data-cell">90 day bank bill rate</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell"></td>
+        <td class="chart__table-data-cell">2.5</td>
+        <td class="chart__table-data-cell">2.98</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Jul-2026</td>
+        <td class="chart__table-data-cell">2.5</td>
+        <td class="chart__table-data-cell">2.85</td>
+      </tr>
+    </table>
+    """
+
+    with pytest.raises(ParserError, match="the newest OCR row"):
+        parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
+
+
+def test_a_missing_cell_on_an_older_row_is_skipped_not_fatal():
+    """The same wrong-cell-count defect on an *older* row must remain
+    non-fatal, matching the treatment already given to a bad rate value on
+    an older row."""
+    html = """
+    <h2>Official Cash Rate (OCR)</h2>
+    <table>chart__table
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Date</td>
+        <td class="chart__table-data-cell">OCR</td>
+        <td class="chart__table-data-cell">90 day bank bill rate</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Aug-2026</td>
+        <td class="chart__table-data-cell">2.5</td>
+        <td class="chart__table-data-cell">2.98</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Jul-2026</td>
+        <td class="chart__table-data-cell">2.5</td>
+      </tr>
+    </table>
+    """
+
+    series = parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
+
+    assert len(series.observations) == 1
+    assert series.current.period == "Aug-2026"
+
+
 def test_duplicate_periods_are_deduplicated_keeping_the_first():
     html = """
     <h2>Official Cash Rate (OCR)</h2>

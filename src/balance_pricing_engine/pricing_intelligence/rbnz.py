@@ -233,19 +233,49 @@ def parse_ocr_series(html: str, captured_at_utc: datetime) -> OcrSeries:
     observations: list[OcrObservation] = []
     seen_periods: set[str] = set()
     for row_match in _ROW_PATTERN.finditer(window):
-        cells = _CELL_PATTERN.findall(row_match.group(1))
-        if len(cells) != 3:
+        cells = [cell.strip() for cell in _CELL_PATTERN.findall(row_match.group(1))]
+        period = cells[0] if cells else ""
+
+        # The header row is the one row exempt from "this must be the current
+        # OCR" scrutiny below -- it is identified purely by its literal "Date"
+        # label, unconditionally, regardless of position or cell count, so a
+        # malformed/duplicated header can never itself be mistaken for a data
+        # row (and therefore can never trip the newest-row guard below).
+        if period == "Date":
             continue
-        period, ocr_text, bank_bill_text = (cell.strip() for cell in cells)
-        if period in ("Date", "") or period in seen_periods:
-            continue
+
         # The series is documented (and relied on by resolve_cash_rate) as
-        # newest-first: the first data row we accept *is* "the current OCR".
-        # An older row failing to parse is a one-off defect the rest of the
-        # table survives; the newest row failing means we cannot state the
-        # current OCR at all, and must not silently promote an older row into
-        # that role instead.
+        # newest-first: the first non-header row we reach *is* "the current
+        # OCR". An older row failing in any way -- wrong cell count, an empty
+        # period, an unparsable/implausible rate -- is a one-off defect the
+        # rest of the table survives; the newest row failing means we cannot
+        # state the current OCR at all, and must not silently promote an
+        # older row into that role instead. This check must run before *any*
+        # of the skip/continue branches below, not just the rate-parsing
+        # ones -- a malformed newest row (missing/extra cell, blank period)
+        # is exactly the case a silent `continue` would otherwise paper over.
         is_newest_row = not observations
+
+        if len(cells) != 3:
+            if is_newest_row:
+                raise ParserError(
+                    "the newest OCR row does not have the expected 3 cells "
+                    f"(found {len(cells)}); refusing to fall back to an "
+                    "older row as the current OCR"
+                )
+            continue
+
+        _, ocr_text, bank_bill_text = cells
+
+        if period == "" or period in seen_periods:
+            if is_newest_row:
+                raise ParserError(
+                    "the newest OCR row has an empty or unexpectedly "
+                    f"repeated period ({period!r}); refusing to fall back "
+                    "to an older row as the current OCR"
+                )
+            continue
+
         try:
             ocr_pct = float(ocr_text)
         except ValueError as exc:
