@@ -108,6 +108,58 @@ def test_heading_with_no_following_table_raises():
         parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
 
 
+def test_swapped_ocr_and_bank_bill_columns_are_rejected():
+    """Data rows carry no column label of their own -- they're parsed by
+    position against the header. If RBNZ ever swapped the OCR and 90-day
+    bank-bill columns while keeping the same heading and 3-cell shape, both
+    values would still pass the plausibility band, so the swap must be
+    caught here rather than silently overlaying the bank-bill rate into
+    pricing as if it were the OCR."""
+    html = """
+    <h2>Official Cash Rate (OCR)</h2>
+    <table>chart__table
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Date</td>
+        <td class="chart__table-data-cell">90 day bank bill rate</td>
+        <td class="chart__table-data-cell">OCR</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Aug-2026</td>
+        <td class="chart__table-data-cell">2.98</td>
+        <td class="chart__table-data-cell">2.5</td>
+      </tr>
+    </table>
+    """
+
+    with pytest.raises(ParserError, match="not in the expected order"):
+        parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
+
+
+def test_an_unrecognised_column_header_is_rejected():
+    """A header that doesn't look like either OCR or bank-bill in its data
+    columns (e.g. a page redesign that renamed both) must fail loud rather
+    than silently parse by position against labels it never actually
+    confirmed."""
+    html = """
+    <h2>Official Cash Rate (OCR)</h2>
+    <table>chart__table
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Date</td>
+        <td class="chart__table-data-cell">Series A</td>
+        <td class="chart__table-data-cell">Series B</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Aug-2026</td>
+        <td class="chart__table-data-cell">2.5</td>
+        <td class="chart__table-data-cell">2.98</td>
+      </tr>
+    </table>
+    """
+
+    with pytest.raises(ParserError, match="not in the expected order"):
+        parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
+
+
 def test_a_table_with_no_plausible_rows_raises():
     """The sole data row is also the newest row, so this now surfaces through
     the newest-row guard rather than the (now practically unreachable except

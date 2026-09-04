@@ -84,6 +84,27 @@ def _shift_year_month(year: int, month: int, delta_months: int) -> tuple[int, in
     return total_months // 12, total_months % 12 + 1
 
 
+#: Substrings (case-insensitive) the OCR and 90-day-bank-bill header cells
+#: are expected to contain, in that column order -- see the header-label
+#: check in :func:`parse_ocr_series`.
+_OCR_COLUMN_LABEL_HINT = "ocr"
+_BANK_BILL_COLUMN_LABEL_HINT = "bank bill"
+
+
+def _header_matches_expected_column_order(header_cells: list[str]) -> bool:
+    """Whether a 3-cell header row has OCR in column 2 and the 90-day bank
+    bill rate in column 3, the order every row below is parsed by position
+    against. Data rows carry no column label of their own -- if RBNZ ever
+    reordered these two columns while keeping the same heading and 3-cell
+    shape, both values still pass the plausibility band, so a swap would
+    otherwise silently overlay the bank-bill rate into pricing as if it were
+    the OCR."""
+    if len(header_cells) != 3:
+        return False
+    ocr_column, bank_bill_column = header_cells[1].lower(), header_cells[2].lower()
+    return _OCR_COLUMN_LABEL_HINT in ocr_column and _BANK_BILL_COLUMN_LABEL_HINT in bank_bill_column
+
+
 @dataclass(frozen=True)
 class OcrObservation:
     """One month's published OCR, with the corroborating 90-day bank bill rate."""
@@ -240,8 +261,21 @@ def parse_ocr_series(html: str, captured_at_utc: datetime) -> OcrSeries:
         # OCR" scrutiny below -- it is identified purely by its literal "Date"
         # label, unconditionally, regardless of position or cell count, so a
         # malformed/duplicated header can never itself be mistaken for a data
-        # row (and therefore can never trip the newest-row guard below).
+        # row (and therefore can never trip the newest-row guard below). But
+        # every row after it is parsed by column *position*, not by label, so
+        # a header this parser is willing to accept must actually confirm
+        # that position: a 3-cell header is fatal, not skippable, if its
+        # columns aren't (OCR, 90-day bank bill) in that order -- both values
+        # are plausible-looking percentages, so a swap would otherwise be
+        # invisible to the plausibility check below.
         if period == "Date":
+            if len(cells) == 3 and not _header_matches_expected_column_order(cells):
+                raise ParserError(
+                    "the OCR table's columns are not in the expected order "
+                    "(OCR, then 90-day bank bill rate); found headers "
+                    f"{cells[1]!r}, {cells[2]!r} -- refusing to parse data "
+                    "rows by position against a header that doesn't match"
+                )
             continue
 
         # The series is documented (and relied on by resolve_cash_rate) as
