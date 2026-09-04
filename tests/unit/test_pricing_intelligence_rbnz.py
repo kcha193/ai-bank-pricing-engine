@@ -329,6 +329,68 @@ def test_a_missing_cell_on_an_older_row_is_skipped_not_fatal():
     assert series.current.period == "Aug-2026"
 
 
+def test_a_malformed_period_label_on_an_older_row_is_skipped_not_fatal():
+    """A period that doesn't parse as month-year (e.g. a space instead of a
+    dash) must not be retained: change_bps() calls _parse_period() on every
+    retained observation, so one bad older row would otherwise raise a raw
+    ValueError and fail the whole ocr command even when the current row and
+    the requested comparison month are both fine."""
+    html = """
+    <h2>Official Cash Rate (OCR)</h2>
+    <table>chart__table
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Date</td>
+        <td class="chart__table-data-cell">OCR</td>
+        <td class="chart__table-data-cell">90 day bank bill rate</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Aug-2026</td>
+        <td class="chart__table-data-cell">2.5</td>
+        <td class="chart__table-data-cell">2.98</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Jul 2026</td>
+        <td class="chart__table-data-cell">2.5</td>
+        <td class="chart__table-data-cell">2.85</td>
+      </tr>
+    </table>
+    """
+
+    series = parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
+
+    assert len(series.observations) == 1
+    assert series.current.period == "Aug-2026"
+    # The malformed row must not have slipped through and later broken
+    # change_bps() on some other observation's lookup.
+    assert series.change_bps(months_back=1) is None
+
+
+def test_a_malformed_period_label_on_the_newest_row_is_fatal():
+    html = """
+    <h2>Official Cash Rate (OCR)</h2>
+    <table>chart__table
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Date</td>
+        <td class="chart__table-data-cell">OCR</td>
+        <td class="chart__table-data-cell">90 day bank bill rate</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Aug 2026</td>
+        <td class="chart__table-data-cell">2.5</td>
+        <td class="chart__table-data-cell">2.98</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Jul-2026</td>
+        <td class="chart__table-data-cell">2.5</td>
+        <td class="chart__table-data-cell">2.85</td>
+      </tr>
+    </table>
+    """
+
+    with pytest.raises(ParserError, match="the newest OCR row"):
+        parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
+
+
 def test_duplicate_periods_are_deduplicated_keeping_the_first():
     html = """
     <h2>Official Cash Rate (OCR)</h2>

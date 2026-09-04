@@ -107,6 +107,22 @@ def test_rbnz_ocr_accepts_an_observation_within_the_normal_publish_lag():
     assert resolved.rate_pct == 2.50
 
 
+def test_rbnz_ocr_rejects_a_future_dated_observation():
+    """A negative observation age (the newest period ends after the fetch
+    timestamp) means the series is malformed -- bad markup, a partial chart
+    update, or an accidentally included projection row -- not a genuinely
+    current reading. The staleness check alone (an upper bound) would not
+    catch this, since a negative age is always <= MAX_OCR_OBSERVATION_AGE_DAYS."""
+    future_dated = OcrSeries(
+        observations=(OcrObservation("Dec-2026", 3.00, 3.25),),
+        source_url="https://www.rbnz.govt.nz/statistics/key-statistics/x",
+        captured_at_utc=CAPTURED_AT,  # 2026-09-03, before Dec-2026 even starts
+    )
+
+    with pytest.raises(MarketStrategyError, match="ends after this fetch"):
+        resolve_cash_rate(CashRateStrategy.RBNZ_OCR, ocr_series=future_dated)
+
+
 def test_strategy_accepts_a_plain_string(ocr_series):
     assert resolve_cash_rate("RBNZ_OCR", ocr_series=ocr_series).rate_pct == 2.50
 

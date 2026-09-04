@@ -276,6 +276,23 @@ def parse_ocr_series(html: str, captured_at_utc: datetime) -> OcrSeries:
                 )
             continue
 
+        # Every retained period must parse -- change_bps() calls
+        # _parse_period() on every observation, including older ones, so a
+        # malformed but nonempty label here (e.g. "Jul 2026" instead of
+        # "Jul-2026") would otherwise slip past this filter, get appended,
+        # and later blow up change_bps() with a raw ValueError even when the
+        # current row and the requested comparison month are both fine.
+        try:
+            _parse_period(period)
+        except ValueError:
+            if is_newest_row:
+                raise ParserError(
+                    "the newest OCR row has a period that doesn't match the "
+                    f"expected month-year format ({period!r}); refusing to "
+                    "fall back to an older row as the current OCR"
+                ) from None
+            continue
+
         try:
             ocr_pct = float(ocr_text)
         except ValueError as exc:

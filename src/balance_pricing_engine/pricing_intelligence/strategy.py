@@ -372,6 +372,13 @@ def resolve_cash_rate(
         raise MarketStrategyError(f"{strategy.value} requires an OCR series")
     current = ocr_series.current
     observation_age_days = (ocr_series.captured_at_utc - _ocr_period_end(current.period)).days
+    if observation_age_days < 0:
+        raise MarketStrategyError(
+            f"{strategy.value}: the newest OCR observation is for {current.period}, which "
+            f"ends after this fetch ({ocr_series.captured_at_utc:%Y-%m-%d}) -- a future-dated "
+            "observation means the series is malformed (bad markup, a partial chart update, "
+            "or an included projection row), not a genuinely current reading"
+        )
     if observation_age_days > MAX_OCR_OBSERVATION_AGE_DAYS:
         raise MarketStrategyError(
             f"{strategy.value}: the newest OCR observation is for {current.period}, "
