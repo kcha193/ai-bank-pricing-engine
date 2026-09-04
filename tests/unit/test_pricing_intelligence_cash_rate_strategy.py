@@ -68,6 +68,45 @@ def test_rbnz_ocr_requires_a_series():
         resolve_cash_rate(CashRateStrategy.RBNZ_OCR)
 
 
+def test_rbnz_ocr_rationale_flags_the_end_of_month_lag(ocr_series):
+    """The dashboard series is a month-end snapshot, so a mid-month OCR
+    review is not guaranteed to be reflected yet -- the rationale must make
+    that limitation visible rather than implying the rate is live."""
+    resolved = resolve_cash_rate(CashRateStrategy.RBNZ_OCR, ocr_series=ocr_series)
+
+    assert "End of Month" in resolved.rationale
+    assert "may not yet reflect" in resolved.rationale
+
+
+def test_rbnz_ocr_rejects_a_series_that_has_not_been_refreshed_in_time():
+    """An observation dramatically older than one OCR review cycle means the
+    fetch didn't actually pick up a current series (e.g. a stalled page) --
+    that must fail loud, not silently price off a rate that could already be
+    multiple OCR reviews stale."""
+    stale_series = OcrSeries(
+        observations=(OcrObservation("Jan-2026", 5.50, 5.80),),
+        source_url="https://www.rbnz.govt.nz/statistics/key-statistics/x",
+        captured_at_utc=CAPTURED_AT,  # 2026-09-03: ~215 days after Jan-2026 closed
+    )
+
+    with pytest.raises(MarketStrategyError, match="looks stale"):
+        resolve_cash_rate(CashRateStrategy.RBNZ_OCR, ocr_series=stale_series)
+
+
+def test_rbnz_ocr_accepts_an_observation_within_the_normal_publish_lag():
+    """A freshly-closed month, captured within the ordinary end-of-month
+    publish delay, must not be rejected as stale."""
+    just_published = OcrSeries(
+        observations=(OcrObservation("Aug-2026", 2.50, 2.98),),
+        source_url="https://www.rbnz.govt.nz/statistics/key-statistics/x",
+        captured_at_utc=datetime(2026, 9, 10, tzinfo=timezone.utc),  # 10 days after Aug closed
+    )
+
+    resolved = resolve_cash_rate(CashRateStrategy.RBNZ_OCR, ocr_series=just_published)
+
+    assert resolved.rate_pct == 2.50
+
+
 def test_strategy_accepts_a_plain_string(ocr_series):
     assert resolve_cash_rate("RBNZ_OCR", ocr_series=ocr_series).rate_pct == 2.50
 

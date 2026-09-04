@@ -228,6 +228,21 @@ describes still holds, just at the corrected cash rate.
   (`CashRateStrategy.MANUAL` default, `RBNZ_OCR` to source it live) exists
   precisely so a scenario run can pull the current rate on demand without
   needing `configs/base.yaml` to be edited by hand each time.
+- **`RBNZ_OCR` can lag an in-month OCR review.** The dashboard chart this reads
+  is explicitly labelled "(End of Month)": each row is the OCR that applied at
+  a given month's close, not a live "as of right now" figure. If the RBNZ
+  Monetary Policy Committee changes the OCR partway through a month, that
+  change is not reflected in this series until the new month itself closes and
+  RBNZ republishes the chart -- so a scenario run in the days after an in-month
+  decision can still pick up the pre-decision rate. `resolve_cash_rate()`
+  rejects an observation that is implausibly old (more than
+  `MAX_OCR_OBSERVATION_AGE_DAYS`, i.e. longer than a normal OCR review cycle
+  plus publish lag) as a stale/stalled fetch, and its `rationale` always names
+  the "as at" month so this is visible in any pricing memo -- but neither
+  catches a genuine in-month change that simply hasn't reached the EOM series
+  yet. Treat `RBNZ_OCR` output as "the OCR as at the last closed month," and
+  cross-check against RBNZ's own OCR review calendar before pricing off it in
+  the days immediately following a scheduled review.
 
 ### A parsing lesson worth keeping
 

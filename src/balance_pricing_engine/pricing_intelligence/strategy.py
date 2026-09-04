@@ -12,8 +12,9 @@ scenario, config file, and test keeps its current behaviour.
 
 from __future__ import annotations
 
+import calendar
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -309,6 +310,27 @@ class CashRateStrategy(str, Enum):
         return self.value
 
 
+# RBNZ's Monetary Policy Committee reviews the OCR roughly every six weeks
+# (seven times a year), and the dashboard's "End of Month" series is normally
+# refreshed within the first couple of weeks of the following month -- so the
+# newest observation is ordinarily well under a month old by the time it is
+# fetched. A gap much larger than that means the fetch didn't actually pick up
+# a current series (a stalled page, a parser that silently stopped updating),
+# and pricing off it would carry a rate that could already be one or more OCR
+# reviews out of date without any signal that it happened.
+MAX_OCR_OBSERVATION_AGE_DAYS = 70
+
+
+def _ocr_period_end(period: str) -> datetime:
+    """The last calendar day of an ``OcrObservation.period`` (e.g. "Aug-2026")."""
+    try:
+        month_start = datetime.strptime(period, "%b-%Y").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise MarketStrategyError(f"could not parse OCR observation period {period!r}") from exc
+    last_day = calendar.monthrange(month_start.year, month_start.month)[1]
+    return month_start.replace(day=last_day)
+
+
 @dataclass(frozen=True)
 class ResolvedCashRateAssumption:
     """A cash-rate assumption plus the evidence behind it."""
@@ -348,12 +370,24 @@ def resolve_cash_rate(
     if ocr_series is None:
         raise MarketStrategyError(f"{strategy.value} requires an OCR series")
     current = ocr_series.current
+    observation_age_days = (ocr_series.captured_at_utc - _ocr_period_end(current.period)).days
+    if observation_age_days > MAX_OCR_OBSERVATION_AGE_DAYS:
+        raise MarketStrategyError(
+            f"{strategy.value}: the newest OCR observation is for {current.period}, "
+            f"{observation_age_days} days before this fetch "
+            f"({ocr_series.captured_at_utc:%Y-%m-%d}) -- RBNZ's End-of-Month series looks "
+            "stale (unrefreshed for longer than an OCR review cycle); verify against RBNZ's "
+            "own OCR announcements before pricing off this feed"
+        )
     return ResolvedCashRateAssumption(
         strategy=strategy,
         cash_rate=round(current.ocr_pct / 100, 8),
         rate_pct=current.ocr_pct,
         as_of_period=current.period,
-        rationale=f"RBNZ Official Cash Rate as at {current.period}",
+        rationale=(
+            f"RBNZ Official Cash Rate as at {current.period} (End of Month reading -- may "
+            "not yet reflect an OCR review decided after that month closed)"
+        ),
     )
 
 
