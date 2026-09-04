@@ -574,6 +574,34 @@ def test_fetch_ocr_series_accepts_a_string_or_bytes_fetcher_result():
     assert series_bytes.current.ocr_pct == series_str.current.ocr_pct == 2.5
 
 
+def test_fetch_ocr_series_honours_a_falsey_injected_fetcher():
+    """A caller-supplied fetcher that happens to be falsey (e.g. a callable
+    test double implementing __len__ and currently empty) must still be
+    used -- `fetcher or (...)` would otherwise discard it and silently build
+    the live browser fetcher instead, which could contact RBNZ or fail on
+    the optional playwright dependency despite an explicit fetcher having
+    been supplied."""
+
+    class FalseyFetcher:
+        def __init__(self):
+            self.calls = []
+
+        def __len__(self):
+            return 0  # bool(self) is False
+
+        def __call__(self, url):
+            self.calls.append(url)
+            return FIXTURE.encode("utf-8")
+
+    falsey_fetcher = FalseyFetcher()
+    assert not falsey_fetcher
+
+    series = fetch_ocr_series(fetcher=falsey_fetcher, captured_at_utc=CAPTURED_AT)
+
+    assert falsey_fetcher.calls == [OCR_SOURCE_URL]
+    assert series.current.ocr_pct == 2.5
+
+
 def test_ocr_observation_is_a_plain_immutable_value():
     obs = OcrObservation(period="Aug-2026", ocr_pct=2.5, bank_bill_90d_pct=2.98)
 

@@ -218,10 +218,18 @@ def fetch_ocr_series(
     explicit ``fetcher`` in tests to avoid both the network and a browser.
     """
     config = config or CollectionConfig()
-    resolved_fetcher = fetcher or (
-        build_dashboard_browser_fetcher(config)
-        if render_javascript
-        else build_default_fetcher(config)
+    # `fetcher or (...)` would discard a caller-supplied fetcher that happens
+    # to be falsey (e.g. a callable test double implementing `__len__` and
+    # currently empty) and silently build the live browser fetcher instead --
+    # `is None` is the only correct test for "no fetcher was supplied".
+    resolved_fetcher = (
+        fetcher
+        if fetcher is not None
+        else (
+            build_dashboard_browser_fetcher(config)
+            if render_javascript
+            else build_default_fetcher(config)
+        )
     )
     captured_at_utc = captured_at_utc or datetime.now(timezone.utc)
 
