@@ -63,9 +63,16 @@ _OCR_HEADING_ANCHOR = "Official Cash Rate"
 MIN_PLAUSIBLE_OCR_PCT = 0.0
 MAX_PLAUSIBLE_OCR_PCT = 10.0
 
-_ROW_PATTERN = re.compile(
-    r'<tr class="chart__table-row">(.*?)</tr>', re.DOTALL
-)
+# Matches any <tr ...> structurally, not the literal class="chart__table-row"
+# attribute value: a row that gained an extra class or attribute (e.g. a
+# "--latest" modifier class highlighting the newest reading) would otherwise
+# fail to match this regex at all, silently vanishing from the loop below --
+# none of the newest-row guards in parse_ocr_series() get a chance to run on
+# a row that never entered the loop in the first place, so the row after it
+# would be promoted to "current" with nothing to signal the substitution.
+# The window this runs against is already tightly bounded to one chart's
+# table (see parse_ocr_series), so matching every <tr> inside it is safe.
+_ROW_PATTERN = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.DOTALL)
 _CELL_PATTERN = re.compile(r"<t[dh][^>]*>([^<]*)</t[dh]>")
 
 #: Format of ``OcrObservation.period`` as RBNZ labels it, e.g. "Aug-2026".

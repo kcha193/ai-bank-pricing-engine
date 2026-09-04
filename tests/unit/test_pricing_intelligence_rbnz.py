@@ -65,6 +65,42 @@ def test_the_header_row_is_captured_without_a_marker_workaround():
     assert series.current.ocr_pct == 2.5
 
 
+def test_a_row_with_an_extra_class_or_attribute_still_matches():
+    """The row regex must match structurally, not on the exact literal
+    class="chart__table-row" attribute value. If the newest row gained an
+    extra modifier class (e.g. highlighting it as the latest reading) or any
+    other attribute while older rows kept the plain markup, a regex that
+    required that exact string would fail to match the newest row at all --
+    it would never enter the parse loop, so none of the newest-row guards
+    get a chance to run, and the row after it would be silently promoted to
+    `current` instead."""
+    html = """
+    <h2>Official Cash Rate (OCR)</h2>
+    <table>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Date</td>
+        <td class="chart__table-data-cell">OCR</td>
+        <td class="chart__table-data-cell">90 day bank bill rate</td>
+      </tr>
+      <tr class="chart__table-row chart__table-row--latest" data-latest="true">
+        <td class="chart__table-data-cell">Aug-2026</td>
+        <td class="chart__table-data-cell">2.5</td>
+        <td class="chart__table-data-cell">2.98</td>
+      </tr>
+      <tr class="chart__table-row">
+        <td class="chart__table-data-cell">Jul-2026</td>
+        <td class="chart__table-data-cell">2.5</td>
+        <td class="chart__table-data-cell">2.85</td>
+      </tr>
+    </table>
+    """
+
+    series = parse_ocr_series(html, captured_at_utc=CAPTURED_AT)
+
+    assert series.current.period == "Aug-2026"
+    assert len(series.observations) == 2
+
+
 def test_extraction_stops_before_the_next_chart():
     """Rows from the chart after OCR (Real TWI) must not leak in."""
     series = parse_ocr_series(FIXTURE, captured_at_utc=CAPTURED_AT)
