@@ -8,6 +8,7 @@ import sqlite3
 
 import streamlit as st
 
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.config import EngineConfig
 from balance_pricing_engine.diagnostics import run_sensitivity_analysis
 from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
@@ -97,7 +98,7 @@ def _render_market_intelligence() -> None:
         config=intelligence_config, store=ObservationStore(database_path)
     ) as service:
         snapshot = service.get_market_snapshot()
-        last_run = service.store.latest_run_id()
+        last_run = service.store.latest_run_id(product_type=ProductType.HOME_LOAN)
         last_run_at = service.store.get_run_started_at(last_run) if last_run else None
         health = build_freshness_frame(
             service.store.get_current_observations(), intelligence_config.selected_banks,
