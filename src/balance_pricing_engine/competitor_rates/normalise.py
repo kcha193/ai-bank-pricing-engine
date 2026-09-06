@@ -142,13 +142,44 @@ _LOW_EQUITY_PATTERN = re.compile(
     re.I,
 )
 
+#: A negation cue anywhere in the same clause before a _LOW_EQUITY_PATTERN
+#: match reverses its meaning: "not less than 20% equity" states a minimum
+#: was met (standard), not that it was missed (low-equity), and "no longer
+#: available for LVR above 80%" excludes low-equity borrowers rather than
+#: describing one. Checked only within the current clause (see
+#: _is_low_equity()), not the whole string, so an unrelated negation in an
+#: earlier sentence of a longer disclosure cannot suppress a genuine
+#: low-equity phrase.
+_LOW_EQUITY_NEGATION_PATTERN = re.compile(
+    r"\bnot\b|\bno\s+longer\b|\bunavailable\b|\bexcludes?\b|\bdoes\s+not\b",
+    re.I,
+)
+
+
+def _is_low_equity(text: str) -> bool:
+    """Whether ``text`` genuinely describes a low-equity/high-LVR condition.
+
+    A negation earlier in the same clause reverses the matched phrase's
+    meaning, so a parser blind to it would classify the *opposite*
+    condition as low-equity -- a wording-only edit (e.g. "at least 20%
+    equity" to "not less than 20% equity") would then emit a false
+    ELIGIBILITY_CHANGE describing the reversed condition rather than
+    leaving eligibility unchanged.
+    """
+    match = _LOW_EQUITY_PATTERN.search(text)
+    if match is None:
+        return False
+    clause_start = max(text.rfind(".", 0, match.start()), text.rfind(";", 0, match.start())) + 1
+    preceding = text[clause_start : match.start()]
+    return not _LOW_EQUITY_NEGATION_PATTERN.search(preceding)
+
 
 def normalise_lvr_condition(label: str | None) -> str:
     """Map common mortgage LVR/equity disclosures to canonical labels."""
     if not label:
         return "standard"
     text = label.lower()
-    if _LOW_EQUITY_PATTERN.search(text):
+    if _is_low_equity(text):
         return "low_equity_margin_applies"
     if "20%" in text and "equity" in text:
         return "min_20_percent_equity"
@@ -245,7 +276,7 @@ def normalise_lvr_values(text: str | None) -> tuple[float | None, float | None]:
 
     # These fields express upper LVR/lower equity bounds only. A low-equity
     # upper bound cannot be stored here without reversing its meaning.
-    if _LOW_EQUITY_PATTERN.search(text):
+    if _is_low_equity(text):
         return None, None
 
     lvr_match = _LVR_PATTERN.search(text) or _LVR_PATTERN_PREFIXED.search(text)

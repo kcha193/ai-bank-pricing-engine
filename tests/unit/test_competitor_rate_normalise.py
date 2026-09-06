@@ -4,6 +4,7 @@ from balance_pricing_engine.competitor_rates.normalise import (
     normalise_balance,
     normalise_frequency,
     normalise_lvr_condition,
+    normalise_lvr_values,
     normalise_term,
 )
 
@@ -100,6 +101,42 @@ def test_normalise_frequency_combines_a_genuine_multi_option_choice(label, expec
 )
 def test_normalise_lvr_condition_maps_common_mortgage_conditions(label, expected):
     assert normalise_lvr_condition(label) == expected
+
+
+@pytest.mark.parametrize(
+    ("label", "expected"),
+    [
+        ("not less than 20% equity", "min_20_percent_equity"),
+        ("unavailable for LVR above 80%", "standard"),
+        ("does not apply to LVR above 80%", "standard"),
+        ("no longer available for LVR above 80%", "standard"),
+        ("excludes LVR above 80%", "standard"),
+    ],
+)
+def test_normalise_lvr_condition_respects_negation_before_a_low_equity_phrase(label, expected):
+    """A negation immediately before a low-equity phrase reverses its
+    meaning -- "not less than 20% equity" states a minimum was met
+    (standard), not missed (low-equity). Without this, a wording-only edit
+    from "at least 20% equity" to "not less than 20% equity" would flip
+    rate_category/lvr_condition and read as a genuine eligibility change."""
+    assert normalise_lvr_condition(label) == expected
+
+
+def test_normalise_lvr_values_of_a_genuine_low_equity_phrase_is_unknown():
+    """max_lvr/min_equity express upper LVR/lower equity bounds only -- a
+    low-equity upper bound would invert their meaning if stored, so a
+    genuine low-equity phrase must resolve to (None, None), not fabricate a
+    reversed bound."""
+    assert normalise_lvr_values("less than 20% equity") == (None, None)
+    assert normalise_lvr_values("LVR above 80%") == (None, None)
+
+
+def test_normalise_lvr_values_respects_negation_before_a_low_equity_phrase():
+    """The same negation-blindness bug applies here: "not less than 20%
+    equity" states a genuine 20%-equity minimum, so it must resolve to the
+    normal (max_lvr, min_equity) pair instead of being discarded as
+    low-equity."""
+    assert normalise_lvr_values("not less than 20% equity") == (0.8, 0.2)
 
 
 def test_normalise_balance_extracts_currency_amounts():
