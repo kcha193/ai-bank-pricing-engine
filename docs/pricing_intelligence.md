@@ -355,9 +355,9 @@ python3 examples/run_market_intelligence_scenarios.py --term 12
    Scenario                  Competitor   Our rate       Objective        vs A
 ------------------------------------------------------------------------------
 A  No change (manual)             4.99%      6.19%      $5,920,859          $0
-B  Match market median            4.99%      6.19%      $5,920,859          $0
-C  Match market leader            4.95%      6.15%      $5,826,903    $-93,956
-D  Market leader -5 bps           4.90%      6.15%      $5,718,761   $-202,099
+B  Median assumption              4.99%      6.19%      $5,920,859          $0
+C  Leader assumption              4.95%      6.15%      $5,826,903    $-93,956
+D  Leader -5 assumption           4.90%      6.15%      $5,718,761   $-202,099
 ```
 
 Scenario E -- the economically optimal price -- is the `Our rate` column: the
@@ -369,7 +369,9 @@ A and B coincide here because `configs/base.yaml` was recalibrated on
 2026-08-26 so its manual competitor default *is* the verified market median.
 Before that recalibration the manual default was 6.75% -- 176 bps above the real
 market -- and A diverged wildly from every market-derived scenario. That the two
-now agree is the point: the manual assumption is no longer silently stale.
+agree in this dated example does not keep the manual assumption current.
+Recheck it against a fresh snapshot before each analysis. These scenarios shift
+the competitor assumption; they do not force our customer rate to match it.
 
 The recommended rate sits above the market because the optimiser maximises
 unconstrained risk-adjusted profit. It models no competitive reaction and no
@@ -382,7 +384,7 @@ strategic constraints this engine does not represent. See
 
 ```bash
 python3 -m pip install -e ".[dashboard]"
-streamlit run scripts/streamlit_dashboard.py
+streamlit run src/balance_pricing_engine/dashboard/app.py
 ```
 
 The **NZ market intelligence** section renders above the scenario runner, so the
@@ -655,9 +657,11 @@ git-ignored. They are diagnostic material, not a permanent archive.
 - **Advertised rates are not negotiated rates.** Every NZ bank discounts off
   carded rates for individual customers. Nothing here observes what customers
   actually pay.
-- **Collectors are live-verified as of 2026-08-25, and require JavaScript
+- **Mortgage advertised values and tiers were independently reverified on
+  2026-09-06; eligibility extraction remains incomplete. They require JavaScript
   rendering.** All five were run against the live official pages with
-  `--render-javascript` and their parsed values checked field by field. The
+  `--render-javascript` and their rates, terms and current table headers checked.
+  See the [independent audit](audits/2026-09-06-pricing-intelligence-audit.md). The
   static-HTML path returns `ParserError` for every bank: the rate tables are
   built client-side, so live collection needs the `browser` extra. A live run is
   a point-in-time check, not a standing guarantee -- re-verify after any bank
@@ -665,10 +669,11 @@ git-ignored. They are diagnostic material, not a permanent archive.
 - **Rate-tier categorisation is per-bank knowledge.** Live pages put "Special"
   in the table *heading*, not in each row, so rows arrive as bare
   `6 month | 4.79% p.a.` with no tier word. What an unmarked row means differs
-  by bank -- for ASB and BNZ it is the special tier, for Westpac it is the
-  carded rate -- so each collector declares `default_fixed_category`. This
-  cannot be inferred generically, and getting it wrong silently drops banks from
-  the market comparison.
+  by bank. ASB uses a special heading; Westpac unmarked rows are carded.
+  BNZ's current explicit Standard header overrides its historical Classic/special
+  fallback. Therefore BNZ is collected but excluded from the default special
+  snapshot. Each collector declares `default_fixed_category`; header changes
+  require review because a plausible rate alone does not establish its tier.
 - **Not all advertised mortgage rates are comparable.** Subsidised green/top-up
   lending (ANZ Good Energy, ASB Better Homes, both at 1.00%), bridging finance
   (ANZ Tideover), and products closed to new applications (ASB Back My Build)
@@ -676,11 +681,14 @@ git-ignored. They are diagnostic material, not a permanent archive.
   the `non_comparable` category -- retained for audit, fenced out of every
   market statistic, since a subsidised 1.00% rate would wreck any median it
   reached.
-- **Bank pages change.** A collector will eventually break. It will report
-  `FAILED`, not invent numbers.
+- **Bank pages change.** Zero recognised rates produces `FAILED`, but a parser
+  can also return plausible, wrongly classified rates with `SUCCESS`. Review
+  coverage, table headers and source evidence after any redesign.
 - **Promotional eligibility matters.** A market-leading rate may require 20%
-  equity, a salary credit, or new lending only. These are captured where
-  published, but a rate comparison is not an eligibility comparison.
+  equity, a salary credit, or new lending only. Row/header conditions are
+  captured where recognised; page footnotes can be missed. The audit found
+  ANZ salary-credit conditions and Kiwibank special-scheme exceptions absent
+  from canonical eligibility. Verify the full source conditions before use.
 - **Rate-category comparisons must be like for like.** Snapshots default to
   `special`, since front-book competition is fought there. Comparing a special
   against a standard rate is meaningless.
@@ -723,3 +731,34 @@ python3 -m pytest tests/unit/test_pricing_intelligence_*.py -q
 No test touches a live bank website. Collection is exercised through saved HTML
 fixtures via the `fixture_fetcher` conftest fixture, which can inject network
 failures, page mutations, and unparseable pages.
+
+
+## Audit hardening and operating limits (2026-09-06)
+
+- `our_bank` excludes that bank from market-derived pricing benchmarks and
+  competitive-position features. The public market grid still includes it.
+  With no external peers, market strategies error. `MANUAL` still returns the
+  original config object unchanged.
+- Repeating a suspicious rate is not independent confirmation. Readings remain
+  quarantined against the last trusted state; their historical change events
+  remain flagged. A clean recovery compares against the trusted rate, not the
+  parser spike. There is no reviewed operator approval workflow yet. Use an
+  explicitly verified manual assumption when a genuine large move needs review.
+- Existing stores may contain values auto-confirmed by earlier code. This fix
+  prevents new automatic confirmations; it cannot certify old history. Review
+  suspicious periods against source evidence before relying on them.
+- New collections must be chronological per product. Existing numeric-only
+  mortgage product names (a former rate-first parsing defect) are repaired on
+  store opening; associated historical events remain available but are flagged
+  suspicious. Back up an existing database before its first opening after upgrade.
+- The dashboard exposes observation age, freshness, quarantine and incomplete
+  confirmation in the latest stored run. A completely failed collection creates
+  no observation run, so this view cannot reveal every failed attempt. Monitor
+  scheduled-run summaries and all nonzero exit codes independently.
+- Daily unattended operation still needs persistent attempt/collector health,
+  configured notifications for partial failure (the canary now fails visibly),
+  a whole-job timeout, a reviewed quarantine process and backup/retention policy.
+  HTTP retry limits alone are not a wall-clock guarantee for a browser run.
+- Raw HTML is retained for parser diagnostics, under ignored `data/raw/` paths;
+  no automatic retention policy is implemented. Live evidence is a dated check,
+  not an assurance that tomorrow's page has the same meaning.

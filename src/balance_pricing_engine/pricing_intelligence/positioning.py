@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
+import math
 from statistics import fmean, median
 from typing import Optional, Sequence
 
@@ -65,6 +66,8 @@ def compute_competitive_position(
     default for this engine, which prices a synthetic bank) every entry in the
     snapshot counts as a competitor.
     """
+    if not math.isfinite(our_rate) or our_rate < 0:
+        raise ValueError("our_rate must be finite and non-negative")
     lower_is_better = ProductType(term_market.product_type) is ProductType.HOME_LOAN
     competitors = [entry for entry in term_market.entries if entry.bank != our_bank]
     if not competitors:

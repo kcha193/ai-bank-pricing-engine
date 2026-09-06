@@ -13,6 +13,7 @@ scenario, config file, and test keeps its current behaviour.
 from __future__ import annotations
 
 import calendar
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -103,6 +104,7 @@ def resolve_competitor_rate(
     term_months: int = 12,
     manual_rate: Optional[float] = None,
     offset_bps: float = 0.0,
+    our_bank: Optional[str] = None,
 ) -> ResolvedCompetitorAssumption:
     """Resolve the competitor rate assumption for one term.
 
@@ -119,6 +121,8 @@ def resolve_competitor_rate(
     if strategy is CompetitorRateStrategy.MANUAL:
         if manual_rate is None:
             raise MarketStrategyError("MANUAL competitor-rate strategy requires manual_rate")
+        if not math.isfinite(manual_rate) or manual_rate < 0:
+            raise MarketStrategyError("manual_rate must be finite and non-negative")
         return ResolvedCompetitorAssumption(
             strategy=strategy,
             competitor_loan_rate=manual_rate,
@@ -132,7 +136,11 @@ def resolve_competitor_rate(
 
     if snapshot is None:
         raise MarketStrategyError(f"{strategy.value} requires a market snapshot")
+    if not math.isfinite(offset_bps):
+        raise MarketStrategyError("offset_bps must be finite")
     term_market = snapshot.term(term_months)
+    if term_market is not None:
+        term_market = term_market.excluding_bank(our_bank)
     if term_market is None or not term_market.entries:
         raise MarketStrategyError(
             f"{strategy.value} requires advertised rates at {term_months} months; "
@@ -244,6 +252,7 @@ def apply_market_strategy_to_config(
         term_months=term_months,
         manual_rate=config.market.competitor_loan_rate,
         offset_bps=offset_bps,
+        our_bank=config.pricing_intelligence.our_bank if config.pricing_intelligence else None,
     )
 
     updates: dict = {}
@@ -268,6 +277,7 @@ def apply_market_strategy_to_config(
             ),
             manual_rate=config.market.competitor_deposit_rate,
             offset_bps=deposit_offset_bps,
+            our_bank=config.pricing_intelligence.our_bank if config.pricing_intelligence else None,
         )
         if resolved_deposit.strategy is not CompetitorRateStrategy.MANUAL:
             updates["competitor_deposit_rate"] = resolved_deposit.competitor_loan_rate

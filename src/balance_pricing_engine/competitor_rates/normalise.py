@@ -35,7 +35,9 @@ def normalise_term(label: str) -> NormalisedTerm:
     """Normalise a bank-advertised term while preserving the original label."""
     raw_label = label.strip()
     text = raw_label.lower()
-    if "floating" in text:
+    if re.search(r"(?:^|\s)[-−]\s*\d|\d+\.\d+\s*(?:days?|months?|years?)\b", text):
+        return NormalisedTerm(raw_label=raw_label, months=None, days=None)
+    if any(word in text for word in ("floating", "revolving", "flexible")):
         return NormalisedTerm(raw_label=raw_label, months=None, days=None, special_label="floating")
     if "variable" in text:
         return NormalisedTerm(raw_label=raw_label, months=None, days=None, special_label="variable")
@@ -43,15 +45,17 @@ def normalise_term(label: str) -> NormalisedTerm:
     days_match = re.search(r"\b(\d+)\s*days?\b", text)
     if days_match:
         days = int(days_match.group(1))
+        if days == 0:
+            return NormalisedTerm(raw_label=raw_label, months=None, days=None)
         return NormalisedTerm(raw_label=raw_label, months=max(round(days / 30), 1), days=days)
 
     months_match = re.search(r"\b(\d+)\s*months?\b", text)
     if months_match:
-        return NormalisedTerm(raw_label=raw_label, months=int(months_match.group(1)), days=None)
+        return NormalisedTerm(raw_label=raw_label, months=int(months_match.group(1)) or None, days=None)
 
     years_match = re.search(r"\b(\d+)\s*years?\b", text)
     if years_match:
-        return NormalisedTerm(raw_label=raw_label, months=int(years_match.group(1)) * 12, days=None)
+        return NormalisedTerm(raw_label=raw_label, months=int(years_match.group(1)) * 12 or None, days=None)
 
     for word, number in NUMBER_WORDS.items():
         if re.search(rf"\b{word}\s+months?\b", text):
@@ -131,11 +135,21 @@ def normalise_frequency(label: str | None) -> str:
     return "+".join(sorted(matches))
 
 
+_LOW_EQUITY_PATTERN = re.compile(
+    r"(?:less than|under|below|<)\s*\d+(?:\.\d+)?\s*%\s*equity"
+    r"|(?:lvr\s*(?:above|over|more than|>)\s*\d+(?:\.\d+)?\s*%)"
+    r"|(?:(?:above|over|more than|>)\s*\d+(?:\.\d+)?\s*%\s*lvr)",
+    re.I,
+)
+
+
 def normalise_lvr_condition(label: str | None) -> str:
     """Map common mortgage LVR/equity disclosures to canonical labels."""
     if not label:
         return "standard"
     text = label.lower()
+    if _LOW_EQUITY_PATTERN.search(text):
+        return "low_equity_margin_applies"
     if "20%" in text and "equity" in text:
         return "min_20_percent_equity"
     if "lvr" in text and ("under 80%" in text or "< 80%" in text or "<80%" in text):
@@ -227,6 +241,11 @@ def normalise_lvr_values(text: str | None) -> tuple[float | None, float | None]:
     rather than assuming a standard-LVR product.
     """
     if not text:
+        return None, None
+
+    # These fields express upper LVR/lower equity bounds only. A low-equity
+    # upper bound cannot be stored here without reversing its meaning.
+    if _LOW_EQUITY_PATTERN.search(text):
         return None, None
 
     lvr_match = _LVR_PATTERN.search(text) or _LVR_PATTERN_PREFIXED.search(text)

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 from typing import Optional
 
 from balance_pricing_engine.competitor_rates.collection_config import CollectionConfig
@@ -45,18 +46,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
-    config = PricingIntelligenceConfig()
-    if args.config:
-        # configs/base.yaml's pricing_intelligence block would otherwise be
-        # silently ignored -- this CLI previously always ran on defaults
-        # regardless of what was configured there.
-        engine_config = load_config(args.config)
-        if engine_config.pricing_intelligence is not None:
-            config = engine_config.pricing_intelligence
-    if args.database:
-        config = config.model_copy(update={"database_path": args.database})
-
     try:
+        config = PricingIntelligenceConfig()
+        if args.config:
+            # configs/base.yaml's pricing_intelligence block would otherwise be
+            # silently ignored -- this CLI previously always ran on defaults
+            # regardless of what was configured there.
+            engine_config = load_config(args.config)
+            if engine_config.pricing_intelligence is not None:
+                config = engine_config.pricing_intelligence
+        if args.database:
+            config = config.model_copy(update={"database_path": args.database})
+
         if args.command == "ocr":
             # Store-independent (see _ocr's docstring): dispatch before the
             # ObservationStore/PricingIntelligenceService context below is
@@ -91,6 +92,27 @@ def main(argv: Optional[list[str]] = None) -> int:
     except Exception as exc:  # noqa: BLE001 - CLI boundary
         print(f"ERROR: {exc}")
         return 1
+
+
+def _positive_int(value: str) -> int:
+    result = int(value)
+    if result <= 0:
+        raise argparse.ArgumentTypeError("must be positive")
+    return result
+
+
+def _finite_float(value: str) -> float:
+    result = float(value)
+    if not math.isfinite(result):
+        raise argparse.ArgumentTypeError("must be finite")
+    return result
+
+
+def _nonnegative_rate(value: str) -> float:
+    result = _finite_float(value)
+    if result < 0:
+        raise argparse.ArgumentTypeError("rate must be non-negative")
+    return result
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -138,7 +160,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     snapshot = subparsers.add_parser("snapshot", help="Show the current advertised market")
-    snapshot.add_argument("--term", type=int, default=None, help="Detail one term, in months")
+    snapshot.add_argument("--term", type=_positive_int, default=None, help="Detail one term, in months")
     snapshot.add_argument(
         "--category",
         default=None,
@@ -147,9 +169,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     changes = subparsers.add_parser("changes", help="Show detected market changes")
-    changes.add_argument("--days", type=int, default=7)
+    changes.add_argument("--days", type=_positive_int, default=7)
     changes.add_argument("--bank", default=None)
-    changes.add_argument("--term", type=int, default=None)
+    changes.add_argument("--term", type=_positive_int, default=None)
     changes.add_argument("--alerts", action="store_true", help="Render as formatted alerts")
     changes.add_argument(
         "--category",
@@ -163,8 +185,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     history = subparsers.add_parser("history", help="Show advertised rate history")
     history.add_argument("--bank", default=None)
-    history.add_argument("--term", type=int, default=None)
-    history.add_argument("--days", type=int, default=None)
+    history.add_argument("--term", type=_positive_int, default=None)
+    history.add_argument("--days", type=_positive_int, default=None)
     history.add_argument("--category", default=None)
 
     subparsers.add_parser("market-state", help="Classify current market activity")
@@ -172,8 +194,8 @@ def _build_parser() -> argparse.ArgumentParser:
     position = subparsers.add_parser(
         "position", help="Position a rate against the advertised market"
     )
-    position.add_argument("--rate", type=float, required=True, help="Our rate, in percent")
-    position.add_argument("--term", type=int, default=12)
+    position.add_argument("--rate", type=_nonnegative_rate, required=True, help="Our rate, in percent")
+    position.add_argument("--term", type=_positive_int, default=12)
 
     strategy = subparsers.add_parser(
         "strategy", help="Resolve the competitor assumption for the pricing engine"
@@ -183,10 +205,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default=CompetitorRateStrategy.MARKET_MEDIAN.value,
         choices=[member.value for member in CompetitorRateStrategy],
     )
-    strategy.add_argument("--term", type=int, default=12)
-    strategy.add_argument("--offset-bps", type=float, default=0.0)
+    strategy.add_argument("--term", type=_positive_int, default=12)
+    strategy.add_argument("--offset-bps", type=_finite_float, default=0.0)
     strategy.add_argument(
-        "--manual-rate", type=float, default=None, help="Decimal rate for MANUAL"
+        "--manual-rate", type=_nonnegative_rate, default=None, help="Decimal rate for MANUAL"
     )
 
     subparsers.add_parser(
@@ -405,6 +427,9 @@ def _history(service: PricingIntelligenceService, args: argparse.Namespace) -> i
 
 
 def _market_state(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
+    if not service.get_market_snapshot(product_type=_product(args)).terms:
+        print("No fresh market data; market activity is unknown.")
+        return 1
     assessment = service.get_market_state(
         product_type=_product(args), rate_category=_default_category(args)
     )

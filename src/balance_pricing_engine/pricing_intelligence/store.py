@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 import logging
+import re
 from pathlib import Path
 import sqlite3
 from typing import Iterable, Iterator, Mapping, NamedTuple, Optional, Sequence
@@ -392,11 +393,37 @@ class ObservationStore:
             self._migrate_observations_first_seen_run_id(connection)
             self._migrate_rate_changes_run_scoped_uniqueness(connection)
             self._migrate_collection_run_products(connection)
+            self._migrate_rate_named_mortgages(connection)
             row = connection.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
                 connection.execute(
                     "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
                 )
+
+    def _migrate_rate_named_mortgages(self, connection: sqlite3.Connection) -> None:
+        """Repair old rate-first mortgage identities, preserving history.
+
+        Only a product name consisting entirely of a percentage/unit qualifies.
+        Prior new/removed events created by that parser defect remain available
+        but are flagged; this migration cannot independently verify their meaning.
+        """
+        rows = connection.execute(
+            "SELECT * FROM observations WHERE product_type = 'home_loan' "
+            "AND term_months IS NOT NULL"
+        ).fetchall()
+        for row in rows:
+            if not re.fullmatch(r"\d+(?:\.\d+)?\s*%\s*(?:p\.?\s*a\.?)?", row["product_name"], re.I):
+                continue
+            record = _row_to_record(row).model_copy(update={"product_name": row["term_label_raw"]})
+            connection.execute(
+                "UPDATE observations SET product_name = ?, observation_key = ? WHERE id = ?",
+                (record.product_name, record.observation_key(), row["id"]),
+            )
+            connection.execute(
+                "UPDATE rate_changes SET product_name = ?, observation_key = ?, suspicious = 1 "
+                "WHERE observation_key = ?",
+                (record.product_name, record.observation_key(), row["observation_key"]),
+            )
 
     def _migrate_collection_runs_product_type(self, connection: sqlite3.Connection) -> None:
         """Add ``collection_runs.product_type`` for a database created before
@@ -957,6 +984,12 @@ class ObservationStore:
         banks = sorted({record.bank for record in records})
 
         with self._transaction() as connection:
+            latest = connection.execute(
+                "SELECT MAX(started_at) FROM collection_run_products WHERE product_type = ?",
+                (product_type.value,),
+            ).fetchone()[0]
+            if latest is not None and timestamp < latest:
+                raise ValueError("collections must be written in chronological order per product")
             # An upsert (UPDATE on conflict), not INSERT OR REPLACE: the
             # latter deletes and reinserts on a run_id collision, handing the
             # row a brand new (higher) rowid. _run_ordered_after()/

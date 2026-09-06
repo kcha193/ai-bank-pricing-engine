@@ -187,7 +187,7 @@ def test_section_renders_grid_ranking_and_changes_frames(monkeypatch, populated_
     assert "1Y" in grid.columns
     assert "Median" in grid.index
 
-    changes = fake.frames[-1]
+    changes = next(frame for frame in fake.frames if "Move (bps)" in frame.columns)
     assert "Move (bps)" in changes.columns
     assert -20.0 in list(changes["Move (bps)"])
 

@@ -241,3 +241,17 @@ config returned unchanged), `MARKET_MEDIAN`, `MARKET_LEADER`,
 `MARKET_SECOND_LOWEST`, and `MARKET_MEAN`, with an `offset_bps` shift.
 
 Full detail: [pricing_intelligence.md](pricing_intelligence.md).
+
+
+### Pricing-intelligence audit boundary (2026-09-06)
+
+The strategy seam excludes configured `our_bank` before computing a benchmark;
+public market snapshots retain the full market. Repeated suspicious readings
+remain quarantined against the last trusted observation and cannot confirm their
+own historical events. Clean recoveries use that trusted observation as the
+change baseline. Observation/event writes remain atomic, with chronological
+collection ordering per product. Store opening repairs legacy numeric-only
+mortgage names and flags affected events, preserving the original rate history.
+The dashboard uses presentation helpers for observation health; entirely failed
+attempts still require the separate scheduled-run summary to be visible.
+See the [audit](audits/2026-09-06-pricing-intelligence-audit.md) for evidence and limits.

@@ -6,7 +6,7 @@ the optimiser's job. This module answers "where does the market sit right now?".
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from statistics import fmean, median
 from typing import Iterable, Optional
@@ -122,6 +122,16 @@ class TermMarket:
     def ranking(self) -> tuple[BankTermRate, ...]:
         """Entries ordered most competitive first."""
         return self.entries
+
+    def excluding_bank(self, bank: Optional[str]) -> "TermMarket":
+        """Return external competitors with ranks recalculated after exclusion."""
+        if bank is None:
+            return self
+        entries = tuple(entry for entry in self.entries if entry.bank != bank)
+        ranks = _competition_ranks([entry.rate_pct for entry in entries])
+        return replace(self, entries=tuple(
+            replace(entry, rank=rank) for entry, rank in zip(entries, ranks)
+        ))
 
 
 @dataclass(frozen=True)

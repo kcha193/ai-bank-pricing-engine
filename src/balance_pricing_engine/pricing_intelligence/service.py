@@ -55,6 +55,7 @@ from balance_pricing_engine.pricing_intelligence.strategy import (
     resolve_competitor_rate,
 )
 from balance_pricing_engine.pricing_intelligence.validation import (
+    ObservationIssue,
     ValidationOutcome,
     validate_observations,
 )
@@ -615,16 +616,31 @@ class PricingIntelligenceService:
         # baseline entirely, making its next (unchanged) collection look like
         # every advertised line is new.
         baseline = self.store.get_current_observations(product_type=product_type)
-        # Also captured before this run's write, for the suspicious-confirmation
-        # check below: the last state that was actually confirmed (not just the
-        # immediately-preceding baseline record, which can itself still be an
-        # unconfirmed warning-tagged reading).
+        # Repeatability is not independent verification. Always measure a new
+        # reading against the last trusted state, never a prior parser spike.
         last_confirmed_before_run = self.store.get_last_confirmed_observations(
             product_type=product_type
         )
         validation = validate_observations(
-            report.records, thresholds=self.config.validation, previous=baseline
+            report.records, thresholds=self.config.validation,
+            previous=_resolve_suspicious(baseline, last_confirmed_before_run),
         )
+        trusted_pairs = _last_confirmed_predecessors(last_confirmed_before_run, validation.accepted)
+        previous_pairs = resolve_pairing(baseline, validation.accepted)
+        for record in validation.accepted:
+            key = record.observation_key()
+            predecessor = previous_pairs.get(key)
+            trusted = trusted_pairs.get(key)
+            if (
+                predecessor is not None and predecessor.validation_status == "warning"
+                and (trusted is None or trusted.observation_key() != key)
+                and key not in validation.suspicious_keys
+            ):
+                validation.issues.append(ObservationIssue(
+                    severity="warning", code="suspicious_movement", bank=record.bank,
+                    observation_key=key,
+                    message="unverified eligibility/category change remains quarantined",
+                ))
         for issue in validation.issues:
             logger.warning("validation: %s", issue)
 
@@ -646,12 +662,8 @@ class PricingIntelligenceService:
             for record in validation.accepted
         ]
 
-        # Observations, their detected changes, and any suspicious-change
-        # confirmation all commit together: if record_changes() (or
-        # confirmation) raised after record_observations() alone had already
-        # committed, a retry of this same collection would compare against
-        # the already-updated state, see no movement, and the change that
-        # should have been reconstructed would be lost for good.
+        # Observations and changes commit together so a failed event write
+        # cannot advance the next run's baseline and lose a movement.
         with self.store.atomic():
             # A dry run (persist=False) skips writing, but still detects changes
             # against the stored baseline -- otherwise --no-persist could not be
@@ -663,32 +675,14 @@ class PricingIntelligenceService:
                 if persist
                 else None
             )
-            # Matched via _last_confirmed_predecessors() (exact key, then an
-            # eligibility-group match, then a category-agnostic match), not a
-            # plain dict lookup by exact key: computed here (before
-            # detect_changes()) because a category flip that has since
-            # settled onto a new key -- even after the record reporting it is
-            # no longer itself flagged suspicious this run -- still needs its
-            # pre-flip predecessor protected from withdrawal below, the same
-            # protection _suspicious_predecessor_keys() only gives while the
-            # record is suspicious *this* run. Reused for the confirmation
-            # check further down.
+            # Resolve the trusted predecessor across eligibility/category keys
+            # so quarantine cannot withdraw the last usable market observation.
             last_confirmed_pairs = _last_confirmed_predecessors(
                 last_confirmed_before_run, accepted
             )
-            # The plain (exact-or-eligibility-group) predecessor pairing,
-            # computed once and reused below for both the rejected_keys
-            # union and the confirmation check further down. Identifies
-            # which accepted records are actually confirming a previously
-            # quarantined warning -- not every category flip resolved via
-            # last_confirmed_pairs's category-agnostic fallback descends
-            # from one: a category relabelling with no out-of-threshold rate
-            # movement (e.g. "4.79% special" -> "4.79% standard") is never
-            # flagged suspicious in the first place, so its predecessor must
-            # not get the same withdrawal protection as a genuine quarantine
-            # confirmation -- that would hide a real REMOVED_PRODUCT behind
-            # an unrelated NEW_PRODUCT, or launder a category-only parser
-            # fault as a verified market event.
+            # A clean recovery from a warning is distinct from a category
+            # relabelling with no suspicious history. Only the former needs
+            # the trusted predecessor substituted into its change baseline.
             plain_pairs = resolve_pairing(baseline, accepted)
             confirming_keys = {
                 key
@@ -702,8 +696,22 @@ class PricingIntelligenceService:
             reliably_collected_banks = _reliably_collected_banks(
                 report, accepted, baseline, self.config.validation.min_bank_coverage_ratio
             )
+            # A clean reading after a parser spike is compared with the last
+            # trusted rate; the spike must not become a fictitious reversal.
+            recovery_predecessors = {
+                plain_pairs[key].observation_key(): last_confirmed_pairs[key]
+                for key in confirming_keys
+                if key in last_confirmed_pairs
+            }
+            change_baseline = list({
+                record.observation_key(): record
+                for record in (
+                    recovery_predecessors.get(record.observation_key(), record)
+                    for record in baseline
+                )
+            }.values())
             changes = detect_changes(
-                previous=baseline,
+                previous=change_baseline,
                 current=accepted,
                 detected_at=captured_at_utc,
                 thresholds=self.config.validation,
@@ -726,18 +734,9 @@ class PricingIntelligenceService:
                 # category-agnostic fallback in _rejected_predecessor_keys(). A
                 # suspicious (accepted-but-flagged) record's predecessor gets the
                 # analogous treatment via _suspicious_predecessor_keys().
-                # A category flip that reverted its rate but not its category
-                # (5.00% special -> 8.00% standard warning -> 5.00% standard
-                # warning -> 5.00% standard clean) stays protected here too,
-                # via last_confirmed_pairs, even on the clean run where the
-                # record is no longer itself in suspicious_keys -- the verified
-                # special line must not be withdrawn just because the record
-                # confirming it isn't flagged suspicious *this* run. Restricted
-                # to confirming_keys (plain predecessor was itself flagged
-                # "warning"): a category flip with no suspicious history behind
-                # it -- e.g. a clean rebrand from "special" to "standard" at the
-                # same rate -- does not get this protection, so a genuine
-                # withdrawal of the old category is still reported.
+                # A previously quarantined predecessor also remains protected
+                # during a clean recovery. Ordinary category changes still
+                # emit their genuine new/removed pair.
                 rejected_keys=(
                     {
                         previous_record.observation_key()
@@ -801,43 +800,6 @@ class PricingIntelligenceService:
                 ]
             if changes and persist:
                 self.store.record_changes(changes)
-
-            # A repeated suspicious value that is no longer independently
-            # flagged this run confirms the earlier movement as genuine. Its
-            # original RateChange event stays permanently suspicious -- and so
-            # excluded from market activity/market-state by default -- unless
-            # cleared here: a 0 bps re-observation produces no new change event
-            # for detect_changes() to mark confirmed instead.
-            if persist:
-                accepted_by_key = {record.observation_key(): record for record in accepted}
-                # plain_pairs and confirming_keys were already computed above,
-                # before detect_changes(), and are reused here unchanged.
-                # Rebased onto the last verified predecessor (or None when there
-                # isn't one) rather than passed as bare keys: a suspicious chain
-                # can partially revert (confirmed 5.00% -> warning 8.00% ->
-                # warning 7.00% -> clean 7.00%), where the latest stored event
-                # (8.00% -> 7.00%) is an intermediate misread's artefact, not the
-                # real movement (5.00% -> 7.00%). confirm_suspicious_changes()
-                # rewrites the event to reflect the true movement.
-                confirmations = {
-                    key: (last_confirmed_pairs.get(key), accepted_by_key[key])
-                    for key in confirming_keys
-                    # A parser spike that reverts exactly (confirmed 5.00% ->
-                    # warning 8.00% -> warning 5.00% -> clean 5.00%) must not
-                    # confirm the latest suspicious event as a genuine -300 bps
-                    # move: 8.00% was itself never confirmed, and the market
-                    # view never actually left 5.00%. Only confirm when this
-                    # run's value differs from the last genuinely confirmed
-                    # state -- i.e. a real new value, not a round trip back to
-                    # where the chain of unconfirmed readings began.
-                    if (
-                        key not in last_confirmed_pairs
-                        or last_confirmed_pairs[key].advertised_rate_pct
-                        != accepted_by_key[key].advertised_rate_pct
-                    )
-                }
-                if confirmations:
-                    self.store.confirm_suspicious_changes(confirmations)
 
         low_coverage_banks = tuple(
             sorted(
@@ -1246,6 +1208,7 @@ class PricingIntelligenceService:
             term_months=term_months,
             manual_rate=manual_rate,
             offset_bps=offset_bps,
+            our_bank=self.config.our_bank,
         )
 
     def close(self) -> None:

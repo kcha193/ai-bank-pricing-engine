@@ -273,3 +273,26 @@ literal `"<table"` tag instead, which always precedes every row inside it
 structurally. The general shape of the mistake: an anchor string chosen for
 convenience turned out to also appear *inside* the very row it was meant to
 keep intact.
+
+
+### Independently audited mortgage benchmarks (2026-09-06)
+
+A benchmark is an external competitor assumption, not the customer rate selected
+by the optimiser. Exclude configured `our_bank` before its mean, median or order
+statistic is computed. Mortgage competitiveness is lower-is-better; the existing
+term-deposit path uses the opposite direction and must retain that distinction.
+
+Special-rate snapshots are a tier-specific, term-specific universe. On the audit
+date, BNZ advertised a Standard column, so the default 12-month special benchmark
+contained ANZ, ASB, Kiwibank and Westpac: median 4.99%, minimum 4.95%, mean 4.98%.
+Full promotional eligibility cannot be inferred from the normalised fields alone.
+Repeated suspicious values are not corroboration, and stale trusted fallback
+rates retain their original age. Market-state thresholds are transparent
+heuristics, not empirically validated signals or optimisation objectives.
+
+Using exactly the same current manual config, the pre-intelligence source at
+`c2c30be` and audited source produced identical result fields and byte-identical
+`grid_results.csv` and `summary.json`. Earlier default-config recalibrations are
+separate from the intelligence seam. The model remains synthetic and does not
+estimate strategic competitor reaction or validate advertised-rate eligibility.
+See the [audit](audits/2026-09-06-pricing-intelligence-audit.md) for scenario outputs.

@@ -79,14 +79,12 @@ jobs:
           CODE="${{ steps.collect.outputs.exit_code }}"
           case "$CODE" in
             0) echo "All five collectors parsed their live pages." ;;
-            2) echo "::warning::At least one collector failed - a bank page may have changed." ;;
+            2) echo "::error::Collection is incomplete - inspect the uploaded run summary." ;;
             1) echo "::error::No collector succeeded. Live collection is broken." ;;
             3) echo "::error::Lock held unexpectedly in a fresh runner." ;;
             *) echo "::error::Unexpected exit code $CODE" ;;
           esac
-          # A single bank changing its page (code 2) is a warning to act on,
-          # not a red build every morning -- but any other nonzero code means
-          # no valid health check completed, and must fail the job.
-          [ "$CODE" = "2" ] && exit 0
+          # The summary has already been uploaded. Partial collection must
+          # remain visible as a failed health check for unattended monitoring.
           [ "$CODE" = "0" ] && exit 0
           exit 1

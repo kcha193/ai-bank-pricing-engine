@@ -8,6 +8,7 @@ import importlib.util
 import json
 import logging
 import re
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -938,3 +939,16 @@ def test_webhook_text_field_is_threaded_through_the_cli(
     assert code == workflow.EXIT_OK
     assert "content" in captured[0]
     assert "text" not in captured[0]
+
+
+@pytest.mark.parametrize("collection_exit", [0, 1, 2, 3])
+def test_canary_health_status_exposes_partial_collection_failures(collection_exit):
+    """Run the actual health-report shell step after GitHub resolves its output."""
+    workflow = yaml.safe_load(Path(".github/workflows/collector-canary.yml").read_text())
+    steps = next(iter(workflow["jobs"].values()))["steps"]
+    report_step = next(step for step in steps if step.get("name") == "Report collector health")
+    script = report_step["run"].replace(
+        "${{ steps.collect.outputs.exit_code }}", str(collection_exit)
+    )
+    result = subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True, check=False)
+    assert (result.returncode == 0) is (collection_exit == 0), result.stdout

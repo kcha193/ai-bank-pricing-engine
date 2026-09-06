@@ -56,6 +56,9 @@ class FakeStreamlit(FakeContext):
     def info(self, *args, **kwargs):
         self._record("info", *args, **kwargs)
 
+    def caption(self, *args, **kwargs):
+        self._record("caption", *args, **kwargs)
+
     def error(self, *args, **kwargs):
         self._record("error", *args, **kwargs)
 

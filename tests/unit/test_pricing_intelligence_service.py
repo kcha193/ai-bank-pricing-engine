@@ -749,15 +749,10 @@ def test_get_changes_scope_to_market_filters_by_selected_banks_and_terms():
     assert [change.bank for change in changes] == ["ANZ"]
 
 
-def test_confirming_a_suspicious_movement_also_clears_its_companion_eligibility_event(
+def test_repeating_a_suspicious_movement_keeps_companion_eligibility_quarantined(
     make_record,
 ):
-    """An over-threshold rate change bundled with an eligibility change
-    produces two suspicious events sharing the same observation_key and
-    detected_at (RATE_INCREASE/DECREASE + ELIGIBILITY_CHANGE). Reconfirming
-    the same reading must clear both, not just the rate event a plain
-    "most recent suspicious" lookup happens to pick (detect_changes() sorts
-    rate events after their companions, so the rate row gets the higher id)."""
+    """Repeated unverified readings must not confirm rates or companion events."""
     confirmed = make_record(bank="ANZ", rate_pct=5.00, max_lvr=0.80, min_equity=0.20)
     service = PricingIntelligenceService(
         config=PricingIntelligenceConfig(
@@ -787,19 +782,11 @@ def test_confirming_a_suspicious_movement_also_clears_its_companion_eligibility_
 
     changes = service.get_changes(days=30, now=DAY_THREE)
     assert len(changes) == 2
-    assert all(not c.suspicious for c in changes), (
-        "the companion eligibility event must be confirmed alongside the rate event"
-    )
+    assert all(c.suspicious for c in changes), "repeatability is not source verification"
 
 
 def test_a_multi_hop_reversion_leaves_its_stale_companion_event_quarantined(make_record):
-    """confirmed 5.00% (max_lvr 0.80) -> warning 8.00% (max_lvr 0.75) ->
-    warning 7.00% (max_lvr 0.70) -> clean 7.00% (max_lvr 0.70). The rate
-    event rebases onto the last verified predecessor (5.00% -> 7.00%), but
-    the companion ELIGIBILITY_CHANGE from the same run still describes the
-    unverified intermediate hop (max_lvr 0.75 -> 0.70, B to C) rather than
-    the accepted transition (A to C) -- clearing it too would present that
-    stale diff as confirmed, so it is left quarantined instead."""
+    """Repeated unverified readings must not confirm rates or companion events."""
     day_four = DAY_ONE + timedelta(days=3)
     confirmed = make_record(bank="ANZ", rate_pct=5.00, max_lvr=0.80, min_equity=0.20)
     service = PricingIntelligenceService(
@@ -838,16 +825,14 @@ def test_a_multi_hop_reversion_leaves_its_stale_companion_event_quarantined(make
     confirmed_rate_events = [c for c in changes if not c.suspicious]
     eligibility_events = [c for c in changes if c.change_type is ChangeType.ELIGIBILITY_CHANGE]
 
-    assert len(confirmed_rate_events) == 1
-    assert confirmed_rate_events[0].previous_rate_pct == 5.00
-    assert confirmed_rate_events[0].current_rate_pct == 7.00
+    assert confirmed_rate_events == []
     assert all(c.suspicious for c in eligibility_events), (
         "the companion still describes the unverified B -> C hop, not the accepted A -> C move"
     )
 
 
-def test_a_confirmed_large_movement_counts_as_market_activity(fixture_fetcher):
-    """A repeated 'suspicious' value is confirmed genuine, not permanently discounted."""
+def test_a_repeated_large_movement_stays_out_of_market_activity(fixture_fetcher):
+    """Repeated unverified readings must not confirm rates or companion events."""
 
     def break_kiwibank(bank, html):
         if bank == "Kiwibank":
@@ -864,8 +849,8 @@ def test_a_confirmed_large_movement_counts_as_market_activity(fixture_fetcher):
         activity = service.get_market_activity(days=30, now=DAY_THREE)
 
     kiwibank_change = next(change for change in changes if change.bank == "Kiwibank")
-    assert kiwibank_change.suspicious is False
-    assert activity.changes >= 1
+    assert kiwibank_change.suspicious is True
+    assert activity.changes == 0
 
 
 def test_a_spike_that_reverts_across_a_category_flip_is_not_confirmed(make_record):
@@ -908,8 +893,8 @@ def test_a_spike_that_reverts_across_a_category_flip_is_not_confirmed(make_recor
     changes = service.get_changes(days=30, now=day_four)
     activity = service.get_market_activity(days=30, now=day_four)
 
-    reversal = next(c for c in changes if c.previous_rate_pct == 8.00 and c.current_rate_pct == 5.00)
-    assert reversal.suspicious is True, "the bogus reversal must stay excluded from market activity"
+    assert not any(c.previous_rate_pct == 8.00 and c.current_rate_pct == 5.00
+                   and not c.suspicious for c in changes)
     assert activity.changes == 0, "the verified rate never actually changed"
     # The category never reverted (it stays "standard" throughout), so the
     # confirmed "special" predecessor is never matched by anything in any
@@ -955,15 +940,13 @@ def test_a_spike_that_reverts_is_not_confirmed_as_a_genuine_movement(make_record
     changes = service.get_changes(days=30, now=day_four)
     activity = service.get_market_activity(days=30, now=day_four)
 
-    reversal = next(c for c in changes if c.previous_rate_pct == 8.00 and c.current_rate_pct == 5.00)
-    assert reversal.suspicious is True, "the bogus reversal must stay excluded from market activity"
+    assert not any(c.previous_rate_pct == 8.00 and c.current_rate_pct == 5.00
+                   and not c.suspicious for c in changes)
     assert activity.changes == 0, "the market view never left the original confirmed 5.00%"
 
 
-def test_a_partial_reversion_is_confirmed_relative_to_the_last_verified_rate(make_record):
-    """confirmed 5.00% -> warning 8.00% -> warning 7.00% -> clean 7.00% must
-    confirm the movement relative to the last verified rate (5.00% -> 7.00%,
-    +200 bps), not the stale intermediate hop (8.00% -> 7.00%, -100 bps)."""
+def test_a_partial_reversion_remains_quarantined_against_last_verified_rate(make_record):
+    """Repeated unverified readings must not confirm rates or companion events."""
     day_four = DAY_ONE + timedelta(days=3)
     confirmed = make_record(bank="ANZ", rate_pct=5.00)
     service = PricingIntelligenceService(
@@ -990,13 +973,9 @@ def test_a_partial_reversion_is_confirmed_relative_to_the_last_verified_rate(mak
     changes = service.get_changes(days=30, now=day_four)
     activity = service.get_market_activity(days=30, now=day_four)
 
-    confirmed_change = next(c for c in changes if not c.suspicious)
-    assert confirmed_change.previous_rate_pct == 5.00
-    assert confirmed_change.current_rate_pct == 7.00
-    assert confirmed_change.change_bps == 200.0
-    assert confirmed_change.change_type is ChangeType.RATE_INCREASE
-    assert activity.changes == 1
-    assert activity.mean_change_bps == 200.0
+    assert all(c.suspicious for c in changes)
+    assert activity.changes == 0
+    assert service.get_market_snapshot(now=day_four)[12].rate_for("ANZ") == 5.00
 
 
 def test_a_spike_that_reverts_across_an_eligibility_key_change_is_not_confirmed(make_record):
@@ -1037,8 +1016,8 @@ def test_a_spike_that_reverts_across_an_eligibility_key_change_is_not_confirmed(
     changes = service.get_changes(days=30, now=day_four)
     activity = service.get_market_activity(days=30, now=day_four)
 
-    reversal = next(c for c in changes if c.previous_rate_pct == 8.00 and c.current_rate_pct == 5.00)
-    assert reversal.suspicious is True, "the bogus reversal must stay excluded from market activity"
+    assert not any(c.previous_rate_pct == 8.00 and c.current_rate_pct == 5.00
+                   and not c.suspicious for c in changes)
     assert activity.changes == 0, "the market view never left the original confirmed 5.00%"
 
 
@@ -1254,7 +1233,7 @@ def test_a_partial_correction_confirms_as_one_event_not_two(make_record):
     )
 
     changes = service.get_changes(days=30, now=DAY_THREE)
-    rate_moves = [c for c in changes if c.is_rate_move]
+    rate_moves = [c for c in changes if c.is_rate_move and not c.suspicious]
 
     assert len(rate_moves) == 1
     assert rate_moves[0].previous_rate_pct == 5.00

@@ -983,7 +983,16 @@ def test_a_pre_column_migration_does_not_attribute_a_same_timestamp_return_to_th
     # The return is backfilled with the bootstrap run's own timestamp,
     # tying first_observed_at across the two observations rows.
     return_run = store.record_observations(
-        [bnz_record], run_id="run-returned", observed_at=DAY_ONE
+        [bnz_record], run_id="run-returned", observed_at=DAY_TWO
+    )
+    # Construct legacy backdated data directly; new writes now reject it.
+    store._connection.execute(
+        "UPDATE observations SET first_observed_at = ? WHERE first_seen_run_id = ?",
+        (DAY_ONE.isoformat(), "run-returned"),
+    )
+    store._connection.execute(
+        "UPDATE collection_runs SET started_at = ? WHERE run_id = ?",
+        (DAY_ONE.isoformat(), "run-returned"),
     )
     store.record_changes(
         detect_changes(

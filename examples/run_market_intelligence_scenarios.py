@@ -6,9 +6,9 @@ scenario only changes *how the competitor rate is sourced* and then calls
 ``run_baseline_diagnostics`` exactly as every other scenario does.
 
     Scenario A  No change            - the config's manual competitor rate
-    Scenario B  Match market median  - MARKET_MEDIAN
-    Scenario C  Match market leader  - MARKET_LEADER
-    Scenario D  Leader minus 5 bps   - MARKET_LEADER with an offset
+    Scenario B  Median assumption  - MARKET_MEDIAN
+    Scenario C  Leader assumption  - MARKET_LEADER
+    Scenario D  Leader -5 assumption - MARKET_LEADER with an offset
     Scenario E  Economically optimal - the optimiser's own answer under the
                                        market-median assumption, which is
                                        Scenario B's recommended rate
@@ -38,9 +38,9 @@ from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
 
 SCENARIOS = (
     ("A", "No change (manual)", CompetitorRateStrategy.MANUAL, 0.0),
-    ("B", "Match market median", CompetitorRateStrategy.MARKET_MEDIAN, 0.0),
-    ("C", "Match market leader", CompetitorRateStrategy.MARKET_LEADER, 0.0),
-    ("D", "Market leader -5 bps", CompetitorRateStrategy.MARKET_LEADER, -5.0),
+    ("B", "Median assumption", CompetitorRateStrategy.MARKET_MEDIAN, 0.0),
+    ("C", "Leader assumption", CompetitorRateStrategy.MARKET_LEADER, 0.0),
+    ("D", "Leader -5 assumption", CompetitorRateStrategy.MARKET_LEADER, -5.0),
 )
 
 
