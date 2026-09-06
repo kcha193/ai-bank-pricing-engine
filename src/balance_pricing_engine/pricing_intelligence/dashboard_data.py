@@ -34,6 +34,11 @@ def build_freshness_frame(
     runs can share a ``started_at`` value, which a timestamp comparison
     would then read as "the same run".
     """
+    if not banks:
+        return pd.DataFrame(
+            columns=["Oldest confirmation (UTC)", "Age (hours)", "Status"],
+            index=pd.Index([], name="Bank"),
+        )
     rows = []
     for bank in banks:
         bank_records = [r for r in records if r.bank == bank]
