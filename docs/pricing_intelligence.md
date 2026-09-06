@@ -345,6 +345,13 @@ Changes flagged suspicious are excluded from the classifier. A suspicious
 movement is more often a parser fault than a reprice, and one bogus 300 bps jump
 would otherwise dominate the mean and fake a repricing round.
 
+`LOW` means "collected, and nothing moved" — it never means "we have no data".
+With no fresh market the command prints `No fresh market data; market activity
+is unknown.` and **exits 1** rather than reporting a calm market. Any external
+scheduler wrapping `market-state` should expect that nonzero exit. The collect
+worker (`scripts/collect_market_rates_workflow.py`) does not invoke this
+command and keeps its own 0/1/2/3 exit codes.
+
 ### Scenario analysis
 
 ```bash

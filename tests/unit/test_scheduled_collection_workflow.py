@@ -952,3 +952,64 @@ def test_canary_health_status_exposes_partial_collection_failures(collection_exi
     )
     result = subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True, check=False)
     assert (result.returncode == 0) is (collection_exit == 0), result.stdout
+
+
+def test_a_backwards_clock_is_a_classified_failure_not_a_traceback(
+    workflow, fixture_fetcher, tmp_path, monkeypatch
+):
+    """The store rejects a write older than the product's latest run.
+
+    ``service.collect()`` stamps its own ``datetime.now``, so an NTP
+    correction, a VM snapshot restore, or any backwards clock step makes that
+    guard fire on an ordinary scheduled run. An unattended worker must report
+    that as a classified total failure with a summary the canary can upload,
+    not die with an unhandled traceback.
+    """
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    monkeypatch.setattr(
+        workflow,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"], store=kwargs["store"], fetcher=fixture_fetcher()
+        ),
+    )
+    # Establish a run, then wind the clock back behind it.
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_TWO + timedelta(days=1), persist_snapshot=False)
+
+    summary_path = tmp_path / "summary.json"
+    # A directly-attached handler, not caplog: configure_json_logging() sets
+    # propagate = False on the balance_pricing_engine hierarchy, so records
+    # never reach caplog's root-based capture once another test has run it.
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    workflow.logger.addHandler(handler)
+    try:
+        code, summary = workflow.run_collection(
+            config, render_javascript=False, summary_path=summary_path
+        )
+    finally:
+        workflow.logger.removeHandler(handler)
+
+    assert code == workflow.EXIT_TOTAL_FAILURE
+    assert summary["rates_accepted"] == 0
+    assert summary["banks_succeeded"] == []
+    assert summary["banks_failed"]
+    assert json.loads(summary_path.read_text())["failures"][0]["error_type"] == (
+        "ChronologicalOrderError"
+    )
+    aborted = [
+        record
+        for record in records
+        if record.getMessage() == "market collection aborted"
+        and record.levelno == logging.ERROR
+    ]
+    assert len(aborted) == 1
+    assert "chronological" in aborted[0].structured_fields["reason"]
+    assert aborted[0].structured_fields["exit_code"] == workflow.EXIT_TOTAL_FAILURE

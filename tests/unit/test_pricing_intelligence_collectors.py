@@ -428,3 +428,29 @@ def test_an_injected_fetcher_wins_over_render_javascript(fixture_fetcher):
     )
 
     assert result.status is CollectionStatus.SUCCESS
+
+
+def test_collect_all_rates_accepts_the_product_type_as_a_string():
+    """``product_type`` selects which collector method runs. Dispatching on
+    ``is ProductType.HOME_LOAN`` means a plain ``"home_loan"`` string is never
+    that member, so it silently fell through to term deposits -- a caller
+    asking for mortgages got deposit rates back with no error anywhere.
+    ``PricingIntelligenceService.collect()`` coerces first and was unaffected;
+    any other caller was not.
+    """
+    from balance_pricing_engine.competitor_rates.collectors import (
+        KiwibankCollector,
+        collect_all_rates,
+    )
+
+    collector = KiwibankCollector(
+        fetcher=lambda url: b"<table><tr><th>Term</th><th>Special fixed rate</th></tr>"
+        b"<tr><td>1 year fixed</td><td>4.95%</td></tr></table>"
+    )
+
+    report = collect_all_rates(
+        [collector], product_type="home_loan", inter_request_delay_seconds=0
+    )
+
+    assert report.results[0].source_url == KiwibankCollector.home_loan_url
+    assert [record.product_type for record in report.records] == [ProductType.HOME_LOAN]

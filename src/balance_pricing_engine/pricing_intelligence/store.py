@@ -270,6 +270,17 @@ _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY = (
 )
 
 
+class ChronologicalOrderError(ValueError):
+    """A collection was written behind the product's latest recorded run.
+
+    Subclasses :class:`ValueError` so callers written against the original
+    guard keep working. Named so an unattended worker can tell a backwards
+    clock (an NTP correction, a restored VM snapshot) apart from a genuine
+    programming error and report it as a classified failure rather than dying
+    on an unhandled traceback -- see ``scripts/collect_market_rates_workflow.py``.
+    """
+
+
 @dataclass(frozen=True)
 class WriteResult:
     """Outcome of persisting one collection run."""
@@ -1011,7 +1022,10 @@ class ObservationStore:
                 (product_type.value,),
             ).fetchone()[0]
             if latest is not None and timestamp < latest:
-                raise ValueError("collections must be written in chronological order per product")
+                raise ChronologicalOrderError(
+                    "collections must be written in chronological order per product "
+                    f"(this run {timestamp}, latest stored {latest})"
+                )
             # An upsert (UPDATE on conflict), not INSERT OR REPLACE: the
             # latter deletes and reinserts on a run_id collision, handing the
             # row a brand new (higher) rowid. _run_ordered_after()/

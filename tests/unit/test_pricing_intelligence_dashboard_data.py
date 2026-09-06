@@ -147,8 +147,12 @@ def test_freshness_frame_of_an_empty_bank_set_is_empty(make_record):
     pd.DataFrame([]).set_index("Bank") would raise KeyError (no "Bank"
     column on an empty frame) and abort the whole page instead."""
     frame = build_freshness_frame(
-        [make_record(bank="ANZ")], [], max_age_hours=168, now=DAY_ONE,
-        run_ids_by_bank={"ANZ": ["run-1"]}, latest_run_id="run-1",
+        [make_record(bank="ANZ")],
+        [],
+        max_age_hours=168,
+        now=DAY_ONE,
+        run_ids_by_bank={"ANZ": ["run-1"]},
+        latest_run_id="run-1",
     )
 
     assert frame.empty
@@ -158,8 +162,12 @@ def test_freshness_frame_of_an_empty_bank_set_is_empty(make_record):
 
 def test_freshness_frame_flags_a_bank_not_touched_by_the_latest_run(make_record):
     frame = build_freshness_frame(
-        [make_record(bank="ANZ", observed_at=DAY_ONE)], ["ANZ"], max_age_hours=168,
-        now=DAY_ONE, run_ids_by_bank={"ANZ": ["run-1"]}, latest_run_id="run-2",
+        [make_record(bank="ANZ", observed_at=DAY_ONE)],
+        ["ANZ"],
+        max_age_hours=168,
+        now=DAY_ONE,
+        run_ids_by_bank={"ANZ": ["run-1"]},
+        latest_run_id="run-2",
     )
 
     assert "not fully confirmed in latest stored run" in frame.loc["ANZ", "Status"]
@@ -167,8 +175,12 @@ def test_freshness_frame_flags_a_bank_not_touched_by_the_latest_run(make_record)
 
 def test_freshness_frame_of_a_bank_touched_by_the_latest_run_is_fresh(make_record):
     frame = build_freshness_frame(
-        [make_record(bank="ANZ", observed_at=DAY_ONE)], ["ANZ"], max_age_hours=168,
-        now=DAY_ONE, run_ids_by_bank={"ANZ": ["run-1"]}, latest_run_id="run-1",
+        [make_record(bank="ANZ", observed_at=DAY_ONE)],
+        ["ANZ"],
+        max_age_hours=168,
+        now=DAY_ONE,
+        run_ids_by_bank={"ANZ": ["run-1"]},
+        latest_run_id="run-1",
     )
 
     assert frame.loc["ANZ", "Status"] == "Fresh"
