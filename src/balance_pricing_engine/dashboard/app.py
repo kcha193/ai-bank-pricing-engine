@@ -100,9 +100,13 @@ def _render_market_intelligence() -> None:
         snapshot = service.get_market_snapshot()
         last_run = service.store.latest_run_id(product_type=ProductType.HOME_LOAN)
         last_run_at = service.store.get_run_started_at(last_run) if last_run else None
+        run_ids_by_bank = service.store.get_current_observation_run_ids(
+            product_type=ProductType.HOME_LOAN
+        )
         health = build_freshness_frame(
             service.store.get_current_observations(), intelligence_config.selected_banks,
-            intelligence_config.max_observation_age_hours, datetime.now(timezone.utc), last_run_at,
+            intelligence_config.max_observation_age_hours, datetime.now(timezone.utc),
+            run_ids_by_bank, last_run,
         )
         st.caption(f"Last collection attempt recorded: {last_run_at or 'none'}")
         incomplete = health[health["Status"] != "Fresh"]

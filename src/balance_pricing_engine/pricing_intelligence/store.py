@@ -1670,6 +1670,41 @@ class ObservationStore:
         ).fetchall()
         return [_row_to_record(row) for row in rows]
 
+    def get_current_observation_run_ids(
+        self, product_type: ProductType | str = ProductType.HOME_LOAN
+    ) -> dict[str, list[str]]:
+        """Map each bank to the ``last_seen_run_id`` of every one of its
+        current observation rows (the same rows :meth:`get_current_observations`
+        returns).
+
+        Lets a caller check whether a bank was touched by a specific run --
+        e.g. the latest run for this product, via :meth:`latest_run_id` --
+        by run identity rather than by comparing ``captured_at_utc``
+        timestamps. Two distinct runs can share the same ``started_at``
+        (recorded with second, not sub-second, precision, or simply
+        launched back-to-back within the same second), which a timestamp
+        comparison cannot tell apart from "the same run": a bank a later
+        run failed to touch would then read as reconfirmed just because its
+        surviving row's timestamp happens to match.
+        """
+        rows = self._connection.execute(
+            "SELECT bank, last_seen_run_id FROM observations o "
+            "WHERE product_type = ? AND id = ("
+            "  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
+            "  ORDER BY first_observed_at DESC, id DESC LIMIT 1"
+            ") AND NOT EXISTS ("
+            "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
+            "  AND rc.change_type = 'REMOVED_PRODUCT' AND "
+            + _run_ordered_after("rc.run_id", "rc.detected_at", "o.last_seen_run_id", "o.last_seen_at")
+            + ") "
+            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra=""),
+            (_product_value(product_type),),
+        ).fetchall()
+        run_ids_by_bank: dict[str, list[str]] = {}
+        for row in rows:
+            run_ids_by_bank.setdefault(row["bank"], []).append(row["last_seen_run_id"])
+        return run_ids_by_bank
+
     def get_last_confirmed_observations(
         self,
         product_type: ProductType | str = ProductType.HOME_LOAN,

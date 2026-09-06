@@ -294,6 +294,46 @@ def test_freshness_is_not_skewed_by_a_newer_term_deposit_run(
     assert not any("Collection freshness needs review" in warning for warning in warnings)
 
 
+def test_freshness_flags_a_bank_untouched_by_a_same_timestamp_later_run(
+    monkeypatch, tmp_path, make_record
+):
+    """Two collection runs can share the same started_at (recorded with
+    second, not sub-second, precision, or simply launched back-to-back
+    within the same second). A bank the later run fails to touch keeps a
+    captured_at_utc equal to that shared timestamp, so a comparison against
+    the latest run's *timestamp* cannot tell its surviving row apart from
+    one the latest run genuinely reconfirmed -- build_freshness_frame must
+    compare by run identity (last_seen_run_id) instead."""
+    path = tmp_path / "observations.db"
+    config = PricingIntelligenceConfig(database_path=str(path))
+    with PricingIntelligenceService(config=config, store=ObservationStore(path)) as service:
+        service.store.record_observations(
+            [
+                make_record(bank=bank, rate_category="special", rate_pct=4.79)
+                for bank in config.selected_banks
+            ],
+            observed_at=DAY_ONE,
+            run_id="run-1",
+        )
+        # The later run shares run-1's exact timestamp but never touches
+        # Kiwibank -- its row's last_seen_run_id stays "run-1" even though
+        # captured_at_utc (last_seen_at) still reads DAY_ONE either way.
+        other_banks = [bank for bank in config.selected_banks if bank != "Kiwibank"]
+        service.store.record_observations(
+            [
+                make_record(bank=bank, rate_category="special", rate_pct=4.79)
+                for bank in other_banks
+            ],
+            observed_at=DAY_ONE,
+            run_id="run-2",
+        )
+
+    fake = render_dashboard(monkeypatch, str(path))
+
+    warnings = fake.texts("warning")
+    assert any("Kiwibank" in warning for warning in warnings)
+
+
 def test_section_guides_the_user_when_no_data_exists(monkeypatch, tmp_path):
     """The suggested recovery command must actually work: every tracked
     bank's collector now needs --render-javascript (collectors/base.py:
