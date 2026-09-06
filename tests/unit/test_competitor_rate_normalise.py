@@ -169,3 +169,31 @@ def test_normalise_balance_an_unrelated_leading_minimum_before_a_genuine_range_i
     9999) belong to a different figure and must not surface as the max
     either."""
     assert normalise_balance("Minimum $1,000 | Balance $5,000 to $9,999") == (1000.0, None)
+
+
+@pytest.mark.parametrize(
+    ("label", "expected_months"),
+    [
+        ("Fixed - 1 year", 12),
+        ("Standard - 18 months", 18),
+        ("Fixed rate - 5 years", 60),
+        ("Home loan - 6 months", 6),
+        ("6-12 months", 12),
+    ],
+)
+def test_normalise_term_keeps_a_dash_separated_label_a_real_term(label, expected_months):
+    """A dash used as a *separator* is not a minus sign.
+
+    The malformed-duration guard rejects a negative duration ("-1 year"), but
+    a bank labelling a row "Fixed - 1 year" is stating a normal 12-month term.
+    Treating the separator as a sign drops the row's fixed term entirely, so
+    the product silently leaves the fixed-term market comparison -- the same
+    class of silent-drop defect as a mis-set default_fixed_category.
+    """
+    assert normalise_term(label).months == expected_months
+
+
+@pytest.mark.parametrize("label", ["-1 year", "-6 months", "-30 days"])
+def test_normalise_term_still_rejects_a_signed_duration(label):
+    """The sign attached directly to the duration still invalidates it."""
+    assert normalise_term(label).months is None

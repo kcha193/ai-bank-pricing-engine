@@ -35,7 +35,12 @@ def normalise_term(label: str) -> NormalisedTerm:
     """Normalise a bank-advertised term while preserving the original label."""
     raw_label = label.strip()
     text = raw_label.lower()
-    if re.search(r"(?:^|\s)[-−]\s*\d|\d+\.\d+\s*(?:days?|months?|years?)\b", text):
+    # A sign is only a sign when it is attached to the digits: "-1 year" is a
+    # malformed duration, but "Fixed - 1 year" uses the dash as a separator and
+    # states an ordinary 12-month term. The lookbehind keeps a numeric range
+    # ("6-12 months") out too. Rejecting a separator would silently strip the
+    # row's fixed term and drop the product from the market comparison.
+    if re.search(r"(?<![\d.])[-−]\d|\d+\.\d+\s*(?:days?|months?|years?)\b", text):
         return NormalisedTerm(raw_label=raw_label, months=None, days=None)
     if any(word in text for word in ("floating", "revolving", "flexible")):
         return NormalisedTerm(raw_label=raw_label, months=None, days=None, special_label="floating")

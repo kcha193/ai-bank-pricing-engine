@@ -2247,3 +2247,43 @@ def test_the_store_persists_to_disk(tmp_path, make_record):
 
     with ObservationStore(path) as reopened:
         assert len(reopened.get_latest_rates()) == 1
+
+
+def test_legacy_rate_named_migration_survives_two_events_that_share_a_migrated_key(
+    tmp_path, make_record
+):
+    """Two rate-named rows of one product collapse onto a single identity.
+
+    ``rate_changes`` is unique on (observation_key, change_type, detected_at,
+    run_id), so a legacy store where the old parser emitted a NEW_PRODUCT for
+    each rate-named variant in the same run has two event rows that the
+    migration rewrites onto the same key. The rewrite must skip the collision
+    rather than raise: the migration runs inside ``_create_schema`` on every
+    open, so an unhandled IntegrityError would leave the database permanently
+    unopenable -- taking the CLI, the dashboard and the scheduled collector
+    with it.
+    """
+    path = tmp_path / "legacy.db"
+    dearer = make_record(
+        bank="Westpac", rate_pct=5.59, product_name="5.59% p.a.", term_label_raw="1 year"
+    )
+    cheaper = make_record(
+        bank="Westpac", rate_pct=5.49, product_name="5.49% p.a.", term_label_raw="1 year"
+    )
+    changes = detect_changes(
+        previous=[], current=[dearer, cheaper], detected_at=DAY_ONE, run_id="run-one"
+    )
+    with ObservationStore(path) as store:
+        store.record_observations([dearer, cheaper], observed_at=DAY_ONE)
+        store.record_changes(changes)
+
+    with ObservationStore(path) as reopened:
+        assert [record.product_name for record in reopened.get_current_observations()] == ["1 year"]
+        assert reopened.get_current_observations()[0].advertised_rate_pct == 5.49
+        # The surviving event carries the repaired identity and is quarantined.
+        migrated = [
+            event
+            for event in reopened.get_changes_since(days=7, now=DAY_ONE)
+            if event["product_name"] == "1 year"
+        ]
+        assert migrated and all(event["suspicious"] for event in migrated)

@@ -406,11 +406,21 @@ class ObservationStore:
         Only a product name consisting entirely of a percentage/unit qualifies.
         Prior new/removed events created by that parser defect remain available
         but are flagged; this migration cannot independently verify their meaning.
+
+        The ``rate_changes`` rewrite is ``UPDATE OR IGNORE`` because several
+        rate-named variants of one product collapse onto a single identity:
+        events the old parser emitted for two of them in the same run then
+        share (observation_key, change_type, detected_at, run_id), which that
+        table is unique on. Skipping the collision leaves those rows under
+        their old rate-named key -- still readable for audit -- whereas
+        raising would abort ``_create_schema`` on *every* open and leave the
+        database permanently unopenable.
         """
         rows = connection.execute(
             "SELECT * FROM observations WHERE product_type = 'home_loan' "
             "AND term_months IS NOT NULL"
         ).fetchall()
+        skipped = 0
         for row in rows:
             if not re.fullmatch(r"\d+(?:\.\d+)?\s*%\s*(?:p\.?\s*a\.?)?", row["product_name"], re.I):
                 continue
@@ -419,10 +429,22 @@ class ObservationStore:
                 "UPDATE observations SET product_name = ?, observation_key = ? WHERE id = ?",
                 (record.product_name, record.observation_key(), row["id"]),
             )
-            connection.execute(
-                "UPDATE rate_changes SET product_name = ?, observation_key = ?, suspicious = 1 "
-                "WHERE observation_key = ?",
+            expected = connection.execute(
+                "SELECT COUNT(*) FROM rate_changes WHERE observation_key = ?",
+                (row["observation_key"],),
+            ).fetchone()[0]
+            updated = connection.execute(
+                "UPDATE OR IGNORE rate_changes SET product_name = ?, observation_key = ?, "
+                "suspicious = 1 WHERE observation_key = ?",
                 (record.product_name, record.observation_key(), row["observation_key"]),
+            ).rowcount
+            skipped += expected - updated
+        if skipped:
+            logger.warning(
+                "rate-named identity migration left %d change event(s) under their original "
+                "key: another event already occupies the repaired identity for the same run. "
+                "Review these historical events against the source before relying on them.",
+                skipped,
             )
 
     def _migrate_collection_runs_product_type(self, connection: sqlite3.Connection) -> None:
