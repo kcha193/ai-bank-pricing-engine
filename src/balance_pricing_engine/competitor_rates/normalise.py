@@ -174,8 +174,9 @@ _CLAUSE_BOUNDARY_PATTERN = re.compile(
 )
 
 
-def _is_low_equity(text: str) -> bool:
-    """Whether ``text`` genuinely describes a low-equity/high-LVR condition.
+def _low_equity_clause_spans(text: str) -> list[tuple[int, int]]:
+    """Spans of every clause containing a genuine (non-negated)
+    _LOW_EQUITY_PATTERN match.
 
     A negation anywhere in the same clause -- before *or after* the matched
     phrase -- reverses its meaning, so a parser checking only one side would
@@ -190,7 +191,13 @@ def _is_low_equity(text: str) -> bool:
     available for LVR above 90%. LVR above 80% attracts a margin"), and
     stopping at the first (negated) match would let the second, genuine
     clause go unclassified.
+
+    Returns spans, not just a bool, so :func:`normalise_lvr_values` can mask
+    out exactly the genuinely low-equity clause(s) rather than discarding an
+    independent hard bound stated in a *different* clause of the same
+    disclosure (e.g. "Maximum 90% LVR. LVR above 80% attracts a margin").
     """
+    spans = []
     for match in _LOW_EQUITY_PATTERN.finditer(text):
         clause_start = 0
         for boundary in _CLAUSE_BOUNDARY_PATTERN.finditer(text, 0, match.start()):
@@ -201,8 +208,13 @@ def _is_low_equity(text: str) -> bool:
             clause_end = trailing_boundary.start()
         clause = text[clause_start:clause_end]
         if not _LOW_EQUITY_NEGATION_PATTERN.search(clause):
-            return True
-    return False
+            spans.append((clause_start, clause_end))
+    return spans
+
+
+def _is_low_equity(text: str) -> bool:
+    """Whether ``text`` genuinely describes a low-equity/high-LVR condition."""
+    return bool(_low_equity_clause_spans(text))
 
 
 def normalise_lvr_condition(label: str | None) -> str:
@@ -305,18 +317,27 @@ def normalise_lvr_values(text: str | None) -> tuple[float | None, float | None]:
     if not text:
         return None, None
 
-    # These fields express upper LVR/lower equity bounds only. A low-equity
-    # upper bound cannot be stored here without reversing its meaning.
-    if _is_low_equity(text):
-        return None, None
+    # These fields express upper LVR/lower equity bounds only. A genuinely
+    # low-equity clause's own threshold cannot be stored here without
+    # reversing its meaning -- masked out rather than disqualifying the
+    # whole string, so an independent hard bound stated in a *different*
+    # clause of the same disclosure (e.g. "Maximum 90% LVR. LVR above 80%
+    # attracts a margin") still resolves.
+    search_text = text
+    for clause_start, clause_end in _low_equity_clause_spans(text):
+        search_text = (
+            search_text[:clause_start]
+            + " " * (clause_end - clause_start)
+            + search_text[clause_end:]
+        )
 
-    lvr_match = _LVR_PATTERN.search(text) or _LVR_PATTERN_PREFIXED.search(text)
+    lvr_match = _LVR_PATTERN.search(search_text) or _LVR_PATTERN_PREFIXED.search(search_text)
     if lvr_match:
         lvr = float(lvr_match.group(1)) / 100
         if 0 < lvr <= 1:
             return round(lvr, 4), round(1 - lvr, 4)
 
-    equity_match = _EQUITY_PATTERN.search(text)
+    equity_match = _EQUITY_PATTERN.search(search_text)
     if equity_match:
         equity = float(equity_match.group(1)) / 100
         if 0 <= equity < 1:

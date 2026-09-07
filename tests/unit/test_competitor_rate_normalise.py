@@ -151,16 +151,15 @@ def test_normalise_lvr_condition_checks_every_low_equity_match_not_just_the_firs
     assert normalise_lvr_condition(label) == "low_equity_margin_applies"
 
 
-def test_normalise_lvr_values_of_a_negated_first_match_still_reports_none():
-    """normalise_lvr_values must likewise not stop at the first (negated)
-    match: "not less than 90% equity" states a met minimum (no bound to
-    report here), but the second clause -- a genuine low-equity condition --
-    must still suppress the numeric fallback. Stopping at the first match
-    would let _EQUITY_PATTERN read the negated "90% equity" as if it were a
-    standard bound, fabricating (0.1, 0.9) for a row with no such bound."""
+def test_normalise_lvr_values_of_a_negated_clause_survives_a_separate_low_equity_clause():
+    """"not less than 90% equity" (negated) states a genuine met minimum --
+    at least 90% equity -- independent of the second clause's own, separate
+    low-equity condition. Only the genuinely low-equity clause is masked
+    out; the first clause's own hard bound must still resolve, the same
+    principle as "Maximum 90% LVR. LVR above 80% attracts a margin"."""
     label = "not less than 90% equity. less than 20% equity applies to new lending"
 
-    assert normalise_lvr_values(label) == (None, None)
+    assert normalise_lvr_values(label) == (0.1, 0.9)
 
 
 @pytest.mark.parametrize(
@@ -206,6 +205,18 @@ def test_normalise_lvr_values_respects_negation_placed_after_the_phrase():
     extracted via the normal fallback, not discarded as if this were an
     unqualified low-equity disclosure."""
     assert normalise_lvr_values("less than 20% equity is not required") == (0.8, 0.2)
+
+
+def test_normalise_lvr_values_preserves_a_hard_cap_alongside_a_separate_low_equity_clause():
+    """A disclosure can combine an explicit eligibility cap with a genuine
+    low-equity threshold in a separate clause: "Maximum 90% LVR. LVR above
+    80% attracts a low-equity margin" states a real 90% LVR ceiling that
+    must survive, not be discarded just because a later clause also
+    describes a genuine low-equity condition -- only that clause is masked
+    out of the numeric search, not the whole string."""
+    label = "Maximum 90% LVR. LVR above 80% attracts a low-equity margin"
+
+    assert normalise_lvr_values(label) == (0.9, 0.1)
 
 
 def test_normalise_balance_extracts_currency_amounts():
