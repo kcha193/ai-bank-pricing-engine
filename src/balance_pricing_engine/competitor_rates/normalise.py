@@ -160,6 +160,18 @@ _LOW_EQUITY_NEGATION_PATTERN = re.compile(
     re.I,
 )
 
+#: A clause boundary for _is_low_equity()'s per-clause negation scoping. A
+#: full stop or semicolon always starts a new clause; a comma only does when
+#: followed by a coordinating conjunction ("Not available to trusts, but LVR
+#: above 80% attracts a margin" -- the ", but" introduces a genuine second
+#: clause the leading negation must not reach into). An unqualified comma is
+#: deliberately excluded: it is just as commonly a list separator within one
+#: clause ("not less than 20%, 25% or 30% equity"), where treating it as a
+#: boundary would wrongly let the negation's own clause split apart.
+_CLAUSE_BOUNDARY_PATTERN = re.compile(
+    r"[.;]|,\s*(?:but|and|or|however|though|yet)\b", re.I
+)
+
 
 def _is_low_equity(text: str) -> bool:
     """Whether ``text`` genuinely describes a low-equity/high-LVR condition.
@@ -178,9 +190,9 @@ def _is_low_equity(text: str) -> bool:
     clause go unclassified.
     """
     for match in _LOW_EQUITY_PATTERN.finditer(text):
-        clause_start = (
-            max(text.rfind(".", 0, match.start()), text.rfind(";", 0, match.start())) + 1
-        )
+        clause_start = 0
+        for boundary in _CLAUSE_BOUNDARY_PATTERN.finditer(text, 0, match.start()):
+            clause_start = boundary.end()
         preceding = text[clause_start : match.start()]
         if not _LOW_EQUITY_NEGATION_PATTERN.search(preceding):
             return True

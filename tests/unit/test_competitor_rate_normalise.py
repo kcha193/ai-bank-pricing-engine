@@ -163,6 +163,26 @@ def test_normalise_lvr_values_of_a_negated_first_match_still_reports_none():
     assert normalise_lvr_values(label) == (None, None)
 
 
+@pytest.mark.parametrize(
+    ("label", "expected"),
+    [
+        ("Not available to trusts, but LVR above 80% attracts a margin", "low_equity_margin_applies"),
+        ("not less than 20%, 25% or 30% equity", "min_20_percent_equity"),
+    ],
+)
+def test_normalise_lvr_condition_scopes_negation_to_the_clause_not_the_whole_string(
+    label, expected
+):
+    """A full stop/semicolon always starts a new clause, but a plain comma
+    does not: "Not available to trusts, but LVR above 80%..." joins an
+    unrelated negated clause to a genuine restriction with a comma, and the
+    leading "not" must not reach across it -- while "not less than 20%, 25%
+    or 30% equity" is a single negated clause (a list), where treating the
+    comma as a boundary would wrongly split the negation from its own
+    phrase."""
+    assert normalise_lvr_condition(label) == expected
+
+
 def test_normalise_balance_extracts_currency_amounts():
     assert normalise_balance("$5,000+") == (5000.0, None)
     assert normalise_balance("$2,000 to $5,000,000") == (2000.0, 5_000_000.0)

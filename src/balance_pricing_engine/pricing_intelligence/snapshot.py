@@ -20,6 +20,19 @@ def _better_is_lower(product_type: ProductType) -> bool:
     return ProductType(product_type) is ProductType.HOME_LOAN
 
 
+def _banks_match(a: str, b: str) -> bool:
+    """Case/whitespace-insensitive bank-name comparison.
+
+    ``PricingIntelligenceConfig.our_bank`` accepts an arbitrary string, not
+    validated against a collector's own canonical bank name. An exact-string
+    comparison against a differently-cased or whitespace-padded ``our_bank``
+    would silently fail to exclude the tracked bank's own advertised rate
+    from market statistics, letting it influence MARKET_MEDIAN/MARKET_LEADER
+    and, through those, the resulting pricing recommendation.
+    """
+    return a.strip().casefold() == b.strip().casefold()
+
+
 @dataclass(frozen=True)
 class BankTermRate:
     """One bank's advertised rate at one term, with its market rank."""
@@ -127,7 +140,7 @@ class TermMarket:
         """Return external competitors with ranks recalculated after exclusion."""
         if bank is None:
             return self
-        entries = tuple(entry for entry in self.entries if entry.bank != bank)
+        entries = tuple(entry for entry in self.entries if not _banks_match(entry.bank, bank))
         ranks = _competition_ranks([entry.rate_pct for entry in entries])
         return replace(self, entries=tuple(
             replace(entry, rank=rank) for entry, rank in zip(entries, ranks)
