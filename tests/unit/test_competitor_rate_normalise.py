@@ -183,6 +183,31 @@ def test_normalise_lvr_condition_scopes_negation_to_the_clause_not_the_whole_str
     assert normalise_lvr_condition(label) == expected
 
 
+@pytest.mark.parametrize(
+    ("label", "expected"),
+    [
+        ("Loans with LVR above 80% are unavailable", "standard"),
+        ("LVR above 80% is unavailable", "standard"),
+    ],
+)
+def test_normalise_lvr_condition_respects_negation_placed_after_the_phrase(label, expected):
+    """A denial can follow the matched condition instead of preceding it:
+    "LVR above 80% are unavailable" states the tier is explicitly
+    ineligible, the opposite of a genuine low-equity disclosure. Checking
+    only the text before the match would miss this and label an explicitly
+    excluded tier as low-equity."""
+    assert normalise_lvr_condition(label) == expected
+
+
+def test_normalise_lvr_values_respects_negation_placed_after_the_phrase():
+    """normalise_lvr_values must likewise check for a negation that follows
+    the match: "less than 20% equity is not required" states the low-equity
+    condition does not apply, so the genuine 20%-equity bound must be
+    extracted via the normal fallback, not discarded as if this were an
+    unqualified low-equity disclosure."""
+    assert normalise_lvr_values("less than 20% equity is not required") == (0.8, 0.2)
+
+
 def test_normalise_balance_extracts_currency_amounts():
     assert normalise_balance("$5,000+") == (5000.0, None)
     assert normalise_balance("$2,000 to $5,000,000") == (2000.0, 5_000_000.0)

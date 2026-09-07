@@ -147,14 +147,15 @@ _LOW_EQUITY_PATTERN = re.compile(
     re.I,
 )
 
-#: A negation cue anywhere in the same clause before a _LOW_EQUITY_PATTERN
-#: match reverses its meaning: "not less than 20% equity" states a minimum
-#: was met (standard), not that it was missed (low-equity), and "no longer
-#: available for LVR above 80%" excludes low-equity borrowers rather than
-#: describing one. Checked only within the current clause (see
-#: _is_low_equity()), not the whole string, so an unrelated negation in an
-#: earlier sentence of a longer disclosure cannot suppress a genuine
-#: low-equity phrase.
+#: A negation cue anywhere in the same clause as a _LOW_EQUITY_PATTERN
+#: match -- before *or after* it -- reverses its meaning: "not less than
+#: 20% equity" states a minimum was met (standard), not that it was missed
+#: (low-equity); "no longer available for LVR above 80%" and the
+#: postpositive "LVR above 80% is unavailable" both exclude low-equity
+#: borrowers rather than describing one. Checked only within the current
+#: clause (see _is_low_equity()), not the whole string, so an unrelated
+#: negation in an earlier or later sentence of a longer disclosure cannot
+#: suppress a genuine low-equity phrase.
 _LOW_EQUITY_NEGATION_PATTERN = re.compile(
     r"\bnot\b|\bno\s+longer\b|\bunavailable\b|\bexcludes?\b|\bdoes\s+not\b",
     re.I,
@@ -176,12 +177,13 @@ _CLAUSE_BOUNDARY_PATTERN = re.compile(
 def _is_low_equity(text: str) -> bool:
     """Whether ``text`` genuinely describes a low-equity/high-LVR condition.
 
-    A negation earlier in the same clause reverses the matched phrase's
-    meaning, so a parser blind to it would classify the *opposite*
-    condition as low-equity -- a wording-only edit (e.g. "at least 20%
-    equity" to "not less than 20% equity") would then emit a false
-    ELIGIBILITY_CHANGE describing the reversed condition rather than
-    leaving eligibility unchanged.
+    A negation anywhere in the same clause -- before *or after* the matched
+    phrase -- reverses its meaning, so a parser checking only one side would
+    classify the *opposite* condition as low-equity: "not less than 20%
+    equity" (negation first) states a minimum was met, and "LVR above 80%
+    are unavailable" (negation after) excludes low-equity borrowers rather
+    than describing one. Either wording could otherwise emit a false
+    ELIGIBILITY_CHANGE describing the reversed condition.
 
     Every match is checked, not just the first: a disclosure can combine a
     negated restriction with a genuine one in separate clauses ("not
@@ -193,8 +195,12 @@ def _is_low_equity(text: str) -> bool:
         clause_start = 0
         for boundary in _CLAUSE_BOUNDARY_PATTERN.finditer(text, 0, match.start()):
             clause_start = boundary.end()
-        preceding = text[clause_start : match.start()]
-        if not _LOW_EQUITY_NEGATION_PATTERN.search(preceding):
+        clause_end = len(text)
+        trailing_boundary = _CLAUSE_BOUNDARY_PATTERN.search(text, match.end())
+        if trailing_boundary is not None:
+            clause_end = trailing_boundary.start()
+        clause = text[clause_start:clause_end]
+        if not _LOW_EQUITY_NEGATION_PATTERN.search(clause):
             return True
     return False
 
