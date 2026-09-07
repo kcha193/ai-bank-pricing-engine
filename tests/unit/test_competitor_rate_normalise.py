@@ -139,6 +139,30 @@ def test_normalise_lvr_values_respects_negation_before_a_low_equity_phrase():
     assert normalise_lvr_values("not less than 20% equity") == (0.8, 0.2)
 
 
+def test_normalise_lvr_condition_checks_every_low_equity_match_not_just_the_first():
+    """A disclosure can combine a negated restriction with a genuine
+    low-equity condition in a later clause: "not available for LVR above
+    90%. LVR above 80% attracts a margin" negates the first match but the
+    second clause is a real low-equity condition. Stopping at the first
+    (negated) match would read the whole disclosure as "standard" and let a
+    later wording change produce a false eligibility event."""
+    label = "not available for LVR above 90%. LVR above 80% attracts a margin"
+
+    assert normalise_lvr_condition(label) == "low_equity_margin_applies"
+
+
+def test_normalise_lvr_values_of_a_negated_first_match_still_reports_none():
+    """normalise_lvr_values must likewise not stop at the first (negated)
+    match: "not less than 90% equity" states a met minimum (no bound to
+    report here), but the second clause -- a genuine low-equity condition --
+    must still suppress the numeric fallback. Stopping at the first match
+    would let _EQUITY_PATTERN read the negated "90% equity" as if it were a
+    standard bound, fabricating (0.1, 0.9) for a row with no such bound."""
+    label = "not less than 90% equity. less than 20% equity applies to new lending"
+
+    assert normalise_lvr_values(label) == (None, None)
+
+
 def test_normalise_balance_extracts_currency_amounts():
     assert normalise_balance("$5,000+") == (5000.0, None)
     assert normalise_balance("$2,000 to $5,000,000") == (2000.0, 5_000_000.0)

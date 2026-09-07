@@ -426,6 +426,17 @@ class ObservationStore:
         their old rate-named key -- still readable for audit -- whereas
         raising would abort ``_create_schema`` on *every* open and leave the
         database permanently unopenable.
+
+        ``suspicious`` is set in a separate, unconditional ``UPDATE`` before
+        that collision-prone rewrite is attempted, not combined into it: a
+        row the rewrite skips would otherwise keep ``suspicious = 0`` under
+        its original rate-named key, which
+        :meth:`get_changes_since`\\ (``include_suspicious=False``) and market-
+        activity calculations then read as a genuine, unflagged event rather
+        than the known parser artifact it is. The plain ``UPDATE`` here only
+        touches ``suspicious``, never the table's unique columns, so it
+        cannot itself collide -- every row under the old key ends up flagged
+        regardless of whether its identity rewrite later succeeds.
         """
         rows = connection.execute(
             "SELECT * FROM observations WHERE product_type = 'home_loan' "
@@ -440,13 +451,17 @@ class ObservationStore:
                 "UPDATE observations SET product_name = ?, observation_key = ? WHERE id = ?",
                 (record.product_name, record.observation_key(), row["id"]),
             )
+            connection.execute(
+                "UPDATE rate_changes SET suspicious = 1 WHERE observation_key = ?",
+                (row["observation_key"],),
+            )
             expected = connection.execute(
                 "SELECT COUNT(*) FROM rate_changes WHERE observation_key = ?",
                 (row["observation_key"],),
             ).fetchone()[0]
             updated = connection.execute(
-                "UPDATE OR IGNORE rate_changes SET product_name = ?, observation_key = ?, "
-                "suspicious = 1 WHERE observation_key = ?",
+                "UPDATE OR IGNORE rate_changes SET product_name = ?, observation_key = ? "
+                "WHERE observation_key = ?",
                 (record.product_name, record.observation_key(), row["observation_key"]),
             ).rowcount
             skipped += expected - updated

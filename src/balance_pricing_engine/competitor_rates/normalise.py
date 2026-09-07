@@ -170,13 +170,21 @@ def _is_low_equity(text: str) -> bool:
     equity" to "not less than 20% equity") would then emit a false
     ELIGIBILITY_CHANGE describing the reversed condition rather than
     leaving eligibility unchanged.
+
+    Every match is checked, not just the first: a disclosure can combine a
+    negated restriction with a genuine one in separate clauses ("not
+    available for LVR above 90%. LVR above 80% attracts a margin"), and
+    stopping at the first (negated) match would let the second, genuine
+    clause go unclassified.
     """
-    match = _LOW_EQUITY_PATTERN.search(text)
-    if match is None:
-        return False
-    clause_start = max(text.rfind(".", 0, match.start()), text.rfind(";", 0, match.start())) + 1
-    preceding = text[clause_start : match.start()]
-    return not _LOW_EQUITY_NEGATION_PATTERN.search(preceding)
+    for match in _LOW_EQUITY_PATTERN.finditer(text):
+        clause_start = (
+            max(text.rfind(".", 0, match.start()), text.rfind(";", 0, match.start())) + 1
+        )
+        preceding = text[clause_start : match.start()]
+        if not _LOW_EQUITY_NEGATION_PATTERN.search(preceding):
+            return True
+    return False
 
 
 def normalise_lvr_condition(label: str | None) -> str:

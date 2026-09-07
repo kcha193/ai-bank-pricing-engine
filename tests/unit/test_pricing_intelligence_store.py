@@ -2287,3 +2287,36 @@ def test_legacy_rate_named_migration_survives_two_events_that_share_a_migrated_k
             if event["product_name"] == "1 year"
         ]
         assert migrated and all(event["suspicious"] for event in migrated)
+
+
+def test_legacy_rate_named_migration_quarantines_a_skipped_collision_row_too(
+    tmp_path, make_record
+):
+    """The event the identity rewrite skips (see the test above) stays under
+    its original rate-named key -- but it must not stay *unflagged* there:
+    UPDATE OR IGNORE only touches the row it succeeds on, so a plain
+    combined UPDATE ... SET suspicious = 1 ... would leave the skipped row's
+    suspicious flag at its original 0. get_changes_since(include_suspicious=
+    False) and market-activity calculations would then treat this known
+    parser artifact as a genuine, unflagged event."""
+    path = tmp_path / "legacy.db"
+    dearer = make_record(
+        bank="Westpac", rate_pct=5.59, product_name="5.59% p.a.", term_label_raw="1 year"
+    )
+    cheaper = make_record(
+        bank="Westpac", rate_pct=5.49, product_name="5.49% p.a.", term_label_raw="1 year"
+    )
+    changes = detect_changes(
+        previous=[], current=[dearer, cheaper], detected_at=DAY_ONE, run_id="run-one"
+    )
+    with ObservationStore(path) as store:
+        store.record_observations([dearer, cheaper], observed_at=DAY_ONE)
+        store.record_changes(changes)
+
+    with ObservationStore(path) as reopened:
+        every_event = reopened.get_changes_since(days=7, now=DAY_ONE, include_suspicious=True)
+        unflagged_events = reopened.get_changes_since(
+            days=7, now=DAY_ONE, include_suspicious=False
+        )
+        assert len(every_event) == 2
+        assert unflagged_events == []
