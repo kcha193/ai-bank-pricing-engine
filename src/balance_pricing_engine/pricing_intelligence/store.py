@@ -442,29 +442,67 @@ class ObservationStore:
             "SELECT * FROM observations WHERE product_type = 'home_loan' "
             "AND term_months IS NOT NULL"
         ).fetchall()
-        skipped = 0
-        for row in rows:
-            if not re.fullmatch(r"\d+(?:\.\d+)?\s*%\s*(?:p\.?\s*a\.?)?", row["product_name"], re.I):
-                continue
+        candidates = [
+            row
+            for row in rows
+            if re.fullmatch(r"\d+(?:\.\d+)?\s*%\s*(?:p\.?\s*a\.?)?", row["product_name"], re.I)
+        ]
+
+        # Grouped by the identity each row repairs to, not applied one row
+        # at a time: several rate-named variants of one product collapse
+        # onto a single identity, and only grouping first can tell that
+        # genuine collision (more than one row landing on the same repaired
+        # key) apart from the common, unambiguous one-row repair.
+        repaired_groups: dict[str, list[sqlite3.Row]] = {}
+        for row in candidates:
             record = _row_to_record(row).model_copy(update={"product_name": row["term_label_raw"]})
-            connection.execute(
-                "UPDATE observations SET product_name = ?, observation_key = ? WHERE id = ?",
-                (record.product_name, record.observation_key(), row["id"]),
+            repaired_groups.setdefault(record.observation_key(), []).append(row)
+
+        skipped = 0
+        quarantined = 0
+        for group in repaired_groups.values():
+            ambiguous = len(group) > 1
+            for row in group:
+                record = _row_to_record(row).model_copy(
+                    update={"product_name": row["term_label_raw"]}
+                )
+                if ambiguous:
+                    connection.execute(
+                        "UPDATE observations SET product_name = ?, observation_key = ?, "
+                        "validation_status = 'warning' WHERE id = ?",
+                        (record.product_name, record.observation_key(), row["id"]),
+                    )
+                    quarantined += 1
+                else:
+                    connection.execute(
+                        "UPDATE observations SET product_name = ?, observation_key = ? "
+                        "WHERE id = ?",
+                        (record.product_name, record.observation_key(), row["id"]),
+                    )
+                connection.execute(
+                    "UPDATE rate_changes SET suspicious = 1 WHERE observation_key = ?",
+                    (row["observation_key"],),
+                )
+                expected = connection.execute(
+                    "SELECT COUNT(*) FROM rate_changes WHERE observation_key = ?",
+                    (row["observation_key"],),
+                ).fetchone()[0]
+                updated = connection.execute(
+                    "UPDATE OR IGNORE rate_changes SET product_name = ?, observation_key = ? "
+                    "WHERE observation_key = ?",
+                    (record.product_name, record.observation_key(), row["observation_key"]),
+                ).rowcount
+                skipped += expected - updated
+        if quarantined:
+            logger.warning(
+                "rate-named identity migration found %d observation(s) whose repaired identity "
+                "collides with another row from the same run: quarantined as "
+                "validation_status='warning' (excluded from get_current_observations() and "
+                "market statistics) rather than let get_current_observations() arbitrarily pick "
+                "one of the colliding rates as current. Review against the source before "
+                "clearing the warning.",
+                quarantined,
             )
-            connection.execute(
-                "UPDATE rate_changes SET suspicious = 1 WHERE observation_key = ?",
-                (row["observation_key"],),
-            )
-            expected = connection.execute(
-                "SELECT COUNT(*) FROM rate_changes WHERE observation_key = ?",
-                (row["observation_key"],),
-            ).fetchone()[0]
-            updated = connection.execute(
-                "UPDATE OR IGNORE rate_changes SET product_name = ?, observation_key = ? "
-                "WHERE observation_key = ?",
-                (record.product_name, record.observation_key(), row["observation_key"]),
-            ).rowcount
-            skipped += expected - updated
         if skipped:
             logger.warning(
                 "rate-named identity migration left %d change event(s) under their original "

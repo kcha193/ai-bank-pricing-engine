@@ -219,6 +219,34 @@ def test_normalise_lvr_values_preserves_a_hard_cap_alongside_a_separate_low_equi
     assert normalise_lvr_values(label) == (0.9, 0.1)
 
 
+def test_normalise_lvr_values_preserves_a_hard_cap_joined_by_a_bare_conjunction():
+    """The same principle applies when the two clauses are joined by a bare
+    conjunction rather than a full stop: "Maximum 90% LVR and LVR above 80%
+    attracts a low-equity margin" has no comma or period before "and", but
+    the repeated "LVR" still marks a genuine second clause -- the 90% cap
+    must not be discarded just because the boundary lacks punctuation."""
+    label = "Maximum 90% LVR and LVR above 80% attracts a low-equity margin"
+
+    assert normalise_lvr_values(label) == (0.9, 0.1)
+
+
+def test_normalise_lvr_condition_does_not_split_a_clause_at_a_decimal_point():
+    """A "." inside an advertised decimal rate is not a sentence boundary:
+    "Not available at 4.99% for LVR above 80%" must keep "Not available" in
+    the same clause as the LVR match, or the decimal point would silently
+    cut the negation away from the condition it negates."""
+    assert normalise_lvr_condition("Not available at 4.99% for LVR above 80%") == "standard"
+
+
+def test_normalise_lvr_condition_a_bare_or_between_rate_options_is_not_a_boundary():
+    """A bare "or" joining two rate options for *one* condition must not
+    become a clause boundary just because a later fix taught boundary
+    detection to recognise a bare conjunction: "LVR above 80% or 85% is
+    unavailable" states one denial covering both options, and splitting at
+    "or" would cut the trailing negation out of the clause it belongs to."""
+    assert normalise_lvr_condition("LVR above 80% or 85% is unavailable") == "standard"
+
+
 def test_normalise_balance_extracts_currency_amounts():
     assert normalise_balance("$5,000+") == (5000.0, None)
     assert normalise_balance("$2,000 to $5,000,000") == (2000.0, 5_000_000.0)

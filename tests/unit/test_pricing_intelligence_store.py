@@ -2320,3 +2320,40 @@ def test_legacy_rate_named_migration_quarantines_a_skipped_collision_row_too(
         )
         assert len(every_event) == 2
         assert unflagged_events == []
+
+
+def test_legacy_rate_named_migration_quarantines_the_colliding_observations_too(
+    tmp_path, make_record
+):
+    """Flagging the rate_changes events (see the tests above) is not enough:
+    the observations table has no uniqueness constraint on observation_key,
+    so both colliding rows survive under the same repaired identity with a
+    clean validation_status by default. get_current_observations() then
+    picks whichever one has the higher id as the current state -- an
+    accident of parse order, not a verified rate -- and get_market_snapshot()
+    would trust it. Both colliding observations must be quarantined as
+    validation_status='warning' too, the same convention a suspicious live
+    collection already uses to keep a bad reading out of market
+    statistics."""
+    path = tmp_path / "legacy.db"
+    dearer = make_record(
+        bank="Westpac", rate_pct=5.59, product_name="5.59% p.a.", term_label_raw="1 year"
+    )
+    cheaper = make_record(
+        bank="Westpac", rate_pct=5.49, product_name="5.49% p.a.", term_label_raw="1 year"
+    )
+    changes = detect_changes(
+        previous=[], current=[dearer, cheaper], detected_at=DAY_ONE, run_id="run-one"
+    )
+    with ObservationStore(path) as store:
+        store.record_observations([dearer, cheaper], observed_at=DAY_ONE)
+        store.record_changes(changes)
+
+    with ObservationStore(path) as reopened:
+        current = [
+            record
+            for record in reopened.get_current_observations()
+            if record.product_name == "1 year"
+        ]
+        assert current and all(record.validation_status == "warning" for record in current)
+        assert reopened.get_last_confirmed_observations() == []

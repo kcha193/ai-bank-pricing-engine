@@ -161,16 +161,34 @@ _LOW_EQUITY_NEGATION_PATTERN = re.compile(
     re.I,
 )
 
-#: A clause boundary for _is_low_equity()'s per-clause negation scoping. A
-#: full stop or semicolon always starts a new clause; a comma only does when
-#: followed by a coordinating conjunction ("Not available to trusts, but LVR
-#: above 80% attracts a margin" -- the ", but" introduces a genuine second
-#: clause the leading negation must not reach into). An unqualified comma is
-#: deliberately excluded: it is just as commonly a list separator within one
-#: clause ("not less than 20%, 25% or 30% equity"), where treating it as a
-#: boundary would wrongly let the negation's own clause split apart.
+#: A clause boundary for _is_low_equity()'s per-clause negation scoping.
+#:
+#: A full stop or semicolon always starts a new clause -- but only when the
+#: "." is a sentence-ending period, not a decimal separator: "Not available
+#: at 4.99% for LVR above 80%" must keep "Not available" in the same clause
+#: as the LVR match, not split it off at the "." inside "4.99".
+#:
+#: A comma only starts a new clause when followed by a coordinating
+#: conjunction ("Not available to trusts, but LVR above 80% attracts a
+#: margin" -- the ", but" introduces a genuine second clause the leading
+#: negation must not reach into). An unqualified comma is deliberately
+#: excluded: it is just as commonly a list separator within one clause
+#: ("not less than 20%, 25% or 30% equity"), where treating it as a boundary
+#: would wrongly let the negation's own clause split apart.
+#:
+#: A *bare* conjunction (no comma) only starts a new clause when it directly
+#: restarts an LVR condition ("Maximum 90% LVR and LVR above 80% attracts a
+#: margin" -- the repeated "LVR" is the second clause's own subject).
+#: Without that anchor, a bare conjunction is deliberately not a boundary:
+#: "LVR above 80% or 85% is unavailable" states two rate options for *one*
+#: condition, and splitting at "or" would cut the trailing "is unavailable"
+#: negation out of the clause it belongs to.
 _CLAUSE_BOUNDARY_PATTERN = re.compile(
-    r"[.;]|,\s*(?:but|and|or|however|though|yet)\b", re.I
+    r"(?<!\d)\.(?!\d)"
+    r"|;"
+    r"|,\s*(?:but|and|or|however|though|yet)\b"
+    r"|\b(?:but|and|or|however|though|yet)\s+(?=lvr\b)",
+    re.I,
 )
 
 
@@ -200,7 +218,14 @@ def _low_equity_clause_spans(text: str) -> list[tuple[int, int]]:
     spans = []
     for match in _LOW_EQUITY_PATTERN.finditer(text):
         clause_start = 0
-        for boundary in _CLAUSE_BOUNDARY_PATTERN.finditer(text, 0, match.start()):
+        # Searched over the *full* text, not text[:match.start()]: the
+        # bare-conjunction alternative's (?=lvr\b) lookahead must be able to
+        # see the "lvr" it anchors on, which sits at/after match.start() --
+        # endpos truncation would hide it from the lookahead entirely,
+        # since re treats the string as if it ended there.
+        for boundary in _CLAUSE_BOUNDARY_PATTERN.finditer(text):
+            if boundary.start() >= match.start():
+                break
             clause_start = boundary.end()
         clause_end = len(text)
         trailing_boundary = _CLAUSE_BOUNDARY_PATTERN.search(text, match.end())
