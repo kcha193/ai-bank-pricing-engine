@@ -2357,3 +2357,37 @@ def test_legacy_rate_named_migration_quarantines_the_colliding_observations_too(
         ]
         assert current and all(record.validation_status == "warning" for record in current)
         assert reopened.get_last_confirmed_observations() == []
+
+
+def test_legacy_rate_named_migration_does_not_quarantine_an_ordinary_reprice_history(
+    tmp_path, make_record
+):
+    """The rate is deliberately absent from identity, so a legacy product
+    legitimately repriced across separate collection runs (5.59% one week,
+    5.49% the next) has every one of its historical rate-named rows repair
+    to the *same* identity too -- that is an ordinary reprice history, not a
+    same-run collision. Grouping by repaired identity alone would quarantine
+    the latest state right along with the genuine collision case above,
+    leaving it with no confirmed fallback and dropping it from market
+    snapshots. Only rows sharing both the repaired identity and their
+    introducing run are a genuine collision."""
+    path = tmp_path / "legacy.db"
+    week_one = make_record(
+        bank="Westpac", rate_pct=5.59, product_name="5.59% p.a.", term_label_raw="1 year"
+    )
+    week_two = make_record(
+        bank="Westpac", rate_pct=5.49, product_name="5.49% p.a.", term_label_raw="1 year"
+    )
+    with ObservationStore(path) as store:
+        store.record_observations([week_one], observed_at=DAY_ONE, run_id="run-week-one")
+        store.record_observations([week_two], observed_at=DAY_TWO, run_id="run-week-two")
+
+    with ObservationStore(path) as reopened:
+        current = [
+            record
+            for record in reopened.get_current_observations()
+            if record.product_name == "1 year"
+        ]
+        assert len(current) == 1
+        assert current[0].advertised_rate_pct == 5.49
+        assert current[0].validation_status != "warning"

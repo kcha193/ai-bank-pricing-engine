@@ -448,15 +448,27 @@ class ObservationStore:
             if re.fullmatch(r"\d+(?:\.\d+)?\s*%\s*(?:p\.?\s*a\.?)?", row["product_name"], re.I)
         ]
 
-        # Grouped by the identity each row repairs to, not applied one row
-        # at a time: several rate-named variants of one product collapse
-        # onto a single identity, and only grouping first can tell that
-        # genuine collision (more than one row landing on the same repaired
-        # key) apart from the common, unambiguous one-row repair.
-        repaired_groups: dict[str, list[sqlite3.Row]] = {}
+        # Grouped by the identity each row repairs to *and* the run that
+        # introduced it, not applied one row at a time or grouped by
+        # identity alone: the rate is deliberately absent from identity, so
+        # a legacy product legitimately repriced across separate runs has
+        # every one of its historical rate-named rows repair to the same
+        # identity too -- that is an ordinary reprice history, not a
+        # collision, and grouping by identity alone would quarantine the
+        # latest state right along with it, leaving it no confirmed
+        # fallback and dropping it from market snapshots. Only rows sharing
+        # both the repaired identity *and* first_seen_run_id are a genuine
+        # collision: the source page advertised two conflicting rate-named
+        # readings for what should be one product in a single collection
+        # attempt. first_seen_run_id is guaranteed backfilled by this point
+        # -- _migrate_observations_first_seen_run_id() runs earlier in
+        # _create_schema, on every database this migration also runs on.
+        repaired_groups: dict[tuple[str, str], list[sqlite3.Row]] = {}
         for row in candidates:
             record = _row_to_record(row).model_copy(update={"product_name": row["term_label_raw"]})
-            repaired_groups.setdefault(record.observation_key(), []).append(row)
+            repaired_groups.setdefault(
+                (record.observation_key(), row["first_seen_run_id"]), []
+            ).append(row)
 
         skipped = 0
         quarantined = 0
