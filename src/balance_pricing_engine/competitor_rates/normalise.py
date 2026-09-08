@@ -35,7 +35,14 @@ def normalise_term(label: str) -> NormalisedTerm:
     """Normalise a bank-advertised term while preserving the original label."""
     raw_label = label.strip()
     text = raw_label.lower()
-    if "floating" in text:
+    # A sign is only a sign when it is attached to the digits: "-1 year" is a
+    # malformed duration, but "Fixed - 1 year" uses the dash as a separator and
+    # states an ordinary 12-month term. The lookbehind keeps a numeric range
+    # ("6-12 months") out too. Rejecting a separator would silently strip the
+    # row's fixed term and drop the product from the market comparison.
+    if re.search(r"(?<![\d.])[-−]\d|\d+\.\d+\s*(?:days?|months?|years?)\b", text):
+        return NormalisedTerm(raw_label=raw_label, months=None, days=None)
+    if any(word in text for word in ("floating", "revolving", "flexible")):
         return NormalisedTerm(raw_label=raw_label, months=None, days=None, special_label="floating")
     if "variable" in text:
         return NormalisedTerm(raw_label=raw_label, months=None, days=None, special_label="variable")
@@ -43,15 +50,17 @@ def normalise_term(label: str) -> NormalisedTerm:
     days_match = re.search(r"\b(\d+)\s*days?\b", text)
     if days_match:
         days = int(days_match.group(1))
+        if days == 0:
+            return NormalisedTerm(raw_label=raw_label, months=None, days=None)
         return NormalisedTerm(raw_label=raw_label, months=max(round(days / 30), 1), days=days)
 
     months_match = re.search(r"\b(\d+)\s*months?\b", text)
     if months_match:
-        return NormalisedTerm(raw_label=raw_label, months=int(months_match.group(1)), days=None)
+        return NormalisedTerm(raw_label=raw_label, months=int(months_match.group(1)) or None, days=None)
 
     years_match = re.search(r"\b(\d+)\s*years?\b", text)
     if years_match:
-        return NormalisedTerm(raw_label=raw_label, months=int(years_match.group(1)) * 12, days=None)
+        return NormalisedTerm(raw_label=raw_label, months=int(years_match.group(1)) * 12 or None, days=None)
 
     for word, number in NUMBER_WORDS.items():
         if re.search(rf"\b{word}\s+months?\b", text):
@@ -131,11 +140,147 @@ def normalise_frequency(label: str | None) -> str:
     return "+".join(sorted(matches))
 
 
+_LOW_EQUITY_PATTERN = re.compile(
+    r"(?:less than|under|below|<)\s*\d+(?:\.\d+)?\s*%\s*equity"
+    r"|(?:lvr\s*(?:above|over|more than|>)\s*\d+(?:\.\d+)?\s*%)"
+    r"|(?:(?:above|over|more than|>)\s*\d+(?:\.\d+)?\s*%\s*lvr)",
+    re.I,
+)
+
+#: A negation cue anywhere in the same clause as a _LOW_EQUITY_PATTERN
+#: match -- before *or after* it -- reverses its meaning: "not less than
+#: 20% equity" states a minimum was met (standard), not that it was missed
+#: (low-equity); "no longer available for LVR above 80%" and the
+#: postpositive "LVR above 80% is unavailable" both exclude low-equity
+#: borrowers rather than describing one. Checked only within the current
+#: clause (see _is_low_equity()), not the whole string, so an unrelated
+#: negation in an earlier or later sentence of a longer disclosure cannot
+#: suppress a genuine low-equity phrase.
+_LOW_EQUITY_NEGATION_PATTERN = re.compile(
+    r"\bnot\b|\bno\s+longer\b|\bunavailable\b|\bexcludes?\b|\bdoes\s+not\b",
+    re.I,
+)
+
+#: A clause boundary for _is_low_equity()'s per-clause negation scoping.
+#:
+#: A full stop or semicolon always starts a new clause -- but only when the
+#: "." is a sentence-ending period, not a decimal separator: "Not available
+#: at 4.99% for LVR above 80%" must keep "Not available" in the same clause
+#: as the LVR match, not split it off at the "." inside "4.99".
+#:
+#: "and"/"but" always start a new clause, comma or no comma: each
+#: introduces its own conjunct with its own predicate, so a negation on
+#: either side belongs to that conjunct alone. This covers a genuine
+#: second clause restarting an LVR condition ("Maximum 90% LVR and LVR
+#: above 80% attracts a margin") and an unrelated trailing conjunct whose
+#: own negation must not reach back into a genuine match before it ("LVR
+#: above 80% attracts a low-equity margin and does not qualify for
+#: cashback" -- "does not" negates cashback eligibility, not the LVR
+#: condition).
+#:
+#: "or"/"however"/"though"/"yet" start a new clause only with a preceding
+#: comma ("Not available to trusts, but LVR above 80% attracts a margin").
+#: Bare "or" is deliberately excluded: it is just as commonly joining two
+#: rate options for *one* predicate ("LVR above 80% or 85% is
+#: unavailable"), where treating it as a boundary would cut the trailing
+#: negation out of the clause it belongs to. A comma alone (no
+#: conjunction) is excluded too: it is just as commonly a list separator
+#: within one clause ("not less than 20%, 25% or 30% equity"), where
+#: treating it as a boundary would wrongly let the negation's own clause
+#: split apart.
+#:
+#: A full stop or semicolon always starts a new clause -- but only when the
+#: "." is a sentence-ending period, not a decimal separator: "Not available
+#: at 4.99% for LVR above 80%" must keep "Not available" in the same clause
+#: as the LVR match, not split it off at the "." inside "4.99".
+_CLAUSE_BOUNDARY_PATTERN = re.compile(
+    r"(?<!\d)\.(?!\d)"
+    r"|;"
+    r"|,?\s*\b(?:and|but)\b"
+    r"|,\s*(?:or|however|though|yet)\b",
+    re.I,
+)
+
+
+def _is_coordinated_object_conjunction(text: str, boundary: re.Match) -> bool:
+    """Whether an "and"/"but" clause-boundary candidate instead coordinates
+    two objects of one shared clause, rather than introducing an
+    independent second clause -- so it must not be treated as a *leading*
+    boundary for the match that follows it.
+
+    True when the conjunction is immediately preceded (only whitespace in
+    between) by the end of another _LOW_EQUITY_PATTERN match: "Not
+    available for borrowers with LVR above 80% and less than 20% equity"
+    coordinates two eligibility conditions under one shared "Not available"
+    governing both -- unlike "Maximum 90% LVR and LVR above 80% attracts a
+    margin", where "and" joins two independent, already-complete
+    statements (the first, "Maximum 90% LVR", is not itself a
+    _LOW_EQUITY_PATTERN match at all, so this exception does not apply and
+    "and" remains a genuine boundary there).
+    """
+    word = boundary.group().strip(" ,")
+    if word.lower() not in ("and", "but"):
+        return False
+    end = boundary.start()
+    while end > 0 and text[end - 1].isspace():
+        end -= 1
+    return any(candidate.end() == end for candidate in _LOW_EQUITY_PATTERN.finditer(text))
+
+
+def _low_equity_clause_spans(text: str) -> list[tuple[int, int]]:
+    """Spans of every clause containing a genuine (non-negated)
+    _LOW_EQUITY_PATTERN match.
+
+    A negation anywhere in the same clause -- before *or after* the matched
+    phrase -- reverses its meaning, so a parser checking only one side would
+    classify the *opposite* condition as low-equity: "not less than 20%
+    equity" (negation first) states a minimum was met, and "LVR above 80%
+    are unavailable" (negation after) excludes low-equity borrowers rather
+    than describing one. Either wording could otherwise emit a false
+    ELIGIBILITY_CHANGE describing the reversed condition.
+
+    Every match is checked, not just the first: a disclosure can combine a
+    negated restriction with a genuine one in separate clauses ("not
+    available for LVR above 90%. LVR above 80% attracts a margin"), and
+    stopping at the first (negated) match would let the second, genuine
+    clause go unclassified.
+
+    Returns spans, not just a bool, so :func:`normalise_lvr_values` can mask
+    out exactly the genuinely low-equity clause(s) rather than discarding an
+    independent hard bound stated in a *different* clause of the same
+    disclosure (e.g. "Maximum 90% LVR. LVR above 80% attracts a margin").
+    """
+    spans = []
+    for match in _LOW_EQUITY_PATTERN.finditer(text):
+        clause_start = 0
+        for boundary in _CLAUSE_BOUNDARY_PATTERN.finditer(text):
+            if boundary.start() >= match.start():
+                break
+            if _is_coordinated_object_conjunction(text, boundary):
+                continue
+            clause_start = boundary.end()
+        clause_end = len(text)
+        trailing_boundary = _CLAUSE_BOUNDARY_PATTERN.search(text, match.end())
+        if trailing_boundary is not None:
+            clause_end = trailing_boundary.start()
+        clause = text[clause_start:clause_end]
+        if not _LOW_EQUITY_NEGATION_PATTERN.search(clause):
+            spans.append((clause_start, clause_end))
+    return spans
+
+
+def _is_low_equity(text: str) -> bool:
+    """Whether ``text`` genuinely describes a low-equity/high-LVR condition."""
+    return bool(_low_equity_clause_spans(text))
+
+
 def normalise_lvr_condition(label: str | None) -> str:
     """Map common mortgage LVR/equity disclosures to canonical labels."""
     if not label:
         return "standard"
     text = label.lower()
+    if _is_low_equity(text):
+        return "low_equity_margin_applies"
     if "20%" in text and "equity" in text:
         return "min_20_percent_equity"
     if "lvr" in text and ("under 80%" in text or "< 80%" in text or "<80%" in text):
@@ -229,13 +374,27 @@ def normalise_lvr_values(text: str | None) -> tuple[float | None, float | None]:
     if not text:
         return None, None
 
-    lvr_match = _LVR_PATTERN.search(text) or _LVR_PATTERN_PREFIXED.search(text)
+    # These fields express upper LVR/lower equity bounds only. A genuinely
+    # low-equity clause's own threshold cannot be stored here without
+    # reversing its meaning -- masked out rather than disqualifying the
+    # whole string, so an independent hard bound stated in a *different*
+    # clause of the same disclosure (e.g. "Maximum 90% LVR. LVR above 80%
+    # attracts a margin") still resolves.
+    search_text = text
+    for clause_start, clause_end in _low_equity_clause_spans(text):
+        search_text = (
+            search_text[:clause_start]
+            + " " * (clause_end - clause_start)
+            + search_text[clause_end:]
+        )
+
+    lvr_match = _LVR_PATTERN.search(search_text) or _LVR_PATTERN_PREFIXED.search(search_text)
     if lvr_match:
         lvr = float(lvr_match.group(1)) / 100
         if 0 < lvr <= 1:
             return round(lvr, 4), round(1 - lvr, 4)
 
-    equity_match = _EQUITY_PATTERN.search(text)
+    equity_match = _EQUITY_PATTERN.search(search_text)
     if equity_match:
         equity = float(equity_match.group(1)) / 100
         if 0 <= equity < 1:

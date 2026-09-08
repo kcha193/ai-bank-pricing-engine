@@ -861,3 +861,36 @@ def test_ocr_uses_the_collection_settings_loaded_from_config(tmp_path, capsys, m
     assert seen_configs[0] is not None
     assert seen_configs[0].max_retries == 7
     assert seen_configs[0].retry_backoff_seconds == 3.5
+
+
+@pytest.mark.parametrize(
+    'arguments',
+    [
+        ['position', '--rate', 'nan'],
+        ['position', '--rate', 'inf'],
+        ['position', '--rate', '-1'],
+        ['snapshot', '--term', '0'],
+        ['changes', '--days', '-7'],
+        ['history', '--days', '0'],
+        ['strategy', '--manual-rate', 'nan'],
+        ['strategy', '--offset-bps', 'inf'],
+    ],
+)
+def test_invalid_numeric_arguments_are_rejected_before_opening_store(tmp_path, arguments):
+    database = tmp_path / 'must_not_be_created.db'
+    with pytest.raises(SystemExit) as exc:
+        run(['--database', str(database), *arguments])
+    assert exc.value.code == 2
+    assert not database.exists()
+
+
+def test_missing_config_is_reported_without_escaping_cli_boundary(tmp_path, capsys):
+    assert run(['--config', str(tmp_path / 'missing.yaml'), 'snapshot']) == 1
+    assert capsys.readouterr().out.startswith('ERROR:')
+
+
+def test_empty_market_state_is_unknown_instead_of_calm(tmp_path, capsys):
+    assert run(['--database', str(tmp_path / 'empty.db'), 'market-state']) == 1
+    output = capsys.readouterr().out
+    assert 'LOW' not in output
+    assert 'No fresh market data' in output

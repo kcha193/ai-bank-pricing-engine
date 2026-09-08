@@ -8,6 +8,7 @@ import importlib.util
 import json
 import logging
 import re
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -938,3 +939,122 @@ def test_webhook_text_field_is_threaded_through_the_cli(
     assert code == workflow.EXIT_OK
     assert "content" in captured[0]
     assert "text" not in captured[0]
+
+
+@pytest.mark.parametrize("collection_exit", [0, 1, 2, 3])
+def test_canary_health_status_exposes_partial_collection_failures(collection_exit):
+    """Run the actual health-report shell step after GitHub resolves its output."""
+    workflow = yaml.safe_load(Path(".github/workflows/collector-canary.yml").read_text())
+    steps = next(iter(workflow["jobs"].values()))["steps"]
+    report_step = next(step for step in steps if step.get("name") == "Report collector health")
+    script = report_step["run"].replace(
+        "${{ steps.collect.outputs.exit_code }}", str(collection_exit)
+    )
+    result = subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True, check=False)
+    assert (result.returncode == 0) is (collection_exit == 0), result.stdout
+
+
+def test_a_backwards_clock_is_a_classified_failure_not_a_traceback(
+    workflow, fixture_fetcher, tmp_path, monkeypatch
+):
+    """The store rejects a write older than the product's latest run.
+
+    ``service.collect()`` stamps its own ``datetime.now``, so an NTP
+    correction, a VM snapshot restore, or any backwards clock step makes that
+    guard fire on an ordinary scheduled run. An unattended worker must report
+    that as a classified total failure with a summary the canary can upload,
+    not die with an unhandled traceback.
+    """
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    monkeypatch.setattr(
+        workflow,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"], store=kwargs["store"], fetcher=fixture_fetcher()
+        ),
+    )
+    # Establish a run, then wind the clock back behind it.
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_TWO + timedelta(days=1), persist_snapshot=False)
+
+    summary_path = tmp_path / "summary.json"
+    # A directly-attached handler, not caplog: configure_json_logging() sets
+    # propagate = False on the balance_pricing_engine hierarchy, so records
+    # never reach caplog's root-based capture once another test has run it.
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    workflow.logger.addHandler(handler)
+    try:
+        code, summary = workflow.run_collection(
+            config, render_javascript=False, summary_path=summary_path
+        )
+    finally:
+        workflow.logger.removeHandler(handler)
+
+    assert code == workflow.EXIT_TOTAL_FAILURE
+    assert summary["rates_accepted"] == 0
+    assert summary["banks_succeeded"] == []
+    assert summary["banks_failed"]
+    assert json.loads(summary_path.read_text())["failures"][0]["error_type"] == (
+        "ChronologicalOrderError"
+    )
+    aborted = [
+        record
+        for record in records
+        if record.getMessage() == "market collection aborted"
+        and record.levelno == logging.ERROR
+    ]
+    assert len(aborted) == 1
+    assert "chronological" in aborted[0].structured_fields["reason"]
+    assert aborted[0].structured_fields["exit_code"] == workflow.EXIT_TOTAL_FAILURE
+
+
+def test_a_backwards_clock_is_caught_before_fetching_any_bank(
+    workflow, fixture_fetcher, tmp_path, monkeypatch
+):
+    """service.collect() fetches and validates every bank before its
+    persistence step reaches record_observations()'s chronological-order
+    guard, so by the time that guard raises, the fetch work is already done
+    and its results (report, validation) are thrown away with the
+    exception -- the synthesized failure summary then has no real per-bank
+    data to report even if, say, a parser had also failed on some other
+    bank in that same attempt. Checking the clock before fetching (not just
+    relying on the later guard) means a backwards clock is caught for free,
+    with no fetch attempted at all."""
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    fetch_calls = []
+
+    def counting_fetcher():
+        fetch = fixture_fetcher()
+
+        def fetch_and_count(url):
+            fetch_calls.append(url)
+            return fetch(url)
+
+        return fetch_and_count
+
+    monkeypatch.setattr(
+        workflow,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"], store=kwargs["store"], fetcher=counting_fetcher()
+        ),
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_TWO + timedelta(days=1), persist_snapshot=False)
+
+    code, _ = workflow.run_collection(config, render_javascript=False)
+
+    assert code == workflow.EXIT_TOTAL_FAILURE
+    assert fetch_calls == []

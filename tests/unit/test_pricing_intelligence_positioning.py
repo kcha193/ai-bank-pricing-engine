@@ -90,6 +90,18 @@ def test_our_own_bank_is_not_counted_as_a_competitor(term_market):
     assert position.market_spread_bps == 4.0, "4.85-4.89 among competitors, not 4.79-4.89"
 
 
+def test_our_own_bank_is_excluded_regardless_of_case_or_whitespace(term_market):
+    """PricingIntelligenceConfig.our_bank is an arbitrary string, not
+    validated against the collectors' canonical names -- "asb" or " ANZ "
+    must still exclude the same bank as "ANZ", or a config typo would let
+    the tracked bank's own advertised rate silently count as a competitor
+    and skew MARKET_MEDIAN/MARKET_LEADER."""
+    position = compute_competitive_position(term_market, our_rate=4.79, our_bank=" anz ")
+
+    assert position.bank_count == 5
+    assert position.market_best == 4.85, "ANZ excluded, so BNZ/Westpac lead"
+
+
 def test_position_reports_market_spread(term_market):
     assert compute_competitive_position(term_market, our_rate=4.85).market_spread_bps == 10.0
 

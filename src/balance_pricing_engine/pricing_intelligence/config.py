@@ -91,7 +91,7 @@ class PricingIntelligenceConfig(BaseModel):
     selected_banks: list[str] = Field(
         default_factory=lambda: ["ANZ", "ASB", "Westpac", "BNZ", "Kiwibank"]
     )
-    # The bank whose position is reported in competitive-position features. None
+    # Excluded from pricing benchmarks and competitive-position features. None
     # means "we are not one of the tracked public banks" (the default for the
     # synthetic engine), and positioning is computed against a supplied rate.
     our_bank: Optional[str] = None

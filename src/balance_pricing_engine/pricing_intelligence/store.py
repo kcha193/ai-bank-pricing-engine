@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 import logging
+import re
 from pathlib import Path
 import sqlite3
 from typing import Iterable, Iterator, Mapping, NamedTuple, Optional, Sequence
@@ -269,6 +270,17 @@ _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY = (
 )
 
 
+class ChronologicalOrderError(ValueError):
+    """A collection was written behind the product's latest recorded run.
+
+    Subclasses :class:`ValueError` so callers written against the original
+    guard keep working. Named so an unattended worker can tell a backwards
+    clock (an NTP correction, a restored VM snapshot) apart from a genuine
+    programming error and report it as a classified failure rather than dying
+    on an unhandled traceback -- see ``scripts/collect_market_rates_workflow.py``.
+    """
+
+
 @dataclass(frozen=True)
 class WriteResult:
     """Outcome of persisting one collection run."""
@@ -392,11 +404,124 @@ class ObservationStore:
             self._migrate_observations_first_seen_run_id(connection)
             self._migrate_rate_changes_run_scoped_uniqueness(connection)
             self._migrate_collection_run_products(connection)
+            self._migrate_rate_named_mortgages(connection)
             row = connection.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
                 connection.execute(
                     "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
                 )
+
+    def _migrate_rate_named_mortgages(self, connection: sqlite3.Connection) -> None:
+        """Repair old rate-first mortgage identities, preserving history.
+
+        Only a product name consisting entirely of a percentage/unit qualifies.
+        Prior new/removed events created by that parser defect remain available
+        but are flagged; this migration cannot independently verify their meaning.
+
+        The ``rate_changes`` rewrite is ``UPDATE OR IGNORE`` because several
+        rate-named variants of one product collapse onto a single identity:
+        events the old parser emitted for two of them in the same run then
+        share (observation_key, change_type, detected_at, run_id), which that
+        table is unique on. Skipping the collision leaves those rows under
+        their old rate-named key -- still readable for audit -- whereas
+        raising would abort ``_create_schema`` on *every* open and leave the
+        database permanently unopenable.
+
+        ``suspicious`` is set in a separate, unconditional ``UPDATE`` before
+        that collision-prone rewrite is attempted, not combined into it: a
+        row the rewrite skips would otherwise keep ``suspicious = 0`` under
+        its original rate-named key, which
+        :meth:`get_changes_since`\\ (``include_suspicious=False``) and market-
+        activity calculations then read as a genuine, unflagged event rather
+        than the known parser artifact it is. The plain ``UPDATE`` here only
+        touches ``suspicious``, never the table's unique columns, so it
+        cannot itself collide -- every row under the old key ends up flagged
+        regardless of whether its identity rewrite later succeeds.
+        """
+        rows = connection.execute(
+            "SELECT * FROM observations WHERE product_type = 'home_loan' "
+            "AND term_months IS NOT NULL"
+        ).fetchall()
+        candidates = [
+            row
+            for row in rows
+            if re.fullmatch(r"\d+(?:\.\d+)?\s*%\s*(?:p\.?\s*a\.?)?", row["product_name"], re.I)
+        ]
+
+        # Grouped by the identity each row repairs to *and* the run that
+        # introduced it, not applied one row at a time or grouped by
+        # identity alone: the rate is deliberately absent from identity, so
+        # a legacy product legitimately repriced across separate runs has
+        # every one of its historical rate-named rows repair to the same
+        # identity too -- that is an ordinary reprice history, not a
+        # collision, and grouping by identity alone would quarantine the
+        # latest state right along with it, leaving it no confirmed
+        # fallback and dropping it from market snapshots. Only rows sharing
+        # both the repaired identity *and* first_seen_run_id are a genuine
+        # collision: the source page advertised two conflicting rate-named
+        # readings for what should be one product in a single collection
+        # attempt. first_seen_run_id is guaranteed backfilled by this point
+        # -- _migrate_observations_first_seen_run_id() runs earlier in
+        # _create_schema, on every database this migration also runs on.
+        repaired_groups: dict[tuple[str, str], list[sqlite3.Row]] = {}
+        for row in candidates:
+            record = _row_to_record(row).model_copy(update={"product_name": row["term_label_raw"]})
+            repaired_groups.setdefault(
+                (record.observation_key(), row["first_seen_run_id"]), []
+            ).append(row)
+
+        skipped = 0
+        quarantined = 0
+        for group in repaired_groups.values():
+            ambiguous = len(group) > 1
+            for row in group:
+                record = _row_to_record(row).model_copy(
+                    update={"product_name": row["term_label_raw"]}
+                )
+                if ambiguous:
+                    connection.execute(
+                        "UPDATE observations SET product_name = ?, observation_key = ?, "
+                        "validation_status = 'warning' WHERE id = ?",
+                        (record.product_name, record.observation_key(), row["id"]),
+                    )
+                    quarantined += 1
+                else:
+                    connection.execute(
+                        "UPDATE observations SET product_name = ?, observation_key = ? "
+                        "WHERE id = ?",
+                        (record.product_name, record.observation_key(), row["id"]),
+                    )
+                connection.execute(
+                    "UPDATE rate_changes SET suspicious = 1 WHERE observation_key = ?",
+                    (row["observation_key"],),
+                )
+                expected = connection.execute(
+                    "SELECT COUNT(*) FROM rate_changes WHERE observation_key = ?",
+                    (row["observation_key"],),
+                ).fetchone()[0]
+                updated = connection.execute(
+                    "UPDATE OR IGNORE rate_changes SET product_name = ?, observation_key = ? "
+                    "WHERE observation_key = ?",
+                    (record.product_name, record.observation_key(), row["observation_key"]),
+                ).rowcount
+                skipped += expected - updated
+        if quarantined:
+            logger.warning(
+                "rate-named identity migration found %d observation(s) whose repaired identity "
+                "collides with another row from the same run: quarantined as "
+                "validation_status='warning' (excluded from get_current_observations() and "
+                "market statistics) rather than let get_current_observations() arbitrarily pick "
+                "one of the colliding rates as current. Review against the source before "
+                "clearing the warning.",
+                quarantined,
+            )
+        if skipped:
+            logger.warning(
+                "rate-named identity migration left %d change event(s) under their original "
+                "key: another event already occupies the repaired identity for the same run. "
+                "Review these historical events against the source before relying on them.",
+                skipped,
+            )
 
     def _migrate_collection_runs_product_type(self, connection: sqlite3.Connection) -> None:
         """Add ``collection_runs.product_type`` for a database created before
@@ -957,6 +1082,15 @@ class ObservationStore:
         banks = sorted({record.bank for record in records})
 
         with self._transaction() as connection:
+            latest = connection.execute(
+                "SELECT MAX(started_at) FROM collection_run_products WHERE product_type = ?",
+                (product_type.value,),
+            ).fetchone()[0]
+            if latest is not None and timestamp < latest:
+                raise ChronologicalOrderError(
+                    "collections must be written in chronological order per product "
+                    f"(this run {timestamp}, latest stored {latest})"
+                )
             # An upsert (UPDATE on conflict), not INSERT OR REPLACE: the
             # latter deletes and reinserts on a run_id collision, handing the
             # row a brand new (higher) rowid. _run_ordered_after()/
@@ -1545,6 +1679,28 @@ class ObservationStore:
             ).fetchone()
         return row["run_id"] if row else None
 
+    def latest_collection_timestamp(
+        self, product_type: ProductType | str = ProductType.HOME_LOAN
+    ) -> Optional[datetime]:
+        """The ``started_at`` of the most recently recorded run for this
+        product, or ``None`` if none has been recorded yet.
+
+        Same query :meth:`record_observations` uses for its own
+        chronological-order guard (``ChronologicalOrderError``). Exposed so a
+        caller -- :meth:`~.service.PricingIntelligenceService.collect` -- can
+        fail fast on a backwards wall clock *before* fetching every bank,
+        rather than only discovering it after that work is already done, when
+        ``record_observations()`` finally runs. Not a replacement for that
+        guard: this is a pre-check for the common case, not transaction-safe
+        against a genuinely concurrent write, which the guard inside the
+        write's own transaction still catches.
+        """
+        row = self._connection.execute(
+            "SELECT MAX(started_at) FROM collection_run_products WHERE product_type = ?",
+            (_product_value(product_type),),
+        ).fetchone()
+        return _parse_iso(row[0]) if row and row[0] is not None else None
+
     def get_run_started_at(self, run_id: str) -> Optional[datetime]:
         """Resolve a run's start time, for reconstructing its state via
         :meth:`get_observations_as_of` -- ``last_seen_run_id`` cannot answer
@@ -1636,6 +1792,41 @@ class ObservationStore:
             (_product_value(product_type),),
         ).fetchall()
         return [_row_to_record(row) for row in rows]
+
+    def get_current_observation_run_ids(
+        self, product_type: ProductType | str = ProductType.HOME_LOAN
+    ) -> dict[str, list[str]]:
+        """Map each bank to the ``last_seen_run_id`` of every one of its
+        current observation rows (the same rows :meth:`get_current_observations`
+        returns).
+
+        Lets a caller check whether a bank was touched by a specific run --
+        e.g. the latest run for this product, via :meth:`latest_run_id` --
+        by run identity rather than by comparing ``captured_at_utc``
+        timestamps. Two distinct runs can share the same ``started_at``
+        (recorded with second, not sub-second, precision, or simply
+        launched back-to-back within the same second), which a timestamp
+        comparison cannot tell apart from "the same run": a bank a later
+        run failed to touch would then read as reconfirmed just because its
+        surviving row's timestamp happens to match.
+        """
+        rows = self._connection.execute(
+            "SELECT bank, last_seen_run_id FROM observations o "
+            "WHERE product_type = ? AND id = ("
+            "  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
+            "  ORDER BY first_observed_at DESC, id DESC LIMIT 1"
+            ") AND NOT EXISTS ("
+            "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
+            "  AND rc.change_type = 'REMOVED_PRODUCT' AND "
+            + _run_ordered_after("rc.run_id", "rc.detected_at", "o.last_seen_run_id", "o.last_seen_at")
+            + ") "
+            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra=""),
+            (_product_value(product_type),),
+        ).fetchall()
+        run_ids_by_bank: dict[str, list[str]] = {}
+        for row in rows:
+            run_ids_by_bank.setdefault(row["bank"], []).append(row["last_seen_run_id"])
+        return run_ids_by_bank
 
     def get_last_confirmed_observations(
         self,

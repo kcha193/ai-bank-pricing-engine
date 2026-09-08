@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timezone
+import sqlite3
 
 import streamlit as st
 
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.config import EngineConfig
 from balance_pricing_engine.diagnostics import run_sensitivity_analysis
 from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
@@ -15,6 +18,7 @@ from balance_pricing_engine.pricing_intelligence.dashboard_data import (
     build_market_grid_frame,
     build_ranking_frame,
     build_term_summary,
+    build_freshness_frame,
 )
 from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
@@ -94,8 +98,24 @@ def _render_market_intelligence() -> None:
         config=intelligence_config, store=ObservationStore(database_path)
     ) as service:
         snapshot = service.get_market_snapshot()
+        last_run = service.store.latest_run_id(product_type=ProductType.HOME_LOAN)
+        last_run_at = service.store.get_run_started_at(last_run) if last_run else None
+        run_ids_by_bank = service.store.get_current_observation_run_ids(
+            product_type=ProductType.HOME_LOAN
+        )
+        health = build_freshness_frame(
+            service.store.get_current_observations(), intelligence_config.selected_banks,
+            intelligence_config.max_observation_age_hours, datetime.now(timezone.utc),
+            run_ids_by_bank, last_run,
+        )
+        st.caption(f"Last collection attempt recorded: {last_run_at or 'none'}")
+        incomplete = health[health["Status"] != "Fresh"]
+        if not incomplete.empty:
+            st.warning("Collection freshness needs review: " + ", ".join(incomplete.index))
         if not snapshot.terms:
-            st.info("The observation store is empty. Run a collection first.")
+            st.warning("No fresh comparable mortgage rates are available. Run and verify a collection.")
+            st.subheader("Collection freshness")
+            st.dataframe(health, width="stretch")
             return
 
         st.subheader("Current mortgage market (advertised specials)")
@@ -142,8 +162,15 @@ def _render_market_intelligence() -> None:
         else:
             st.line_chart(history_series)
 
+        st.subheader("Collection freshness")
+        st.dataframe(health, width="stretch")
+        st.caption("Last-known rates may survive a failed fetch. Freshness is not source verification.")
 
-_render_market_intelligence()
+
+try:
+    _render_market_intelligence()
+except (OSError, sqlite3.Error) as exc:
+    st.error(f"Cannot read market data: {exc}")
 
 if not run_button:
     st.info("Paste a YAML config in the sidebar and click **Run scenario**.")

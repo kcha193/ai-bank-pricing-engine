@@ -24,6 +24,7 @@ See docs/pricing_intelligence.md for scheduling recipes.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import errno
 import json
 import logging
@@ -45,7 +46,10 @@ from balance_pricing_engine.pricing_intelligence.service import (
     PricingIntelligenceService,
     _resolve_rate_category,
 )
-from balance_pricing_engine.pricing_intelligence.store import ObservationStore
+from balance_pricing_engine.pricing_intelligence.store import (
+    ChronologicalOrderError,
+    ObservationStore,
+)
 
 # Under the `balance_pricing_engine` hierarchy so configure_json_logging()'s
 # handler actually applies; a bare "pricing_intelligence.*" name falls
@@ -426,6 +430,59 @@ def exit_code_for(
     return EXIT_OK
 
 
+def _clock_regression_failure(
+    error: ChronologicalOrderError,
+    product_type: ProductType,
+    summary_path: Optional[Path],
+) -> tuple[int, dict]:
+    """Report a backwards clock as a total failure, with a written summary.
+
+    Carries every key :func:`build_summary` produces so a consumer reading a
+    summary file (the collector canary, launchd alerting) does not have to
+    special-case this shape -- an empty run, one synthetic failure entry, and
+    the guard's own message as the reason.
+    """
+    summary = {
+        "product_type": product_type.value,
+        "collected_at_utc": datetime.now(timezone.utc).isoformat(),
+        "banks_succeeded": [],
+        # No bank was reached, so this cannot be derived from a report --
+        # but alerting that keys off banks_failed still needs something to
+        # fire on, and an empty list would read as "nothing went wrong".
+        "banks_failed": ["*"],
+        "rates_accepted": 0,
+        "rates_rejected": 0,
+        "rows_skipped": 0,
+        "validation_errors": 0,
+        "validation_warnings": 0,
+        "new_states_stored": 0,
+        "unchanged_states": 0,
+        "changes_detected": 0,
+        "suspicious_changes": 0,
+        "changes": [],
+        "alerts_sent": 0,
+        "failures": [
+            {
+                "bank": None,
+                "error_type": type(error).__name__,
+                "error": str(error),
+            }
+        ],
+    }
+    log_event(
+        logger,
+        "market collection aborted",
+        level=logging.ERROR,
+        exit_code=EXIT_TOTAL_FAILURE,
+        reason=str(error),
+        product_type=product_type.value,
+    )
+    if summary_path is not None:
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return EXIT_TOTAL_FAILURE, summary
+
+
 def run_collection(
     config: PricingIntelligenceConfig,
     render_javascript: bool,
@@ -452,7 +509,16 @@ def run_collection(
         store=ObservationStore(config.database_path),
         render_javascript=render_javascript,
     ) as service:
-        outcome = service.collect(product_type=product_type)
+        try:
+            outcome = service.collect(product_type=product_type)
+        except ChronologicalOrderError as exc:
+            # service.collect() stamps its own datetime.now, so this fires on
+            # an ordinary scheduled run whenever the wall clock steps
+            # backwards behind the last stored run. Caught here specifically
+            # (not as a bare ValueError, which would swallow real bugs) so the
+            # worker still writes a summary for the canary to upload and
+            # returns a classified code instead of an unhandled traceback.
+            return _clock_regression_failure(exc, product_type, summary_path)
 
         alerts_sent = 0
         webhook_sink = build_webhook_sink_from_env(text_field=webhook_text_field)

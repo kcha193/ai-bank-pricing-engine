@@ -7,13 +7,58 @@ objects or plain dicts.
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import pandas as pd
+from datetime import datetime
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord
 from balance_pricing_engine.pricing_intelligence.changes import RateChange
 from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot, _term_label
+
+
+def build_freshness_frame(
+    records: Sequence[CompetitorRateRecord], banks: Sequence[str], max_age_hours: float,
+    now: datetime, run_ids_by_bank: Mapping[str, Sequence[str]] | None,
+    latest_run_id: str | None,
+) -> pd.DataFrame:
+    """Expose each bank's oldest current confirmation and latest-run coverage.
+
+    This describes recorded observations. It cannot infer an unrecorded failed
+    attempt, or label a successful HTTP request as a verified source reading.
+
+    ``run_ids_by_bank`` (from :meth:`.store.ObservationStore.get_current_observation_run_ids`)
+    and ``latest_run_id`` (from :meth:`.store.ObservationStore.latest_run_id`)
+    decide "not fully confirmed" by run identity, not by comparing
+    ``captured_at_utc`` against the latest run's timestamp: two distinct
+    runs can share a ``started_at`` value, which a timestamp comparison
+    would then read as "the same run".
+    """
+    if not banks:
+        return pd.DataFrame(
+            columns=["Oldest confirmation (UTC)", "Age (hours)", "Status"],
+            index=pd.Index([], name="Bank"),
+        )
+    rows = []
+    for bank in banks:
+        bank_records = [r for r in records if r.bank == bank]
+        confirmed = [r for r in bank_records if r.validation_status != "warning"]
+        oldest = min((r.captured_at_utc for r in confirmed), default=None)
+        age = (now - oldest).total_seconds() / 3600 if oldest is not None else None
+        status = "Missing" if age is None else "Stale" if age > max_age_hours else "Fresh"
+        bank_run_ids = (run_ids_by_bank or {}).get(bank, [])
+        if any(r.validation_status == "warning" for r in bank_records):
+            status = "Quarantined readings"
+        elif (
+            oldest is not None
+            and latest_run_id is not None
+            and any(run_id != latest_run_id for run_id in bank_run_ids)
+        ):
+            status += "; not fully confirmed in latest stored run"
+        rows.append({"Bank": bank, "Oldest confirmation (UTC)": oldest,
+                     "Age (hours)": age, "Status": status})
+    return pd.DataFrame(rows).set_index("Bank")
+
 
 
 def build_market_grid_frame(snapshot: MarketSnapshot) -> pd.DataFrame:

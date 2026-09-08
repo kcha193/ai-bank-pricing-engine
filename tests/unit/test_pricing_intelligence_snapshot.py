@@ -48,6 +48,18 @@ def test_ranking_handles_ties_with_standard_competition_ranking(snapshot):
     assert ranks == {"ANZ": 1, "BNZ": 2, "Westpac": 2, "ASB": 4, "Kiwibank": 4}
 
 
+def test_excluding_bank_matches_regardless_of_case_or_whitespace(snapshot):
+    """our_bank is an arbitrary config string, not validated against the
+    collectors' canonical names -- "asb" or " ASB " must exclude the same
+    bank as "ASB", or a config typo would leave the tracked bank's own
+    advertised rate counted in every market statistic it should be excluded
+    from."""
+    excluded = snapshot[12].excluding_bank(" asb ")
+
+    assert "ASB" not in {entry.bank for entry in excluded.entries}
+    assert excluded.bank_count == 4
+
+
 def test_ranking_is_ordered_most_competitive_first(snapshot):
     ordered = [entry.bank for entry in snapshot[12].ranking()]
 

@@ -616,7 +616,7 @@ class BankPricingCollector(abc.ABC):
 
 def collect_all_rates(
     collectors: Sequence[BankPricingCollector],
-    product_type: ProductType = ProductType.HOME_LOAN,
+    product_type: ProductType | str = ProductType.HOME_LOAN,
     captured_at_utc: Optional[datetime] = None,
     persist_snapshot: bool = True,
     inter_request_delay_seconds: Optional[float] = None,
@@ -626,6 +626,11 @@ def collect_all_rates(
     A collector raising or returning nothing produces a FAILED entry in the
     report; the remaining banks still run.
     """
+    # Coerced, not compared as given: the dispatch below is an identity test
+    # against ProductType.HOME_LOAN, which a plain "home_loan" string never
+    # satisfies -- it would fall through to term deposits and hand the caller
+    # the wrong product with no error raised anywhere.
+    product_type = ProductType(product_type)
     captured_at_utc = captured_at_utc or datetime.now(timezone.utc)
     results: list[BankCollectionResult] = []
     for index, collector in enumerate(collectors):

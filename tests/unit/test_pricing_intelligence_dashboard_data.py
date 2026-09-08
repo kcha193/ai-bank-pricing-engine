@@ -7,6 +7,7 @@ import pytest
 from balance_pricing_engine.pricing_intelligence.changes import detect_changes
 from balance_pricing_engine.pricing_intelligence.dashboard_data import (
     build_changes_frame,
+    build_freshness_frame,
     build_history_frame,
     build_history_series,
     build_market_grid_frame,
@@ -138,3 +139,48 @@ def test_history_series_sorts_dates_regardless_of_input_order():
 
 def test_history_series_of_nothing_is_empty():
     assert build_history_series([]).empty
+
+
+def test_freshness_frame_of_an_empty_bank_set_is_empty(make_record):
+    """PricingIntelligenceConfig accepts selected_banks=[] as valid, and the
+    dashboard only catches OSError/sqlite3.Error -- an unguarded
+    pd.DataFrame([]).set_index("Bank") would raise KeyError (no "Bank"
+    column on an empty frame) and abort the whole page instead."""
+    frame = build_freshness_frame(
+        [make_record(bank="ANZ")],
+        [],
+        max_age_hours=168,
+        now=DAY_ONE,
+        run_ids_by_bank={"ANZ": ["run-1"]},
+        latest_run_id="run-1",
+    )
+
+    assert frame.empty
+    assert list(frame.columns) == ["Oldest confirmation (UTC)", "Age (hours)", "Status"]
+    assert frame.index.name == "Bank"
+
+
+def test_freshness_frame_flags_a_bank_not_touched_by_the_latest_run(make_record):
+    frame = build_freshness_frame(
+        [make_record(bank="ANZ", observed_at=DAY_ONE)],
+        ["ANZ"],
+        max_age_hours=168,
+        now=DAY_ONE,
+        run_ids_by_bank={"ANZ": ["run-1"]},
+        latest_run_id="run-2",
+    )
+
+    assert "not fully confirmed in latest stored run" in frame.loc["ANZ", "Status"]
+
+
+def test_freshness_frame_of_a_bank_touched_by_the_latest_run_is_fresh(make_record):
+    frame = build_freshness_frame(
+        [make_record(bank="ANZ", observed_at=DAY_ONE)],
+        ["ANZ"],
+        max_age_hours=168,
+        now=DAY_ONE,
+        run_ids_by_bank={"ANZ": ["run-1"]},
+        latest_run_id="run-1",
+    )
+
+    assert frame.loc["ANZ", "Status"] == "Fresh"

@@ -353,6 +353,39 @@ def test_parse_html_rates_splits_a_row_with_two_rate_bearing_cells():
     assert by_category == {"special": 4.79, "standard": 5.39}
 
 
+def test_parse_html_rates_keeps_a_product_first_name_stable_across_a_rate_move():
+    """A product-first row (ASB's "Better Homes Top Up") puts its term and
+    rate in a later cell: "ASB Better Homes Top Up | 1.00% p.a. Fixed for 36
+    months | Interest Rate". The category word ("fixed") lands inside that
+    rate cell, not a dedicated category-label cell -- product_name must
+    still resolve to the stable product cell (row[0]), not the mutable rate
+    cell, or a plain reprice reads as a withdrawal-plus-new-product pair via
+    observation_key()."""
+    html = """
+    <html><body><table>
+      <tr><td>ASB Better Homes Top Up</td><td>{rate}</td><td>Interest Rate</td></tr>
+    </table></body></html>
+    """
+
+    def parse(rate_pct):
+        html_for_rate = html.format(rate=f"{rate_pct:.2f}% p.a. Fixed for 36 months")
+        records = parse_html_rates(
+            bank="ASB",
+            product_type="home_loan",
+            source_url="https://example.test/home",
+            html=html_for_rate,
+            captured_at_utc=datetime(2026, 4, 27, tzinfo=timezone.utc),
+        )
+        assert len(records) == 1
+        return records[0]
+
+    before = parse(1.00)
+    after = parse(1.10)
+
+    assert before.product_name == "ASB Better Homes Top Up"
+    assert before.observation_key() == after.observation_key()
+
+
 def test_parse_html_rates_scopes_lvr_condition_and_special_conditions_per_cell():
     """A sibling cell's eligibility text must not leak into
     lvr_condition/special_conditions either -- these are derived at parse

@@ -343,7 +343,11 @@ def _compare_records(
         change_type = (
             ChangeType.RATE_INCREASE if movement_bps > 0 else ChangeType.RATE_DECREASE
         )
-        suspicious = abs(movement_bps) > thresholds.suspicious_change_bps
+        suspicious = (
+            abs(movement_bps) > thresholds.suspicious_change_bps
+            or current.validation_status == "warning"
+            or previous.validation_status == "warning"
+        )
         changes.append(
             _build(
                 current,
@@ -356,8 +360,7 @@ def _compare_records(
                 previous_observed_at=previous.captured_at_utc,
                 suspicious=suspicious,
                 detail=(
-                    f"movement of {abs(movement_bps):.0f} bps exceeds the "
-                    f"{thresholds.suspicious_change_bps:.0f} bps review threshold; "
+                    f"unverified movement of {abs(movement_bps):.0f} bps; "
                     "verify against the source page before treating as a genuine reprice"
                 )
                 if suspicious

@@ -983,7 +983,16 @@ def test_a_pre_column_migration_does_not_attribute_a_same_timestamp_return_to_th
     # The return is backfilled with the bootstrap run's own timestamp,
     # tying first_observed_at across the two observations rows.
     return_run = store.record_observations(
-        [bnz_record], run_id="run-returned", observed_at=DAY_ONE
+        [bnz_record], run_id="run-returned", observed_at=DAY_TWO
+    )
+    # Construct legacy backdated data directly; new writes now reject it.
+    store._connection.execute(
+        "UPDATE observations SET first_observed_at = ? WHERE first_seen_run_id = ?",
+        (DAY_ONE.isoformat(), "run-returned"),
+    )
+    store._connection.execute(
+        "UPDATE collection_runs SET started_at = ? WHERE run_id = ?",
+        (DAY_ONE.isoformat(), "run-returned"),
     )
     store.record_changes(
         detect_changes(
@@ -2238,3 +2247,147 @@ def test_the_store_persists_to_disk(tmp_path, make_record):
 
     with ObservationStore(path) as reopened:
         assert len(reopened.get_latest_rates()) == 1
+
+
+def test_legacy_rate_named_migration_survives_two_events_that_share_a_migrated_key(
+    tmp_path, make_record
+):
+    """Two rate-named rows of one product collapse onto a single identity.
+
+    ``rate_changes`` is unique on (observation_key, change_type, detected_at,
+    run_id), so a legacy store where the old parser emitted a NEW_PRODUCT for
+    each rate-named variant in the same run has two event rows that the
+    migration rewrites onto the same key. The rewrite must skip the collision
+    rather than raise: the migration runs inside ``_create_schema`` on every
+    open, so an unhandled IntegrityError would leave the database permanently
+    unopenable -- taking the CLI, the dashboard and the scheduled collector
+    with it.
+    """
+    path = tmp_path / "legacy.db"
+    dearer = make_record(
+        bank="Westpac", rate_pct=5.59, product_name="5.59% p.a.", term_label_raw="1 year"
+    )
+    cheaper = make_record(
+        bank="Westpac", rate_pct=5.49, product_name="5.49% p.a.", term_label_raw="1 year"
+    )
+    changes = detect_changes(
+        previous=[], current=[dearer, cheaper], detected_at=DAY_ONE, run_id="run-one"
+    )
+    with ObservationStore(path) as store:
+        store.record_observations([dearer, cheaper], observed_at=DAY_ONE)
+        store.record_changes(changes)
+
+    with ObservationStore(path) as reopened:
+        assert [record.product_name for record in reopened.get_current_observations()] == ["1 year"]
+        assert reopened.get_current_observations()[0].advertised_rate_pct == 5.49
+        # The surviving event carries the repaired identity and is quarantined.
+        migrated = [
+            event
+            for event in reopened.get_changes_since(days=7, now=DAY_ONE)
+            if event["product_name"] == "1 year"
+        ]
+        assert migrated and all(event["suspicious"] for event in migrated)
+
+
+def test_legacy_rate_named_migration_quarantines_a_skipped_collision_row_too(
+    tmp_path, make_record
+):
+    """The event the identity rewrite skips (see the test above) stays under
+    its original rate-named key -- but it must not stay *unflagged* there:
+    UPDATE OR IGNORE only touches the row it succeeds on, so a plain
+    combined UPDATE ... SET suspicious = 1 ... would leave the skipped row's
+    suspicious flag at its original 0. get_changes_since(include_suspicious=
+    False) and market-activity calculations would then treat this known
+    parser artifact as a genuine, unflagged event."""
+    path = tmp_path / "legacy.db"
+    dearer = make_record(
+        bank="Westpac", rate_pct=5.59, product_name="5.59% p.a.", term_label_raw="1 year"
+    )
+    cheaper = make_record(
+        bank="Westpac", rate_pct=5.49, product_name="5.49% p.a.", term_label_raw="1 year"
+    )
+    changes = detect_changes(
+        previous=[], current=[dearer, cheaper], detected_at=DAY_ONE, run_id="run-one"
+    )
+    with ObservationStore(path) as store:
+        store.record_observations([dearer, cheaper], observed_at=DAY_ONE)
+        store.record_changes(changes)
+
+    with ObservationStore(path) as reopened:
+        every_event = reopened.get_changes_since(days=7, now=DAY_ONE, include_suspicious=True)
+        unflagged_events = reopened.get_changes_since(
+            days=7, now=DAY_ONE, include_suspicious=False
+        )
+        assert len(every_event) == 2
+        assert unflagged_events == []
+
+
+def test_legacy_rate_named_migration_quarantines_the_colliding_observations_too(
+    tmp_path, make_record
+):
+    """Flagging the rate_changes events (see the tests above) is not enough:
+    the observations table has no uniqueness constraint on observation_key,
+    so both colliding rows survive under the same repaired identity with a
+    clean validation_status by default. get_current_observations() then
+    picks whichever one has the higher id as the current state -- an
+    accident of parse order, not a verified rate -- and get_market_snapshot()
+    would trust it. Both colliding observations must be quarantined as
+    validation_status='warning' too, the same convention a suspicious live
+    collection already uses to keep a bad reading out of market
+    statistics."""
+    path = tmp_path / "legacy.db"
+    dearer = make_record(
+        bank="Westpac", rate_pct=5.59, product_name="5.59% p.a.", term_label_raw="1 year"
+    )
+    cheaper = make_record(
+        bank="Westpac", rate_pct=5.49, product_name="5.49% p.a.", term_label_raw="1 year"
+    )
+    changes = detect_changes(
+        previous=[], current=[dearer, cheaper], detected_at=DAY_ONE, run_id="run-one"
+    )
+    with ObservationStore(path) as store:
+        store.record_observations([dearer, cheaper], observed_at=DAY_ONE)
+        store.record_changes(changes)
+
+    with ObservationStore(path) as reopened:
+        current = [
+            record
+            for record in reopened.get_current_observations()
+            if record.product_name == "1 year"
+        ]
+        assert current and all(record.validation_status == "warning" for record in current)
+        assert reopened.get_last_confirmed_observations() == []
+
+
+def test_legacy_rate_named_migration_does_not_quarantine_an_ordinary_reprice_history(
+    tmp_path, make_record
+):
+    """The rate is deliberately absent from identity, so a legacy product
+    legitimately repriced across separate collection runs (5.59% one week,
+    5.49% the next) has every one of its historical rate-named rows repair
+    to the *same* identity too -- that is an ordinary reprice history, not a
+    same-run collision. Grouping by repaired identity alone would quarantine
+    the latest state right along with the genuine collision case above,
+    leaving it with no confirmed fallback and dropping it from market
+    snapshots. Only rows sharing both the repaired identity and their
+    introducing run are a genuine collision."""
+    path = tmp_path / "legacy.db"
+    week_one = make_record(
+        bank="Westpac", rate_pct=5.59, product_name="5.59% p.a.", term_label_raw="1 year"
+    )
+    week_two = make_record(
+        bank="Westpac", rate_pct=5.49, product_name="5.49% p.a.", term_label_raw="1 year"
+    )
+    with ObservationStore(path) as store:
+        store.record_observations([week_one], observed_at=DAY_ONE, run_id="run-week-one")
+        store.record_observations([week_two], observed_at=DAY_TWO, run_id="run-week-two")
+
+    with ObservationStore(path) as reopened:
+        current = [
+            record
+            for record in reopened.get_current_observations()
+            if record.product_name == "1 year"
+        ]
+        assert len(current) == 1
+        assert current[0].advertised_rate_pct == 5.49
+        assert current[0].validation_status != "warning"

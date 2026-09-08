@@ -284,7 +284,13 @@ def parse_html_rates(
                 record = CompetitorRateRecord(
                     bank=bank,
                     product_type=product,
-                    product_name=_product_name(product, row, category),
+                    product_name=(
+                        own_header
+                        if product == ProductType.HOME_LOAN
+                        and term.special_label in {"floating", "variable"}
+                        and own_header and len(rate_categories) > 1
+                        else _product_name(product, row, category)
+                    ),
                     rate_category=category,
                     term_label_raw=term.raw_label,
                     term_months_normalised=term.months,
@@ -390,9 +396,18 @@ def _strip_term_label(text: str, term_label: str) -> str:
     return re.sub(re.escape(phrase), "", text, flags=re.IGNORECASE)
 
 
+#: A bare rate percentage (e.g. "1.00%"), shared by _is_header_row() (a row
+#: mentioning "rate" with no percentage anywhere is a header, not data) and
+#: _product_name() (a candidate product-name cell must not carry one, since
+#: that is exactly the mutable value identity must not embed).
+_RATE_PERCENTAGE_PATTERN = re.compile(r"\d+(?:\.\d+)?\s*%")
+
+
 def _is_header_row(row: list[str]) -> bool:
     text = " ".join(row).lower()
-    return "rate" in text and not re.search(r"\d+(?:\.\d+)?\s*%", text)
+    return (
+        "rate" in text or bool(re.fullmatch(r"term\s*\d*", row[0].lower()))
+    ) and not _RATE_PERCENTAGE_PATTERN.search(text)
 
 
 # Bounds the gap a marker-then-percentage match may span: the percentage
@@ -624,7 +639,9 @@ _TERM_PHRASE_PATTERN = re.compile(
 def _find_term_label(row: list[str], product: ProductType) -> str | None:
     for cell in row:
         text = cell.lower()
-        if product == ProductType.HOME_LOAN and ("floating" in text or "variable" in text):
+        if product == ProductType.HOME_LOAN and any(
+            word in text for word in ("floating", "variable", "revolving", "flexible")
+        ):
             return cell
         if _TERM_PHRASE_PATTERN.search(text):
             return _strip_product_prefix(cell)
@@ -670,7 +687,32 @@ def _rate_category(product: ProductType, context: str, special_label: str | None
 
 def _product_name(product: ProductType, row: list[str], category: str) -> str:
     if product == ProductType.HOME_LOAN:
-        return next((cell for cell in row if category.lower() in cell.lower()), row[0])
+        # Rate-first layouts (Westpac, row[0]="5.59% p.a.") must not embed a
+        # mutable percentage in identity: every reprice would become a
+        # new/removed product pair. A candidate cell is only used when it
+        # does not itself carry a rate percentage -- a product-first row
+        # (ASB's "Better Homes Top Up | 1.00% p.a. Fixed for 36 months") can
+        # have the category word land inside its rate cell, which is
+        # exactly the mutable value this lookup exists to avoid.
+        matched = next(
+            (
+                cell
+                for cell in row
+                if category.lower() in cell.lower() and not _RATE_PERCENTAGE_PATTERN.search(cell)
+            ),
+            None,
+        )
+        if matched is not None:
+            return matched
+        # No clean category-label cell. _find_term_label() picks the stable
+        # term cell (e.g. Westpac's "1 year") for a genuinely rate-first row
+        # -- but it is just as able to return a rate-bearing cell itself
+        # (the ASB row above: its term/rate share one cell), so it is only
+        # safe to use when row[0] confirms the row really is rate-first. A
+        # product-first row's own row[0] is the stable choice instead.
+        if _RATE_PERCENTAGE_PATTERN.search(row[0]):
+            return _find_term_label(row, product) or row[0]
+        return row[0]
     if category == "pie_term_deposit":
         return "PIE term deposit"
     return "Term deposit"

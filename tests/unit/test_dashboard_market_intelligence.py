@@ -187,7 +187,7 @@ def test_section_renders_grid_ranking_and_changes_frames(monkeypatch, populated_
     assert "1Y" in grid.columns
     assert "Median" in grid.index
 
-    changes = fake.frames[-1]
+    changes = next(frame for frame in fake.frames if "Move (bps)" in frame.columns)
     assert "Move (bps)" in changes.columns
     assert -20.0 in list(changes["Move (bps)"])
 
@@ -247,6 +247,91 @@ def test_history_chart_is_not_blanked_by_a_different_products_withdrawal(
 
     chart = fake.charts[0]
     assert chart.loc[later_day.date(), "ANZ"] == 4.79
+
+
+def test_freshness_is_not_skewed_by_a_newer_term_deposit_run(
+    monkeypatch, tmp_path, make_record
+):
+    """A term-deposit collection newer than the last mortgage collection must
+    not make get_current_observations()'s (home-loan) rows look stale: an
+    unscoped latest_run_id() would resolve to the deposit run, and
+    build_freshness_frame would then compare every mortgage confirmation
+    against that unrelated timestamp and flag a false "not fully confirmed"
+    warning even though the mortgage run is itself the latest one for its
+    own product. Seeds every bank in the render's (default) selected_banks
+    list, so the only source of a "not fully confirmed" status can be the
+    scoping bug under test, not an unrelated "Missing" bank."""
+    path = tmp_path / "observations.db"
+    config = PricingIntelligenceConfig(database_path=str(path))
+    with PricingIntelligenceService(config=config, store=ObservationStore(path)) as service:
+        service.store.record_observations(
+            [
+                make_record(bank=bank, rate_category="special", rate_pct=4.79)
+                for bank in config.selected_banks
+            ],
+            observed_at=DAY_ONE,
+        )
+        service.store.record_observations(
+            [
+                make_record(
+                    bank="ANZ",
+                    product_type="term_deposit",
+                    product_name="12 Month Term Deposit",
+                    rate_category="standard",
+                    rate_pct=4.5,
+                )
+            ],
+            observed_at=DAY_TWO,
+        )
+
+    fake = render_dashboard(monkeypatch, str(path))
+
+    captions = fake.texts("caption")
+    assert any(str(DAY_ONE) in caption for caption in captions)
+    assert not any(str(DAY_TWO) in caption for caption in captions)
+
+    warnings = fake.texts("warning")
+    assert not any("Collection freshness needs review" in warning for warning in warnings)
+
+
+def test_freshness_flags_a_bank_untouched_by_a_same_timestamp_later_run(
+    monkeypatch, tmp_path, make_record
+):
+    """Two collection runs can share the same started_at (recorded with
+    second, not sub-second, precision, or simply launched back-to-back
+    within the same second). A bank the later run fails to touch keeps a
+    captured_at_utc equal to that shared timestamp, so a comparison against
+    the latest run's *timestamp* cannot tell its surviving row apart from
+    one the latest run genuinely reconfirmed -- build_freshness_frame must
+    compare by run identity (last_seen_run_id) instead."""
+    path = tmp_path / "observations.db"
+    config = PricingIntelligenceConfig(database_path=str(path))
+    with PricingIntelligenceService(config=config, store=ObservationStore(path)) as service:
+        service.store.record_observations(
+            [
+                make_record(bank=bank, rate_category="special", rate_pct=4.79)
+                for bank in config.selected_banks
+            ],
+            observed_at=DAY_ONE,
+            run_id="run-1",
+        )
+        # The later run shares run-1's exact timestamp but never touches
+        # Kiwibank -- its row's last_seen_run_id stays "run-1" even though
+        # captured_at_utc (last_seen_at) still reads DAY_ONE either way.
+        other_banks = [bank for bank in config.selected_banks if bank != "Kiwibank"]
+        service.store.record_observations(
+            [
+                make_record(bank=bank, rate_category="special", rate_pct=4.79)
+                for bank in other_banks
+            ],
+            observed_at=DAY_ONE,
+            run_id="run-2",
+        )
+
+    fake = render_dashboard(monkeypatch, str(path))
+
+    warnings = fake.texts("warning")
+    assert any("Kiwibank" in warning for warning in warnings)
 
 
 def test_section_guides_the_user_when_no_data_exists(monkeypatch, tmp_path):
