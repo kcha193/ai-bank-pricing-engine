@@ -202,6 +202,31 @@ _CLAUSE_BOUNDARY_PATTERN = re.compile(
 )
 
 
+def _is_coordinated_object_conjunction(text: str, boundary: re.Match) -> bool:
+    """Whether an "and"/"but" clause-boundary candidate instead coordinates
+    two objects of one shared clause, rather than introducing an
+    independent second clause -- so it must not be treated as a *leading*
+    boundary for the match that follows it.
+
+    True when the conjunction is immediately preceded (only whitespace in
+    between) by the end of another _LOW_EQUITY_PATTERN match: "Not
+    available for borrowers with LVR above 80% and less than 20% equity"
+    coordinates two eligibility conditions under one shared "Not available"
+    governing both -- unlike "Maximum 90% LVR and LVR above 80% attracts a
+    margin", where "and" joins two independent, already-complete
+    statements (the first, "Maximum 90% LVR", is not itself a
+    _LOW_EQUITY_PATTERN match at all, so this exception does not apply and
+    "and" remains a genuine boundary there).
+    """
+    word = boundary.group().strip(" ,")
+    if word.lower() not in ("and", "but"):
+        return False
+    end = boundary.start()
+    while end > 0 and text[end - 1].isspace():
+        end -= 1
+    return any(candidate.end() == end for candidate in _LOW_EQUITY_PATTERN.finditer(text))
+
+
 def _low_equity_clause_spans(text: str) -> list[tuple[int, int]]:
     """Spans of every clause containing a genuine (non-negated)
     _LOW_EQUITY_PATTERN match.
@@ -228,14 +253,11 @@ def _low_equity_clause_spans(text: str) -> list[tuple[int, int]]:
     spans = []
     for match in _LOW_EQUITY_PATTERN.finditer(text):
         clause_start = 0
-        # Searched over the *full* text, not text[:match.start()]: the
-        # bare-conjunction alternative's (?=lvr\b) lookahead must be able to
-        # see the "lvr" it anchors on, which sits at/after match.start() --
-        # endpos truncation would hide it from the lookahead entirely,
-        # since re treats the string as if it ended there.
         for boundary in _CLAUSE_BOUNDARY_PATTERN.finditer(text):
             if boundary.start() >= match.start():
                 break
+            if _is_coordinated_object_conjunction(text, boundary):
+                continue
             clause_start = boundary.end()
         clause_end = len(text)
         trailing_boundary = _CLAUSE_BOUNDARY_PATTERN.search(text, match.end())

@@ -258,6 +258,20 @@ def test_normalise_lvr_condition_a_bare_or_between_rate_options_is_not_a_boundar
     assert normalise_lvr_condition("LVR above 80% or 85% is unavailable") == "standard"
 
 
+def test_normalise_lvr_condition_a_bare_and_between_coordinated_conditions_is_not_a_boundary():
+    """A bare "and" joining two eligibility conditions under *one* shared
+    governing negation must not become a leading boundary for the second:
+    "Not available for borrowers with LVR above 80% and less than 20%
+    equity" negates both conditions together (the product simply requires
+    at most 80% LVR / at least 20% equity -- a standard cap, not a genuine
+    low-equity margin), unlike "Maximum 90% LVR and LVR above 80% attracts
+    a margin", where "and" joins two independent, already-complete
+    statements and remains a genuine boundary."""
+    label = "Not available for borrowers with LVR above 80% and less than 20% equity"
+
+    assert normalise_lvr_condition(label) == "min_20_percent_equity"
+
+
 def test_normalise_balance_extracts_currency_amounts():
     assert normalise_balance("$5,000+") == (5000.0, None)
     assert normalise_balance("$2,000 to $5,000,000") == (2000.0, 5_000_000.0)
