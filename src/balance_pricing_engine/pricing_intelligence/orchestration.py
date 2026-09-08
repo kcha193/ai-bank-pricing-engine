@@ -12,6 +12,15 @@ they are core domain logic -- "how do I classify a collection run's health" --
 not scheduler-specific concerns, and the interactive CLI command needs the
 exact same classification the scheduler already relies on. The script
 re-imports these names so nothing that already depended on them breaks.
+
+Pricing-scenario auto-triggering (Phase 15) is deliberately *not* imported
+here: this package is architecturally forbidden from depending on the
+optimiser at all (see ``tests/unit/test_pricing_intelligence_boundaries.py``
+-- "nothing in the intelligence layer may price"). ``run_operational_cycle``
+instead accepts an optional ``scenario_trigger_fn`` the caller supplies --
+only a caller *outside* this package (the scheduler script) can actually
+build one, since only it may import a scenario-computation module that
+touches the optimiser.
 """
 
 from __future__ import annotations
@@ -19,7 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
-from typing import Mapping, Optional
+from typing import Callable, Mapping, NamedTuple, Optional
 import uuid
 
 from balance_pricing_engine.competitor_rates.models import ProductType
@@ -34,13 +43,39 @@ from balance_pricing_engine.pricing_intelligence.alerts import (
     plain_alert,
 )
 from balance_pricing_engine.pricing_intelligence.changes import RateChange
-from balance_pricing_engine.pricing_intelligence.config import HealthThresholds
+from balance_pricing_engine.pricing_intelligence.config import (
+    HealthThresholds,
+    PricingIntelligenceConfig,
+)
 from balance_pricing_engine.pricing_intelligence.service import (
     CollectionOutcome,
     PricingIntelligenceService,
     _resolve_rate_category,
 )
+from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot
 from balance_pricing_engine.pricing_intelligence.store import CollectorHealth, RunRecord
+
+
+class ScenarioResult(NamedTuple):
+    """What a ``ScenarioTriggerFn`` returns for one triggered term.
+
+    Both fields are pre-computed by the caller, not by this module -- ``data``
+    for :meth:`~.store.ObservationStore.write_scenario_run` (JSON-serialisable),
+    ``alert_block`` for :func:`_enrich_with_scenarios` to append verbatim.
+    This package must not know how to compute or render either (see the
+    module docstring), only how to persist/attach them.
+    """
+
+    data: list[dict]
+    alert_block: str
+
+
+#: A caller-supplied hook: given the tracked/comparable terms this run's
+#: changes triggered and the current market snapshot, return a
+#: :class:`ScenarioResult` per term. Injected rather than imported because
+#: this package must not depend on how a scenario comparison is actually
+#: computed -- see the module docstring.
+ScenarioTriggerFn = Callable[[list[int], MarketSnapshot], Mapping[int, ScenarioResult]]
 
 logger = logging.getLogger(__name__)
 
@@ -452,26 +487,71 @@ def _recovery_alert(bank: str, health: CollectorHealth) -> Alert:
 # ---------------------------------------------------------------------------
 
 
-def _dispatch_rate_change_alerts(
-    store,
-    changes: list[RateChange],
-    sinks: Mapping[str, AlertSink],
-    snapshot,
-    previous_snapshot,
+def _dispatch_rendered_alerts(
+    store, alerts: list[Alert], sinks: Mapping[str, AlertSink]
 ) -> int:
-    """Format+dispatch rate-move alerts once per configured channel,
-    skipping any change already delivered on that channel (see
-    ``store.notified_alerts``)."""
+    """Dispatch already-rendered rate-move alerts once per configured
+    channel, skipping any change already delivered on that channel (see
+    ``store.notified_alerts``). Rendered (not raw changes) so scenario
+    enrichment (see ``_enrich_with_scenarios``) happens once, before dedup
+    filtering, rather than once per channel."""
     total_sent = 0
     for channel, sink in sinks.items():
-        unnotified = [change for change in changes if not store.was_notified(change, channel)]
+        unnotified = [alert for alert in alerts if not store.was_notified(alert.change, channel)]
         if not unnotified:
             continue
-        alerts = format_alerts(unnotified, snapshot, previous_snapshot)
-        total_sent += dispatch_alerts_safely(alerts, sink)
-        for change in unnotified:
-            store.record_notification(change, channel)
+        total_sent += dispatch_alerts_safely(unnotified, sink)
+        for alert in unnotified:
+            store.record_notification(alert.change, channel)
     return total_sent
+
+
+def _scenario_trigger_candidates(
+    changes: list[RateChange], product_type: ProductType, config: PricingIntelligenceConfig
+) -> list[int]:
+    """Tracked, comparable-category terms with a genuine (non-suspicious)
+    rate move this run -- passed to ``scenario_trigger_fn`` (see
+    :data:`ScenarioTriggerFn`).
+
+    Any bank's move counts, not just ``our_bank`` -- Phase 15 triggers on a
+    *competitor* reprice, which is exactly what a market-wide collection
+    detects regardless of which bank moved.
+    """
+    target_category = _resolve_rate_category(product_type, None)
+    terms = {
+        change.term_months
+        for change in changes
+        if change.is_rate_move
+        and not change.suspicious
+        and change.rate_category == target_category
+        and change.term_months in config.tracked_terms_months
+    }
+    return sorted(terms)
+
+
+def _enrich_with_scenarios(
+    alerts: list[Alert], scenarios_by_term: Mapping[int, "ScenarioResult"]
+) -> list[Alert]:
+    """Append each triggered term's pre-formatted alert block (Phase 17) to
+    the alert whose change landed on it.
+
+    Takes the already-rendered ``ScenarioResult.alert_block`` rather than
+    formatting the comparison itself -- this module must not know how to
+    render one (see the module docstring), only that
+    ``scenario_trigger_fn``'s caller already did.
+    """
+    from dataclasses import replace
+
+    enriched = []
+    for alert in alerts:
+        comparison = (
+            scenarios_by_term.get(alert.change.term_months) if alert.change is not None else None
+        )
+        if comparison is None:
+            enriched.append(alert)
+            continue
+        enriched.append(replace(alert, body=alert.body + "\n\n" + comparison.alert_block))
+    return enriched
 
 
 def _dispatch_health_alerts(
@@ -539,6 +619,7 @@ def run_operational_cycle(
     dry_run: bool = False,
     alert_sinks: Optional[Mapping[str, AlertSink]] = None,
     webhook_text_field: str = "text",
+    scenario_trigger_fn: Optional[ScenarioTriggerFn] = None,
 ) -> OperationalRunResult:
     """Run one full collect -> validate -> persist -> detect -> alert cycle.
 
@@ -550,6 +631,16 @@ def run_operational_cycle(
     building that default webhook sink (ignored when ``alert_sinks`` is
     supplied directly) -- ``"text"`` (the default) is read by Slack/Teams,
     ``"content"`` by Discord.
+
+    ``scenario_trigger_fn`` enables auto-triggered pricing scenarios
+    (Phase 15): when supplied, it is called once with every tracked/
+    comparable term that had a genuine (non-suspicious) rate move this run,
+    plus the current market snapshot, and must return a comparison object per
+    term. Each is persisted (:meth:`~.store.ObservationStore.write_scenario_run`,
+    skipped on a dry run) and appended to the corresponding rate-move
+    alert(s) for that term. Omitted (the default) simply skips scenario-
+    triggering. See :data:`ScenarioTriggerFn` and the module docstring for
+    why this is injected rather than imported.
 
     ``dry_run`` collects and classifies as normal but does not persist
     observations (``service.collect(persist=False)``), does not write a
@@ -593,21 +684,41 @@ def run_operational_cycle(
         sinks = built
 
     rate_moves = [change for change in outcome.changes if change.is_rate_move]
+
+    scenarios_by_term: dict[int, ScenarioResult] = {}
+    triggered_terms = (
+        _scenario_trigger_candidates(outcome.changes, product_type, service.config)
+        if scenario_trigger_fn is not None
+        else []
+    )
+    if triggered_terms:
+        scenario_snapshot = service.get_market_snapshot(product_type=product_type)
+        scenarios_by_term = dict(scenario_trigger_fn(triggered_terms, scenario_snapshot))
+        if not dry_run:
+            for term, comparison in scenarios_by_term.items():
+                service.store.write_scenario_run(
+                    operational_run_id,
+                    product_type,
+                    term,
+                    comparison.data,
+                    generated_at=started_at,
+                )
+
     alerts_sent = 0
     if sinks and rate_moves:
         snapshot = service.get_market_snapshot(product_type=product_type)
         previous_snapshot = service.get_previous_market_snapshot(product_type=product_type)
+        rendered = format_alerts(rate_moves, snapshot, previous_snapshot)
+        if scenarios_by_term:
+            rendered = _enrich_with_scenarios(rendered, scenarios_by_term)
         if dry_run:
             # No dedup ledger writes on a dry run -- record_notification()
             # would otherwise let a later real run believe these changes
             # were already delivered.
-            rendered = format_alerts(rate_moves, snapshot, previous_snapshot)
             for sink in sinks.values():
                 alerts_sent += dispatch_alerts_safely(rendered, sink)
         else:
-            alerts_sent = _dispatch_rate_change_alerts(
-                service.store, rate_moves, sinks, snapshot, previous_snapshot
-            )
+            alerts_sent = _dispatch_rendered_alerts(service.store, rendered, sinks)
 
     error_summary = None
     if code != EXIT_OK:

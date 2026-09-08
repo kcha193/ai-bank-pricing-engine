@@ -369,13 +369,21 @@ def _collect(service: PricingIntelligenceService, args: argparse.Namespace) -> i
     return 0
 
 
-def _run(config: PricingIntelligenceConfig, args: argparse.Namespace) -> int:
+def _run(
+    config: PricingIntelligenceConfig, args: argparse.Namespace
+) -> int:
     """Interactive entry point for the full operational cycle.
 
     Shares :func:`~.orchestration.run_operational_cycle` with
     ``scripts/collect_market_rates_workflow.py``'s scheduled entry point, so
     a manual run and a scheduled one classify and alert identically -- see
     that module's docstring.
+
+    Does not auto-trigger pricing scenarios (Phase 15) -- that needs a
+    scenario_trigger_fn built from a module that imports the optimiser, which
+    this package (including this CLI) is architecturally forbidden from doing
+    (see ``tests/unit/test_pricing_intelligence_boundaries.py``). Use the
+    scheduled workflow script for scenario-triggered runs.
     """
     try:
         with SingleInstanceLock(Path(args.lock_file)):

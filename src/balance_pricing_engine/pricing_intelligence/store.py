@@ -220,6 +220,26 @@ CREATE TABLE IF NOT EXISTS collector_health (
     last_alert_sent_at   TEXT,
     PRIMARY KEY (bank, product_type)
 );
+
+-- Auto-triggered pricing-scenario comparisons (see
+-- pricing_intelligence.scenario_trigger), one row per (run_id, term_months)
+-- that a meaningful competitor move triggered analysis for. Keyed on run_id
+-- rather than a rate_changes.id foreign key -- run_id already identifies
+-- both the triggering operational_runs row and every rate_changes row it
+-- produced, and a term can have more than one contributing change (several
+-- banks moving the same term in one run) with no single natural change to
+-- point at instead.
+CREATE TABLE IF NOT EXISTS scenario_runs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id        TEXT NOT NULL,
+    product_type  TEXT NOT NULL,
+    term_months   INTEGER NOT NULL,
+    generated_at  TEXT NOT NULL,
+    scenarios_json TEXT NOT NULL,
+    UNIQUE (run_id, product_type, term_months)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scenario_runs_run_id ON scenario_runs (run_id);
 """ + _RATE_CHANGES_SCHEMA
 
 # Fields whose movement makes an observation a genuinely new advertised state.
@@ -1843,6 +1863,73 @@ class ObservationStore:
                 (bank, product.value),
             ).fetchone()
         return _collector_health_from_row(row)
+
+    def write_scenario_run(
+        self,
+        run_id: str,
+        product_type: ProductType | str,
+        term_months: int,
+        scenarios: list[dict],
+        generated_at: Optional[datetime] = None,
+    ) -> None:
+        """Persist one triggered scenario comparison for (run_id, term_months).
+
+        ``scenarios`` is whatever JSON-serialisable structure the caller
+        computed (see ``scenario_trigger.ScenarioComparison.as_dicts()``) --
+        this method is deliberately agnostic to that module's dataclasses, so
+        storage does not couple to the scenario-computation layer's types.
+        """
+        generated_at = generated_at or datetime.now(timezone.utc)
+        with self._transaction() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO scenario_runs "
+                "(run_id, product_type, term_months, generated_at, scenarios_json) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    ProductType(product_type).value,
+                    term_months,
+                    _iso(generated_at),
+                    json.dumps(scenarios),
+                ),
+            )
+
+    def get_scenario_runs(
+        self, run_id: str, product_type: ProductType | str = ProductType.HOME_LOAN
+    ) -> list[dict]:
+        """Every triggered scenario comparison for one run, one dict per term."""
+        rows = self._connection.execute(
+            "SELECT term_months, generated_at, scenarios_json FROM scenario_runs "
+            "WHERE run_id = ? AND product_type = ? ORDER BY term_months",
+            (run_id, ProductType(product_type).value),
+        ).fetchall()
+        return [
+            {
+                "term_months": row["term_months"],
+                "generated_at": _parse_iso(row["generated_at"]),
+                "scenarios": json.loads(row["scenarios_json"]),
+            }
+            for row in rows
+        ]
+
+    def get_recent_scenario_runs(
+        self, product_type: ProductType | str = ProductType.HOME_LOAN, limit: int = 20
+    ) -> list[dict]:
+        """Most recent triggered scenario comparisons, newest first."""
+        rows = self._connection.execute(
+            "SELECT run_id, term_months, generated_at, scenarios_json FROM scenario_runs "
+            "WHERE product_type = ? ORDER BY generated_at DESC, id DESC LIMIT ?",
+            (ProductType(product_type).value, limit),
+        ).fetchall()
+        return [
+            {
+                "run_id": row["run_id"],
+                "term_months": row["term_months"],
+                "generated_at": _parse_iso(row["generated_at"]),
+                "scenarios": json.loads(row["scenarios_json"]),
+            }
+            for row in rows
+        ]
 
     def record_collector_health_alert(
         self, bank: str, product_type: ProductType | str, at: Optional[datetime] = None

@@ -132,6 +132,7 @@ def run_collection(
     summary_path: Optional[Path] = None,
     product_type: ProductType | str = ProductType.HOME_LOAN,
     webhook_text_field: str = "text",
+    pricing_config: Optional[object] = None,
 ) -> tuple[int, dict]:
     """Run one collection and return ``(exit_code, summary)``.
 
@@ -146,8 +147,38 @@ def run_collection(
     configured (see ``pricing_intelligence.alerts``); ``webhook_text_field``
     ("text" for Slack/Teams, "content" for Discord) only affects the webhook
     payload's message field.
+
+    ``pricing_config`` (the full ``EngineConfig`` loaded from ``--config``,
+    ``None`` when this ran on ``--database`` alone) enables auto-triggered
+    pricing scenarios: every tracked/comparable term with a genuine rate move
+    this run gets a scenario comparison built via
+    ``pricing_scenario_trigger.run_triggered_scenarios`` -- imported here,
+    not inside ``pricing_intelligence``, which is architecturally forbidden
+    from depending on the optimiser (see
+    ``tests/unit/test_pricing_intelligence_boundaries.py``). ``None`` (the
+    default, matching a ``--database``-only invocation with no economic
+    assumptions loaded) simply skips scenario-triggering.
     """
     product_type = ProductType(product_type)
+    scenario_trigger_fn = None
+    if pricing_config is not None:
+        from balance_pricing_engine.pricing_intelligence.orchestration import ScenarioResult
+        from balance_pricing_engine.pricing_scenario_trigger import (
+            format_scenario_block,
+            run_triggered_scenarios,
+        )
+
+        def scenario_trigger_fn(terms, snapshot):
+            results = {}
+            for term in terms:
+                comparison = run_triggered_scenarios(
+                    pricing_config, term_months=term, snapshot=snapshot
+                )
+                results[term] = ScenarioResult(
+                    data=comparison.as_dicts(), alert_block=format_scenario_block(comparison)
+                )
+            return results
+
     with PricingIntelligenceService(
         config=config,
         store=ObservationStore(config.database_path),
@@ -155,7 +186,10 @@ def run_collection(
     ) as service:
         try:
             result = run_operational_cycle(
-                service, product_type=product_type, webhook_text_field=webhook_text_field
+                service,
+                product_type=product_type,
+                webhook_text_field=webhook_text_field,
+                scenario_trigger_fn=scenario_trigger_fn,
             )
         except ChronologicalOrderError as exc:
             # service.collect() stamps its own datetime.now, so this fires on
@@ -272,6 +306,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     configure_json_logging()
 
     config = PricingIntelligenceConfig()
+    # Retained (not just its .pricing_intelligence block) so scheduled runs
+    # can auto-trigger pricing scenarios (Phase 15) -- see run_collection()'s
+    # pricing_config docstring.
+    engine_config = None
     if args.config:
         # configs/base.yaml's pricing_intelligence block would otherwise be
         # silently ignored -- scheduled production runs could then contact
@@ -292,6 +330,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 summary_path=Path(args.summary_file) if args.summary_file else None,
                 product_type=args.product,
                 webhook_text_field=args.webhook_text_field,
+                pricing_config=engine_config,
             )
     except AlreadyRunningError as exc:
         log_event(logger, "collection skipped", level=logging.WARNING, reason=str(exc))

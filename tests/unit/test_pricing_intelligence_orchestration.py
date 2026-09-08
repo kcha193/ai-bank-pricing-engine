@@ -19,6 +19,7 @@ from balance_pricing_engine.pricing_intelligence.orchestration import (
     HEALTH_NONE,
     HEALTH_RECOVERY,
     HEALTH_WARNING,
+    ScenarioResult,
     classify_health_escalation,
     run_operational_cycle,
 )
@@ -289,6 +290,175 @@ def test_recovery_alert_fires_after_an_escalated_streak(tmp_path, fixture_fetche
     recovery_alerts = [a for a in sink.alerts if "recovered" in a.title]
     assert len(recovery_alerts) == 1
     assert "Westpac" in recovery_alerts[0].title
+
+
+# --------------------------------------------------- scenario-trigger wiring
+
+
+def _fake_scenario_result(term_months) -> ScenarioResult:
+    return ScenarioResult(
+        data=[{"label": "No change", "our_rate": 0.0549}],
+        alert_block="PRICING ENGINE\n\nCurrent rate:     5.49%",
+    )
+
+
+def _mutate_anz_one_year(bank, html):
+    if bank == "ANZ":
+        return html.replace("<td>1 year</td><td>4.79%", "<td>1 year</td><td>4.59%")
+    return html
+
+
+def test_scenario_trigger_fn_is_called_for_a_genuine_rate_move(tmp_path, fixture_fetcher):
+    config = _config(tmp_path)
+    calls = []
+
+    def trigger_fn(terms, snapshot):
+        calls.append((tuple(terms), snapshot))
+        return {term: _fake_scenario_result(term) for term in terms}
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=_mutate_anz_one_year)
+        run_operational_cycle(
+            service, captured_at_utc=DAY_TWO, alert_sinks={}, scenario_trigger_fn=trigger_fn
+        )
+
+    assert len(calls) == 1
+    assert calls[0][0] == (12,)
+
+
+def test_scenario_trigger_fn_is_not_called_with_no_changes(tmp_path, fixture_fetcher):
+    config = _config(tmp_path)
+    calls = []
+
+    def trigger_fn(terms, snapshot):
+        calls.append(terms)
+        return {}
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        run_operational_cycle(
+            service, captured_at_utc=DAY_ONE, alert_sinks={}, scenario_trigger_fn=trigger_fn
+        )
+
+    assert calls == []
+
+
+def test_scenario_trigger_fn_is_not_called_for_a_suspicious_change(tmp_path, fixture_fetcher):
+    """A suspicious movement must not silently trigger a trusted-looking scenario run."""
+    config = _config(tmp_path)
+    calls = []
+
+    def trigger_fn(terms, snapshot):
+        calls.append(terms)
+        return {}
+
+    def mutate_to_suspicious(bank, html):
+        if bank == "ANZ":
+            # A move far larger than suspicious_change_bps (75 bps default).
+            return html.replace("<td>1 year</td><td>4.79%", "<td>1 year</td><td>8.49%")
+        return html
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=mutate_to_suspicious)
+        result = run_operational_cycle(
+            service, captured_at_utc=DAY_TWO, alert_sinks={}, scenario_trigger_fn=trigger_fn
+        )
+
+    assert any(change.suspicious for change in result.outcome.changes)
+    assert calls == []
+
+
+def test_no_scenario_trigger_fn_means_no_scenario_runs_persisted(tmp_path, fixture_fetcher):
+    config = _config(tmp_path)
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=_mutate_anz_one_year)
+        result = run_operational_cycle(service, captured_at_utc=DAY_TWO, alert_sinks={})
+
+    with ObservationStore(config.database_path) as store:
+        assert store.get_scenario_runs(result.run_record.run_id) == []
+
+
+def test_triggered_scenario_is_persisted_and_linked_to_the_run(tmp_path, fixture_fetcher):
+    config = _config(tmp_path)
+
+    def trigger_fn(terms, snapshot):
+        return {term: _fake_scenario_result(term) for term in terms}
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=_mutate_anz_one_year)
+        result = run_operational_cycle(
+            service, captured_at_utc=DAY_TWO, alert_sinks={}, scenario_trigger_fn=trigger_fn
+        )
+
+    with ObservationStore(config.database_path) as store:
+        runs = store.get_scenario_runs(result.run_record.run_id)
+    assert len(runs) == 1
+    assert runs[0]["term_months"] == 12
+    assert runs[0]["scenarios"] == [{"label": "No change", "our_rate": 0.0549}]
+
+
+def test_triggered_scenario_enriches_the_rate_move_alert(tmp_path, fixture_fetcher):
+    config = _config(tmp_path)
+    sink = CollectingAlertSink()
+
+    def trigger_fn(terms, snapshot):
+        return {term: _fake_scenario_result(term) for term in terms}
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=_mutate_anz_one_year)
+        run_operational_cycle(
+            service,
+            captured_at_utc=DAY_TWO,
+            alert_sinks={"telegram": sink},
+            scenario_trigger_fn=trigger_fn,
+        )
+
+    assert len(sink.alerts) == 1
+    assert "PRICING ENGINE" not in sink.alerts[0].title  # still the rate-change title
+    assert "NZ MORTGAGE RATE CHANGE" in sink.alerts[0].title
+    assert "PRICING ENGINE" in sink.alerts[0].body
+    assert "Current rate:     5.49%" in sink.alerts[0].body
+
+
+def test_dry_run_still_previews_scenarios_but_persists_nothing(tmp_path, fixture_fetcher):
+    config = _config(tmp_path)
+    calls = []
+
+    def trigger_fn(terms, snapshot):
+        calls.append(tuple(terms))
+        return {term: _fake_scenario_result(term) for term in terms}
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=_mutate_anz_one_year)
+        run_operational_cycle(
+            service,
+            captured_at_utc=DAY_TWO,
+            dry_run=True,
+            scenario_trigger_fn=trigger_fn,
+        )
+
+    assert calls == [(12,)]
+    with ObservationStore(config.database_path) as store:
+        assert store.get_recent_scenario_runs() == []
 
 
 def test_a_broken_telegram_sink_does_not_fail_the_run(tmp_path, fixture_fetcher):

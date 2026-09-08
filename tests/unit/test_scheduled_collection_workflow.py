@@ -1058,3 +1058,141 @@ def test_a_backwards_clock_is_caught_before_fetching_any_bank(
 
     assert code == workflow.EXIT_TOTAL_FAILURE
     assert fetch_calls == []
+
+
+# ---------------------------------------------------- scenario-trigger wiring
+
+
+def test_a_reprice_auto_triggers_pricing_scenarios_end_to_end(
+    workflow, fixture_fetcher, tmp_path, monkeypatch
+):
+    """The full wiring: --config supplies both pricing_intelligence settings
+    and the economic assumptions scenario-triggering needs; a real (not
+    injected/faked) run_triggered_scenarios() call runs against the small
+    engine config, and its result is both persisted and appended to the
+    delivered alert."""
+    monkeypatch.setenv("PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL", "https://hooks.example/x")
+    monkeypatch.chdir(tmp_path)
+    custom_db = tmp_path / "obs.db"
+
+    with PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=str(custom_db), collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(custom_db),
+        fetcher=fixture_fetcher(),
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    captured = []
+
+    def fake_urlopen(request, timeout=None):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+        captured.append(json.loads(request.data))
+        return FakeResponse()
+
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    monkeypatch.setattr(alerts_module, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        workflow,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"],
+            store=kwargs["store"],
+            fetcher=_reprice_fetcher(fixture_fetcher),
+        ),
+    )
+
+    engine_config_path = tmp_path / "engine.yaml"
+    engine_config_path.write_text(
+        yaml.dump(_minimal_engine_config(database_path=str(custom_db)))
+    )
+
+    code = workflow.main(
+        [
+            "--config",
+            str(engine_config_path),
+            "--lock-file",
+            str(tmp_path / "collection.lock"),
+            "--quiet",
+        ]
+    )
+
+    assert code == workflow.EXIT_OK
+    assert len(captured) == 1
+    assert "PRICING ENGINE" in captured[0]["text"]
+    assert "Decision support only" in captured[0]["text"]
+
+    with ObservationStore(custom_db) as store:
+        latest = store.get_latest_run_record()
+        runs = store.get_scenario_runs(latest.run_id)
+    assert len(runs) == 1
+    assert runs[0]["term_months"] == 12
+
+
+def test_no_config_means_no_scenario_trigger(workflow, fixture_fetcher, tmp_path, monkeypatch):
+    """--database alone (no --config) has no economic assumptions to run
+    scenarios against, so scenario-triggering is silently skipped, not an
+    error."""
+    monkeypatch.setenv("PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL", "https://hooks.example/x")
+    custom_db = tmp_path / "obs.db"
+
+    with PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=str(custom_db), collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(custom_db),
+        fetcher=fixture_fetcher(),
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+    captured = []
+
+    def fake_urlopen(request, timeout=None):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+        captured.append(json.loads(request.data))
+        return FakeResponse()
+
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    monkeypatch.setattr(alerts_module, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        workflow,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"],
+            store=kwargs["store"],
+            fetcher=_reprice_fetcher(fixture_fetcher),
+        ),
+    )
+
+    code = workflow.main(
+        [
+            "--database",
+            str(custom_db),
+            "--lock-file",
+            str(tmp_path / "collection.lock"),
+            "--quiet",
+        ]
+    )
+
+    assert code == workflow.EXIT_OK
+    assert len(captured) == 1
+    assert "PRICING ENGINE" not in captured[0]["text"]
+
+    with ObservationStore(custom_db) as store:
+        latest = store.get_latest_run_record()
+        assert store.get_scenario_runs(latest.run_id) == []
