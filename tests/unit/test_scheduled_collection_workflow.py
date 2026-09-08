@@ -1013,3 +1013,48 @@ def test_a_backwards_clock_is_a_classified_failure_not_a_traceback(
     assert len(aborted) == 1
     assert "chronological" in aborted[0].structured_fields["reason"]
     assert aborted[0].structured_fields["exit_code"] == workflow.EXIT_TOTAL_FAILURE
+
+
+def test_a_backwards_clock_is_caught_before_fetching_any_bank(
+    workflow, fixture_fetcher, tmp_path, monkeypatch
+):
+    """service.collect() fetches and validates every bank before its
+    persistence step reaches record_observations()'s chronological-order
+    guard, so by the time that guard raises, the fetch work is already done
+    and its results (report, validation) are thrown away with the
+    exception -- the synthesized failure summary then has no real per-bank
+    data to report even if, say, a parser had also failed on some other
+    bank in that same attempt. Checking the clock before fetching (not just
+    relying on the later guard) means a backwards clock is caught for free,
+    with no fetch attempted at all."""
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "obs.db"),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    fetch_calls = []
+
+    def counting_fetcher():
+        fetch = fixture_fetcher()
+
+        def fetch_and_count(url):
+            fetch_calls.append(url)
+            return fetch(url)
+
+        return fetch_and_count
+
+    monkeypatch.setattr(
+        workflow,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"], store=kwargs["store"], fetcher=counting_fetcher()
+        ),
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_TWO + timedelta(days=1), persist_snapshot=False)
+
+    code, _ = workflow.run_collection(config, render_javascript=False)
+
+    assert code == workflow.EXIT_TOTAL_FAILURE
+    assert fetch_calls == []

@@ -48,7 +48,11 @@ from balance_pricing_engine.pricing_intelligence.snapshot import (
     MarketSnapshot,
     build_market_snapshot,
 )
-from balance_pricing_engine.pricing_intelligence.store import ObservationStore, WriteResult
+from balance_pricing_engine.pricing_intelligence.store import (
+    ChronologicalOrderError,
+    ObservationStore,
+    WriteResult,
+)
 from balance_pricing_engine.pricing_intelligence.strategy import (
     CompetitorRateStrategy,
     ResolvedCompetitorAssumption,
@@ -593,6 +597,22 @@ class PricingIntelligenceService:
         """
         product_type = ProductType(product_type)
         captured_at_utc = captured_at_utc or datetime.now(timezone.utc)
+
+        # Checked before fetching, not just left to record_observations()'s
+        # own guard at the end of this method: a backwards wall clock (an
+        # NTP correction, a restored VM snapshot) is detected the same way
+        # either place, but catching it here means a scheduled run fails
+        # immediately instead of only after every bank has already been
+        # fetched and validated -- work whose results would otherwise be
+        # thrown away once the later guard raises. Only relevant when this
+        # call will actually persist; a dry run never reaches that guard.
+        if persist:
+            latest = self.store.latest_collection_timestamp(product_type=product_type)
+            if latest is not None and captured_at_utc < latest:
+                raise ChronologicalOrderError(
+                    "collections must be written in chronological order per product "
+                    f"(this run {captured_at_utc}, latest stored {latest})"
+                )
         report = collect_all_rates(
             self.collectors,
             product_type=product_type,

@@ -1679,6 +1679,28 @@ class ObservationStore:
             ).fetchone()
         return row["run_id"] if row else None
 
+    def latest_collection_timestamp(
+        self, product_type: ProductType | str = ProductType.HOME_LOAN
+    ) -> Optional[datetime]:
+        """The ``started_at`` of the most recently recorded run for this
+        product, or ``None`` if none has been recorded yet.
+
+        Same query :meth:`record_observations` uses for its own
+        chronological-order guard (``ChronologicalOrderError``). Exposed so a
+        caller -- :meth:`~.service.PricingIntelligenceService.collect` -- can
+        fail fast on a backwards wall clock *before* fetching every bank,
+        rather than only discovering it after that work is already done, when
+        ``record_observations()`` finally runs. Not a replacement for that
+        guard: this is a pre-check for the common case, not transaction-safe
+        against a genuinely concurrent write, which the guard inside the
+        write's own transaction still catches.
+        """
+        row = self._connection.execute(
+            "SELECT MAX(started_at) FROM collection_run_products WHERE product_type = ?",
+            (_product_value(product_type),),
+        ).fetchone()
+        return _parse_iso(row[0]) if row and row[0] is not None else None
+
     def get_run_started_at(self, run_id: str) -> Optional[datetime]:
         """Resolve a run's start time, for reconstructing its state via
         :meth:`get_observations_as_of` -- ``last_seen_run_id`` cannot answer
