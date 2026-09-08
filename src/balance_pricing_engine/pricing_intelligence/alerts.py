@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 #: in a config file. Unset means "no webhook delivery configured".
 ALERT_WEBHOOK_URL_SECRET_NAME = "PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL"
 
+#: Same pattern, for Telegram delivery. Both must be set for
+#: :func:`build_telegram_sink_from_env` to return a sink -- a bot token with
+#: no destination chat (or vice versa) is not a usable configuration.
+TELEGRAM_BOT_TOKEN_SECRET_NAME = "TELEGRAM_BOT_TOKEN"
+TELEGRAM_CHAT_ID_SECRET_NAME = "TELEGRAM_CHAT_ID"
+
 #: Posts a JSON-encoded payload to a URL and returns nothing, raising on
 #: failure. Injectable so tests never reach the network -- the same pattern
 #: as the collector ``Fetcher`` type in ``collectors/base.py``.
@@ -234,6 +240,73 @@ def build_webhook_sink_from_env(
     if not webhook_url:
         return None
     return WebhookAlertSink(webhook_url, text_field=text_field)
+
+
+class TelegramAlertSink:
+    """Sends a rendered alert as a plain-text Telegram message.
+
+    Uses the Bot API's ``sendMessage`` method directly (``POST
+    https://api.telegram.org/bot<token>/sendMessage``) -- no third-party
+    Telegram client dependency, same rationale as :class:`WebhookAlertSink`
+    using bare ``urlopen``. No ``parse_mode`` is set: every alert body in this
+    module is plain text with emoji markers, not Markdown/HTML, and sending it
+    unescaped through a parse mode would risk a stray ``_``/``*``/``[`` in a
+    bank or product name breaking Telegram's parser and losing the whole
+    message.
+
+    Reuses :func:`build_default_poster` for delivery, including its 429
+    retry loop. Telegram's own rate-limit response carries its suggested
+    delay in the JSON body (``parameters.retry_after``), not the
+    ``Retry-After`` header ``_parse_retry_after_seconds`` reads -- so a 429
+    here retries after :data:`DEFAULT_RETRY_AFTER_SECONDS` rather than
+    Telegram's exact suggested delay. That is an accepted simplification:
+    ``dispatch_alerts_safely``'s own deadline already bounds total wait time
+    regardless of the per-retry delay chosen, and adding a second,
+    Telegram-specific retry-delay parser for a non-safety-critical value
+    is not worth the extra surface area.
+
+    ``send()`` raises on failure, same contract as ``WebhookAlertSink.send`` --
+    callers wanting a broken Telegram channel to never affect a collection
+    run should go through :func:`dispatch_alerts_safely`.
+    """
+
+    def __init__(
+        self,
+        bot_token: str,
+        chat_id: str,
+        poster: Optional[WebhookPoster] = None,
+    ) -> None:
+        self.bot_token = bot_token
+        self.chat_id = chat_id
+        # `is not None`, not `or` -- same falsey-injected-poster reasoning as
+        # WebhookAlertSink.__init__.
+        self._poster = poster if poster is not None else build_default_poster()
+
+    def send(self, alert: Alert) -> None:
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        payload = {"chat_id": self.chat_id, "text": alert.render()}
+        self._poster(url, json.dumps(payload).encode("utf-8"))
+
+
+def build_telegram_sink_from_env(
+    secrets: Optional[SecretsProvider] = None,
+    bot_token_secret_name: str = TELEGRAM_BOT_TOKEN_SECRET_NAME,
+    chat_id_secret_name: str = TELEGRAM_CHAT_ID_SECRET_NAME,
+) -> Optional[TelegramAlertSink]:
+    """Build a Telegram sink from the configured secrets, or None if either is unset.
+
+    Same "no delivery channel is the default" shape as
+    :func:`build_webhook_sink_from_env`. Both the token and the chat id must
+    be present -- one without the other cannot deliver anything.
+    """
+    # `is None`, not `or` -- same falsey-injected-provider reasoning as
+    # build_webhook_sink_from_env.
+    secrets = EnvSecretsProvider() if secrets is None else secrets
+    bot_token = secrets.get_secret(bot_token_secret_name)
+    chat_id = secrets.get_secret(chat_id_secret_name)
+    if not bot_token or not chat_id:
+        return None
+    return TelegramAlertSink(bot_token, chat_id)
 
 
 def term_name(term_months: Optional[int]) -> str:

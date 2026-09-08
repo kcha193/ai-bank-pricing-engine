@@ -35,7 +35,7 @@ import uuid
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
-from balance_pricing_engine.pricing_intelligence.changes import ChangeType
+from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +160,26 @@ CREATE INDEX IF NOT EXISTS idx_observations_bank_term
     ON observations (bank, product_type, term_months);
 CREATE INDEX IF NOT EXISTS idx_observations_last_seen
     ON observations (last_seen_run_id);
+
+-- Idempotency ledger for alert *delivery* (not detection -- detect_changes()
+-- itself only ever fires a given transition once, since an unchanged
+-- re-observation never re-inserts a rate_changes row; see the module
+-- docstring). This exists for the narrower case of re-processing the same
+-- already-detected change -- a crashed run retried under the same run_id, or
+-- a future manual "resend recent alerts" tool -- which must not re-notify a
+-- channel that already delivered it. Keyed on the same identity
+-- rate_changes' own UNIQUE constraint uses, plus the channel, since Telegram
+-- and a webhook are independent deliveries and one succeeding must not
+-- suppress the other.
+CREATE TABLE IF NOT EXISTS notified_alerts (
+    observation_key     TEXT NOT NULL,
+    change_type         TEXT NOT NULL,
+    detected_at         TEXT NOT NULL,
+    run_id              TEXT NOT NULL,
+    channel             TEXT NOT NULL,
+    notified_at         TEXT NOT NULL,
+    PRIMARY KEY (observation_key, change_type, detected_at, run_id, channel)
+);
 """ + _RATE_CHANGES_SCHEMA
 
 # Fields whose movement makes an observation a genuinely new advertised state.
@@ -1570,6 +1590,52 @@ class ObservationStore:
                         "AND current_rate_pct = ?",
                         (key, *rate_types, stale_current_rate_pct, current.advertised_rate_pct),
                     )
+
+    def was_notified(self, change: RateChange, channel: str) -> bool:
+        """True when this exact change has already been delivered on this channel.
+
+        See the ``notified_alerts`` schema comment for why this exists
+        despite ``detect_changes()`` already firing a given transition only
+        once: this guards delivery, not detection.
+        """
+        row = self._connection.execute(
+            "SELECT 1 FROM notified_alerts WHERE observation_key = ? AND change_type = ? "
+            "AND detected_at = ? AND run_id = ? AND channel = ?",
+            (
+                change.observation_key,
+                change.change_type.value,
+                _iso(change.detected_at),
+                change.run_id or "",
+                channel,
+            ),
+        ).fetchone()
+        return row is not None
+
+    def record_notification(
+        self, change: RateChange, channel: str, notified_at: Optional[datetime] = None
+    ) -> None:
+        """Record that ``change`` was delivered on ``channel``, for future dedup.
+
+        ``INSERT OR IGNORE``: recording the same (change, channel) pair twice
+        (e.g. a caller re-marking after already checking :meth:`was_notified`)
+        is a no-op, not an error -- this ledger only ever needs to know
+        whether delivery happened at least once.
+        """
+        notified_at = notified_at or datetime.now(timezone.utc)
+        with self._transaction() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO notified_alerts "
+                "(observation_key, change_type, detected_at, run_id, channel, notified_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    change.observation_key,
+                    change.change_type.value,
+                    _iso(change.detected_at),
+                    change.run_id or "",
+                    channel,
+                    _iso(notified_at),
+                ),
+            )
 
     # ----------------------------------------------------------------- reads
 

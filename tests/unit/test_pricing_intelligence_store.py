@@ -2391,3 +2391,66 @@ def test_legacy_rate_named_migration_does_not_quarantine_an_ordinary_reprice_his
         assert len(current) == 1
         assert current[0].advertised_rate_pct == 5.49
         assert current[0].validation_status != "warning"
+
+
+def _build_change(make_record, run_id="run-1", **overrides):
+    record = make_record()
+    payload = dict(
+        observation_key=record.observation_key(),
+        bank=record.bank,
+        product_type=ProductType.HOME_LOAN,
+        product_name=record.product_name,
+        rate_category=record.rate_category,
+        term_months=record.term_months_normalised,
+        change_type=ChangeType.RATE_DECREASE,
+        detected_at=DAY_ONE,
+        previous_rate_pct=4.99,
+        current_rate_pct=4.79,
+        change_bps=-20.0,
+        run_id=run_id,
+    )
+    payload.update(overrides)
+    return RateChange(**payload)
+
+
+def test_a_change_is_not_notified_until_recorded(store, make_record):
+    change = _build_change(make_record)
+
+    assert store.was_notified(change, "telegram") is False
+
+    store.record_notification(change, "telegram")
+
+    assert store.was_notified(change, "telegram") is True
+
+
+def test_notification_channels_are_independent(store, make_record):
+    """A webhook delivery succeeding must not suppress a separate Telegram
+    delivery of the same change, and vice versa."""
+    change = _build_change(make_record)
+
+    store.record_notification(change, "webhook")
+
+    assert store.was_notified(change, "webhook") is True
+    assert store.was_notified(change, "telegram") is False
+
+
+def test_recording_the_same_notification_twice_is_not_an_error(store, make_record):
+    change = _build_change(make_record)
+
+    store.record_notification(change, "telegram")
+    store.record_notification(change, "telegram")  # must not raise
+
+    assert store.was_notified(change, "telegram") is True
+
+
+def test_a_different_run_id_is_a_distinct_notification(store, make_record):
+    """Guards delivery idempotency for one already-detected change, not
+    cross-run suppression of a genuinely new event that happens to share
+    every other identity field but the run it was detected in."""
+    first = _build_change(make_record, run_id="run-1")
+    second = _build_change(make_record, run_id="run-2")
+
+    store.record_notification(first, "telegram")
+
+    assert store.was_notified(first, "telegram") is True
+    assert store.was_notified(second, "telegram") is False
