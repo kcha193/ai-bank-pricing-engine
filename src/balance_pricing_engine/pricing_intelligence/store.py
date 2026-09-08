@@ -180,6 +180,46 @@ CREATE TABLE IF NOT EXISTS notified_alerts (
     notified_at         TEXT NOT NULL,
     PRIMARY KEY (observation_key, change_type, detected_at, run_id, channel)
 );
+
+-- One row per run_operational_cycle() invocation -- see RunRecord's
+-- docstring for why this is a separate table from collection_runs rather
+-- than additional columns on it.
+CREATE TABLE IF NOT EXISTS operational_runs (
+    run_id                   TEXT PRIMARY KEY,
+    started_at               TEXT NOT NULL,
+    completed_at             TEXT,
+    status                   TEXT NOT NULL,
+    product_type             TEXT NOT NULL,
+    banks_attempted          TEXT NOT NULL,
+    banks_successful         TEXT NOT NULL,
+    banks_failed             TEXT NOT NULL,
+    rates_observed           INTEGER NOT NULL DEFAULT 0,
+    rates_changed            INTEGER NOT NULL DEFAULT 0,
+    validation_failures      INTEGER NOT NULL DEFAULT 0,
+    suspicious_observations  INTEGER NOT NULL DEFAULT 0,
+    market_state             TEXT,
+    error_summary            TEXT,
+    collection_run_id        TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_operational_runs_started_at
+    ON operational_runs (product_type, started_at);
+
+-- Consecutive-failure streak per bank/product, surviving across scheduler
+-- process restarts (each scheduled run is a separate process). Updated once
+-- per bank per run_operational_cycle() call; see
+-- orchestration.classify_health_escalation() for the alerting policy this
+-- drives.
+CREATE TABLE IF NOT EXISTS collector_health (
+    bank                 TEXT NOT NULL,
+    product_type         TEXT NOT NULL,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    last_success_at      TEXT,
+    last_failure_at      TEXT,
+    last_error           TEXT,
+    last_alert_sent_at   TEXT,
+    PRIMARY KEY (bank, product_type)
+);
 """ + _RATE_CHANGES_SCHEMA
 
 # Fields whose movement makes an observation a genuinely new advertised state.
@@ -314,6 +354,49 @@ class WriteResult:
         return self.inserted + self.unchanged
 
 
+@dataclass(frozen=True)
+class RunRecord:
+    """One operational run of :func:`~.orchestration.run_operational_cycle`.
+
+    Distinct from ``collection_runs`` (written by :meth:`record_observations`,
+    keyed by whatever run_id that call is given): this is the orchestration
+    layer's own ledger, and it always gets a row -- including a total-failure
+    run where ``record_observations`` is never reached at all (zero accepted
+    records short-circuits before persistence), which ``collection_runs``
+    cannot represent. ``collection_run_id`` links back to that row when one
+    exists, for cross-referencing.
+    """
+
+    run_id: str
+    started_at: datetime
+    completed_at: datetime
+    status: str  # "SUCCESS" | "PARTIAL_SUCCESS" | "FAILED"
+    product_type: ProductType
+    banks_attempted: tuple[str, ...]
+    banks_successful: tuple[str, ...]
+    banks_failed: tuple[str, ...]
+    rates_observed: int
+    rates_changed: int
+    validation_failures: int
+    suspicious_observations: int
+    market_state: Optional[str]
+    error_summary: Optional[str]
+    collection_run_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class CollectorHealth:
+    """Current failure-streak state for one bank/product collector."""
+
+    bank: str
+    product_type: ProductType
+    consecutive_failures: int
+    last_success_at: Optional[datetime]
+    last_failure_at: Optional[datetime]
+    last_error: Optional[str]
+    last_alert_sent_at: Optional[datetime]
+
+
 class PreviousRun(NamedTuple):
     """The run immediately before a reference run, resolved atomically.
 
@@ -350,6 +433,40 @@ def _parse_iso(value: str) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _run_record_from_row(row: sqlite3.Row) -> "RunRecord":
+    return RunRecord(
+        run_id=row["run_id"],
+        started_at=_parse_iso(row["started_at"]),
+        completed_at=_parse_iso(row["completed_at"]) if row["completed_at"] else None,
+        status=row["status"],
+        product_type=ProductType(row["product_type"]),
+        banks_attempted=tuple(json.loads(row["banks_attempted"])),
+        banks_successful=tuple(json.loads(row["banks_successful"])),
+        banks_failed=tuple(json.loads(row["banks_failed"])),
+        rates_observed=row["rates_observed"],
+        rates_changed=row["rates_changed"],
+        validation_failures=row["validation_failures"],
+        suspicious_observations=row["suspicious_observations"],
+        market_state=row["market_state"],
+        error_summary=row["error_summary"],
+        collection_run_id=row["collection_run_id"],
+    )
+
+
+def _collector_health_from_row(row: sqlite3.Row) -> "CollectorHealth":
+    return CollectorHealth(
+        bank=row["bank"],
+        product_type=ProductType(row["product_type"]),
+        consecutive_failures=row["consecutive_failures"],
+        last_success_at=_parse_iso(row["last_success_at"]) if row["last_success_at"] else None,
+        last_failure_at=_parse_iso(row["last_failure_at"]) if row["last_failure_at"] else None,
+        last_error=row["last_error"],
+        last_alert_sent_at=(
+            _parse_iso(row["last_alert_sent_at"]) if row["last_alert_sent_at"] else None
+        ),
+    )
 
 
 class ObservationStore:
@@ -1637,7 +1754,145 @@ class ObservationStore:
                 ),
             )
 
+    def write_run_record(self, record: RunRecord) -> None:
+        """Persist one operational run. Overwrites on a retried run_id.
+
+        Unlike ``collection_runs``, nothing else joins against this table's
+        rowid or relies on its insertion order for chronological tie-breaking,
+        so a plain ``INSERT OR REPLACE`` (rather than the upsert-preserving-
+        original-rowid dance ``record_observations`` uses) is sufficient.
+        """
+        with self._transaction() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO operational_runs "
+                "(run_id, started_at, completed_at, status, product_type, banks_attempted, "
+                "banks_successful, banks_failed, rates_observed, rates_changed, "
+                "validation_failures, suspicious_observations, market_state, error_summary, "
+                "collection_run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    record.run_id,
+                    _iso(record.started_at),
+                    _iso(record.completed_at) if record.completed_at else None,
+                    record.status,
+                    ProductType(record.product_type).value,
+                    json.dumps(list(record.banks_attempted)),
+                    json.dumps(list(record.banks_successful)),
+                    json.dumps(list(record.banks_failed)),
+                    record.rates_observed,
+                    record.rates_changed,
+                    record.validation_failures,
+                    record.suspicious_observations,
+                    record.market_state,
+                    record.error_summary,
+                    record.collection_run_id,
+                ),
+            )
+
+    def update_collector_health(
+        self,
+        bank: str,
+        product_type: ProductType | str,
+        *,
+        success: bool,
+        error: Optional[str] = None,
+        at: Optional[datetime] = None,
+    ) -> CollectorHealth:
+        """Advance one bank's consecutive-failure streak and return the new state.
+
+        A success resets the streak to zero (a recovery, if the streak was
+        previously at or above the alert threshold, is the caller's to
+        detect by comparing the returned state against what
+        :meth:`get_collector_health` held before this call). A failure
+        increments it. Both update the corresponding ``last_*_at`` timestamp;
+        ``last_alert_sent_at`` is left untouched here -- the caller
+        (``orchestration.classify_health_escalation``) sets it separately,
+        only once an alert is actually sent, via
+        :meth:`record_collector_health_alert`.
+        """
+        product = ProductType(product_type)
+        at = at or datetime.now(timezone.utc)
+        with self._transaction() as connection:
+            existing = connection.execute(
+                "SELECT consecutive_failures FROM collector_health "
+                "WHERE bank = ? AND product_type = ?",
+                (bank, product.value),
+            ).fetchone()
+            previous_streak = existing["consecutive_failures"] if existing is not None else 0
+            new_streak = 0 if success else previous_streak + 1
+            connection.execute(
+                "INSERT INTO collector_health "
+                "(bank, product_type, consecutive_failures, last_success_at, last_failure_at, "
+                "last_error) VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(bank, product_type) DO UPDATE SET "
+                "consecutive_failures = excluded.consecutive_failures, "
+                "last_success_at = COALESCE(excluded.last_success_at, collector_health.last_success_at), "
+                "last_failure_at = COALESCE(excluded.last_failure_at, collector_health.last_failure_at), "
+                "last_error = CASE WHEN excluded.last_error IS NOT NULL THEN excluded.last_error "
+                "ELSE collector_health.last_error END",
+                (
+                    bank,
+                    product.value,
+                    new_streak,
+                    _iso(at) if success else None,
+                    _iso(at) if not success else None,
+                    error if not success else None,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM collector_health WHERE bank = ? AND product_type = ?",
+                (bank, product.value),
+            ).fetchone()
+        return _collector_health_from_row(row)
+
+    def record_collector_health_alert(
+        self, bank: str, product_type: ProductType | str, at: Optional[datetime] = None
+    ) -> None:
+        """Record that a health escalation/recovery alert was just sent for this bank."""
+        product = ProductType(product_type)
+        at = at or datetime.now(timezone.utc)
+        with self._transaction() as connection:
+            connection.execute(
+                "UPDATE collector_health SET last_alert_sent_at = ? "
+                "WHERE bank = ? AND product_type = ?",
+                (_iso(at), bank, product.value),
+            )
+
     # ----------------------------------------------------------------- reads
+
+    def get_run_record(self, run_id: str) -> Optional[RunRecord]:
+        row = self._connection.execute(
+            "SELECT * FROM operational_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        return _run_record_from_row(row) if row is not None else None
+
+    def get_latest_run_record(
+        self, product_type: ProductType | str = ProductType.HOME_LOAN
+    ) -> Optional[RunRecord]:
+        row = self._connection.execute(
+            "SELECT * FROM operational_runs WHERE product_type = ? "
+            "ORDER BY started_at DESC, rowid DESC LIMIT 1",
+            (ProductType(product_type).value,),
+        ).fetchone()
+        return _run_record_from_row(row) if row is not None else None
+
+    def get_recent_run_records(
+        self, product_type: ProductType | str = ProductType.HOME_LOAN, limit: int = 10
+    ) -> list[RunRecord]:
+        rows = self._connection.execute(
+            "SELECT * FROM operational_runs WHERE product_type = ? "
+            "ORDER BY started_at DESC, rowid DESC LIMIT ?",
+            (ProductType(product_type).value, limit),
+        ).fetchall()
+        return [_run_record_from_row(row) for row in rows]
+
+    def get_collector_health(
+        self, product_type: ProductType | str = ProductType.HOME_LOAN
+    ) -> list[CollectorHealth]:
+        rows = self._connection.execute(
+            "SELECT * FROM collector_health WHERE product_type = ? ORDER BY bank",
+            (ProductType(product_type).value,),
+        ).fetchall()
+        return [_collector_health_from_row(row) for row in rows]
 
     def latest_run_id(
         self, product_type: Optional[ProductType | str] = None

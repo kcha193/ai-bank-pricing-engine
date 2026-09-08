@@ -894,3 +894,88 @@ def test_empty_market_state_is_unknown_instead_of_calm(tmp_path, capsys):
     output = capsys.readouterr().out
     assert 'LOW' not in output
     assert 'No fresh market data' in output
+
+
+# ---------------------------------------------------------------- run command
+
+
+def test_run_command_reports_status_and_persists_a_run_record(tmp_path, fixture_fetcher, monkeypatch, capsys):
+    monkeypatch.delenv("PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    database = tmp_path / "observations.db"
+    monkeypatch.setattr(
+        cli,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"], store=kwargs["store"], fetcher=fixture_fetcher()
+        ),
+    )
+
+    exit_code = run(
+        [
+            "--database",
+            str(database),
+            "run",
+            "--lock-file",
+            str(tmp_path / "collection.lock"),
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Status:      SUCCESS" in output
+    assert "Run id:" in output
+
+    with ObservationStore(database) as store:
+        record = store.get_latest_run_record()
+    assert record is not None
+    assert record.status == "SUCCESS"
+    assert set(record.banks_successful) == {"ANZ", "ASB", "Westpac", "BNZ", "Kiwibank"}
+
+
+def test_run_command_dry_run_persists_nothing(tmp_path, fixture_fetcher, capsys, monkeypatch):
+    database = tmp_path / "observations.db"
+    monkeypatch.setattr(
+        cli,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"], store=kwargs["store"], fetcher=fixture_fetcher()
+        ),
+    )
+
+    exit_code = run(
+        [
+            "--database",
+            str(database),
+            "run",
+            "--dry-run",
+            "--lock-file",
+            str(tmp_path / "collection.lock"),
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Dry run: nothing persisted" in output
+    assert "Run id:" not in output
+
+    with ObservationStore(database) as store:
+        assert store.get_latest_run_record() is None
+        assert store.get_current_observations() == []
+
+
+def test_run_command_reports_already_running(tmp_path, capsys):
+    from balance_pricing_engine.pricing_intelligence.locking import SingleInstanceLock
+
+    lock_path = tmp_path / "collection.lock"
+    database = tmp_path / "observations.db"
+
+    with SingleInstanceLock(lock_path):
+        exit_code = run(
+            ["--database", str(database), "run", "--lock-file", str(lock_path)]
+        )
+
+    output = capsys.readouterr().out
+    assert exit_code == 3  # EXIT_ALREADY_RUNNING
+    assert "Skipped" in output

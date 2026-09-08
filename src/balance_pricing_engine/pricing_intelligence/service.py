@@ -583,6 +583,7 @@ class PricingIntelligenceService:
         persist: bool = True,
         persist_snapshot: bool = True,
         product_type: ProductType | str = ProductType.HOME_LOAN,
+        run_id: Optional[str] = None,
     ) -> CollectionOutcome:
         """Run a full collection: fetch, validate, store, and detect changes.
 
@@ -594,6 +595,15 @@ class PricingIntelligenceService:
         ``product_type`` selects home loans (the default) or term deposits.
         Each product keeps its own baseline, change history, and bootstrap
         state, so collecting one is never read as the other being withdrawn.
+
+        ``run_id``, when supplied, is threaded through to
+        :meth:`.store.ObservationStore.record_observations` (which otherwise
+        generates its own) so a caller that needs to correlate this
+        collection with a run_id it already minted -- e.g.
+        ``orchestration.run_operational_cycle`` -- gets that same id back on
+        ``outcome.write_result.run_id`` / every detected change's ``run_id``,
+        rather than a second, unrelated one. Has no effect when ``persist``
+        is False, since no ``collection_runs`` row is written either way.
         """
         product_type = ProductType(product_type)
         captured_at_utc = captured_at_utc or datetime.now(timezone.utc)
@@ -699,7 +709,7 @@ class PricingIntelligenceService:
             # used to preview what a real collection would do.
             write_result = (
                 self.store.record_observations(
-                    accepted, observed_at=captured_at_utc, product_type=product_type
+                    accepted, run_id=run_id, observed_at=captured_at_utc, product_type=product_type
                 )
                 if persist
                 else None

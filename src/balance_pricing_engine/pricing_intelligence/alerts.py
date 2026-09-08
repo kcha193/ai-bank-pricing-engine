@@ -64,14 +64,27 @@ _TERM_NAMES = {
 
 @dataclass(frozen=True)
 class Alert:
-    """A rendered, delivery-agnostic alert."""
+    """A rendered, delivery-agnostic alert.
+
+    ``change`` is ``None`` for an alert not tied to one specific detected
+    change -- a collector health/recovery notice or an intelligence brief
+    (see ``pricing_intelligence.orchestration``/``briefing``). Sinks and
+    ``dispatch_alerts_safely`` degrade their change-specific behaviour
+    (structured webhook fields, per-alert log context) gracefully when it is
+    absent, rather than requiring a fabricated placeholder change.
+    """
 
     title: str
     body: str
-    change: RateChange
+    change: Optional[RateChange] = None
 
     def render(self) -> str:
         return f"{self.title}\n\n{self.body}"
+
+
+def plain_alert(title: str, body: str) -> Alert:
+    """Build a change-less alert (collector health, recovery, briefs)."""
+    return Alert(title=title, body=body, change=None)
 
 
 @runtime_checkable
@@ -206,15 +219,18 @@ class WebhookAlertSink:
         self._poster = poster if poster is not None else build_default_poster()
 
     def send(self, alert: Alert) -> None:
+        payload = {self.text_field: alert.render()}
         change = alert.change
-        payload = {
-            self.text_field: alert.render(),
-            "bank": change.bank,
-            "change_type": change.change_type.value,
-            "change_bps": change.change_bps,
-            "suspicious": change.suspicious,
-            "detected_at": change.detected_at.isoformat(),
-        }
+        if change is not None:
+            payload.update(
+                {
+                    "bank": change.bank,
+                    "change_type": change.change_type.value,
+                    "change_bps": change.change_bps,
+                    "suspicious": change.suspicious,
+                    "detected_at": change.detected_at.isoformat(),
+                }
+            )
         self._poster(self.webhook_url, json.dumps(payload).encode("utf-8"))
 
 
@@ -457,6 +473,13 @@ def dispatch_alerts(alerts: Sequence[Alert], sink: AlertSink) -> int:
 DEFAULT_ALERT_DISPATCH_DEADLINE_SECONDS = 30.0
 
 
+def _alert_log_label(alert: Alert) -> str:
+    """Identify an alert in a log line, whether or not it carries a change."""
+    if alert.change is None:
+        return alert.title
+    return f"{alert.change.bank} {alert.change.change_type.value}"
+
+
 def dispatch_alerts_safely(
     alerts: Sequence[Alert],
     sink: AlertSink,
@@ -491,9 +514,8 @@ def dispatch_alerts_safely(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             logger.warning(
-                "alert delivery skipped for %s %s: dispatch deadline of %.0fs exceeded",
-                alert.change.bank,
-                alert.change.change_type.value,
+                "alert delivery skipped for %s: dispatch deadline of %.0fs exceeded",
+                _alert_log_label(alert),
                 deadline_seconds,
             )
             continue
@@ -512,9 +534,8 @@ def dispatch_alerts_safely(
             worker.start()
         except Exception as exc:  # noqa: BLE001 - e.g. RuntimeError: can't start new thread
             logger.warning(
-                "alert delivery failed for %s %s: could not start delivery thread: %s",
-                alert.change.bank,
-                alert.change.change_type.value,
+                "alert delivery failed for %s: could not start delivery thread: %s",
+                _alert_log_label(alert),
                 exc,
             )
             continue
@@ -522,18 +543,16 @@ def dispatch_alerts_safely(
 
         if worker.is_alive():
             logger.warning(
-                "alert delivery timed out for %s %s: exceeded dispatch deadline of %.0fs",
-                alert.change.bank,
-                alert.change.change_type.value,
+                "alert delivery timed out for %s: exceeded dispatch deadline of %.0fs",
+                _alert_log_label(alert),
                 deadline_seconds,
             )
         elif outcome.get("ok"):
             sent += 1
         else:
             logger.warning(
-                "alert delivery failed for %s %s: %s",
-                alert.change.bank,
-                alert.change.change_type.value,
+                "alert delivery failed for %s: %s",
+                _alert_log_label(alert),
                 outcome.get("error"),
             )
     return sent

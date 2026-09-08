@@ -3,6 +3,7 @@
 Mirrors the argparse subcommand style already used by
 ``balance_pricing_engine.competitor_rates.cli``.
 
+    python3 -m balance_pricing_engine.pricing_intelligence run
     python3 -m balance_pricing_engine.pricing_intelligence collect
     python3 -m balance_pricing_engine.pricing_intelligence snapshot
     python3 -m balance_pricing_engine.pricing_intelligence changes --days 7
@@ -17,6 +18,7 @@ from __future__ import annotations
 import argparse
 import logging
 import math
+from pathlib import Path
 from typing import Optional
 
 from balance_pricing_engine.competitor_rates.collection_config import CollectionConfig
@@ -28,6 +30,11 @@ from balance_pricing_engine.pricing_intelligence.alerts import (
     format_alerts,
 )
 from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
+from balance_pricing_engine.pricing_intelligence.locking import AlreadyRunningError, SingleInstanceLock
+from balance_pricing_engine.pricing_intelligence.orchestration import (
+    EXIT_ALREADY_RUNNING,
+    run_operational_cycle,
+)
 from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 from balance_pricing_engine.pricing_intelligence.rbnz import fetch_ocr_series
@@ -69,6 +76,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             # though -- store independence isn't fetch-configuration
             # independence.
             return _ocr(config.collection)
+
+        if args.command == "run":
+            # Takes its own single-instance lock (see locking.py) before
+            # entering the service/store context below, the same as
+            # scripts/collect_market_rates_workflow.py's scheduled entry
+            # point -- an interactive `run` and a scheduled one must not be
+            # able to interleave against the same database either.
+            return _run(config, args)
 
         with PricingIntelligenceService(
             config=config,
@@ -211,6 +226,34 @@ def _build_parser() -> argparse.ArgumentParser:
         "--manual-rate", type=_nonnegative_rate, default=None, help="Decimal rate for MANUAL"
     )
 
+    run = subparsers.add_parser(
+        "run",
+        help=(
+            "Full operational cycle: collect, validate, persist, detect changes, "
+            "classify market state, update collector health, and dispatch alerts "
+            "(webhook/Telegram, whichever is configured) in one command"
+        ),
+    )
+    run.add_argument(
+        "--render-javascript",
+        action="store_true",
+        help="Render pages in a headless browser. Required for live collection.",
+    )
+    run.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Collect, validate, and classify as normal, but persist nothing and "
+            "send no real alerts -- every alert is printed to the console instead. "
+            "Safe to run against a real Telegram/webhook configuration."
+        ),
+    )
+    run.add_argument(
+        "--lock-file",
+        default="data/processed/pricing_intelligence/collection.lock",
+        help="Single-instance lock path (shared with the scheduled workflow if reused)",
+    )
+
     subparsers.add_parser(
         "ocr",
         help=(
@@ -305,6 +348,45 @@ def _collect(service: PricingIntelligenceService, args: argparse.Namespace) -> i
     if not outcome.report.any_success or outcome.rate_count == 0 or comparable_count == 0:
         return 1
     return 0
+
+
+def _run(config: PricingIntelligenceConfig, args: argparse.Namespace) -> int:
+    """Interactive entry point for the full operational cycle.
+
+    Shares :func:`~.orchestration.run_operational_cycle` with
+    ``scripts/collect_market_rates_workflow.py``'s scheduled entry point, so
+    a manual run and a scheduled one classify and alert identically -- see
+    that module's docstring.
+    """
+    try:
+        with SingleInstanceLock(Path(args.lock_file)):
+            with PricingIntelligenceService(
+                config=config,
+                store=ObservationStore(config.database_path),
+                render_javascript=args.render_javascript,
+            ) as service:
+                result = run_operational_cycle(
+                    service, product_type=_product(args), dry_run=args.dry_run
+                )
+    except AlreadyRunningError as exc:
+        print(f"Skipped: {exc}")
+        return EXIT_ALREADY_RUNNING
+
+    print(result.outcome.render())
+    if result.outcome.changes:
+        print("\nDetected changes:")
+        for change in result.outcome.changes:
+            flag = "  [SUSPICIOUS]" if change.suspicious else ""
+            print(f"  {change.change_type.value:<18} {change.describe()}{flag}")
+    print()
+    print(f"Status:      {result.status}")
+    print(f"Alerts sent: {result.alerts_sent}")
+    if result.run_record is not None:
+        print(f"Run id:      {result.run_record.run_id}")
+    if args.dry_run:
+        print()
+        print("Dry run: nothing persisted, no real alerts sent.")
+    return result.code
 
 
 def _snapshot(service: PricingIntelligenceService, args: argparse.Namespace) -> int:

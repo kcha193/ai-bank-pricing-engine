@@ -81,6 +81,28 @@ class MarketStateThresholds(BaseModel):
         return self
 
 
+class HealthThresholds(BaseModel):
+    """Escalation policy for a collector's consecutive failures.
+
+    A single failed collection is routine (a bank site hiccups); the alerting
+    burden should scale with how many *in a row* have failed. Bands are
+    inclusive minimums, evaluated by
+    :func:`~.orchestration.classify_health_escalation`: below
+    ``warning_after_failures`` is logged only, at least ``warning_after_failures``
+    but below ``alert_after_failures`` is a structured warning log (no Telegram
+    send), and at least ``alert_after_failures`` sends a Telegram health alert.
+    """
+
+    warning_after_failures: int = Field(default=2, ge=1)
+    alert_after_failures: int = Field(default=3, ge=1)
+
+    @model_validator(mode="after")
+    def validate_monotonic(self) -> "HealthThresholds":
+        if self.alert_after_failures < self.warning_after_failures:
+            raise ValueError("alert_after_failures must be >= warning_after_failures")
+        return self
+
+
 class PricingIntelligenceConfig(BaseModel):
     """Top-level pricing-intelligence settings."""
 
@@ -110,6 +132,7 @@ class PricingIntelligenceConfig(BaseModel):
     collection: CollectionConfig = Field(default_factory=CollectionConfig)
     validation: ValidationThresholds = Field(default_factory=ValidationThresholds)
     market_state: MarketStateThresholds = Field(default_factory=MarketStateThresholds)
+    health: HealthThresholds = Field(default_factory=HealthThresholds)
 
     @model_validator(mode="after")
     def validate_terms(self) -> "PricingIntelligenceConfig":
