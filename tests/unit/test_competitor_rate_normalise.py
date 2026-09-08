@@ -223,11 +223,22 @@ def test_normalise_lvr_values_preserves_a_hard_cap_joined_by_a_bare_conjunction(
     """The same principle applies when the two clauses are joined by a bare
     conjunction rather than a full stop: "Maximum 90% LVR and LVR above 80%
     attracts a low-equity margin" has no comma or period before "and", but
-    the repeated "LVR" still marks a genuine second clause -- the 90% cap
-    must not be discarded just because the boundary lacks punctuation."""
+    "and" is always a clause boundary regardless -- the 90% cap must not be
+    discarded just because the boundary lacks punctuation."""
     label = "Maximum 90% LVR and LVR above 80% attracts a low-equity margin"
 
     assert normalise_lvr_values(label) == (0.9, 0.1)
+
+
+def test_normalise_lvr_condition_a_trailing_unrelated_conjunct_is_not_negation():
+    """A negation attached to an unrelated trailing conjunct must not reach
+    back into a genuine match before it: "LVR above 80% attracts a
+    low-equity margin and does not qualify for cashback" negates cashback
+    eligibility, not the LVR condition -- "and" ends the clause the LVR
+    match is scoped to before "does not" is ever reached."""
+    label = "LVR above 80% attracts a low-equity margin and does not qualify for cashback"
+
+    assert normalise_lvr_condition(label) == "low_equity_margin_applies"
 
 
 def test_normalise_lvr_condition_does_not_split_a_clause_at_a_decimal_point():

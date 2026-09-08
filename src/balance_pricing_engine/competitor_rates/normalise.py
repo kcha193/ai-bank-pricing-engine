@@ -168,26 +168,36 @@ _LOW_EQUITY_NEGATION_PATTERN = re.compile(
 #: at 4.99% for LVR above 80%" must keep "Not available" in the same clause
 #: as the LVR match, not split it off at the "." inside "4.99".
 #:
-#: A comma only starts a new clause when followed by a coordinating
-#: conjunction ("Not available to trusts, but LVR above 80% attracts a
-#: margin" -- the ", but" introduces a genuine second clause the leading
-#: negation must not reach into). An unqualified comma is deliberately
-#: excluded: it is just as commonly a list separator within one clause
-#: ("not less than 20%, 25% or 30% equity"), where treating it as a boundary
-#: would wrongly let the negation's own clause split apart.
+#: "and"/"but" always start a new clause, comma or no comma: each
+#: introduces its own conjunct with its own predicate, so a negation on
+#: either side belongs to that conjunct alone. This covers a genuine
+#: second clause restarting an LVR condition ("Maximum 90% LVR and LVR
+#: above 80% attracts a margin") and an unrelated trailing conjunct whose
+#: own negation must not reach back into a genuine match before it ("LVR
+#: above 80% attracts a low-equity margin and does not qualify for
+#: cashback" -- "does not" negates cashback eligibility, not the LVR
+#: condition).
 #:
-#: A *bare* conjunction (no comma) only starts a new clause when it directly
-#: restarts an LVR condition ("Maximum 90% LVR and LVR above 80% attracts a
-#: margin" -- the repeated "LVR" is the second clause's own subject).
-#: Without that anchor, a bare conjunction is deliberately not a boundary:
-#: "LVR above 80% or 85% is unavailable" states two rate options for *one*
-#: condition, and splitting at "or" would cut the trailing "is unavailable"
-#: negation out of the clause it belongs to.
+#: "or"/"however"/"though"/"yet" start a new clause only with a preceding
+#: comma ("Not available to trusts, but LVR above 80% attracts a margin").
+#: Bare "or" is deliberately excluded: it is just as commonly joining two
+#: rate options for *one* predicate ("LVR above 80% or 85% is
+#: unavailable"), where treating it as a boundary would cut the trailing
+#: negation out of the clause it belongs to. A comma alone (no
+#: conjunction) is excluded too: it is just as commonly a list separator
+#: within one clause ("not less than 20%, 25% or 30% equity"), where
+#: treating it as a boundary would wrongly let the negation's own clause
+#: split apart.
+#:
+#: A full stop or semicolon always starts a new clause -- but only when the
+#: "." is a sentence-ending period, not a decimal separator: "Not available
+#: at 4.99% for LVR above 80%" must keep "Not available" in the same clause
+#: as the LVR match, not split it off at the "." inside "4.99".
 _CLAUSE_BOUNDARY_PATTERN = re.compile(
     r"(?<!\d)\.(?!\d)"
     r"|;"
-    r"|,\s*(?:but|and|or|however|though|yet)\b"
-    r"|\b(?:but|and|or|however|though|yet)\s+(?=lvr\b)",
+    r"|,?\s*\b(?:and|but)\b"
+    r"|,\s*(?:or|however|though|yet)\b",
     re.I,
 )
 
