@@ -192,6 +192,22 @@ def test_a_real_reprice_produces_a_change_event(fixture_fetcher):
     assert change.change_bps == -20.0
 
 
+def test_collect_accepts_a_naive_captured_at_utc_after_an_earlier_aware_run(fixture_fetcher):
+    """record_observations() (via store._iso()) already interprets a naive
+    timestamp as UTC once persisted -- collect()'s preflight chronology
+    check must normalize a naive captured_at_utc the same way before
+    comparing it against latest_collection_timestamp()'s always-aware
+    result, or a caller passing a plain datetime.now() hits "can't compare
+    offset-naive and offset-aware datetimes" on every run once one aware
+    run has been stored, before collection even begins."""
+    with build_service(fixture_fetcher()) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        naive_later = DAY_TWO.replace(tzinfo=None)
+        outcome = service.collect(captured_at_utc=naive_later, persist_snapshot=False)
+
+    assert outcome.report.records
+
+
 def test_one_failing_bank_does_not_fail_the_run(fixture_fetcher):
     with build_service(fixture_fetcher(failing_banks=["Westpac"])) as service:
         outcome = service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)

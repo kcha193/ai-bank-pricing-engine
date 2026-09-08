@@ -597,6 +597,15 @@ class PricingIntelligenceService:
         """
         product_type = ProductType(product_type)
         captured_at_utc = captured_at_utc or datetime.now(timezone.utc)
+        # record_observations() (via store._iso()) already interprets a naive
+        # timestamp as UTC once this reaches persistence -- normalized the
+        # same way here too, before the preflight check below compares it
+        # against latest_collection_timestamp()'s always-aware result, or a
+        # caller passing a naive captured_at_utc hits "can't compare
+        # offset-naive and offset-aware datetimes" before collection even
+        # begins, on every run once one aware run has been stored.
+        if captured_at_utc.tzinfo is None:
+            captured_at_utc = captured_at_utc.replace(tzinfo=timezone.utc)
 
         # Checked before fetching, not just left to record_observations()'s
         # own guard at the end of this method: a backwards wall clock (an
