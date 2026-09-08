@@ -1,6 +1,7 @@
 """CLI behaviour, exercised against a temporary store and saved fixtures."""
 
 import argparse
+import json
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -1045,3 +1046,149 @@ def test_run_command_reports_already_running(tmp_path, capsys):
     output = capsys.readouterr().out
     assert exit_code == 3  # EXIT_ALREADY_RUNNING
     assert "Skipped" in output
+
+
+# --------------------------------------------------------------- health command
+
+
+def test_health_reports_ok_on_an_empty_database(tmp_path, capsys):
+    exit_code = run(["--database", str(tmp_path / "empty.db"), "health"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Database: OK" in output
+    assert "Last run: none recorded yet" in output
+    assert "UNKNOWN" in output
+    assert "Telegram: not configured" in output
+    assert "Latest market snapshot: EMPTY" in output
+
+
+def test_health_reports_a_run_and_collector_status(tmp_path, fixture_fetcher, capsys):
+    from balance_pricing_engine.pricing_intelligence.orchestration import run_operational_cycle
+
+    database = tmp_path / "observations.db"
+    config = PricingIntelligenceConfig(
+        database_path=str(database), collection=CollectionConfig(inter_request_delay_seconds=0)
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        run_operational_cycle(service, alert_sinks={})
+
+    exit_code = run(["--database", str(database), "health"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Last run:" in output
+    assert "FRESH" in output
+    assert "Latest market snapshot: VALID" in output
+
+
+def test_health_reports_telegram_configured(populated_database, capsys, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "-100999")
+
+    exit_code = run(["--database", populated_database, "health"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Telegram: configured" in output
+
+
+def test_health_exits_nonzero_when_the_database_is_broken(populated_database, capsys):
+    with ObservationStore(populated_database) as store:
+        store._connection.execute("UPDATE observations SET rate_pct = 999")
+        store._connection.commit()
+
+    exit_code = run(["--database", populated_database, "health"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "ISSUES DETECTED" in output
+    assert "plausible rate bounds" in output
+
+
+# --------------------------------------------------------- telegram-test command
+
+
+def test_telegram_test_reports_not_configured(capsys, monkeypatch):
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+    exit_code = run(["telegram-test"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "not configured" in output
+
+
+def test_telegram_test_sends_the_fixed_message(capsys, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "-100999")
+    captured = []
+
+    def fake_urlopen(request, timeout=None):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+        captured.append(json.loads(request.data))
+        return FakeResponse()
+
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    monkeypatch.setattr(alerts_module, "urlopen", fake_urlopen)
+
+    exit_code = run(["telegram-test"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert len(captured) == 1
+    assert captured[0]["chat_id"] == "-100999"
+    assert "NZ Pricing Intelligence Telegram test successful." in captured[0]["text"]
+    assert "Sent:" in output
+
+
+def test_telegram_test_reports_a_delivery_failure(capsys, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "-100999")
+
+    def broken_urlopen(request, timeout=None):
+        raise ConnectionError("telegram unreachable")
+
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    monkeypatch.setattr(alerts_module, "urlopen", broken_urlopen)
+
+    exit_code = run(["telegram-test"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "Telegram test failed" in output
+
+
+# ------------------------------------------------------------------ backup command
+
+
+def test_backup_writes_a_timestamped_copy(populated_database, tmp_path, capsys):
+    destination = tmp_path / "backups"
+
+    exit_code = run(["--database", populated_database, "backup", "--destination", str(destination)])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Backup written to" in output
+    assert len(list(destination.glob("*.db"))) == 1
+
+
+def test_backup_reports_when_there_is_no_database_yet(tmp_path, capsys):
+    exit_code = run(
+        ["--database", str(tmp_path / "missing.db"), "backup", "--destination", str(tmp_path / "backups")]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "nothing to back up" in output

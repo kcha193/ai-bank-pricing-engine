@@ -307,7 +307,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     config = PricingIntelligenceConfig()
     # Retained (not just its .pricing_intelligence block) so scheduled runs
-    # can auto-trigger pricing scenarios (Phase 15) -- see run_collection()'s
+    # can auto-trigger pricing scenarios -- see run_collection()'s
     # pricing_config docstring.
     engine_config = None
     if args.config:

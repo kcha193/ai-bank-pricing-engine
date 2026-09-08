@@ -36,10 +36,27 @@
 #
 #   PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL=https://hooks.slack.com/services/T000/B000/xxxx
 #
-# Keep that line out of any copy of this file under version control; only
-# your installed crontab should carry a real URL. Unset is the default (no
-# delivery), and a broken webhook never fails the collection run.
+# Telegram delivery, independent of and stackable with the webhook above:
+#
+#   TELEGRAM_BOT_TOKEN=123456:AAAA-your-bot-token
+#   TELEGRAM_CHAT_ID=-1001234567890
+#
+# Keep those lines out of any copy of this file under version control; only
+# your installed crontab should carry real values. Unset is the default (no
+# delivery), and a broken channel never fails the collection run.
+#
+# TZ pins every schedule below to Pacific/Auckland explicitly, regardless of
+# the host machine's own system timezone -- cron (vixie-cron/cronie, and
+# macOS's built-in cron) honours a TZ= line placed in the crontab itself.
+# Without this, "07:30" silently means the machine's local time, which is
+# wrong the moment this runs on a host not already set to NZ time.
+TZ=Pacific/Auckland
 
 30 7 * * * cd /path/to/ai-bank-pricing-engine && mkdir -p data/processed/pricing_intelligence && ( .venv/bin/python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --render-javascript --quiet --lock-file data/processed/pricing_intelligence/collection-home-loan.lock --summary-file data/processed/pricing_intelligence/last_run_home_loan.json >> data/processed/pricing_intelligence/collect.log 2>&1; code=$?; [ "$code" -eq 0 ] || echo "NZ home-loan rate collection exited $code $(date)" >> data/processed/pricing_intelligence/collect.err.log; exit "$code" )
 
 35 7 * * * cd /path/to/ai-bank-pricing-engine && mkdir -p data/processed/pricing_intelligence && ( .venv/bin/python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --product term_deposit --render-javascript --quiet --lock-file data/processed/pricing_intelligence/collection-term-deposit.lock --summary-file data/processed/pricing_intelligence/last_run_term_deposit.json >> data/processed/pricing_intelligence/collect.log 2>&1; code=$?; [ "$code" -eq 0 ] || echo "NZ term-deposit rate collection exited $code $(date)" >> data/processed/pricing_intelligence/collect.err.log; exit "$code" )
+
+# A daily brief right after the morning run, and an optional second
+# collection later in the day, are both opt-in operator choices -- see
+# "Daily workflow" and "Scheduled run" in docs/pricing_intelligence.md's
+# Operations section for ready-to-adapt schedule lines.

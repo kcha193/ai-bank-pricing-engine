@@ -15,6 +15,7 @@ from datetime import datetime
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord
 from balance_pricing_engine.pricing_intelligence.changes import RateChange
 from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot, _term_label
+from balance_pricing_engine.pricing_intelligence.store import CollectorHealth, RunRecord
 
 
 def build_freshness_frame(
@@ -185,3 +186,71 @@ def build_history_series(series: Sequence[tuple]) -> pd.DataFrame:
     frame = pd.DataFrame.from_dict(dict(series), orient="index").sort_index()
     frame.index.name = "Date"
     return frame
+
+
+def build_collector_health_frame(health: Sequence[CollectorHealth]) -> pd.DataFrame:
+    """Per-bank collector status, for the operational dashboard section."""
+    if not health:
+        return pd.DataFrame(
+            columns=["Consecutive failures", "Status", "Last success", "Last error"],
+            index=pd.Index([], name="Bank"),
+        )
+    rows = [
+        {
+            "Bank": entry.bank,
+            "Consecutive failures": entry.consecutive_failures,
+            "Status": "FRESH" if entry.consecutive_failures == 0 else "FAILING",
+            "Last success": entry.last_success_at,
+            "Last error": entry.last_error or "",
+        }
+        for entry in health
+    ]
+    return pd.DataFrame(rows).set_index("Bank")
+
+
+def build_recent_runs_frame(runs: Sequence[RunRecord]) -> pd.DataFrame:
+    """Recent operational runs, newest first -- see ``store.RunRecord``."""
+    if not runs:
+        return pd.DataFrame()
+    return pd.DataFrame(
+        [
+            {
+                "Started": run.started_at,
+                "Status": run.status,
+                "Banks OK": len(run.banks_successful),
+                "Banks failed": len(run.banks_failed),
+                "Rates observed": run.rates_observed,
+                "Changes": run.rates_changed,
+                "Market state": run.market_state or "",
+                "Run id": run.run_id,
+            }
+            for run in runs
+        ]
+    )
+
+
+def build_scenario_runs_frame(scenario_runs: Sequence[dict]) -> pd.DataFrame:
+    """Recent auto-triggered pricing-scenario comparisons -- one row per
+    (term, scenario), from ``store.get_recent_scenario_runs()``."""
+    if not scenario_runs:
+        return pd.DataFrame()
+    rows = []
+    for run in scenario_runs:
+        for scenario in run["scenarios"]:
+            rows.append(
+                {
+                    "Generated": run["generated_at"],
+                    "Term": _term_label(run["term_months"]),
+                    "Scenario": scenario.get("label"),
+                    "Competitor rate (%)": (
+                        scenario["competitor_rate"] * 100
+                        if scenario.get("competitor_rate") is not None
+                        else None
+                    ),
+                    "Our rate (%)": (
+                        scenario["our_rate"] * 100 if scenario.get("our_rate") is not None else None
+                    ),
+                    "Objective": scenario.get("objective"),
+                }
+            )
+    return pd.DataFrame(rows)

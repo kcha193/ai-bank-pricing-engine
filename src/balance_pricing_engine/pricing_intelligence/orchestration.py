@@ -13,7 +13,7 @@ not scheduler-specific concerns, and the interactive CLI command needs the
 exact same classification the scheduler already relies on. The script
 re-imports these names so nothing that already depended on them breaks.
 
-Pricing-scenario auto-triggering (Phase 15) is deliberately *not* imported
+Pricing-scenario auto-triggering is deliberately *not* imported
 here: this package is architecturally forbidden from depending on the
 optimiser at all (see ``tests/unit/test_pricing_intelligence_boundaries.py``
 -- "nothing in the intelligence layer may price"). ``run_operational_cycle``
@@ -513,7 +513,7 @@ def _scenario_trigger_candidates(
     rate move this run -- passed to ``scenario_trigger_fn`` (see
     :data:`ScenarioTriggerFn`).
 
-    Any bank's move counts, not just ``our_bank`` -- Phase 15 triggers on a
+    Any bank's move counts, not just ``our_bank`` -- this triggers on a
     *competitor* reprice, which is exactly what a market-wide collection
     detects regardless of which bank moved.
     """
@@ -532,7 +532,7 @@ def _scenario_trigger_candidates(
 def _enrich_with_scenarios(
     alerts: list[Alert], scenarios_by_term: Mapping[int, "ScenarioResult"]
 ) -> list[Alert]:
-    """Append each triggered term's pre-formatted alert block (Phase 17) to
+    """Append each triggered term's pre-formatted alert block to
     the alert whose change landed on it.
 
     Takes the already-rendered ``ScenarioResult.alert_block`` rather than
@@ -632,11 +632,11 @@ def run_operational_cycle(
     supplied directly) -- ``"text"`` (the default) is read by Slack/Teams,
     ``"content"`` by Discord.
 
-    ``scenario_trigger_fn`` enables auto-triggered pricing scenarios
-    (Phase 15): when supplied, it is called once with every tracked/
-    comparable term that had a genuine (non-suspicious) rate move this run,
-    plus the current market snapshot, and must return a comparison object per
-    term. Each is persisted (:meth:`~.store.ObservationStore.write_scenario_run`,
+    ``scenario_trigger_fn`` enables auto-triggered pricing scenarios: when
+    supplied, it is called once with every tracked/comparable term that had a
+    genuine (non-suspicious) rate move this run, plus the current market
+    snapshot, and must return a comparison object per term. Each is persisted
+    (:meth:`~.store.ObservationStore.write_scenario_run`,
     skipped on a dry run) and appended to the corresponding rate-move
     alert(s) for that term. Omitted (the default) simply skips scenario-
     triggering. See :data:`ScenarioTriggerFn` and the module docstring for

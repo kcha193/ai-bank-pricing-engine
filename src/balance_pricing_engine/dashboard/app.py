@@ -14,9 +14,12 @@ from balance_pricing_engine.diagnostics import run_sensitivity_analysis
 from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
 from balance_pricing_engine.pricing_intelligence.dashboard_data import (
     build_changes_frame,
+    build_collector_health_frame,
     build_history_series,
     build_market_grid_frame,
     build_ranking_frame,
+    build_recent_runs_frame,
+    build_scenario_runs_frame,
     build_term_summary,
     build_freshness_frame,
 )
@@ -165,6 +168,35 @@ def _render_market_intelligence() -> None:
         st.subheader("Collection freshness")
         st.dataframe(health, width="stretch")
         st.caption("Last-known rates may survive a failed fetch. Freshness is not source verification.")
+
+        st.subheader("Collector health")
+        collector_health = service.store.get_collector_health(product_type=ProductType.HOME_LOAN)
+        if not collector_health:
+            st.info("No operational runs recorded yet -- run `pricing_intelligence run`.")
+        else:
+            st.dataframe(build_collector_health_frame(collector_health), width="stretch")
+
+        st.subheader("Recent runs")
+        recent_runs = service.store.get_recent_run_records(
+            product_type=ProductType.HOME_LOAN, limit=10
+        )
+        if not recent_runs:
+            st.info("No operational runs recorded yet -- run `pricing_intelligence run`.")
+        else:
+            st.dataframe(build_recent_runs_frame(recent_runs), width="stretch")
+
+        st.subheader("Pricing scenarios")
+        scenario_runs = service.store.get_recent_scenario_runs(
+            product_type=ProductType.HOME_LOAN, limit=10
+        )
+        if not scenario_runs:
+            st.info(
+                "No auto-triggered scenario comparisons yet -- these appear once a "
+                "meaningful competitor move is detected during a scheduled `run` with "
+                "--config supplied."
+            )
+        else:
+            st.dataframe(build_scenario_runs_frame(scenario_runs), width="stretch")
 
 
 try:

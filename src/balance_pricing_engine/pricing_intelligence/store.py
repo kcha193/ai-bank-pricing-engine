@@ -36,6 +36,7 @@ import uuid
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange
+from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
 
 logger = logging.getLogger(__name__)
 
@@ -415,6 +416,15 @@ class CollectorHealth:
     last_failure_at: Optional[datetime]
     last_error: Optional[str]
     last_alert_sent_at: Optional[datetime]
+
+
+@dataclass(frozen=True)
+class IntegrityReport:
+    """Result of :meth:`ObservationStore.check_integrity`."""
+
+    ok: bool
+    checks: dict[str, bool]
+    issues: tuple[str, ...]
 
 
 class PreviousRun(NamedTuple):
@@ -2772,6 +2782,67 @@ class ObservationStore:
             (_product_value(product_type),),
         ).fetchall()
         return [row["term_months"] for row in rows]
+
+    def check_integrity(self, thresholds: Optional[ValidationThresholds] = None) -> IntegrityReport:
+        """Lightweight, read-only database health check for the ``health`` CLI command.
+
+        Deliberately narrow -- this is an operational smoke check, not a
+        replacement for ``PRAGMA integrity_check`` (which it also runs) or a
+        full re-validation pass. ``no_duplicate_current_keys`` checks
+        :meth:`get_current_observations`'s own result rather than the raw
+        ``observations`` table: several rows legitimately share one
+        ``observation_key`` across history (one per distinct advertised
+        state), so the invariant that matters is "at most one *current* row
+        per key", which only that method's own current-state logic can
+        answer correctly.
+        """
+        thresholds = thresholds or ValidationThresholds()
+        issues: list[str] = []
+        checks: dict[str, bool] = {}
+
+        pragma_row = self._connection.execute("PRAGMA integrity_check").fetchone()
+        schema_ok = pragma_row is not None and pragma_row[0] == "ok"
+        checks["schema_accessible"] = schema_ok
+        if not schema_ok:
+            issues.append(f"PRAGMA integrity_check: {pragma_row[0] if pragma_row else 'no result'}")
+
+        try:
+            current = self.get_current_observations()
+            checks["latest_observations_readable"] = True
+        except Exception as exc:  # noqa: BLE001 - reported, not raised
+            current = []
+            checks["latest_observations_readable"] = False
+            issues.append(f"latest observations unreadable: {exc}")
+
+        keys = [(record.observation_key(), record.product_type) for record in current]
+        checks["no_duplicate_current_keys"] = len(keys) == len(set(keys))
+        if not checks["no_duplicate_current_keys"]:
+            issues.append("more than one current row shares the same observation_key")
+
+        min_rate = min(thresholds.min_mortgage_rate_pct, thresholds.min_deposit_rate_pct)
+        max_rate = max(thresholds.max_mortgage_rate_pct, thresholds.max_deposit_rate_pct)
+        bad_rate_count = self._connection.execute(
+            "SELECT COUNT(*) FROM observations WHERE rate_pct < ? OR rate_pct > ?",
+            (min_rate, max_rate),
+        ).fetchone()[0]
+        checks["rates_within_plausible_bounds"] = bad_rate_count == 0
+        if bad_rate_count:
+            issues.append(f"{bad_rate_count} stored observation(s) fall outside plausible rate bounds")
+
+        broken_timestamps = 0
+        for row in self._connection.execute(
+            "SELECT first_observed_at, last_seen_at FROM observations"
+        ):
+            for value in row:
+                try:
+                    _parse_iso(value)
+                except (ValueError, TypeError):
+                    broken_timestamps += 1
+        checks["timestamps_parse"] = broken_timestamps == 0
+        if broken_timestamps:
+            issues.append(f"{broken_timestamps} stored timestamp(s) failed to parse")
+
+        return IntegrityReport(ok=all(checks.values()), checks=checks, issues=tuple(issues))
 
 
 def _product_value(product_type: ProductType | str) -> str:

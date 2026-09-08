@@ -142,7 +142,7 @@ def run_triggered_scenarios(
 
 
 def format_scenario_block(comparison: ScenarioComparison) -> str:
-    """Compact enrichment block for a Telegram/webhook alert (Phase 17).
+    """Compact enrichment block for a Telegram/webhook alert.
 
     Deliberately terse -- current/match-median/match-leader/model-optimum
     only, no full grid -- per "do not send large modelling tables through

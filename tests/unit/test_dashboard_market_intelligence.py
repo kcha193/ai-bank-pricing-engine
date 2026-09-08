@@ -404,3 +404,48 @@ def test_resolve_intelligence_config_falls_back_to_defaults_on_invalid_yaml(
     resolved = fake.module._resolve_intelligence_config("not: valid: engine: config: [")
 
     assert resolved == PricingIntelligenceConfig()
+
+
+# ------------------------------------------------------- operational sections
+
+
+def test_operational_sections_guide_the_user_with_no_runs_recorded(monkeypatch, populated_store):
+    """populated_store only calls service.collect() directly, not
+    run_operational_cycle(), so no RunRecord/collector_health exists yet --
+    the operational sections must guide, not error."""
+    fake = render_dashboard(monkeypatch, populated_store)
+
+    subheaders = fake.texts("subheader")
+    assert "Collector health" in subheaders
+    assert "Recent runs" in subheaders
+    assert "Pricing scenarios" in subheaders
+    info_texts = fake.texts("info")
+    assert any("run `pricing_intelligence run`" in text for text in info_texts)
+
+
+@pytest.fixture
+def operationally_run_store(tmp_path, fixture_fetcher):
+    from balance_pricing_engine.pricing_intelligence.orchestration import run_operational_cycle
+
+    path = tmp_path / "observations.db"
+    config = PricingIntelligenceConfig(
+        database_path=str(path), collection=CollectionConfig(inter_request_delay_seconds=0)
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(path), fetcher=fixture_fetcher()
+    ) as service:
+        run_operational_cycle(service, captured_at_utc=DAY_ONE, alert_sinks={})
+    return str(path)
+
+
+def test_operational_sections_render_after_a_run_operational_cycle(
+    monkeypatch, operationally_run_store
+):
+    fake = render_dashboard(monkeypatch, operationally_run_store)
+
+    frames = fake.frames
+    assert len(frames) >= 2  # collector health + recent runs, at minimum
+    health_frame = next(f for f in frames if "Consecutive failures" in f.columns)
+    assert "ANZ" in health_frame.index
+    runs_frame = next(f for f in frames if "Run id" in f.columns)
+    assert list(runs_frame["Status"]) == ["SUCCESS"]

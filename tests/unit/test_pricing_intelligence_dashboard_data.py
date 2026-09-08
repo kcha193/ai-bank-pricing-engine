@@ -4,17 +4,22 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.changes import detect_changes
 from balance_pricing_engine.pricing_intelligence.dashboard_data import (
     build_changes_frame,
+    build_collector_health_frame,
     build_freshness_frame,
     build_history_frame,
     build_history_series,
     build_market_grid_frame,
     build_ranking_frame,
+    build_recent_runs_frame,
+    build_scenario_runs_frame,
     build_term_summary,
 )
 from balance_pricing_engine.pricing_intelligence.snapshot import build_market_snapshot
+from balance_pricing_engine.pricing_intelligence.store import CollectorHealth, RunRecord
 
 DAY_ONE = datetime(2026, 8, 20, tzinfo=timezone.utc)
 DAY_TWO = DAY_ONE + timedelta(days=1)
@@ -184,3 +189,86 @@ def test_freshness_frame_of_a_bank_touched_by_the_latest_run_is_fresh(make_recor
     )
 
     assert frame.loc["ANZ", "Status"] == "Fresh"
+
+
+def _health(bank, consecutive_failures=0, last_error=None):
+    return CollectorHealth(
+        bank=bank,
+        product_type=ProductType.HOME_LOAN,
+        consecutive_failures=consecutive_failures,
+        last_success_at=DAY_ONE,
+        last_failure_at=None,
+        last_error=last_error,
+        last_alert_sent_at=None,
+    )
+
+
+def test_collector_health_frame_of_no_data_is_empty_with_the_right_columns():
+    frame = build_collector_health_frame([])
+
+    assert frame.empty
+    assert list(frame.columns) == ["Consecutive failures", "Status", "Last success", "Last error"]
+
+
+def test_collector_health_frame_marks_failing_banks():
+    frame = build_collector_health_frame([_health("ANZ"), _health("Westpac", 3, "ParserError")])
+
+    assert frame.loc["ANZ", "Status"] == "FRESH"
+    assert frame.loc["Westpac", "Status"] == "FAILING"
+    assert frame.loc["Westpac", "Last error"] == "ParserError"
+
+
+def _run_record(run_id, status="SUCCESS"):
+    return RunRecord(
+        run_id=run_id,
+        started_at=DAY_ONE,
+        completed_at=DAY_ONE,
+        status=status,
+        product_type=ProductType.HOME_LOAN,
+        banks_attempted=("ANZ", "BNZ"),
+        banks_successful=("ANZ", "BNZ") if status == "SUCCESS" else ("ANZ",),
+        banks_failed=() if status == "SUCCESS" else ("BNZ",),
+        rates_observed=10,
+        rates_changed=1,
+        validation_failures=0,
+        suspicious_observations=0,
+        market_state="LOW",
+        error_summary=None,
+    )
+
+
+def test_recent_runs_frame_of_no_runs_is_empty():
+    assert build_recent_runs_frame([]).empty
+
+
+def test_recent_runs_frame_reports_bank_counts_per_run():
+    frame = build_recent_runs_frame([_run_record("r1"), _run_record("r2", status="PARTIAL_SUCCESS")])
+
+    assert list(frame["Run id"]) == ["r1", "r2"]
+    assert list(frame["Banks OK"]) == [2, 1]
+    assert list(frame["Banks failed"]) == [0, 1]
+
+
+def test_scenario_runs_frame_of_no_runs_is_empty():
+    assert build_scenario_runs_frame([]).empty
+
+
+def test_scenario_runs_frame_flattens_scenarios_and_converts_rates_to_percent():
+    scenario_runs = [
+        {
+            "term_months": 12,
+            "generated_at": DAY_ONE,
+            "scenarios": [
+                {"label": "No change", "competitor_rate": 0.0489, "our_rate": 0.0549, "objective": 100.0},
+                {"label": "Match median", "competitor_rate": 0.0485, "our_rate": 0.0545, "objective": 90.0},
+            ],
+        }
+    ]
+
+    frame = build_scenario_runs_frame(scenario_runs)
+
+    assert len(frame) == 2
+    assert frame.iloc[0]["Term"] == "1Y"
+    assert frame.iloc[0]["Scenario"] == "No change"
+    assert frame.iloc[0]["Competitor rate (%)"] == pytest.approx(4.89)
+    assert frame.iloc[0]["Our rate (%)"] == pytest.approx(5.49)

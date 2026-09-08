@@ -291,6 +291,25 @@ paging system, the in-process event publisher), implement the two-method
 and pass it to `dispatch_alerts_safely()` -- `WebhookAlertSink` is one concrete
 sink, not the only extension point.
 
+### Telegram delivery
+
+Independent of, and stackable with, the webhook above -- both can be
+configured at once, and each dedups and delivers separately.
+
+```bash
+export TELEGRAM_BOT_TOKEN="123456:AAAA-your-bot-token"
+export TELEGRAM_CHAT_ID="-1001234567890"
+python3 -m balance_pricing_engine.pricing_intelligence telegram-test
+```
+
+Create a bot via [@BotFather](https://t.me/BotFather) to get a token, then
+message the bot (or add it to a group and send any message there) to learn
+the chat id -- `https://api.telegram.org/bot<token>/getUpdates` echoes it
+back. Both variables must be set; either alone is treated as "not
+configured", same as the webhook's "unset means off" default. Plain text
+only -- no `parse_mode` -- so a bank or product name containing `_`/`*`/`[`
+can never break Telegram's Markdown/HTML parser and drop the message.
+
 ### Inspect the market
 
 ```bash
@@ -727,7 +746,326 @@ All thresholds live in `PricingIntelligenceConfig`
 request timeout, retries, backoff, inter-request delay, user agent, rate bounds,
 suspicious-movement threshold, database path, tracked terms, selected banks, and
 market-state cut-offs. There are no magic numbers scattered through the
-pipeline.
+pipeline. `health.warning_after_failures`/`health.alert_after_failures`
+control collector-failure escalation (see Operations below).
+
+## Pricing Intelligence Operations
+
+This section covers the v0.2.0 operational layer: scheduling, Telegram/webhook
+alerting, health monitoring, briefings, and auto-triggered pricing scenarios.
+The distinction to keep in mind throughout:
+
+| Layer | Answers | Where |
+| --- | --- | --- |
+| Pricing intelligence | "What is happening?" | `pricing_intelligence/` (collection, snapshots, changes) |
+| Pricing engine | "What are the economic consequences?" | `optimization/`, `pricing/`, `scenarios/` |
+| Alerts / briefing | "What needs my attention?" | `orchestration.py`, `briefing.py`, `alerts.py` |
+
+### First-time setup
+
+```bash
+python3 -m pip install -e ".[browser]"      # collectors need headless-browser rendering
+python3 -m playwright install chromium
+cp .env.example .env                        # then fill in whichever channels you want
+```
+
+Nothing above is required to run the engine's synthetic pricing scenarios --
+only for live NZ market collection.
+
+### Environment variables
+
+See [`.env.example`](../.env.example) for the full list with placeholders.
+Every one is optional; each feature it gates is off until set.
+
+| Variable | Gates |
+| --- | --- |
+| `PRICING_INTELLIGENCE_DB_PATH` | Fallback database path for the CLI/scripts when `--database`/`--config` don't set one |
+| `PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL` | Slack/Teams/Discord-compatible webhook alert delivery |
+| `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | Telegram alert delivery (both required) |
+| `ANTHROPIC_API_KEY` | The separate LLM decision-support layer (`llm/`), unrelated to alerting |
+| `PRICING_ENGINE_API_KEYS` | The optional FastAPI serving layer's auth |
+
+### Manual run
+
+```bash
+python3 -m balance_pricing_engine.pricing_intelligence run --render-javascript
+```
+
+One command: collect → validate → persist → detect changes → classify market
+state → update collector health → dispatch alerts (webhook/Telegram, whichever
+configured) → persist a `RunRecord`. Prints the same collection report
+`collect` does, plus status/alerts-sent/run id. Takes the same single-instance
+lock the scheduled workflow uses (`--lock-file`, default
+`data/processed/pricing_intelligence/collection.lock`), so a manual and a
+scheduled run cannot interleave against the same database.
+
+Does **not** auto-trigger pricing scenarios (see below) -- that requires the
+optimiser, which `pricing_intelligence` (this CLI included) is architecturally
+forbidden from importing. Use the scheduled workflow script for
+scenario-triggered runs, or run `collect`/`brief` and inspect the scenario
+manually via `examples/run_market_intelligence_scenarios.py`.
+
+The lower-level commands (`collect`, `snapshot`, `changes`, `history`,
+`market-state`, `position`, `strategy`) remain available for debugging and
+exploration, unchanged.
+
+### Scheduled run
+
+Unchanged mechanics from before v0.2.0 (see "Scheduled collection" above) --
+[`scripts/collect_market_rates_workflow.py`](../scripts/collect_market_rates_workflow.py)
+now additionally does everything `run` does (Telegram, collector health,
+`RunRecord` persistence, and -- when `--config` is given -- auto-triggered
+scenarios), through the same `orchestration.run_operational_cycle()` the
+interactive `run` command uses. Nothing about the lock/exit-code/summary-file
+contract changed.
+
+```bash
+python3 scripts/collect_market_rates_workflow.py \
+    --config configs/base.yaml \
+    --render-javascript \
+    --lock-file data/processed/pricing_intelligence/collection.lock \
+    --summary-file data/processed/pricing_intelligence/last_run.json
+```
+
+`--config` is what enables scenario-triggering here (see "How pricing
+scenarios are triggered" below) -- without it, this behaves exactly as a
+`--database`-only invocation always has: collection, alerting, and health
+tracking, no scenario runs.
+
+| Time | Timezone | Command | Deployment |
+| --- | --- | --- | --- |
+| 07:30 | Pacific/Auckland (explicit in the `.plist`/crontab, never machine-local) | home-loan collection | `deploy/scheduling/nz.pricing-intelligence.collect.plist` (launchd) or `crontab.example` |
+| 07:35 | Pacific/Auckland | term-deposit collection | sibling `.plist` / second crontab line |
+
+Both ready-made schedules in [`deploy/scheduling/`](../deploy/scheduling/)
+document Telegram configuration alongside the existing webhook guidance --
+launchd needs the variables added to the `.plist`'s `EnvironmentVariables`
+block (it does not inherit your shell's exported variables); cron inherits a
+plain `VAR=value` line placed above the job in the same crontab.
+
+### Daily workflow
+
+```bash
+python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --render-javascript
+python3 -m balance_pricing_engine.pricing_intelligence brief --send
+```
+
+Or, in one scheduled line: `... workflow.py ... && ... brief --send`. The
+brief is a separate command by design (see the layer table above) -- `run`/the
+scheduled workflow answers "what happened", `brief` answers "what needs your
+attention", and chaining them is an operator choice, not a hidden coupling.
+
+### Weekly workflow
+
+```bash
+python3 -m balance_pricing_engine.pricing_intelligence brief --weekly --send
+```
+
+Run this any time (Sunday evening / Monday morning is a reasonable schedule);
+it summarises the last `market_state.lookback_days` (7, by default) of
+activity from whatever is already stored -- no separate weekly collection
+needed.
+
+### Health checks
+
+```bash
+python3 -m balance_pricing_engine.pricing_intelligence health
+```
+
+Reports: `PRAGMA integrity_check` plus a few lightweight data-quality checks
+(`ObservationStore.check_integrity()` -- duplicate current keys, implausible
+rates, unparseable timestamps), the most recent `RunRecord` and its status,
+per-bank collector health (`FRESH` / `FAILING (Nx)` / `UNKNOWN` for a bank
+never yet collected), whether Telegram/webhook are configured, and whether the
+latest market snapshot is `VALID` or `EMPTY`. Exits non-zero when the
+integrity check finds an issue -- suitable for a monitoring check, not just
+human reading.
+
+### Database backup
+
+```bash
+python3 -m balance_pricing_engine.pricing_intelligence backup --destination ~/pricing-intelligence-backups
+```
+
+Writes a timestamped, transactionally-consistent copy
+(`sqlite3.Connection.backup()`, not a raw file copy -- safe even if the
+database is open elsewhere) and prunes down to `--keep` (default 30) newest
+backups. Store the destination **outside the repository** -- there is no
+retention policy beyond the count-based pruning above, so pick a destination
+your own backup/off-site strategy already covers. Run it on whatever cadence
+matches how much history you can afford to lose (daily, alongside the morning
+collection, is a reasonable default for a personal deployment).
+
+### Telegram testing
+
+```bash
+python3 -m balance_pricing_engine.pricing_intelligence telegram-test
+```
+
+Sends a fixed `✅ NZ Pricing Intelligence Telegram test successful.` message.
+Does not require a real market event or a populated database -- exactly for
+verifying delivery before relying on it during a scheduled run.
+
+### Dry run
+
+```bash
+python3 -m balance_pricing_engine.pricing_intelligence run --dry-run
+```
+
+Collects, validates, and classifies exactly as a real run does, but persists
+no observations, writes no `RunRecord`, updates no collector health, and sends
+no real alerts -- every alert (including a scenario-enriched one, if scenario-
+triggering were wired in at this call site) is printed to the console instead.
+Safe to run against a real Telegram/webhook configuration: nothing reaches
+those channels. Useful when iterating on a collector or a threshold change
+without touching production history.
+
+`collect --no-persist` (unchanged from before v0.2.0) is the equivalent for
+the lower-level `collect` command specifically.
+
+### Collector troubleshooting
+
+See the Runbook below ("Bank collector fails").
+
+### Stale-data behaviour
+
+`max_observation_age_hours` (default 168h / 7 days) is the single freshness
+threshold: a bank's last-known rate stops feeding market-derived pricing
+benchmarks (median, leader, rankings) once its most recent confirmation is
+older than that, and the dashboard's freshness table / `health` command both
+surface exactly which bank and how old. An unreachable bank is "unknown, not
+withdrawn" for change-detection purposes (it stays in the baseline
+indefinitely, so it does not falsely read as every one of its products being
+withdrawn), but a stale value is not allowed to silently keep influencing a
+*live* pricing view forever -- those are two different questions with two
+different, deliberately separate answers. (v0.2.0 kept this single-threshold
+design rather than adding a second `FRESH_MAX_AGE_HOURS`/`STALE_MAX_AGE_HOURS`
+tier -- the existing Fresh/Stale/Missing states, plus the "quarantined" and
+"not fully confirmed in latest run" states already covered above, give
+conservative, explicit freshness without more config surface.)
+
+### How pricing scenarios are triggered
+
+A scheduled/manual `run` invoked **with `--config`** (so a full pricing
+`EngineConfig`, not just the `pricing_intelligence` block, is loaded) checks
+every tracked, comparable-category term for a genuine (non-suspicious) rate
+move detected that run -- any bank, not just a configured `our_bank`. Each
+triggered term runs the fixed scenario set from
+[`pricing_scenario_trigger.py`](../src/balance_pricing_engine/pricing_scenario_trigger.py),
+reusing exactly the seam `examples/run_market_intelligence_scenarios.py`
+already established (`strategy.apply_market_strategy_to_config` +
+the optimiser's baseline-diagnostics entry point -- no optimiser logic is
+duplicated):
+
+| Scenario | Competitor assumption |
+| --- | --- |
+| No change | The config's existing manual rate |
+| Match median | `MARKET_MEDIAN` |
+| Match leader | `MARKET_LEADER` |
+| Leader -5bps | `MARKET_LEADER`, offset -5bps |
+| Model optimum | Match median's own optimiser answer, relabelled |
+
+Results are persisted to the `scenario_runs` table (keyed by `run_id` +
+`term_months`, queryable via `ObservationStore.get_scenario_runs`/
+`get_recent_scenario_runs`, and visible in the dashboard's "Pricing scenarios"
+section) and a compact block is appended to the triggering rate-move alert:
+
+```text
+PRICING ENGINE
+
+Current rate:     4.89%
+Match median:     4.85%
+Match leader:     4.79%
+Model optimum:    4.84%
+
+Decision support only -- no automatic pricing action taken.
+```
+
+This is decision support only. Nothing here writes a price -- see
+`pricing_scenario_trigger.py`'s own docstring for why this deliberately lives
+outside `pricing_intelligence/` (that package is
+architecturally forbidden from importing the optimiser; see
+`tests/unit/test_pricing_intelligence_boundaries.py`).
+
+### How to disable alerts
+
+Unset (or never set) `PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL`,
+`TELEGRAM_BOT_TOKEN`, and `TELEGRAM_CHAT_ID` -- no delivery channel is the
+default state, and collection/classification/health-tracking/`RunRecord`
+persistence all continue unaffected. To keep a channel configured but silence
+one run, use `run --dry-run` or `collect --no-persist`.
+
+### How to disable scheduling
+
+Remove/unload the launchd agent(s) (`launchctl unload
+~/Library/LaunchAgents/nz.pricing-intelligence.collect*.plist`) or delete the
+crontab line(s). Collection, `health`, `brief`, and manual `run` all keep
+working on demand either way -- nothing about the CLI depends on a scheduler
+being installed.
+
+## Runbook
+
+### Bank collector fails
+
+1. `python3 -m balance_pricing_engine.pricing_intelligence health` -- confirm
+   which bank, and how many consecutive failures.
+2. Run that collector manually: `collect --render-javascript` and read the
+   `FAILED` reason in the report.
+3. Open the bank's official page and compare its current table structure
+   against what the collector expects.
+4. Run that collector's fixture tests: `pytest tests/unit/test_pricing_intelligence_collectors.py -k <bank>`.
+5. If the page structure changed, update the collector in
+   `competitor_rates/collectors/` (see "Adding a sixth bank" for the pattern;
+   fixing one is a smaller version of the same work) and refresh its saved
+   HTML fixture.
+6. `run --dry-run` to confirm the fix without touching production history.
+7. Deploy (redeploy/restart whatever runs the scheduled job).
+
+Escalation is automatic and configurable
+(`health.warning_after_failures`/`health.alert_after_failures`, defaults 2/3):
+the 1st failure logs only, the 2nd logs a structured warning (no Telegram
+send), the 3rd+ sends a Telegram/webhook alert, and a subsequent success sends
+a recovery notice.
+
+### Suspicious rate detected
+
+1. Compare the flagged value against the bank's official page directly.
+2. Determine whether it is a genuine reprice or a parser fault (mis-parsed
+   digit, wrong table row, standard/special mix-up).
+3. Follow the existing quarantine workflow (see "Audit hardening and
+   operating limits" below) -- there is no automated approve/reject command;
+   review against source evidence and correct the parser if it is a fault.
+4. Re-run collection/`snapshot` once resolved.
+
+Suspicious observations are excluded from market benchmarks and market-state
+classification by construction (`compute_market_activity` skips them by
+default) -- a parser fault cannot silently reach the optimiser through
+scenario-triggering either, since `_scenario_trigger_candidates` only
+considers non-suspicious changes.
+
+### Telegram fails
+
+1. `telegram-test` -- read the reported error (invalid token, wrong chat id,
+   bot not a member of the target chat/group, network failure).
+2. Confirm both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set in the
+   *process* actually running the scheduled job -- launchd needs them in the
+   `.plist`'s `EnvironmentVariables` block, not just your shell.
+3. A broken Telegram channel never fails a collection run or changes its exit
+   code -- `health` still reports "not configured"/delivery failures are only
+   in the structured logs, not the exit code, by design (mirrors webhook
+   delivery's existing safety guarantee).
+
+### Database problem
+
+1. `health` -- read which integrity check failed.
+2. Restore from the most recent backup:
+   `cp ~/pricing-intelligence-backups/<latest>.db data/processed/pricing_intelligence/observations.db`
+   (adjust the destination to match your configured `database_path`).
+3. Re-run `health` to confirm the restored copy passes.
+4. If no backup exists, `check_integrity()`'s issues list names exactly what
+   is wrong (schema, implausible rates, broken timestamps) -- a targeted SQL
+   fix may be possible for a narrow corruption; a full rebuild from scratch
+   loses history that cannot be backfilled.
 
 ## Testing
 
@@ -762,9 +1100,13 @@ failures, page mutations, and unparseable pages.
   confirmation in the latest stored run. A completely failed collection creates
   no observation run, so this view cannot reveal every failed attempt. Monitor
   scheduled-run summaries and all nonzero exit codes independently.
-- Daily unattended operation still needs persistent attempt/collector health,
-  configured notifications for partial failure (the canary now fails visibly),
-  a whole-job timeout, a reviewed quarantine process and backup/retention policy.
+- **Resolved in v0.2.0** (see "Pricing Intelligence Operations" above):
+  persistent per-bank collector health with configurable failure escalation
+  and recovery notifications, Telegram delivery alongside the existing
+  webhook, a persisted `RunRecord` operational ledger, a `health` command, and
+  a documented/implemented backup command. Still open: a reviewed quarantine
+  *approval workflow* (the quarantine mechanism itself is enforced; there is
+  no operator approve/reject command) and a whole-job wall-clock timeout --
   HTTP retry limits alone are not a wall-clock guarantee for a browser run.
 - Raw HTML is retained for parser diagnostics, under ignored `data/raw/` paths;
   no automatic retention policy is implemented. Live evidence is a dated check,

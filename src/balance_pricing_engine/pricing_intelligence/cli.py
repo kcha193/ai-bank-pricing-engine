@@ -9,8 +9,12 @@ Mirrors the argparse subcommand style already used by
     python3 -m balance_pricing_engine.pricing_intelligence changes --days 7
     python3 -m balance_pricing_engine.pricing_intelligence history --bank ANZ --term 12
     python3 -m balance_pricing_engine.pricing_intelligence market-state
+    python3 -m balance_pricing_engine.pricing_intelligence brief --weekly
     python3 -m balance_pricing_engine.pricing_intelligence position --rate 4.95 --term 12
     python3 -m balance_pricing_engine.pricing_intelligence strategy --strategy MARKET_MEDIAN
+    python3 -m balance_pricing_engine.pricing_intelligence health
+    python3 -m balance_pricing_engine.pricing_intelligence telegram-test
+    python3 -m balance_pricing_engine.pricing_intelligence backup --destination ~/pi-backups
 """
 
 from __future__ import annotations
@@ -91,6 +95,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             # able to interleave against the same database either.
             return _run(config, args)
 
+        if args.command == "telegram-test":
+            # Store-independent, same rationale as "ocr" above: a delivery
+            # smoke test needs no database at all.
+            return _telegram_test()
+
+        if args.command == "backup":
+            # backup_database() opens config.database_path directly via
+            # sqlite3 -- no need to construct an ObservationStore/service
+            # first just to hand it a path.
+            return _backup(config, args)
+
         with PricingIntelligenceService(
             config=config,
             store=ObservationStore(config.database_path),
@@ -103,6 +118,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "history": _history,
                 "market-state": _market_state,
                 "brief": _brief,
+                "health": _health,
                 "position": _position,
                 "strategy": _strategy,
             }
@@ -281,6 +297,26 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    subparsers.add_parser(
+        "health",
+        help="Database, collector, and alert-channel status for troubleshooting",
+    )
+
+    subparsers.add_parser(
+        "telegram-test",
+        help="Send a fixed test message to the configured Telegram bot/chat",
+    )
+
+    backup = subparsers.add_parser(
+        "backup", help="Write a timestamped backup of the observation store"
+    )
+    backup.add_argument(
+        "--destination", required=True, help="Directory to write timestamped backups into"
+    )
+    backup.add_argument(
+        "--keep", type=_positive_int, default=30, help="How many recent backups to retain"
+    )
+
     return parser
 
 
@@ -379,7 +415,7 @@ def _run(
     a manual run and a scheduled one classify and alert identically -- see
     that module's docstring.
 
-    Does not auto-trigger pricing scenarios (Phase 15) -- that needs a
+    Does not auto-trigger pricing scenarios -- that needs a
     scenario_trigger_fn built from a module that imports the optimiser, which
     this package (including this CLI) is architecturally forbidden from doing
     (see ``tests/unit/test_pricing_intelligence_boundaries.py``). Use the
@@ -702,6 +738,85 @@ def _ocr(collection_config: CollectionConfig) -> int:
         change_text = f"{change:+.0f} bps" if change is not None else "n/a"
         print(f"  change over {months} {label:<7}{change_text}")
     print(f"  source                 {series.source_url}")
+    return 0
+
+
+def _health(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
+    """Database, collector, and alert-channel status -- the first stop for troubleshooting."""
+    product = _product(args)
+    print("PRICING INTELLIGENCE HEALTH")
+    print()
+
+    report = service.store.check_integrity()
+    print(f"Database: {'OK' if report.ok else 'ISSUES DETECTED'}")
+    for issue in report.issues:
+        print(f"  - {issue}")
+    print()
+
+    latest_run = service.store.get_latest_run_record(product_type=product)
+    if latest_run is None:
+        print("Last run: none recorded yet (run 'run' to start collecting)")
+    else:
+        print(f"Last run: {latest_run.started_at:%d %b %Y %H:%M} UTC -- {latest_run.status}")
+    print()
+
+    health_by_bank = {h.bank: h for h in service.store.get_collector_health(product_type=product)}
+    for bank in service.config.selected_banks:
+        health = health_by_bank.get(bank)
+        if health is None:
+            print(f"  {bank:<12}{'UNKNOWN':<16}no collection recorded yet")
+            continue
+        status = "FRESH" if health.consecutive_failures == 0 else f"FAILING ({health.consecutive_failures}x)"
+        last_seen = (
+            health.last_success_at.strftime("%d %b %H:%M") if health.last_success_at else "never"
+        )
+        print(f"  {bank:<12}{status:<16}last seen {last_seen}")
+    print()
+
+    telegram_configured = build_telegram_sink_from_env() is not None
+    webhook_configured = build_webhook_sink_from_env() is not None
+    print(f"Telegram: {'configured' if telegram_configured else 'not configured'}")
+    print(f"Webhook:  {'configured' if webhook_configured else 'not configured'}")
+    print()
+
+    snapshot = service.get_market_snapshot(product_type=product)
+    print(f"Latest market snapshot: {'VALID' if snapshot.terms else 'EMPTY'}")
+
+    return 0 if report.ok else 1
+
+
+def _telegram_test() -> int:
+    """Send a fixed test message via the configured Telegram bot/chat.
+
+    Store-independent (see the dispatch comment in ``main()``) -- a delivery
+    smoke test should not require a database at all, and should be safe to
+    run before any collection has happened.
+    """
+    sink = build_telegram_sink_from_env()
+    if sink is None:
+        print(
+            "Telegram is not configured: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID "
+            "(see .env.example)."
+        )
+        return 1
+    try:
+        sink.send(plain_alert("NZ Pricing Intelligence Telegram test successful.", ""))
+    except Exception as exc:  # noqa: BLE001 - reported at the CLI boundary
+        print(f"Telegram test failed: {exc}")
+        return 1
+    print("Sent: ✅ NZ Pricing Intelligence Telegram test successful.")
+    return 0
+
+
+def _backup(config: PricingIntelligenceConfig, args: argparse.Namespace) -> int:
+    """Write a timestamped backup of the observation store and prune old ones."""
+    from balance_pricing_engine.pricing_intelligence.backup import backup_database
+
+    if not Path(config.database_path).exists():
+        print(f"No database at {config.database_path}; nothing to back up.")
+        return 1
+    backup_path = backup_database(config.database_path, args.destination, keep=args.keep)
+    print(f"Backup written to {backup_path}")
     return 0
 
 

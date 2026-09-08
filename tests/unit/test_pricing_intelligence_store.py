@@ -2454,3 +2454,42 @@ def test_a_different_run_id_is_a_distinct_notification(store, make_record):
 
     assert store.was_notified(first, "telegram") is True
     assert store.was_notified(second, "telegram") is False
+
+
+def test_integrity_check_passes_on_a_clean_database(store, make_record):
+    store.record_observations([make_record()], observed_at=DAY_ONE)
+
+    report = store.check_integrity()
+
+    assert report.ok is True
+    assert report.issues == ()
+    assert all(report.checks.values())
+
+
+def test_integrity_check_flags_an_implausible_rate(store, make_record):
+    store.record_observations([make_record()], observed_at=DAY_ONE)
+    store._connection.execute("UPDATE observations SET rate_pct = 999")
+
+    report = store.check_integrity()
+
+    assert report.ok is False
+    assert report.checks["rates_within_plausible_bounds"] is False
+    assert any("plausible rate bounds" in issue for issue in report.issues)
+
+
+def test_integrity_check_flags_a_broken_timestamp(store, make_record):
+    store.record_observations([make_record()], observed_at=DAY_ONE)
+    store._connection.execute("UPDATE observations SET last_seen_at = 'not-a-timestamp'")
+
+    report = store.check_integrity()
+
+    assert report.ok is False
+    assert report.checks["timestamps_parse"] is False
+
+
+def test_integrity_check_reports_pragma_failure(store, make_record):
+    from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
+
+    report = store.check_integrity(thresholds=ValidationThresholds())
+
+    assert report.checks["schema_accessible"] is True
