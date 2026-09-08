@@ -16,6 +16,7 @@ Mirrors the argparse subcommand style already used by
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta, timezone
 import logging
 import math
 from pathlib import Path
@@ -26,9 +27,14 @@ from balance_pricing_engine.config import load_config
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.alerts import (
     ConsoleAlertSink,
+    build_telegram_sink_from_env,
+    build_webhook_sink_from_env,
     dispatch_alerts,
+    dispatch_alerts_safely,
     format_alerts,
+    plain_alert,
 )
+from balance_pricing_engine.pricing_intelligence.briefing import build_daily_brief, build_weekly_brief
 from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
 from balance_pricing_engine.pricing_intelligence.locking import AlreadyRunningError, SingleInstanceLock
 from balance_pricing_engine.pricing_intelligence.orchestration import (
@@ -96,6 +102,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "changes": _changes,
                 "history": _history,
                 "market-state": _market_state,
+                "brief": _brief,
                 "position": _position,
                 "strategy": _strategy,
             }
@@ -205,6 +212,18 @@ def _build_parser() -> argparse.ArgumentParser:
     history.add_argument("--category", default=None)
 
     subparsers.add_parser("market-state", help="Classify current market activity")
+
+    brief = subparsers.add_parser(
+        "brief", help="Generate the daily or weekly intelligence brief"
+    )
+    brief.add_argument(
+        "--weekly", action="store_true", help="Generate the weekly summary instead of daily"
+    )
+    brief.add_argument(
+        "--send",
+        action="store_true",
+        help="Deliver via configured webhook/Telegram, in addition to printing it",
+    )
 
     position = subparsers.add_parser(
         "position", help="Position a rate against the advertised market"
@@ -528,6 +547,75 @@ def _market_state(service: PricingIntelligenceService, args: argparse.Namespace)
         print(f"  {key:<20}{payload[key]}")
     print()
     print(f"  {payload['rationale']}")
+    return 0
+
+
+def _brief(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
+    """Generate the daily or weekly intelligence brief.
+
+    Deliberately a separate command from ``run``, not folded into
+    ``orchestration.run_operational_cycle`` -- the project's own
+    intelligence/pricing/alerting split (see docs/pricing_intelligence.md)
+    treats "what needs my attention" as a distinct concern from collection
+    itself, and an operator who wants both chains them in one schedule line
+    (``pricing-intelligence run && pricing-intelligence brief --send``; see
+    the Operations section of the docs).
+    """
+    product = _product(args)
+    category = _default_category(args)
+    snapshot = service.get_market_snapshot(product_type=product, rate_category=category)
+    if not snapshot.terms:
+        print("No market data. Run 'run' or 'collect' first.")
+        return 1
+
+    assessment = service.get_market_state(product_type=product, rate_category=category)
+    now = datetime.now(timezone.utc)
+    lookback_days = service.config.market_state.lookback_days
+
+    if args.weekly:
+        week_changes = service.get_changes(
+            days=lookback_days, product_type=product, rate_category=category
+        )
+        cutoff = now - timedelta(days=lookback_days)
+        run_records = [
+            record
+            for record in service.store.get_recent_run_records(product_type=product, limit=200)
+            if record.started_at >= cutoff
+        ]
+        text = build_weekly_brief(
+            as_of=now,
+            week_changes=week_changes,
+            week_assessment=assessment,
+            snapshot=snapshot,
+            run_records=run_records,
+        )
+    else:
+        today_changes = service.get_changes(days=1, product_type=product, rate_category=category)
+        health = service.store.get_collector_health(product_type=product)
+        text = build_daily_brief(
+            as_of=now,
+            today_changes=today_changes,
+            week_assessment=assessment,
+            snapshot=snapshot,
+            collector_health=health,
+            tracked_banks=service.config.selected_banks,
+        )
+
+    print(text)
+
+    if args.send:
+        title = "NZ Pricing Intelligence -- Weekly Brief" if args.weekly else "NZ Pricing Intelligence -- Daily Brief"
+        alert = plain_alert(title, text)
+        sinks = [
+            sink
+            for sink in (build_webhook_sink_from_env(), build_telegram_sink_from_env())
+            if sink is not None
+        ]
+        if not sinks:
+            print("\n(--send requested, but no webhook or Telegram channel is configured)")
+        else:
+            sent = sum(dispatch_alerts_safely([alert], sink) for sink in sinks)
+            print(f"\nDelivered to {sent}/{len(sinks)} configured channel(s).")
     return 0
 
 

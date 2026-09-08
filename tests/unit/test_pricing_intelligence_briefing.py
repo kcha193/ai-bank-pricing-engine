@@ -1,0 +1,190 @@
+"""Daily/weekly brief rendering, driven by directly-constructed fixtures."""
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from balance_pricing_engine.competitor_rates.models import ProductType
+from balance_pricing_engine.pricing_intelligence.briefing import build_daily_brief, build_weekly_brief
+from balance_pricing_engine.pricing_intelligence.changes import detect_changes
+from balance_pricing_engine.pricing_intelligence.market_state import MarketState, MarketStateAssessment
+from balance_pricing_engine.pricing_intelligence.positioning import MarketActivity
+from balance_pricing_engine.pricing_intelligence.snapshot import build_market_snapshot
+from balance_pricing_engine.pricing_intelligence.store import CollectorHealth, RunRecord
+
+DAY_ONE = datetime(2026, 8, 20, tzinfo=timezone.utc)
+DAY_TWO = DAY_ONE + timedelta(days=1)
+MARKET = [("ANZ", 4.79), ("BNZ", 4.85), ("Westpac", 4.85), ("ASB", 4.89), ("Kiwibank", 4.89)]
+
+
+def _assessment(**overrides):
+    activity = MarketActivity(
+        lookback_days=7,
+        changes=1,
+        banks_changed=1,
+        terms_changed=1,
+        increases=0,
+        decreases=1,
+        mean_change_bps=-20.0,
+        dominant_direction="DOWN",
+    )
+    payload = dict(state=MarketState.ELEVATED, activity=activity, rationale="1 change, 1 bank")
+    payload.update(overrides)
+    return MarketStateAssessment(**payload)
+
+
+def _health(bank, consecutive_failures=0):
+    return CollectorHealth(
+        bank=bank,
+        product_type=ProductType.HOME_LOAN,
+        consecutive_failures=consecutive_failures,
+        last_success_at=DAY_TWO,
+        last_failure_at=None,
+        last_error=None,
+        last_alert_sent_at=None,
+    )
+
+
+def _run_record(run_id, banks_attempted, banks_successful):
+    return RunRecord(
+        run_id=run_id,
+        started_at=DAY_ONE,
+        completed_at=DAY_ONE,
+        status="SUCCESS" if set(banks_attempted) == set(banks_successful) else "PARTIAL_SUCCESS",
+        product_type=ProductType.HOME_LOAN,
+        banks_attempted=tuple(banks_attempted),
+        banks_successful=tuple(banks_successful),
+        banks_failed=tuple(sorted(set(banks_attempted) - set(banks_successful))),
+        rates_observed=10,
+        rates_changed=0,
+        validation_failures=0,
+        suspicious_observations=0,
+        market_state="LOW",
+        error_summary=None,
+    )
+
+
+@pytest.fixture
+def snapshot(make_record):
+    records = [make_record(bank=bank, rate_pct=rate) for bank, rate in MARKET]
+    return build_market_snapshot(records)
+
+
+def test_no_change_day_is_a_single_line(snapshot):
+    brief = build_daily_brief(
+        as_of=DAY_TWO,
+        today_changes=[],
+        week_assessment=_assessment(),
+        snapshot=snapshot,
+        collector_health=[_health(bank) for bank, _ in MARKET],
+        tracked_banks=[bank for bank, _ in MARKET],
+    )
+    assert brief == (
+        "NZ PRICING INTELLIGENCE\n21 Aug 2026\n\n"
+        "No material mortgage pricing changes detected today."
+    )
+
+
+def test_a_reprice_day_reports_the_move_and_market_context(make_record, snapshot):
+    change = detect_changes(
+        [make_record(bank="ANZ", rate_pct=4.79)],
+        [make_record(bank="ANZ", rate_pct=4.59, observed_at=DAY_TWO)],
+        detected_at=DAY_TWO,
+    )[0]
+
+    brief = build_daily_brief(
+        as_of=DAY_TWO,
+        today_changes=[change],
+        week_assessment=_assessment(),
+        snapshot=snapshot,
+        collector_health=[_health(bank) for bank, _ in MARKET],
+        tracked_banks=[bank for bank, _ in MARKET],
+        scenario_triggered_terms=[12],
+    )
+
+    assert "TODAY" in brief
+    assert "ANZ 1 Year    -20 bps" in brief
+    assert "Market state: ELEVATED" in brief
+    assert "MOST COMPETITIVE" in brief
+    assert "1 Year: ANZ" in brief
+    assert "WIDEST SPREAD" in brief
+    assert "COLLECTOR HEALTH" in brief
+    assert "5/5 banks fresh" in brief
+    assert "Pricing scenario analysis triggered for:" in brief
+    assert "1 Year" in brief.splitlines()[-1]
+
+
+def test_a_bank_with_a_failure_streak_is_not_counted_fresh(make_record, snapshot):
+    health = [_health(bank) for bank, _ in MARKET]
+    health[0] = _health("ANZ", consecutive_failures=2)
+
+    brief = build_daily_brief(
+        as_of=DAY_TWO,
+        today_changes=detect_changes(
+            [make_record(bank="ANZ", rate_pct=4.79)],
+            [make_record(bank="ANZ", rate_pct=4.59, observed_at=DAY_TWO)],
+            detected_at=DAY_TWO,
+        ),
+        week_assessment=_assessment(),
+        snapshot=snapshot,
+        collector_health=health,
+        tracked_banks=[bank for bank, _ in MARKET],
+    )
+
+    assert "4/5 banks fresh" in brief
+
+
+def test_weekly_brief_with_no_changes(snapshot):
+    brief = build_weekly_brief(
+        as_of=DAY_TWO,
+        week_changes=[],
+        week_assessment=_assessment(),
+        snapshot=snapshot,
+        run_records=[],
+    )
+    assert "No repricing events this week." in brief
+    assert "NZ MORTGAGE PRICING -- WEEKLY" in brief
+
+
+def test_weekly_brief_reports_largest_move_and_most_active_term(make_record, snapshot):
+    changes = detect_changes(
+        [make_record(bank="ANZ", rate_pct=4.79), make_record(bank="BNZ", rate_pct=4.85)],
+        [
+            make_record(bank="ANZ", rate_pct=4.59, observed_at=DAY_TWO),
+            make_record(bank="BNZ", rate_pct=4.80, observed_at=DAY_TWO),
+        ],
+        detected_at=DAY_TWO,
+    )
+
+    brief = build_weekly_brief(
+        as_of=DAY_TWO,
+        week_changes=changes,
+        week_assessment=_assessment(),
+        snapshot=snapshot,
+        run_records=[],
+    )
+
+    assert "Repricing events: 2" in brief
+    assert "Banks changing: 2" in brief
+    assert "Largest move:" in brief
+    assert "ANZ 1 Year -20 bps" in brief
+    assert "Most active term: 1 Year" in brief
+
+
+def test_weekly_brief_reports_collector_uptime(snapshot):
+    run_records = [
+        _run_record("r1", ["ANZ", "BNZ"], ["ANZ", "BNZ"]),
+        _run_record("r2", ["ANZ", "BNZ"], ["ANZ"]),
+    ]
+
+    brief = build_weekly_brief(
+        as_of=DAY_TWO,
+        week_changes=[],
+        week_assessment=_assessment(),
+        snapshot=snapshot,
+        run_records=run_records,
+    )
+
+    assert "Collector uptime:" in brief
+    assert "ANZ           100%" in brief
+    assert "BNZ            50%" in brief

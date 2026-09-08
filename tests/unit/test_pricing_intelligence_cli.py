@@ -965,6 +965,72 @@ def test_run_command_dry_run_persists_nothing(tmp_path, fixture_fetcher, capsys,
         assert store.get_current_observations() == []
 
 
+def test_brief_daily_reports_no_change(populated_database, capsys):
+    exit_code = run(["--database", populated_database, "brief"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "NZ PRICING INTELLIGENCE" in output
+    assert "No material mortgage pricing changes detected today." in output
+
+
+def test_brief_weekly_reports_market_activity(populated_database, capsys):
+    exit_code = run(["--database", populated_database, "brief", "--weekly"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "NZ MORTGAGE PRICING -- WEEKLY" in output
+
+
+def test_brief_with_no_market_data_fails_cleanly(tmp_path, capsys):
+    exit_code = run(["--database", str(tmp_path / "empty.db"), "brief"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "No market data" in output
+
+
+def test_brief_send_reports_when_no_channel_is_configured(populated_database, capsys, monkeypatch):
+    monkeypatch.delenv("PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+    exit_code = run(["--database", populated_database, "brief", "--send"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "no webhook or Telegram channel is configured" in output
+
+
+def test_brief_send_delivers_to_a_configured_webhook(populated_database, capsys, monkeypatch):
+    monkeypatch.setenv("PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL", "https://hooks.example/x")
+    captured = []
+
+    def fake_urlopen(request, timeout=None):
+        import json
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+        captured.append(json.loads(request.data))
+        return FakeResponse()
+
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    monkeypatch.setattr(alerts_module, "urlopen", fake_urlopen)
+
+    exit_code = run(["--database", populated_database, "brief", "--send"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert len(captured) == 1
+    assert "Delivered to 1/1 configured channel(s)." in output
+
+
 def test_run_command_reports_already_running(tmp_path, capsys):
     from balance_pricing_engine.pricing_intelligence.locking import SingleInstanceLock
 
