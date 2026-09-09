@@ -148,7 +148,10 @@ def test_format_scenario_block_is_compact_and_carries_the_disclaimer():
     block = format_scenario_block(result)
 
     assert "PRICING ENGINE" in block
-    assert "Current rate:" in block
+    # Not "Current rate" -- this is the optimiser's recommendation under an
+    # unchanged competitor assumption, not the bank's actual current rate.
+    assert "No-change optimum:" in block
+    assert "Current rate" not in block
     assert "Match median:" in block
     assert "Match leader:" in block
     assert "Model optimum:" in block

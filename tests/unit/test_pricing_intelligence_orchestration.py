@@ -3,6 +3,7 @@ RunRecord persistence, and dry-run semantics -- driven entirely by fixtures
 and injected sinks, no live bank sites or real Telegram/webhook calls."""
 
 from datetime import datetime, timedelta, timezone
+import logging
 
 import pytest
 
@@ -177,6 +178,51 @@ def test_a_reprice_is_delivered_exactly_once_across_retries(tmp_path, fixture_fe
     assert len(sink.alerts) == 1, "the retried run must not re-deliver the same change"
 
 
+def test_a_change_persisted_but_never_alerted_is_replayed_on_a_later_run(
+    tmp_path, fixture_fetcher
+):
+    """If the process exits after service.collect() commits a change but
+    before run_operational_cycle reaches alert dispatch (a crash mid-run,
+    simulated here by calling service.collect() directly instead of going
+    through run_operational_cycle), the change must not be lost forever --
+    the next successful cycle must still deliver it, even though its own
+    fresh collect() sees no new change (the crashed run's collect() already
+    persisted the new rate as the baseline)."""
+    config = _config(tmp_path)
+    sink = CollectingAlertSink()
+
+    def mutate(bank, html):
+        if bank == "ANZ":
+            return html.replace("<td>1 year</td><td>4.79%", "<td>1 year</td><td>4.59%")
+        return html
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+        # Simulate the crash: collect() alone persists the ANZ change, but
+        # nothing ever reaches alert dispatch (that only happens inside
+        # run_operational_cycle, which is never called here).
+        service._fetcher = fixture_fetcher(mutate=mutate)
+        crashed_outcome = service.collect(captured_at_utc=DAY_TWO)
+        assert any(c.is_rate_move for c in crashed_outcome.changes)
+        assert sink.alerts == []
+
+        # The next scheduled run, one day later, sees no *new* change --
+        # DAY_TWO's mutated rate is already the stored baseline -- but must
+        # still deliver the change orphaned by the simulated crash.
+        result = run_operational_cycle(
+            service,
+            captured_at_utc=DAY_TWO + timedelta(days=1),
+            alert_sinks={"test": sink},
+        )
+
+    assert len(result.outcome.changes) == 0, "no fresh change this run -- the replay is the point"
+    assert len(sink.alerts) == 1
+    assert "ANZ" in sink.alerts[0].title or "ANZ" in sink.alerts[0].body
+
+
 def test_dispatch_rendered_alerts_only_records_confirmed_sends(tmp_path, make_record):
     """A send that fails must not be recorded as notified -- otherwise a
     retried run's was_notified() dedup check would permanently suppress a
@@ -309,6 +355,84 @@ def test_two_consecutive_failures_does_not_alert_only_warns(tmp_path, fixture_fe
     assert sink.alerts == []
 
 
+def test_health_warning_still_logs_with_no_alert_sinks_configured(tmp_path, fixture_fetcher):
+    """warning_after_failures escalation is a structured log, not a delivery
+    -- it must fire even with no webhook/Telegram configured (the documented
+    default), not only when run_operational_cycle happens to have a sink.
+
+    A directly-attached handler is used instead of caplog: configure_json_logging()
+    (called by an earlier test's workflow.main() in the same process) sets
+    propagate = False on the balance_pricing_engine logger hierarchy, which
+    stops records from reaching caplog's root-based capture -- same rationale
+    as tests/unit/test_scheduled_collection_workflow.py's own tests of this."""
+    from balance_pricing_engine.pricing_intelligence import orchestration as orchestration_module
+
+    config = _config(
+        tmp_path, health=HealthThresholds(warning_after_failures=2, alert_after_failures=3)
+    )
+
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    orchestration_module.logger.addHandler(handler)
+    try:
+        for day in range(2):
+            fetcher = fixture_fetcher(failing_banks=["Westpac"])
+            with PricingIntelligenceService(
+                config=config, store=ObservationStore(config.database_path), fetcher=fetcher
+            ) as service:
+                run_operational_cycle(
+                    service, captured_at_utc=DAY_ONE + timedelta(days=day), alert_sinks={}
+                )
+    finally:
+        orchestration_module.logger.removeHandler(handler)
+
+    assert any(
+        "collector health" in record.getMessage() and "Westpac" in record.getMessage()
+        for record in records
+    ), "the warning-level escalation must log regardless of configured sinks"
+
+
+def test_health_alerts_for_several_banks_are_batched_into_one_dispatch_call(tmp_path, monkeypatch):
+    """Several banks escalating in the same cycle must be dispatched in one
+    dispatch_alerts_safely call per sink, not one call per bank -- a
+    per-bank call gives each bank its own fresh dispatch deadline, so N
+    banks escalating against one hung sink could otherwise serialise into
+    N * deadline seconds of blocking while the run's single-instance lock
+    is still held."""
+    from balance_pricing_engine.pricing_intelligence import orchestration as orchestration_module
+    from balance_pricing_engine.pricing_intelligence.orchestration import _dispatch_health_alerts
+
+    calls = []
+
+    def fake_dispatch(alerts, sink, **kwargs):
+        calls.append(list(alerts))
+        return len(alerts)
+
+    monkeypatch.setattr(orchestration_module, "dispatch_alerts_safely", fake_dispatch)
+
+    store = ObservationStore(str(tmp_path / "obs.db"))
+    thresholds = HealthThresholds(warning_after_failures=1, alert_after_failures=1)
+    try:
+        _dispatch_health_alerts(
+            store,
+            ProductType.HOME_LOAN,
+            [("ANZ", False, "boom"), ("BNZ", False, "boom")],
+            thresholds,
+            {"test": CollectingAlertSink()},
+            DAY_ONE,
+        )
+    finally:
+        store.close()
+
+    assert len(calls) == 1, "both banks' escalation alerts must share a single dispatch call"
+    assert len(calls[0]) == 2
+    assert {alert.body.split("\n")[0] for alert in calls[0]} == {
+        "ANZ collector failed 1 consecutive runs.",
+        "BNZ collector failed 1 consecutive runs.",
+    }
+
+
 def test_recovery_alert_fires_after_an_escalated_streak(tmp_path, fixture_fetcher):
     config = _config(tmp_path, health=HealthThresholds(warning_after_failures=2, alert_after_failures=3))
     sink = CollectingAlertSink()
@@ -342,7 +466,7 @@ def test_recovery_alert_fires_after_an_escalated_streak(tmp_path, fixture_fetche
 def _fake_scenario_result(term_months) -> ScenarioResult:
     return ScenarioResult(
         data=[{"label": "No change", "our_rate": 0.0549}],
-        alert_block="PRICING ENGINE\n\nCurrent rate:     5.49%",
+        alert_block="PRICING ENGINE\n\nNo-change optimum:5.49%",
     )
 
 
@@ -477,7 +601,7 @@ def test_triggered_scenario_enriches_the_rate_move_alert(tmp_path, fixture_fetch
     assert "PRICING ENGINE" not in sink.alerts[0].title  # still the rate-change title
     assert "NZ MORTGAGE RATE CHANGE" in sink.alerts[0].title
     assert "PRICING ENGINE" in sink.alerts[0].body
-    assert "Current rate:     5.49%" in sink.alerts[0].body
+    assert "No-change optimum:5.49%" in sink.alerts[0].body
 
 
 def test_dry_run_still_previews_scenarios_but_persists_nothing(tmp_path, fixture_fetcher):

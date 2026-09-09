@@ -2,6 +2,7 @@
 
 import argparse
 import json
+from pathlib import Path
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -1072,6 +1073,30 @@ def test_run_command_reports_already_running(tmp_path, capsys):
         exit_code = run(
             ["--database", str(database), "run", "--lock-file", str(lock_path)]
         )
+
+    output = capsys.readouterr().out
+    assert exit_code == 3  # EXIT_ALREADY_RUNNING
+    assert "Skipped" in output
+
+
+def test_run_command_default_lock_file_is_derived_from_product(tmp_path, capsys, monkeypatch):
+    """Without an explicit --lock-file, `run` must derive the same default
+    lock path scripts/collect_market_rates_workflow.py derives (see
+    orchestration.default_lock_file_path) -- otherwise an interactive
+    `pricing-intelligence run` and the deployed scheduled job for the same
+    product could acquire different locks and collect concurrently against
+    the same database."""
+    from balance_pricing_engine.pricing_intelligence.locking import SingleInstanceLock
+    from balance_pricing_engine.pricing_intelligence.orchestration import (
+        default_lock_file_path,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    database = Path("observations.db")
+    lock_path = Path(default_lock_file_path("home_loan"))
+
+    with SingleInstanceLock(lock_path):
+        exit_code = run(["--database", str(database), "run"])
 
     output = capsys.readouterr().out
     assert exit_code == 3  # EXIT_ALREADY_RUNNING

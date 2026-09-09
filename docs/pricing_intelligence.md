@@ -184,10 +184,11 @@ configured there.
 `--product` selects which market this invocation collects (default:
 `home_loan`). **Term deposits are a separate market and need their own
 scheduled invocation** with `--product term_deposit` -- one schedule alone
-never refreshes both. Give each invocation its own `--lock-file` and
-`--summary-file`: sharing either between the two products makes the second
-one either get skipped (`EXIT_ALREADY_RUNNING`) or silently overwrite the
-other product's summary.
+never refreshes both. `--lock-file` already defaults to a distinct path per
+product (`orchestration.default_lock_file_path()`), so the two invocations
+cannot collide there even if left unset; `--summary-file` has no such
+default, though, so give each invocation its own or the second one silently
+overwrites the first product's summary.
 
 ```bash
 python3 scripts/collect_market_rates_workflow.py \
@@ -795,10 +796,14 @@ python3 -m balance_pricing_engine.pricing_intelligence run --render-javascript
 One command: collect → validate → persist → detect changes → classify market
 state → update collector health → dispatch alerts (webhook/Telegram, whichever
 configured) → persist a `RunRecord`. Prints the same collection report
-`collect` does, plus status/alerts-sent/run id. Takes the same single-instance
-lock the scheduled workflow uses (`--lock-file`, default
-`data/processed/pricing_intelligence/collection.lock`), so a manual and a
-scheduled run cannot interleave against the same database.
+`collect` does, plus status/alerts-sent/run id. Takes a single-instance lock
+(`--lock-file`) whose default is derived from `--product` --
+`orchestration.default_lock_file_path()` -- matching the checked-in
+cron/launchd artifacts' own per-product lock files (`collection-home-loan.lock`
+/ `collection-term-deposit.lock`, see "Scheduled run" below), so a manual
+`run` and the scheduled job for the same product genuinely share one lock and
+cannot interleave against the same database. Pass `--lock-file` explicitly
+only to point at something other than that default.
 
 Does **not** auto-trigger pricing scenarios (see below) -- that requires the
 optimiser, which `pricing_intelligence` (this CLI included) is architecturally
@@ -824,9 +829,13 @@ contract changed.
 python3 scripts/collect_market_rates_workflow.py \
     --config configs/base.yaml \
     --render-javascript \
-    --lock-file data/processed/pricing_intelligence/collection.lock \
     --summary-file data/processed/pricing_intelligence/last_run.json
 ```
+
+`--lock-file` is omitted here deliberately -- its default is derived from
+`--product` (`collection-home-loan.lock` for the default `home_loan`), the
+same as the interactive `run` command above; pass it explicitly only to
+override that default.
 
 `--config` is what enables scenario-triggering here (see "How pricing
 scenarios are triggered" below) -- without it, this behaves exactly as a
@@ -974,13 +983,18 @@ section) and a compact block is appended to the triggering rate-move alert:
 ```text
 PRICING ENGINE
 
-Current rate:     4.89%
+No-change optimum:4.89%
 Match median:     4.85%
 Match leader:     4.79%
 Model optimum:    4.84%
 
 Decision support only -- no automatic pricing action taken.
 ```
+
+"No-change optimum" -- not "current rate" -- because this module never reads
+the bank's actual currently advertised rate; it is the optimiser's own
+recommendation under an *unchanged* competitor assumption, and labelling a
+recommendation as an existing price would be misleading.
 
 This is decision support only. Nothing here writes a price -- see
 `pricing_scenario_trigger.py`'s own docstring for why this deliberately lives

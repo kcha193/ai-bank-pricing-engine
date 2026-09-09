@@ -60,6 +60,7 @@ from balance_pricing_engine.pricing_intelligence.orchestration import (
     _comparable_rate_count,  # noqa: F401
     _validation_only_failures,  # noqa: F401
     build_summary,
+    default_lock_file_path,
     exit_code_for,  # noqa: F401
     run_operational_cycle,
 )
@@ -287,8 +288,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument(
         "--lock-file",
-        default="data/processed/pricing_intelligence/collection.lock",
-        help="Single-instance lock path",
+        default=None,
+        help=(
+            "Single-instance lock path (default: derived from --product, "
+            "matching the checked-in cron/launchd artifacts' per-product "
+            "lock files -- see deploy/scheduling/ and "
+            "docs/pricing_intelligence.md)"
+        ),
     )
     parser.add_argument(
         "--summary-file", default=None, help="Write a JSON run summary here"
@@ -325,8 +331,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.database:
         config = config.model_copy(update={"database_path": args.database})
 
+    lock_file = args.lock_file or default_lock_file_path(args.product)
     try:
-        with _SingleInstanceLock(Path(args.lock_file)):
+        with _SingleInstanceLock(Path(lock_file)):
             code, summary = run_collection(
                 config,
                 render_javascript=args.render_javascript,

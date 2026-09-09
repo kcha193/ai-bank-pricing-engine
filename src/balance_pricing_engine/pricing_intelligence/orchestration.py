@@ -26,7 +26,7 @@ touches the optimiser.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 from typing import Callable, Mapping, NamedTuple, Optional
 import uuid
@@ -43,7 +43,7 @@ from balance_pricing_engine.pricing_intelligence.alerts import (
     format_alerts,
     plain_alert,
 )
-from balance_pricing_engine.pricing_intelligence.changes import RateChange
+from balance_pricing_engine.pricing_intelligence.changes import RateChange, load_changes
 from balance_pricing_engine.pricing_intelligence.config import (
     HealthThresholds,
     PricingIntelligenceConfig,
@@ -95,6 +95,24 @@ _STATUS_BY_CODE = {
     EXIT_PARTIAL_FAILURE: "PARTIAL_SUCCESS",
     EXIT_TOTAL_FAILURE: "FAILED",
 }
+
+
+def default_lock_file_path(product_type: ProductType | str) -> str:
+    """Default single-instance lock path for one product's operational cycle.
+
+    Derived from ``product_type`` -- not one shared literal duplicated in
+    the interactive CLI's ``run`` command and the scheduled workflow script
+    -- so the two agree by construction on which lock file protects which
+    product+database. Matches the naming the checked-in cron/launchd
+    artifacts already use (``collection-home-loan.lock`` /
+    ``collection-term-deposit.lock`` -- see ``deploy/scheduling/``): before
+    this, an ordinary interactive ``pricing-intelligence run`` defaulted to
+    an unqualified ``collection.lock`` that no deployed schedule actually
+    uses, so a manual run and the scheduled job for the same product could
+    acquire different locks and run concurrently against the same database.
+    """
+    slug = ProductType(product_type).value.replace("_", "-")
+    return f"data/processed/pricing_intelligence/collection-{slug}.lock"
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +531,50 @@ def _dispatch_rendered_alerts(
     return total_sent
 
 
+#: How far back to look for a stored rate move that was never delivered on
+#: every currently configured alert channel -- most often because the
+#: process exited after service.collect() committed the change but before
+#: this module reached alert dispatch on that same run: the *next* scheduled
+#: invocation's own collect() then sees the already-persisted rate as
+#: unchanged, so the change would otherwise never be detected -- and
+#: therefore never alerted -- again. Bounded so a change nobody has ever
+#: configured a channel for (or one from a long-abandoned collection) does
+#: not resurface forever.
+UNDELIVERED_CHANGE_REPLAY_HOURS = 48.0
+
+
+def _undelivered_change_replay_candidates(
+    store,
+    product_type: ProductType,
+    sinks: Mapping[str, AlertSink],
+    already_included: set[tuple],
+    now: datetime,
+) -> list[RateChange]:
+    """Stored rate moves from a recent prior run that still have not reached
+    every currently configured channel.
+
+    ``was_notified()`` is checked per channel, the same dedup
+    :func:`_dispatch_rendered_alerts` already applies to a live batch, so a
+    change already delivered everywhere it needed to be is never re-sent --
+    this only replays a change still missing on at least one channel.
+    """
+    since = now - timedelta(hours=UNDELIVERED_CHANGE_REPLAY_HOURS)
+    rows = store.get_changes_since(
+        since=since, now=now, product_type=product_type, include_suspicious=False
+    )
+    candidates = []
+    for change in load_changes(rows):
+        if not change.is_rate_move:
+            continue
+        key = (change.observation_key, change.change_type, change.detected_at, change.run_id)
+        if key in already_included:
+            continue
+        if all(store.was_notified(change, channel) for channel in sinks):
+            continue
+        candidates.append(change)
+    return candidates
+
+
 def _scenario_trigger_candidates(
     changes: list[RateChange], product_type: ProductType, config: PricingIntelligenceConfig
 ) -> list[int]:
@@ -570,10 +632,20 @@ def _dispatch_health_alerts(
     at: datetime,
 ) -> None:
     """Update every attempted bank's health streak and deliver an
-    escalation/recovery alert where the policy calls for one."""
+    escalation/recovery alert where the policy calls for one.
+
+    Escalation/recovery alerts are batched into one ``dispatch_alerts_safely``
+    call per sink, not one call per bank: a per-bank call would give each
+    bank its own fresh ``DEFAULT_ALERT_DISPATCH_DEADLINE_SECONDS`` budget, so
+    several banks escalating against one hung sink could serialise into
+    banks * deadline seconds of blocking while this run's single-instance
+    lock is still held -- one shared deadline per sink bounds that to a
+    single deadline regardless of how many banks escalated.
+    """
     previous_by_bank = {
         health.bank: health for health in store.get_collector_health(product_type)
     }
+    escalations: list[tuple[str, Alert]] = []
     for bank, success, error in banks:
         current = store.update_collector_health(
             bank, product_type, success=success, error=error, at=at
@@ -593,8 +665,15 @@ def _dispatch_health_alerts(
             if outcome == HEALTH_RECOVERY
             else _health_alert(bank, current)
         )
-        for sink in sinks.values():
-            dispatch_alerts_safely([alert], sink)
+        escalations.append((bank, alert))
+
+    if not escalations:
+        return
+
+    alerts = [alert for _, alert in escalations]
+    for sink in sinks.values():
+        dispatch_alerts_safely(alerts, sink)
+    for bank, _ in escalations:
         store.record_collector_health_alert(bank, product_type, at=at)
 
 
@@ -691,6 +770,28 @@ def run_operational_cycle(
         sinks = built
 
     rate_moves = [change for change in outcome.changes if change.is_rate_move]
+    if not dry_run and sinks:
+        # Re-offer any recent, still-undelivered stored change for delivery
+        # this run -- see UNDELIVERED_CHANGE_REPLAY_HOURS. A dry run must not
+        # participate: it never writes to the notified_alerts ledger, so its
+        # ad-hoc "console" channel would never look delivered and every
+        # candidate would resurface on every dry-run preview indefinitely.
+        #
+        # Anchored on captured_at_utc (the same business-time clock
+        # detected_at is stamped from -- see service.collect()), not
+        # started_at's wall clock: a caller backfilling or replaying a past
+        # captured_at_utc must get a lookback window relative to that
+        # simulated "now", not the real time this process happens to run at.
+        replay_now = captured_at_utc or started_at
+        if replay_now.tzinfo is None:
+            replay_now = replay_now.replace(tzinfo=timezone.utc)
+        already_included = {
+            (change.observation_key, change.change_type, change.detected_at, change.run_id)
+            for change in rate_moves
+        }
+        rate_moves = rate_moves + _undelivered_change_replay_candidates(
+            service.store, product_type, sinks, already_included, replay_now
+        )
 
     scenarios_by_term: dict[int, ScenarioResult] = {}
     triggered_terms = (
@@ -735,36 +836,20 @@ def run_operational_cycle(
 
     run_record: Optional[RunRecord] = None
     if not dry_run:
-        if sinks:
-            _dispatch_health_alerts(
-                service.store,
-                product_type,
-                [
-                    (
-                        bank,
-                        bank in summary["banks_succeeded"],
-                        next(
-                            (
-                                failure["error"]
-                                for failure in summary["failures"]
-                                if failure["bank"] == bank
-                            ),
-                            None,
-                        ),
-                    )
-                    for bank in banks_attempted
-                ],
-                service.config.health,
-                sinks,
-                started_at,
-            )
-        else:
-            for bank in banks_attempted:
-                service.store.update_collector_health(
+        # Always classified, sinks or not: classify_health_escalation()'s
+        # warning-level escalation (a structured log line, not a delivery) is
+        # unconditional policy -- it must fire at warning_after_failures even
+        # with no webhook/Telegram configured, the documented default. Only
+        # the alert-level outcome's `for sink in sinks.values(): ...` loop
+        # depends on sinks being non-empty, and naturally no-ops when it is.
+        _dispatch_health_alerts(
+            service.store,
+            product_type,
+            [
+                (
                     bank,
-                    product_type,
-                    success=bank in summary["banks_succeeded"],
-                    error=next(
+                    bank in summary["banks_succeeded"],
+                    next(
                         (
                             failure["error"]
                             for failure in summary["failures"]
@@ -772,8 +857,13 @@ def run_operational_cycle(
                         ),
                         None,
                     ),
-                    at=started_at,
                 )
+                for bank in banks_attempted
+            ],
+            service.config.health,
+            sinks,
+            started_at,
+        )
 
         market_state_value = None
         try:

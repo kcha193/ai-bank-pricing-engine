@@ -180,7 +180,11 @@ def format_scenario_block(comparison: ScenarioComparison) -> str:
         row = by_label.get(label)
         if row is None:
             continue
-        display_label = "Current rate" if label == "No change" else label
+        # "No change" is the optimiser's recommendation under an *unchanged*
+        # competitor assumption -- it is not the bank's actual currently
+        # advertised rate, which this module never reads. Labelling it
+        # "Current rate" would present a recommendation as an existing price.
+        display_label = "No-change optimum" if label == "No change" else label
         lines.append(f"{display_label + ':':<18}{row.our_rate:.2%}")
     lines.append("")
     lines.append("Decision support only -- no automatic pricing action taken.")

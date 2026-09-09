@@ -46,6 +46,7 @@ from balance_pricing_engine.pricing_intelligence.config import (
 from balance_pricing_engine.pricing_intelligence.locking import AlreadyRunningError, SingleInstanceLock
 from balance_pricing_engine.pricing_intelligence.orchestration import (
     EXIT_ALREADY_RUNNING,
+    default_lock_file_path,
     run_operational_cycle,
 )
 from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
@@ -288,8 +289,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--lock-file",
-        default="data/processed/pricing_intelligence/collection.lock",
-        help="Single-instance lock path (shared with the scheduled workflow if reused)",
+        default=None,
+        help=(
+            "Single-instance lock path (default: derived from --product, "
+            "matching the deployed scheduled workflow's per-product lock "
+            "files -- see docs/pricing_intelligence.md)"
+        ),
     )
 
     subparsers.add_parser(
@@ -424,8 +429,9 @@ def _run(
     (see ``tests/unit/test_pricing_intelligence_boundaries.py``). Use the
     scheduled workflow script for scenario-triggered runs.
     """
+    lock_file = args.lock_file or default_lock_file_path(_product(args))
     try:
-        with SingleInstanceLock(Path(args.lock_file)):
+        with SingleInstanceLock(Path(lock_file)):
             with PricingIntelligenceService(
                 config=config,
                 store=ObservationStore(config.database_path),
