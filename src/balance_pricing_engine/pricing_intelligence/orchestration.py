@@ -557,11 +557,16 @@ def _undelivered_change_replay_candidates(
     :func:`_dispatch_rendered_alerts` already applies to a live batch, so a
     change already delivered everywhere it needed to be is never re-sent --
     this only replays a change still missing on at least one channel.
+
+    Includes suspicious changes: the live path (``rate_moves`` above) already
+    delivers a suspicious move, rendered with its explicit "FLAGGED
+    SUSPICIOUS -- verify against the source page" warning (see
+    :func:`~.alerts.format_alert`) rather than dropping it -- excluding
+    suspicious changes here would silently lose exactly the alert a parser
+    fault most needs a human to see, on top of losing it to a channel outage.
     """
     since = now - timedelta(hours=UNDELIVERED_CHANGE_REPLAY_HOURS)
-    rows = store.get_changes_since(
-        since=since, now=now, product_type=product_type, include_suspicious=False
-    )
+    rows = store.get_changes_since(since=since, now=now, product_type=product_type)
     candidates = []
     for change in load_changes(rows):
         if not change.is_rate_move:
@@ -728,6 +733,14 @@ def run_operational_cycle(
     triggering. See :data:`ScenarioTriggerFn` and the module docstring for
     why this is injected rather than imported.
 
+    A ``scenario_trigger_fn`` failure (e.g. no external competitor peer
+    remains once ``our_bank`` is excluded from the only bank that moved this
+    run -- a documented, reachable case, not a bug in the callback) is caught
+    and logged, not propagated: this decision-support enrichment must never
+    cost the collection its alerts, collector-health update, run record, or
+    summary, all of which are otherwise still valid off a successful
+    ``service.collect()``.
+
     ``dry_run`` collects and classifies as normal but does not persist
     observations (``service.collect(persist=False)``), does not write a
     :class:`~.store.RunRecord` or update collector health, and does not
@@ -801,7 +814,17 @@ def run_operational_cycle(
     )
     if triggered_terms:
         scenario_snapshot = service.get_market_snapshot(product_type=product_type)
-        scenarios_by_term = dict(scenario_trigger_fn(triggered_terms, scenario_snapshot))
+        try:
+            scenarios_by_term = dict(scenario_trigger_fn(triggered_terms, scenario_snapshot))
+        except Exception:  # noqa: BLE001 - decision-support only, must not abort the cycle
+            logger.warning(
+                "scenario_trigger_fn failed for run %s (terms=%s); continuing the "
+                "operational cycle without scenario enrichment this run",
+                operational_run_id,
+                triggered_terms,
+                exc_info=True,
+            )
+            scenarios_by_term = {}
         if not dry_run:
             for term, comparison in scenarios_by_term.items():
                 service.store.write_scenario_run(

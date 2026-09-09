@@ -22,11 +22,20 @@ from collections import Counter
 from datetime import datetime
 from typing import Sequence
 
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.alerts import term_name
 from balance_pricing_engine.pricing_intelligence.changes import RateChange
 from balance_pricing_engine.pricing_intelligence.market_state import MarketStateAssessment
 from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot
 from balance_pricing_engine.pricing_intelligence.store import CollectorHealth, RunRecord
+
+
+def _product_label(product_type: ProductType) -> str:
+    """Display label derived from ``snapshot.product_type`` -- both brief
+    builders previously hard-coded "MORTGAGE" wording regardless of which
+    product the caller actually selected, so a term-deposit brief (--product
+    term_deposit) delivered lending-labelled intelligence."""
+    return "TERM DEPOSIT" if product_type is ProductType.TERM_DEPOSIT else "MORTGAGE"
 
 
 def build_daily_brief(
@@ -45,13 +54,20 @@ def build_daily_brief(
     detected (``OperationalRunResult.outcome.changes``), not a re-query --
     "today" means this run, not a rolling 24h window that could straddle two
     scheduled runs.
+
+    A suspicious movement is still listed under TODAY -- it is a genuine
+    detected event worth an operator's attention -- but flagged, matching
+    the "FLAGGED SUSPICIOUS -- verify against the source page" warning a live
+    alert already carries for the same change (see ``alerts.format_alert``);
+    it is never silently presented as ordinary, trusted repricing.
     """
+    product_label = _product_label(snapshot.product_type)
     rate_moves = [change for change in today_changes if change.is_rate_move]
     if not rate_moves:
         return (
             "NZ PRICING INTELLIGENCE\n"
             f"{as_of:%d %b %Y}\n\n"
-            "No material mortgage pricing changes detected today."
+            f"No material {product_label.lower()} pricing changes detected today."
         )
 
     lines = ["NZ PRICING INTELLIGENCE", f"{as_of:%d %b %Y}", ""]
@@ -60,7 +76,8 @@ def build_daily_brief(
     lines.append("TODAY")
     for change in sorted(rate_moves, key=lambda c: (-abs(c.change_bps or 0), c.bank)):
         label = f"{change.bank} {term_name(change.term_months)}"
-        lines.append(f"{label:<14}{change.change_bps:+.0f} bps")
+        flag = "  [SUSPICIOUS -- verify source]" if change.suspicious else ""
+        lines.append(f"{label:<14}{change.change_bps:+.0f} bps{flag}")
 
     lines.append("")
     lines.append(f"{week_assessment.activity.lookback_days}-DAY MARKET")
@@ -116,9 +133,23 @@ def build_weekly_brief(
     ``store.get_recent_run_records(product_type, limit=N)`` filtered by the
     caller to ``started_at >= as_of - 7 days``) -- collector uptime is
     computed only over those.
+
+    Suspicious movements are excluded from every aggregate stat below
+    (repricing-event count, banks changing, largest move, most active term),
+    the same as :func:`~.changes.compute_market_activity` already excludes
+    them from market-state classification -- a parser fault must not be able
+    to fake a repricing round here either. A footnote reports how many were
+    excluded so a genuine cluster of suspicious readings is still visible.
     """
-    rate_moves = [change for change in week_changes if change.is_rate_move]
-    lines = ["NZ MORTGAGE PRICING -- WEEKLY", "", f"Market activity: {week_assessment.state.value}"]
+    product_label = _product_label(snapshot.product_type)
+    all_changes = [change for change in week_changes if change.is_rate_move]
+    rate_moves = [change for change in all_changes if not change.suspicious]
+    suspicious_count = len(all_changes) - len(rate_moves)
+    lines = [
+        f"NZ {product_label} PRICING -- WEEKLY",
+        "",
+        f"Market activity: {week_assessment.state.value}",
+    ]
 
     if not rate_moves:
         lines.append("")
@@ -144,6 +175,13 @@ def build_weekly_brief(
         market = snapshot.term(most_active_term) if most_active_term is not None else None
         if market is not None:
             lines.append(f"{term_name(most_active_term)} median now: {market.median_rate:.2f}%")
+
+    if suspicious_count:
+        lines.append("")
+        lines.append(
+            f"{suspicious_count} suspicious movement(s) excluded above -- verify against "
+            "the source page before treating as genuine repricing."
+        )
 
     if run_records:
         lines.append("")

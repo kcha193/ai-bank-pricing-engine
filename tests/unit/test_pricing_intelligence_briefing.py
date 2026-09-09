@@ -171,6 +171,108 @@ def test_weekly_brief_reports_largest_move_and_most_active_term(make_record, sna
     assert "Most active term: 1 Year" in brief
 
 
+def test_a_suspicious_move_is_flagged_not_hidden_in_daily_brief(make_record, snapshot):
+    """A suspicious move must still be listed under TODAY (it is a genuine
+    detected event) but flagged, matching the "FLAGGED SUSPICIOUS" warning a
+    live alert already carries for the same change -- never presented as
+    ordinary, trusted repricing."""
+    suspicious_change = detect_changes(
+        [make_record(bank="ANZ", rate_pct=4.79)],
+        # Far larger than suspicious_change_bps (75 bps default).
+        [make_record(bank="ANZ", rate_pct=8.49, observed_at=DAY_TWO)],
+        detected_at=DAY_TWO,
+    )[0]
+    assert suspicious_change.suspicious
+
+    brief = build_daily_brief(
+        as_of=DAY_TWO,
+        today_changes=[suspicious_change],
+        week_assessment=_assessment(),
+        snapshot=snapshot,
+        collector_health=[_health(bank) for bank, _ in MARKET],
+        tracked_banks=[bank for bank, _ in MARKET],
+    )
+
+    assert "TODAY" in brief
+    assert "ANZ 1 Year" in brief
+    assert "[SUSPICIOUS -- verify source]" in brief
+
+
+def test_weekly_brief_excludes_suspicious_moves_from_aggregate_stats(make_record, snapshot):
+    """Suspicious movements must be excluded from every weekly aggregate --
+    repricing-event count, banks changing, largest move, most active term --
+    the same as compute_market_activity already excludes them from
+    market-state classification. A parser fault must not be able to fake a
+    repricing round here either."""
+    normal_change = detect_changes(
+        [make_record(bank="BNZ", rate_pct=4.85)],
+        [make_record(bank="BNZ", rate_pct=4.80, observed_at=DAY_TWO)],
+        detected_at=DAY_TWO,
+    )[0]
+    suspicious_change = detect_changes(
+        [make_record(bank="ANZ", rate_pct=4.79)],
+        [make_record(bank="ANZ", rate_pct=8.49, observed_at=DAY_TWO)],
+        detected_at=DAY_TWO,
+    )[0]
+    assert suspicious_change.suspicious
+    assert not normal_change.suspicious
+
+    brief = build_weekly_brief(
+        as_of=DAY_TWO,
+        week_changes=[normal_change, suspicious_change],
+        week_assessment=_assessment(),
+        snapshot=snapshot,
+        run_records=[],
+    )
+
+    assert "Repricing events: 1" in brief
+    assert "Banks changing: 1" in brief
+    assert "BNZ 1 Year -5 bps" in brief, "the suspicious ANZ move must not win 'Largest move'"
+    assert "ANZ" not in brief.split("Largest move:")[1].split("\n\n")[0]
+    assert "1 suspicious movement(s) excluded" in brief
+
+
+def test_daily_brief_labels_a_term_deposit_snapshot(make_record):
+    deposit_snapshot = build_market_snapshot(
+        [make_record(bank=bank, rate_pct=rate, product_type="term_deposit", rate_category="term_deposit")
+            for bank, rate in MARKET],
+        product_type=ProductType.TERM_DEPOSIT,
+        rate_category="term_deposit",
+    )
+
+    brief = build_daily_brief(
+        as_of=DAY_TWO,
+        today_changes=[],
+        week_assessment=_assessment(),
+        snapshot=deposit_snapshot,
+        collector_health=[_health(bank) for bank, _ in MARKET],
+        tracked_banks=[bank for bank, _ in MARKET],
+    )
+
+    assert "No material term deposit pricing changes detected today." in brief
+    assert "mortgage" not in brief.lower()
+
+
+def test_weekly_brief_labels_a_term_deposit_snapshot(make_record):
+    deposit_snapshot = build_market_snapshot(
+        [make_record(bank=bank, rate_pct=rate, product_type="term_deposit", rate_category="term_deposit")
+            for bank, rate in MARKET],
+        product_type=ProductType.TERM_DEPOSIT,
+        rate_category="term_deposit",
+    )
+
+    brief = build_weekly_brief(
+        as_of=DAY_TWO,
+        week_changes=[],
+        week_assessment=_assessment(),
+        snapshot=deposit_snapshot,
+        run_records=[],
+    )
+
+    assert "NZ TERM DEPOSIT PRICING -- WEEKLY" in brief
+    assert "mortgage" not in brief.lower()
+
+
 def test_weekly_brief_reports_collector_uptime(snapshot):
     run_records = [
         _run_record("r1", ["ANZ", "BNZ"], ["ANZ", "BNZ"]),

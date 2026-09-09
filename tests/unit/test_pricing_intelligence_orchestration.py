@@ -16,6 +16,7 @@ from balance_pricing_engine.pricing_intelligence.config import (
     PricingIntelligenceConfig,
 )
 from balance_pricing_engine.pricing_intelligence.orchestration import (
+    EXIT_OK,
     HEALTH_ALERT,
     HEALTH_NONE,
     HEALTH_RECOVERY,
@@ -221,6 +222,47 @@ def test_a_change_persisted_but_never_alerted_is_replayed_on_a_later_run(
     assert len(result.outcome.changes) == 0, "no fresh change this run -- the replay is the point"
     assert len(sink.alerts) == 1
     assert "ANZ" in sink.alerts[0].title or "ANZ" in sink.alerts[0].body
+
+
+def test_a_suspicious_change_persisted_but_never_alerted_is_replayed_too(
+    tmp_path, fixture_fetcher
+):
+    """The undelivered-change replay must not silently drop a suspicious
+    move: the live path already delivers one (with its explicit "FLAGGED
+    SUSPICIOUS -- verify against the source page" warning, see
+    alerts.format_alert), so a suspicious change orphaned by a crash before
+    dispatch must still be replayed the same way, not lost -- that would
+    hide exactly the alert a parser fault most needs a human to see."""
+    config = _config(tmp_path)
+    sink = CollectingAlertSink()
+
+    def mutate_to_suspicious(bank, html):
+        if bank == "ANZ":
+            # A move far larger than suspicious_change_bps (75 bps default).
+            return html.replace("<td>1 year</td><td>4.79%", "<td>1 year</td><td>8.49%")
+        return html
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+        # Simulate the crash: collect() alone persists the suspicious ANZ
+        # change, but nothing ever reaches alert dispatch.
+        service._fetcher = fixture_fetcher(mutate=mutate_to_suspicious)
+        crashed_outcome = service.collect(captured_at_utc=DAY_TWO)
+        assert any(c.suspicious for c in crashed_outcome.changes)
+        assert sink.alerts == []
+
+        result = run_operational_cycle(
+            service,
+            captured_at_utc=DAY_TWO + timedelta(days=1),
+            alert_sinks={"test": sink},
+        )
+
+    assert len(result.outcome.changes) == 0
+    assert len(sink.alerts) == 1
+    assert "FLAGGED SUSPICIOUS" in sink.alerts[0].body
 
 
 def test_dispatch_rendered_alerts_only_records_confirmed_sends(tmp_path, make_record):
@@ -495,6 +537,36 @@ def test_scenario_trigger_fn_is_called_for_a_genuine_rate_move(tmp_path, fixture
 
     assert len(calls) == 1
     assert calls[0][0] == (12,)
+
+
+def test_a_failing_scenario_trigger_fn_does_not_abort_the_cycle(tmp_path, fixture_fetcher):
+    """A scenario_trigger_fn failure -- e.g. no external competitor peer
+    remains once our_bank is excluded from the only bank that moved this run
+    -- is a reachable, documented case, not a bug in the callback. It must
+    not cost the run its alerts, collector-health update, run record, or
+    summary, all of which are otherwise valid off a successful collect()."""
+    config = _config(tmp_path)
+    sink = CollectingAlertSink()
+
+    def failing_trigger_fn(terms, snapshot):
+        raise RuntimeError("simulated: no external peer remains for this term")
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=_mutate_anz_one_year)
+        result = run_operational_cycle(
+            service,
+            captured_at_utc=DAY_TWO,
+            alert_sinks={"test": sink},
+            scenario_trigger_fn=failing_trigger_fn,
+        )
+
+    assert result.code == EXIT_OK
+    assert result.run_record is not None
+    assert len(sink.alerts) == 1, "the rate-move alert must still be delivered"
+    assert result.outcome.report.any_success
 
 
 def test_scenario_trigger_fn_is_not_called_with_no_changes(tmp_path, fixture_fetcher):

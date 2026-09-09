@@ -2819,12 +2819,30 @@ class ObservationStore:
         if not checks["no_duplicate_current_keys"]:
             issues.append("more than one current row shares the same observation_key")
 
-        min_rate = min(thresholds.min_mortgage_rate_pct, thresholds.min_deposit_rate_pct)
-        max_rate = max(thresholds.max_mortgage_rate_pct, thresholds.max_deposit_rate_pct)
-        bad_rate_count = self._connection.execute(
-            "SELECT COUNT(*) FROM observations WHERE rate_pct < ? OR rate_pct > ?",
-            (min_rate, max_rate),
-        ).fetchone()[0]
+        # Queried per product_type, each against its own bounds -- collapsing
+        # loan and deposit thresholds into their widest union (as a single
+        # combined query would) lets a corrupted rate on one product hide
+        # behind the other's wider band: with the defaults, a 0.1% home-loan
+        # rate would pass because 0% is a valid deposit minimum, even though
+        # ordinary ingestion validation (which selects bounds by
+        # product_type) would reject it outright.
+        product_bounds = {
+            ProductType.HOME_LOAN: (
+                thresholds.min_mortgage_rate_pct,
+                thresholds.max_mortgage_rate_pct,
+            ),
+            ProductType.TERM_DEPOSIT: (
+                thresholds.min_deposit_rate_pct,
+                thresholds.max_deposit_rate_pct,
+            ),
+        }
+        bad_rate_count = 0
+        for product, (min_rate, max_rate) in product_bounds.items():
+            bad_rate_count += self._connection.execute(
+                "SELECT COUNT(*) FROM observations "
+                "WHERE product_type = ? AND (rate_pct < ? OR rate_pct > ?)",
+                (product.value, min_rate, max_rate),
+            ).fetchone()[0]
         checks["rates_within_plausible_bounds"] = bad_rate_count == 0
         if bad_rate_count:
             issues.append(f"{bad_rate_count} stored observation(s) fall outside plausible rate bounds")

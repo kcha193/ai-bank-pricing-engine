@@ -2477,6 +2477,25 @@ def test_integrity_check_flags_an_implausible_rate(store, make_record):
     assert any("plausible rate bounds" in issue for issue in report.issues)
 
 
+def test_integrity_check_flags_a_home_loan_rate_hiding_behind_the_deposit_band(
+    store, make_record
+):
+    """A corrupted home-loan rate must be validated against the mortgage
+    band, not the widest union of mortgage and deposit bounds -- with the
+    default thresholds (min_deposit_rate_pct=0.0), a 0.1% home-loan rate
+    would otherwise pass because 0% is a valid deposit minimum, even though
+    ordinary ingestion validation (which selects bounds by product_type)
+    would reject it outright."""
+    store.record_observations([make_record(product_type="home_loan")], observed_at=DAY_ONE)
+    store._connection.execute("UPDATE observations SET rate_pct = 0.1")
+
+    report = store.check_integrity()
+
+    assert report.ok is False
+    assert report.checks["rates_within_plausible_bounds"] is False
+    assert any("plausible rate bounds" in issue for issue in report.issues)
+
+
 def test_integrity_check_flags_a_broken_timestamp(store, make_record):
     store.record_observations([make_record()], observed_at=DAY_ONE)
     store._connection.execute("UPDATE observations SET last_seen_at = 'not-a-timestamp'")
