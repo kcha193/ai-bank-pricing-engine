@@ -767,6 +767,7 @@ The distinction to keep in mind throughout:
 python3 -m pip install -e ".[browser]"      # collectors need headless-browser rendering
 python3 -m playwright install chromium
 cp .env.example .env                        # then fill in whichever channels you want
+set -a; source .env; set +a                 # no dotenv loader -- export it into the shell
 ```
 
 Nothing above is required to run the engine's synthetic pricing scenarios --

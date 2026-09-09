@@ -199,6 +199,36 @@ def test_config_flag_loads_pricing_intelligence_settings_from_engine_config(
     assert "NZ MORTGAGE MARKET" in output
 
 
+def test_db_path_env_var_is_honored_with_no_database_or_config_flag(
+    populated_database, monkeypatch, capsys
+):
+    """PRICING_INTELLIGENCE_DB_PATH (documented in .env.example) must be read
+    when neither --database nor --config points somewhere else -- previously
+    the CLI always fell back to PricingIntelligenceConfig()'s hard-coded
+    default path regardless of this env var."""
+    monkeypatch.setenv("PRICING_INTELLIGENCE_DB_PATH", populated_database)
+
+    exit_code = run(["snapshot"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "NZ MORTGAGE MARKET" in output
+
+
+def test_explicit_database_flag_overrides_the_env_var(tmp_path, populated_database, monkeypatch, capsys):
+    """An explicit --database must win over PRICING_INTELLIGENCE_DB_PATH --
+    an operator's command-line choice must not be silently overridden by
+    an ambient environment variable."""
+    monkeypatch.setenv("PRICING_INTELLIGENCE_DB_PATH", str(tmp_path / "unused.db"))
+
+    exit_code = run(["--database", populated_database, "snapshot"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "NZ MORTGAGE MARKET" in output
+    assert not (tmp_path / "unused.db").exists(), "the env-var path must not have been touched"
+
+
 def test_snapshot_renders_the_market_grid(populated_database, capsys):
     exit_code = run(["--database", populated_database, "snapshot"])
     output = capsys.readouterr().out

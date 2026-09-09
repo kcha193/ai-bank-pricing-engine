@@ -495,6 +495,31 @@ def dispatch_alerts_safely(
     on. Each alert is attempted independently, so one failure does not cost
     the rest. Failures are logged, not silently dropped.
 
+    Returns how many alerts were confirmed delivered. Callers that must know
+    *which* alerts succeeded (not just the count) -- e.g. to record per-alert
+    delivery state in a dedup ledger -- should use
+    :func:`dispatch_alerts_safely_detailed` instead; this is a thin wrapper
+    over it.
+    """
+    return len(dispatch_alerts_safely_detailed(alerts, sink, deadline_seconds=deadline_seconds))
+
+
+def dispatch_alerts_safely_detailed(
+    alerts: Sequence[Alert],
+    sink: AlertSink,
+    *,
+    deadline_seconds: float = DEFAULT_ALERT_DISPATCH_DEADLINE_SECONDS,
+) -> list[Alert]:
+    """Deliver alerts through a sink, never letting a delivery failure escape.
+
+    Same delivery behaviour as :func:`dispatch_alerts_safely` (see there for
+    the full rationale), but returns the list of alerts individually
+    confirmed delivered rather than just a count -- a caller that marks
+    alerts as notified (so a retried run does not re-send them) must persist
+    that only for sends actually confirmed, not for every alert attempted;
+    persisting an attempt as delivered would suppress a genuinely failed send
+    on every future retry.
+
     Each ``sink.send()`` call runs on its own daemon thread, joined with
     whatever time remains of ``deadline_seconds``. A per-alert deadline check
     alone would not be enough: ``WebhookAlertSink``'s own 429 retries can
@@ -508,7 +533,7 @@ def dispatch_alerts_safely(
     same as any other delivery failure -- it must not propagate out of this
     "never fails the run" helper either.
     """
-    sent = 0
+    sent: list[Alert] = []
     deadline = time.monotonic() + deadline_seconds
     for alert in alerts:
         remaining = deadline - time.monotonic()
@@ -548,7 +573,7 @@ def dispatch_alerts_safely(
                 deadline_seconds,
             )
         elif outcome.get("ok"):
-            sent += 1
+            sent.append(alert)
         else:
             logger.warning(
                 "alert delivery failed for %s: %s",

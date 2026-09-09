@@ -39,6 +39,7 @@ from balance_pricing_engine.pricing_intelligence.alerts import (
     build_telegram_sink_from_env,
     build_webhook_sink_from_env,
     dispatch_alerts_safely,
+    dispatch_alerts_safely_detailed,
     format_alerts,
     plain_alert,
 )
@@ -494,14 +495,20 @@ def _dispatch_rendered_alerts(
     channel, skipping any change already delivered on that channel (see
     ``store.notified_alerts``). Rendered (not raw changes) so scenario
     enrichment (see ``_enrich_with_scenarios``) happens once, before dedup
-    filtering, rather than once per channel."""
+    filtering, rather than once per channel.
+
+    Only alerts individually confirmed delivered are recorded as notified --
+    a send that failed or timed out must remain eligible for retry on the
+    next run, not be marked as if it succeeded (see
+    :func:`~.alerts.dispatch_alerts_safely_detailed`)."""
     total_sent = 0
     for channel, sink in sinks.items():
         unnotified = [alert for alert in alerts if not store.was_notified(alert.change, channel)]
         if not unnotified:
             continue
-        total_sent += dispatch_alerts_safely(unnotified, sink)
-        for alert in unnotified:
+        delivered = dispatch_alerts_safely_detailed(unnotified, sink)
+        total_sent += len(delivered)
+        for alert in delivered:
             store.record_notification(alert.change, channel)
     return total_sent
 

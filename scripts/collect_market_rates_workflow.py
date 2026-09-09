@@ -38,7 +38,10 @@ from typing import Optional
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.observability.logging import configure_json_logging, log_event
-from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
+from balance_pricing_engine.pricing_intelligence.config import (
+    PricingIntelligenceConfig,
+    resolve_database_path_from_env,
+)
 from balance_pricing_engine.pricing_intelligence.locking import (
     AlreadyRunningError,
     SingleInstanceLock as _SingleInstanceLock,
@@ -305,7 +308,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     configure_json_logging()
 
-    config = PricingIntelligenceConfig()
+    config = resolve_database_path_from_env(PricingIntelligenceConfig())
     # Retained (not just its .pricing_intelligence block) so scheduled runs
     # can auto-trigger pricing scenarios -- see run_collection()'s
     # pricing_config docstring.

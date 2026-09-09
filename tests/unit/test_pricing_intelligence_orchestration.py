@@ -177,6 +177,50 @@ def test_a_reprice_is_delivered_exactly_once_across_retries(tmp_path, fixture_fe
     assert len(sink.alerts) == 1, "the retried run must not re-deliver the same change"
 
 
+def test_dispatch_rendered_alerts_only_records_confirmed_sends(tmp_path, make_record):
+    """A send that fails must not be recorded as notified -- otherwise a
+    retried run's was_notified() dedup check would permanently suppress a
+    change that was never actually delivered (see
+    dispatch_alerts_safely_detailed and its use in _dispatch_rendered_alerts)."""
+    from balance_pricing_engine.pricing_intelligence.changes import detect_changes
+    from balance_pricing_engine.pricing_intelligence.orchestration import (
+        _dispatch_rendered_alerts,
+    )
+
+    change_ok = detect_changes(
+        [make_record(bank="ANZ", rate_pct=4.99)],
+        [make_record(bank="ANZ", rate_pct=4.79, observed_at=DAY_TWO)],
+        detected_at=DAY_TWO,
+    )[0]
+    change_fails = detect_changes(
+        [make_record(bank="BNZ", rate_pct=4.95)],
+        [make_record(bank="BNZ", rate_pct=4.85, observed_at=DAY_TWO)],
+        detected_at=DAY_TWO,
+    )[0]
+    from balance_pricing_engine.pricing_intelligence.alerts import format_alerts
+
+    alerts = format_alerts([change_ok, change_fails])
+    ok_bank = next(a for a in alerts if a.change.bank == "ANZ")
+    failing_bank = next(a for a in alerts if a.change.bank == "BNZ")
+
+    class PartiallyFailingSink:
+        def send(self, alert) -> None:
+            if alert.change is not None and alert.change.bank == "BNZ":
+                raise RuntimeError("simulated webhook outage")
+
+    store = ObservationStore(str(tmp_path / "obs.db"))
+    try:
+        total_sent = _dispatch_rendered_alerts(store, alerts, {"test": PartiallyFailingSink()})
+
+        assert total_sent == 1, "only the confirmed send counts toward the total"
+        assert store.was_notified(ok_bank.change, "test") is True
+        assert store.was_notified(failing_bank.change, "test") is False, (
+            "a failed send must remain eligible for retry, not be marked as delivered"
+        )
+    finally:
+        store.close()
+
+
 def test_collector_health_tracks_per_bank_streaks(tmp_path, fixture_fetcher):
     config = _config(tmp_path)
     fetcher = fixture_fetcher(failing_banks=["Westpac"])

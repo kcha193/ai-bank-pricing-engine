@@ -39,7 +39,10 @@ from balance_pricing_engine.pricing_intelligence.alerts import (
     plain_alert,
 )
 from balance_pricing_engine.pricing_intelligence.briefing import build_daily_brief, build_weekly_brief
-from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
+from balance_pricing_engine.pricing_intelligence.config import (
+    PricingIntelligenceConfig,
+    resolve_database_path_from_env,
+)
 from balance_pricing_engine.pricing_intelligence.locking import AlreadyRunningError, SingleInstanceLock
 from balance_pricing_engine.pricing_intelligence.orchestration import (
     EXIT_ALREADY_RUNNING,
@@ -64,7 +67,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
 
     try:
-        config = PricingIntelligenceConfig()
+        config = resolve_database_path_from_env(PricingIntelligenceConfig())
         if args.config:
             # configs/base.yaml's pricing_intelligence block would otherwise be
             # silently ignored -- this CLI previously always ran on defaults

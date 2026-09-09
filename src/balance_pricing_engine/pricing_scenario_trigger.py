@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.config import EngineConfig
 from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot
 from balance_pricing_engine.pricing_intelligence.strategy import (
@@ -101,26 +102,50 @@ def run_triggered_scenarios(
     ``base_config`` supplies every economic assumption (elasticities, cost of
     funds, penalty terms) unchanged -- only the competitor-rate input differs
     per scenario, via ``apply_market_strategy_to_config``.
+
+    ``snapshot.product_type`` selects which side of the config the scenario
+    overlays: a ``TERM_DEPOSIT`` snapshot drives the deposit-side overlay
+    (``deposit_strategy``/``deposit_snapshot``) and reports
+    ``competitor_deposit_rate``/``best.deposit_rate``; any other snapshot
+    (``HOME_LOAN``) drives the loan side as before. ``apply_market_strategy_to_config``
+    requires the loan-side ``snapshot`` argument to be a home-loan market view for
+    every non-MANUAL strategy, so a term-deposit snapshot must never be passed there.
     """
+    is_deposit = ProductType(snapshot.product_type) is ProductType.TERM_DEPOSIT
     rows: list[ScenarioRow] = []
     model_optimum_source: ScenarioRow | None = None
     for label, strategy, offset_bps in _SCENARIOS:
-        scenario_config = apply_market_strategy_to_config(
-            base_config,
-            strategy=strategy,
-            snapshot=snapshot,
-            term_months=term_months,
-            offset_bps=offset_bps,
-        )
+        if is_deposit:
+            scenario_config = apply_market_strategy_to_config(
+                base_config,
+                deposit_strategy=strategy,
+                deposit_snapshot=snapshot,
+                deposit_term_months=term_months,
+                deposit_offset_bps=offset_bps,
+            )
+        else:
+            scenario_config = apply_market_strategy_to_config(
+                base_config,
+                strategy=strategy,
+                snapshot=snapshot,
+                term_months=term_months,
+                offset_bps=offset_bps,
+            )
         diagnostics = run_baseline_diagnostics(
             scenario_config, max_boundary_expansions=max_boundary_expansions
         )
         best = diagnostics.best_result
+        if is_deposit:
+            competitor_rate = scenario_config.market.competitor_deposit_rate
+            our_rate = best.deposit_rate
+        else:
+            competitor_rate = scenario_config.market.competitor_loan_rate
+            our_rate = best.loan_rate
         row = ScenarioRow(
             label=label,
             strategy=strategy.value,
-            competitor_rate=scenario_config.market.competitor_loan_rate,
-            our_rate=best.loan_rate,
+            competitor_rate=competitor_rate,
+            our_rate=our_rate,
             objective=best.total_objective,
         )
         rows.append(row)

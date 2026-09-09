@@ -13,9 +13,15 @@ from typing import Optional
 from pydantic import BaseModel, Field, model_validator
 
 from balance_pricing_engine.competitor_rates.collection_config import CollectionConfig
+from balance_pricing_engine.secrets.provider import EnvSecretsProvider, SecretsProvider
 
 # Fixed home-loan terms tracked in phase 1, in months.
 DEFAULT_TRACKED_TERMS_MONTHS: tuple[int, ...] = (6, 12, 18, 24, 36, 48, 60)
+
+#: Env var documented in .env.example to relocate the operational database
+#: outside the repo checkout. Matches the ANTHROPIC_API_KEY / PRICING_ENGINE_API_KEYS
+#: / PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL pattern (see :mod:`.secrets.provider`).
+DATABASE_PATH_SECRET_NAME = "PRICING_INTELLIGENCE_DB_PATH"
 
 
 class ValidationThresholds(BaseModel):
@@ -143,3 +149,22 @@ class PricingIntelligenceConfig(BaseModel):
         if len(set(self.tracked_terms_months)) != len(self.tracked_terms_months):
             raise ValueError("tracked_terms_months must not contain duplicates")
         return self
+
+
+def resolve_database_path_from_env(
+    config: PricingIntelligenceConfig, secrets: Optional[SecretsProvider] = None
+) -> PricingIntelligenceConfig:
+    """Apply the documented ``PRICING_INTELLIGENCE_DB_PATH`` override, if set.
+
+    Neither the CLI nor the scheduled script otherwise reads this env var --
+    both instantiate ``PricingIntelligenceConfig()`` and use its hard-coded
+    default path unless ``--database``/``--config`` is passed. Callers should
+    apply this to that freshly constructed default, *before* any explicit
+    ``--config``/``--database`` override, so an operator's explicit choice on
+    the command line always wins over the environment.
+    """
+    secrets = EnvSecretsProvider() if secrets is None else secrets
+    database_path = secrets.get_secret(DATABASE_PATH_SECRET_NAME)
+    if not database_path:
+        return config
+    return config.model_copy(update={"database_path": database_path})
