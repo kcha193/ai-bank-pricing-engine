@@ -697,6 +697,13 @@ def _brief(service: PricingIntelligenceService, args: argparse.Namespace) -> int
         else:
             sent = sum(dispatch_alerts_safely([alert], sink) for sink in sinks)
             print(f"\nDelivered to {sent}/{len(sinks)} configured channel(s).")
+            if sent == 0:
+                # Every configured sink failed or timed out -- a scheduled
+                # `run && brief --send` line must not read as healthy when
+                # nobody actually received the briefing; cron/monitoring
+                # only sees this command's own exit code, not the printed
+                # delivery count above.
+                return 1
     return 0
 
 

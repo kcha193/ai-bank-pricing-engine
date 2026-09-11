@@ -1251,6 +1251,29 @@ def test_brief_send_delivers_to_a_configured_webhook(populated_database, capsys,
     assert "Delivered to 1/1 configured channel(s)." in output
 
 
+def test_brief_send_fails_when_every_configured_channel_fails_to_deliver(
+    populated_database, capsys, monkeypatch
+):
+    """A scheduled `run && brief --send` line must not read as healthy to
+    cron/monitoring (which only sees this command's own exit code) when
+    every configured sink failed or timed out and nobody actually received
+    the briefing."""
+    monkeypatch.setenv("PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL", "https://hooks.example/x")
+
+    def failing_urlopen(request, timeout=None):
+        raise OSError("simulated webhook outage")
+
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    monkeypatch.setattr(alerts_module, "urlopen", failing_urlopen)
+
+    exit_code = run(["--database", populated_database, "brief", "--send"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "Delivered to 0/1 configured channel(s)." in output
+
+
 def test_run_command_reports_already_running(tmp_path, capsys):
     from balance_pricing_engine.pricing_intelligence.locking import SingleInstanceLock
 
