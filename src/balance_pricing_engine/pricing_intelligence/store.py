@@ -212,13 +212,19 @@ CREATE INDEX IF NOT EXISTS idx_operational_runs_started_at
 -- orchestration.classify_health_escalation() for the alerting policy this
 -- drives.
 CREATE TABLE IF NOT EXISTS collector_health (
-    bank                 TEXT NOT NULL,
-    product_type         TEXT NOT NULL,
-    consecutive_failures INTEGER NOT NULL DEFAULT 0,
-    last_success_at      TEXT,
-    last_failure_at      TEXT,
-    last_error           TEXT,
-    last_alert_sent_at   TEXT,
+    bank                   TEXT NOT NULL,
+    product_type           TEXT NOT NULL,
+    consecutive_failures   INTEGER NOT NULL DEFAULT 0,
+    last_success_at        TEXT,
+    last_failure_at        TEXT,
+    last_error             TEXT,
+    last_alert_sent_at     TEXT,
+    -- The operational run_id that last advanced this streak. Lets
+    -- update_collector_health() recognise a retried run_operational_cycle()
+    -- invocation (e.g. crashed then re-run under the same run_id) and skip
+    -- advancing the streak a second time for what is logically one failed
+    -- or successful collection attempt -- see that method's docstring.
+    last_processed_run_id  TEXT,
     PRIMARY KEY (bank, product_type)
 );
 
@@ -362,6 +368,7 @@ class ChronologicalOrderError(ValueError):
     """
 
 
+
 @dataclass(frozen=True)
 class WriteResult:
     """Outcome of persisting one collection run."""
@@ -416,6 +423,10 @@ class CollectorHealth:
     last_failure_at: Optional[datetime]
     last_error: Optional[str]
     last_alert_sent_at: Optional[datetime]
+    #: The operational run_id that last advanced this streak, or None for a
+    #: pre-migration row or one never updated with a run_id. See
+    #: ObservationStore.update_collector_health()'s retry-dedup docstring.
+    last_processed_run_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -496,6 +507,7 @@ def _collector_health_from_row(row: sqlite3.Row) -> "CollectorHealth":
         last_alert_sent_at=(
             _parse_iso(row["last_alert_sent_at"]) if row["last_alert_sent_at"] else None
         ),
+        last_processed_run_id=row["last_processed_run_id"],
     )
 
 
@@ -572,6 +584,7 @@ class ObservationStore:
             self._migrate_rate_changes_run_scoped_uniqueness(connection)
             self._migrate_collection_run_products(connection)
             self._migrate_rate_named_mortgages(connection)
+            self._migrate_collector_health_run_id(connection)
             row = connection.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
                 connection.execute(
@@ -689,6 +702,22 @@ class ObservationStore:
                 "Review these historical events against the source before relying on them.",
                 skipped,
             )
+
+    def _migrate_collector_health_run_id(self, connection: sqlite3.Connection) -> None:
+        """Add ``collector_health.last_processed_run_id`` for a database
+        created before this column existed.
+
+        No backfill: the concept ("which operational run last advanced this
+        streak") did not exist before this column, so there is nothing
+        historical to recover -- every pre-existing row simply starts with
+        ``NULL``, which :meth:`update_collector_health` already treats as
+        "no known prior run" (never matches a provided ``run_id``, so the
+        first update after upgrade advances normally).
+        """
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(collector_health)")}
+        if "last_processed_run_id" in columns:
+            return
+        connection.execute("ALTER TABLE collector_health ADD COLUMN last_processed_run_id TEXT")
 
     def _migrate_collection_runs_product_type(self, connection: sqlite3.Connection) -> None:
         """Add ``collection_runs.product_type`` for a database created before
@@ -1319,6 +1348,26 @@ class ObservationStore:
         )
         return WriteResult(run_id=run_id, inserted=inserted, unchanged=unchanged)
 
+    def has_run_participation(self, run_id: str, product_type: ProductType | str) -> bool:
+        """True when ``run_id`` already has recorded participation for
+        ``product_type`` -- i.e. :meth:`record_observations` would
+        short-circuit as a no-op (not touch ``observations`` at all) if
+        called again with this exact ``(run_id, product_type)`` pair.
+
+        Exposed so a caller like ``service.PricingIntelligenceService.collect()``
+        can check this *before* deciding whether to run change detection
+        against a freshly-fetched payload: comparing that payload to the
+        stored baseline is only meaningful when this call's own write will
+        actually land. See ``collect()``'s own handling for why.
+        """
+        return (
+            self._connection.execute(
+                "SELECT 1 FROM collection_run_products WHERE run_id = ? AND product_type = ?",
+                (run_id, ProductType(product_type).value),
+            ).fetchone()
+            is not None
+        )
+
     def _run_ordered_after_fixed_reference(
         self,
         connection: sqlite3.Connection,
@@ -1826,6 +1875,7 @@ class ObservationStore:
         success: bool,
         error: Optional[str] = None,
         at: Optional[datetime] = None,
+        run_id: Optional[str] = None,
     ) -> CollectorHealth:
         """Advance one bank's consecutive-failure streak and return the new state.
 
@@ -1838,27 +1888,54 @@ class ObservationStore:
         (``orchestration.classify_health_escalation``) sets it separately,
         only once an alert is actually sent, via
         :meth:`record_collector_health_alert`.
+
+        ``run_id``, when given and it matches this bank's stored
+        ``last_processed_run_id``, means this exact operational run already
+        advanced the streak -- the call is a retried ``run_operational_cycle()``
+        invocation under the same ``run_id`` (e.g. crashed then re-run), not
+        a new attempt. The streak is left untouched and the current state is
+        returned as-is: without this, a single logical failed run retried
+        several times would increment ``consecutive_failures`` once per
+        retry, reaching ``alert_after_failures`` and firing a premature
+        incident alert even though every other idempotent write in this run
+        (``record_observations``, ``record_changes``, ``notified_alerts``)
+        already treats a repeated ``run_id`` as a no-op. Omitting ``run_id``
+        (the default) preserves the unconditional-advance behaviour for any
+        caller not tracking operational runs.
         """
         product = ProductType(product_type)
         at = at or datetime.now(timezone.utc)
         with self._transaction() as connection:
             existing = connection.execute(
-                "SELECT consecutive_failures FROM collector_health "
+                "SELECT consecutive_failures, last_processed_run_id FROM collector_health "
                 "WHERE bank = ? AND product_type = ?",
                 (bank, product.value),
             ).fetchone()
+            if (
+                existing is not None
+                and run_id is not None
+                and existing["last_processed_run_id"] == run_id
+            ):
+                return _collector_health_from_row(
+                    connection.execute(
+                        "SELECT * FROM collector_health WHERE bank = ? AND product_type = ?",
+                        (bank, product.value),
+                    ).fetchone()
+                )
             previous_streak = existing["consecutive_failures"] if existing is not None else 0
             new_streak = 0 if success else previous_streak + 1
             connection.execute(
                 "INSERT INTO collector_health "
                 "(bank, product_type, consecutive_failures, last_success_at, last_failure_at, "
-                "last_error) VALUES (?, ?, ?, ?, ?, ?) "
+                "last_error, last_processed_run_id) VALUES (?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(bank, product_type) DO UPDATE SET "
                 "consecutive_failures = excluded.consecutive_failures, "
                 "last_success_at = COALESCE(excluded.last_success_at, collector_health.last_success_at), "
                 "last_failure_at = COALESCE(excluded.last_failure_at, collector_health.last_failure_at), "
                 "last_error = CASE WHEN excluded.last_error IS NOT NULL THEN excluded.last_error "
-                "ELSE collector_health.last_error END",
+                "ELSE collector_health.last_error END, "
+                "last_processed_run_id = COALESCE(excluded.last_processed_run_id, "
+                "collector_health.last_processed_run_id)",
                 (
                     bank,
                     product.value,
@@ -1866,6 +1943,7 @@ class ObservationStore:
                     _iso(at) if success else None,
                     _iso(at) if not success else None,
                     error if not success else None,
+                    run_id,
                 ),
             )
             row = connection.execute(

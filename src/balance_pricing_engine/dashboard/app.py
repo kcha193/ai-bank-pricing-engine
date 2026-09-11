@@ -178,7 +178,14 @@ def _render_market_intelligence() -> None:
         if not collector_health:
             st.info("No operational runs recorded yet -- run `pricing_intelligence run`.")
         else:
-            st.dataframe(build_collector_health_frame(collector_health), width="stretch")
+            st.dataframe(
+                build_collector_health_frame(
+                    collector_health,
+                    now=datetime.now(timezone.utc),
+                    max_observation_age_hours=intelligence_config.max_observation_age_hours,
+                ),
+                width="stretch",
+            )
 
         st.subheader("Recent runs")
         recent_runs = service.store.get_recent_run_records(

@@ -660,6 +660,7 @@ def _dispatch_health_alerts(
     thresholds: HealthThresholds,
     sinks: Mapping[str, AlertSink],
     at: datetime,
+    run_id: Optional[str] = None,
 ) -> int:
     """Update every attempted bank's health streak and deliver an
     escalation/recovery alert where the policy calls for one.
@@ -671,6 +672,12 @@ def _dispatch_health_alerts(
     banks * deadline seconds of blocking while this run's single-instance
     lock is still held -- one shared deadline per sink bounds that to a
     single deadline regardless of how many banks escalated.
+
+    ``run_id``, when given, is threaded through to
+    :meth:`~.store.ObservationStore.update_collector_health` so a retried
+    ``run_operational_cycle()`` invocation under the same ``run_id`` does not
+    advance a bank's failure streak a second time for what is logically one
+    collection attempt -- see that method's own docstring.
 
     Returns how many health alerts were confirmed delivered, summed across
     every configured sink -- the same per-sink counting convention
@@ -685,7 +692,7 @@ def _dispatch_health_alerts(
     escalations: list[tuple[str, str, Alert]] = []
     for bank, success, error in banks:
         current = store.update_collector_health(
-            bank, product_type, success=success, error=error, at=at
+            bank, product_type, success=success, error=error, at=at, run_id=run_id
         )
         outcome = classify_health_escalation(thresholds, previous_by_bank.get(bank), current)
         if outcome == HEALTH_NONE:
@@ -972,6 +979,7 @@ def run_operational_cycle(
             service.config.health,
             sinks,
             started_at,
+            run_id=operational_run_id,
         )
 
         market_state_value = None

@@ -2512,3 +2512,56 @@ def test_integrity_check_reports_pragma_failure(store, make_record):
     report = store.check_integrity(thresholds=ValidationThresholds())
 
     assert report.checks["schema_accessible"] is True
+
+
+# ------------------------------------------------------ collector health
+
+
+def test_update_collector_health_advances_the_streak_normally(store):
+    first = store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom", at=DAY_ONE, run_id="run-1"
+    )
+    second = store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom", at=DAY_TWO, run_id="run-2"
+    )
+
+    assert first.consecutive_failures == 1
+    assert second.consecutive_failures == 2
+
+
+def test_update_collector_health_skips_advancing_for_a_retried_run_id(store):
+    """A retried run_operational_cycle() invocation under the same run_id
+    (e.g. crashed then re-run) must not advance the streak a second time
+    for what is logically one failed collection attempt -- every other
+    idempotent write in a run (record_observations, record_changes,
+    notified_alerts) already treats a repeated run_id as a no-op, and an
+    unguarded streak update was the one place that didn't."""
+    first = store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom", at=DAY_ONE, run_id="run-1"
+    )
+    retried = store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom again", at=DAY_TWO, run_id="run-1"
+    )
+
+    assert first.consecutive_failures == 1
+    assert retried.consecutive_failures == 1, "the same run_id must not double-count a failure"
+    assert retried.last_failure_at == first.last_failure_at, (
+        "a deduplicated retry must return the original, untouched state"
+    )
+    assert retried.last_error == "boom", "the retry's error must not overwrite the original"
+
+    # A genuinely new run_id after the retry must still advance normally.
+    third = store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom", at=DAY_THREE, run_id="run-2"
+    )
+    assert third.consecutive_failures == 2
+
+
+def test_update_collector_health_without_run_id_always_advances(store):
+    """Omitting run_id (the default) preserves the unconditional-advance
+    behaviour for a caller not tracking operational runs."""
+    first = store.update_collector_health("ANZ", "home_loan", success=False, at=DAY_ONE)
+    second = store.update_collector_health("ANZ", "home_loan", success=False, at=DAY_TWO)
+
+    assert first.consecutive_failures == 1
+    assert second.consecutive_failures == 2

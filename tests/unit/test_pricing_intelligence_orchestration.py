@@ -496,6 +496,40 @@ def test_three_consecutive_failures_sends_a_telegram_alert(tmp_path, fixture_fet
     assert result.alerts_sent == 1
 
 
+def test_a_retried_run_does_not_inflate_the_failure_streak(tmp_path, fixture_fetcher):
+    """A retried run_operational_cycle() invocation under the same run_id
+    (e.g. crashed then re-run) must not double-count a single logical
+    failure -- otherwise a streak that only truly reached 1 consecutive
+    failure could cross alert_after_failures purely from being retried,
+    firing a premature incident alert even though every other idempotent
+    write in the run (record_observations, record_changes, notified_alerts)
+    already treats a repeated run_id as a no-op."""
+    config = _config(
+        tmp_path, health=HealthThresholds(warning_after_failures=1, alert_after_failures=2)
+    )
+    sink = CollectingAlertSink()
+
+    fetcher = fixture_fetcher(failing_banks=["Westpac"])
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fetcher
+    ) as service:
+        first = run_operational_cycle(
+            service, captured_at_utc=DAY_ONE, alert_sinks={"test": sink}
+        )
+        run_operational_cycle(
+            service,
+            captured_at_utc=DAY_ONE,
+            run_id=first.run_record.run_id,
+            alert_sinks={"test": sink},
+        )
+        health = {h.bank: h for h in service.store.get_collector_health(ProductType.HOME_LOAN)}
+    assert health["Westpac"].consecutive_failures == 1, (
+        "a retried run under the same run_id must not double-count the failure"
+    )
+    health_alerts = [a for a in sink.alerts if "COLLECTOR ISSUE" in a.title]
+    assert health_alerts == [], "a streak of 1 must not have crossed alert_after_failures=2"
+
+
 def test_two_consecutive_failures_does_not_alert_only_warns(tmp_path, fixture_fetcher, caplog):
     config = _config(tmp_path, health=HealthThresholds(warning_after_failures=2, alert_after_failures=3))
     sink = CollectingAlertSink()

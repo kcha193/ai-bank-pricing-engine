@@ -218,6 +218,30 @@ def test_collector_health_frame_marks_failing_banks():
     assert frame.loc["Westpac", "Last error"] == "ParserError"
 
 
+def test_collector_health_frame_marks_a_stale_success_once_past_the_freshness_window():
+    """A bank that stops being attempted at all (scheduling disabled) never
+    fails again, so consecutive_failures alone would report it FRESH
+    indefinitely -- even once its last success is older than
+    max_observation_age_hours, directly contradicting the adjacent
+    freshness table/market snapshot, which do apply that same threshold --
+    matching the pricing_intelligence health CLI command's own check."""
+    frame = build_collector_health_frame(
+        [_health("ANZ")],
+        now=DAY_ONE + timedelta(hours=2),
+        max_observation_age_hours=1.0,
+    )
+
+    assert frame.loc["ANZ", "Status"] == "STALE"
+
+
+def test_collector_health_frame_without_freshness_params_stays_fresh_indefinitely():
+    """Backward-compatible default: omitting now/max_observation_age_hours
+    never classifies a zero-failure bank as anything but FRESH."""
+    frame = build_collector_health_frame([_health("ANZ")])
+
+    assert frame.loc["ANZ", "Status"] == "FRESH"
+
+
 def _run_record(run_id, status="SUCCESS"):
     return RunRecord(
         run_id=run_id,

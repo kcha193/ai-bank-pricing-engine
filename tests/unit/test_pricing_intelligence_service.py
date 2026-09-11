@@ -192,6 +192,55 @@ def test_a_real_reprice_produces_a_change_event(fixture_fetcher):
     assert change.change_bps == -20.0
 
 
+def test_a_retried_run_id_with_a_changed_payload_does_not_record_a_phantom_change(
+    fixture_fetcher,
+):
+    """record_observations()'s idempotent short-circuit keeps the first
+    recording of a retried run_id authoritative -- observations are never
+    overwritten by a retry. Change detection must respect that too: if it
+    kept comparing against the freshly refetched payload regardless, a
+    retry whose payload has moved on again since the original attempt
+    (e.g. the market moved again between a crash and the retry) would
+    persist a rate_changes event -- and could fire an alert -- describing a
+    transition observations never actually stored."""
+
+    def mutate_to_second_rate(bank, html):
+        if bank == "ANZ":
+            return html.replace("<td>1 year</td><td>4.79%", "<td>1 year</td><td>4.39%")
+        return html
+
+    with build_service(fixture_fetcher()) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+        service._fetcher = fixture_fetcher(mutate=cut_anz_one_year)  # 4.79 -> 4.59
+        first = service.collect(captured_at_utc=DAY_TWO, run_id="run-1", persist_snapshot=False)
+        assert len(first.changes) == 1
+        assert first.changes[0].change_bps == -20.0
+
+        # Simulate a crash-then-retry where the market moved again in the
+        # interim: same run_id, but a genuinely different fetched payload.
+        service._fetcher = fixture_fetcher(mutate=mutate_to_second_rate)
+        retried = service.collect(
+            captured_at_utc=DAY_TWO, run_id="run-1", persist_snapshot=False
+        )
+
+        anz_one_year = next(
+            record
+            for record in service.store.get_current_observations()
+            if record.bank == "ANZ"
+            and record.term_months_normalised == 12
+            and record.rate_category == "special"
+        )
+        all_anz_changes = service.store.get_changes_since(days=None, bank="ANZ", term_months=12)
+
+    assert retried.changes == (), "a retried run_id must not detect a fresh change"
+    assert anz_one_year.advertised_rate_pct == 4.59, (
+        "observations must still reflect the original attempt's committed rate, "
+        "not the retry's differing fetch"
+    )
+    assert len(all_anz_changes) == 1, "the retry must not have persisted a second, phantom change"
+
+
 def test_collect_accepts_a_naive_captured_at_utc_after_an_earlier_aware_run(fixture_fetcher):
     """record_observations() (via store._iso()) already interprets a naive
     timestamp as UTC once persisted -- collect()'s preflight chronology

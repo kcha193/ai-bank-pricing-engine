@@ -704,6 +704,22 @@ class PricingIntelligenceService:
         # Observations and changes commit together so a failed event write
         # cannot advance the next run's baseline and lose a movement.
         with self.store.atomic():
+            # Checked before record_observations() below, which would
+            # otherwise short-circuit silently (see its own docstring: "any
+            # retry an inert no-op") for a run_id this store has already
+            # recorded for this product. detect_changes() further down
+            # always compares against the freshly-refetched `accepted`
+            # payload regardless of whether that write actually lands --
+            # for a retried run_id whose payload has genuinely changed
+            # since the original attempt (e.g. the market moved again
+            # between a crash and the retry), that would otherwise persist
+            # a rate_changes event, and fire an alert, describing a
+            # transition `observations` never actually stored.
+            already_recorded = (
+                persist
+                and run_id is not None
+                and self.store.has_run_participation(run_id, product_type)
+            )
             # A dry run (persist=False) skips writing, but still detects changes
             # against the stored baseline -- otherwise --no-persist could not be
             # used to preview what a real collection would do.
@@ -714,131 +730,143 @@ class PricingIntelligenceService:
                 if persist
                 else None
             )
-            # Resolve the trusted predecessor across eligibility/category keys
-            # so quarantine cannot withdraw the last usable market observation.
-            last_confirmed_pairs = _last_confirmed_predecessors(
-                last_confirmed_before_run, accepted
-            )
-            # A clean recovery from a warning is distinct from a category
-            # relabelling with no suspicious history. Only the former needs
-            # the trusted predecessor substituted into its change baseline.
-            plain_pairs = resolve_pairing(baseline, accepted)
-            confirming_keys = {
-                key
-                for key, previous_record in plain_pairs.items()
-                if previous_record.validation_status == "warning" and key not in suspicious_keys
-            }
-            # Computed once and reused below both for change detection's
-            # withdrawal-suppression scope and for CollectionOutcome's own
-            # low_coverage_banks, so a caller judging collection health does
-            # not have to recompute the same coverage check independently.
+            # Computed unconditionally: also feeds CollectionOutcome's own
+            # low_coverage_banks below, independent of change detection.
             reliably_collected_banks = _reliably_collected_banks(
                 report, accepted, baseline, self.config.validation.min_bank_coverage_ratio
             )
-            # A clean reading after a parser spike is compared with the last
-            # trusted rate; the spike must not become a fictitious reversal.
-            recovery_predecessors = {
-                plain_pairs[key].observation_key(): last_confirmed_pairs[key]
-                for key in confirming_keys
-                if key in last_confirmed_pairs
-            }
-            change_baseline = list({
-                record.observation_key(): record
-                for record in (
-                    recovery_predecessors.get(record.observation_key(), record)
-                    for record in baseline
+            if already_recorded:
+                # This exact run_id already committed its observations (and
+                # any changes they produced) in an earlier call -- a retry,
+                # e.g. crashed then re-run. record_observations() above just
+                # returned that original write untouched, so this retry does
+                # nothing further: the original commit's own changes (if
+                # any) are already persisted, and if they were never
+                # delivered, a later run's undelivered-change replay (see
+                # orchestration._undelivered_change_replay_candidates)
+                # picks them up regardless of what this retry does here.
+                changes: list = []
+            else:
+                # Resolve the trusted predecessor across eligibility/category
+                # keys so quarantine cannot withdraw the last usable market
+                # observation.
+                last_confirmed_pairs = _last_confirmed_predecessors(
+                    last_confirmed_before_run, accepted
                 )
-            }.values())
-            changes = detect_changes(
-                previous=change_baseline,
-                current=accepted,
-                detected_at=captured_at_utc,
-                thresholds=self.config.validation,
-                run_id=write_result.run_id if write_result is not None else None,
-                # Scoped to banks that both responded and whose coverage this run
-                # plausibly matches their known range, so neither an unreachable
-                # bank nor a partial-parse regression is read as withdrawing its
-                # whole range.
-                banks_collected=reliably_collected_banks,
-                # A record rejected by validation this run is unknown, not
-                # withdrawn -- a single implausible line must not read as a
-                # market event. Suppressed by the *previous* record's key, not
-                # the rejected record's own key: a rejected line that also
-                # changed a key-forming eligibility field (e.g. a parser fault
-                # that garbles the rate and misreads max_lvr together) would
-                # otherwise have a key that never matches its last confirmed
-                # predecessor, so the predecessor's key is only found via the
-                # same eligibility-group fallback used elsewhere, or -- when the
-                # rejected line's rate_category flipped too -- the
-                # category-agnostic fallback in _rejected_predecessor_keys(). A
-                # suspicious (accepted-but-flagged) record's predecessor gets the
-                # analogous treatment via _suspicious_predecessor_keys().
-                # A previously quarantined predecessor also remains protected
-                # during a clean recovery. Ordinary category changes still
-                # emit their genuine new/removed pair.
-                rejected_keys=(
-                    {
-                        previous_record.observation_key()
-                        for previous_record in resolve_pairing(
-                            baseline, validation.rejected
-                        ).values()
-                    }
-                    | _rejected_predecessor_keys(baseline, validation.rejected)
-                    | _suspicious_predecessor_keys(baseline, accepted, suspicious_keys)
-                    # A row that failed CompetitorRateRecord construction
-                    # outright this run (a parser fault, before the row could
-                    # even reach validate_observations) is unknown, not
-                    # withdrawn, same as a rejected-but-constructed record
-                    # just above.
-                    | _skipped_row_predecessor_keys(
-                        baseline, accepted, tuple(report.skipped_row_keys)
+                # A clean recovery from a warning is distinct from a category
+                # relabelling with no suspicious history. Only the former needs
+                # the trusted predecessor substituted into its change baseline.
+                plain_pairs = resolve_pairing(baseline, accepted)
+                confirming_keys = {
+                    key
+                    for key, previous_record in plain_pairs.items()
+                    if previous_record.validation_status == "warning"
+                    and key not in suspicious_keys
+                }
+                # A clean reading after a parser spike is compared with the last
+                # trusted rate; the spike must not become a fictitious reversal.
+                recovery_predecessors = {
+                    plain_pairs[key].observation_key(): last_confirmed_pairs[key]
+                    for key in confirming_keys
+                    if key in last_confirmed_pairs
+                }
+                change_baseline = list({
+                    record.observation_key(): record
+                    for record in (
+                        recovery_predecessors.get(record.observation_key(), record)
+                        for record in baseline
                     )
-                    | {
-                        last_confirmed_pairs[key].observation_key()
-                        for key in confirming_keys
-                        if key in last_confirmed_pairs
-                    }
-                    # A bank counted as reliably_collected_banks above only
-                    # because that check lumps every non-non_comparable
-                    # category into one combined ratio -- one specific
-                    # category (non_comparable, or a real but non-default
-                    # category like pie_term_deposit) can still have
-                    # regressed on its own while the lumped total stays
-                    # healthy. Without this, every now-missing key in that
-                    # category reads as a genuine withdrawal instead of the
-                    # same "unknown, not withdrawn" treatment
-                    # _reliably_collected_banks() gives a whole-bank
-                    # coverage regression.
-                    | _low_coverage_category_predecessor_keys_to_suppress(
-                        accepted, baseline, self.config.validation.min_bank_coverage_ratio
-                    )
-                ),
-            )
-            # A bank's first-ever successful collection would otherwise report
-            # every one of its rates as a new product, which is noise rather than
-            # market intelligence. Suppressed per bank, not globally.
-            bootstrapping_banks = {
-                change.bank
-                for change in changes
-                if change.change_type is ChangeType.NEW_PRODUCT
-                and change.bank not in previously_seen_banks
-            }
-            if bootstrapping_banks:
-                logger.info(
-                    "bootstrapping bank(s) with no prior observation; suppressing "
-                    "new-product events for %s",
-                    ", ".join(sorted(bootstrapping_banks)),
+                }.values())
+                changes = detect_changes(
+                    previous=change_baseline,
+                    current=accepted,
+                    detected_at=captured_at_utc,
+                    thresholds=self.config.validation,
+                    run_id=write_result.run_id if write_result is not None else None,
+                    # Scoped to banks that both responded and whose coverage this run
+                    # plausibly matches their known range, so neither an unreachable
+                    # bank nor a partial-parse regression is read as withdrawing its
+                    # whole range.
+                    banks_collected=reliably_collected_banks,
+                    # A record rejected by validation this run is unknown, not
+                    # withdrawn -- a single implausible line must not read as a
+                    # market event. Suppressed by the *previous* record's key, not
+                    # the rejected record's own key: a rejected line that also
+                    # changed a key-forming eligibility field (e.g. a parser fault
+                    # that garbles the rate and misreads max_lvr together) would
+                    # otherwise have a key that never matches its last confirmed
+                    # predecessor, so the predecessor's key is only found via the
+                    # same eligibility-group fallback used elsewhere, or -- when the
+                    # rejected line's rate_category flipped too -- the
+                    # category-agnostic fallback in _rejected_predecessor_keys(). A
+                    # suspicious (accepted-but-flagged) record's predecessor gets the
+                    # analogous treatment via _suspicious_predecessor_keys().
+                    # A previously quarantined predecessor also remains protected
+                    # during a clean recovery. Ordinary category changes still
+                    # emit their genuine new/removed pair.
+                    rejected_keys=(
+                        {
+                            previous_record.observation_key()
+                            for previous_record in resolve_pairing(
+                                baseline, validation.rejected
+                            ).values()
+                        }
+                        | _rejected_predecessor_keys(baseline, validation.rejected)
+                        | _suspicious_predecessor_keys(baseline, accepted, suspicious_keys)
+                        # A row that failed CompetitorRateRecord construction
+                        # outright this run (a parser fault, before the row could
+                        # even reach validate_observations) is unknown, not
+                        # withdrawn, same as a rejected-but-constructed record
+                        # just above.
+                        | _skipped_row_predecessor_keys(
+                            baseline, accepted, tuple(report.skipped_row_keys)
+                        )
+                        | {
+                            last_confirmed_pairs[key].observation_key()
+                            for key in confirming_keys
+                            if key in last_confirmed_pairs
+                        }
+                        # A bank counted as reliably_collected_banks above only
+                        # because that check lumps every non-non_comparable
+                        # category into one combined ratio -- one specific
+                        # category (non_comparable, or a real but non-default
+                        # category like pie_term_deposit) can still have
+                        # regressed on its own while the lumped total stays
+                        # healthy. Without this, every now-missing key in that
+                        # category reads as a genuine withdrawal instead of the
+                        # same "unknown, not withdrawn" treatment
+                        # _reliably_collected_banks() gives a whole-bank
+                        # coverage regression.
+                        | _low_coverage_category_predecessor_keys_to_suppress(
+                            accepted, baseline, self.config.validation.min_bank_coverage_ratio
+                        )
+                    ),
                 )
-                changes = [
-                    change
+                # A bank's first-ever successful collection would otherwise report
+                # every one of its rates as a new product, which is noise rather than
+                # market intelligence. Suppressed per bank, not globally.
+                bootstrapping_banks = {
+                    change.bank
                     for change in changes
-                    if not (
-                        change.change_type is ChangeType.NEW_PRODUCT
-                        and change.bank in bootstrapping_banks
+                    if change.change_type is ChangeType.NEW_PRODUCT
+                    and change.bank not in previously_seen_banks
+                }
+                if bootstrapping_banks:
+                    logger.info(
+                        "bootstrapping bank(s) with no prior observation; suppressing "
+                        "new-product events for %s",
+                        ", ".join(sorted(bootstrapping_banks)),
                     )
-                ]
-            if changes and persist:
-                self.store.record_changes(changes)
+                    changes = [
+                        change
+                        for change in changes
+                        if not (
+                            change.change_type is ChangeType.NEW_PRODUCT
+                            and change.bank in bootstrapping_banks
+                        )
+                    ]
+                if changes and persist:
+                    self.store.record_changes(changes)
 
         low_coverage_banks = tuple(
             sorted(

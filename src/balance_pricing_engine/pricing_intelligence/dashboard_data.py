@@ -7,10 +7,10 @@ objects or plain dicts.
 
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+from typing import Mapping, Optional, Sequence
 
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord
 from balance_pricing_engine.pricing_intelligence.changes import RateChange
@@ -188,18 +188,52 @@ def build_history_series(series: Sequence[tuple]) -> pd.DataFrame:
     return frame
 
 
-def build_collector_health_frame(health: Sequence[CollectorHealth]) -> pd.DataFrame:
-    """Per-bank collector status, for the operational dashboard section."""
+def build_collector_health_frame(
+    health: Sequence[CollectorHealth],
+    *,
+    now: Optional[datetime] = None,
+    max_observation_age_hours: Optional[float] = None,
+) -> pd.DataFrame:
+    """Per-bank collector status, for the operational dashboard section.
+
+    ``now``/``max_observation_age_hours`` classify a bank whose scheduling
+    has simply stopped (no new attempts at all, so ``consecutive_failures``
+    stays zero forever) as ``STALE`` once its last success is older than the
+    configured freshness threshold -- matching the ``pricing_intelligence
+    health`` CLI command's own check. Without both, staleness is not
+    evaluated and a bank with zero consecutive failures is always ``FRESH``,
+    the previous behaviour -- callers should pass both wherever the
+    freshness table/market snapshot alongside this frame already apply that
+    same threshold, so the two cannot contradict each other.
+    """
     if not health:
         return pd.DataFrame(
             columns=["Consecutive failures", "Status", "Last success", "Last error"],
             index=pd.Index([], name="Bank"),
         )
+    max_age = (
+        timedelta(hours=max_observation_age_hours)
+        if max_observation_age_hours is not None
+        else None
+    )
+    evaluated_at = now or datetime.now(timezone.utc)
+
+    def _status(entry: CollectorHealth) -> str:
+        if entry.consecutive_failures > 0:
+            return "FAILING"
+        if (
+            max_age is not None
+            and entry.last_success_at is not None
+            and evaluated_at - entry.last_success_at > max_age
+        ):
+            return "STALE"
+        return "FRESH"
+
     rows = [
         {
             "Bank": entry.bank,
             "Consecutive failures": entry.consecutive_failures,
-            "Status": "FRESH" if entry.consecutive_failures == 0 else "FAILING",
+            "Status": _status(entry),
             "Last success": entry.last_success_at,
             "Last error": entry.last_error or "",
         }
