@@ -801,6 +801,36 @@ def test_read_only_store_does_not_migrate_the_database_file_on_disk(tmp_path):
     assert "last_processed_run_id" not in on_disk_columns
 
 
+def test_read_only_store_snapshots_committed_wal_data(tmp_path, make_record):
+    """A production database can run in WAL mode, where a committed write
+    sits only in the '-wal' sidecar until checkpointed -- a plain file copy
+    of just the main '.db' file would silently miss it, showing a dry run
+    stale or empty data. The snapshot must use sqlite's own backup API (the
+    way backup_database() already does), which reads through a live
+    connection and always sees committed WAL pages too."""
+    import sqlite3
+
+    db_path = tmp_path / "wal.db"
+
+    with ObservationStore(str(db_path)):
+        pass
+    raw = sqlite3.connect(str(db_path))
+    raw.execute("PRAGMA journal_mode=WAL")
+    raw.close()
+
+    # Keep this writer connection open for the whole test: SQLite
+    # auto-checkpoints a WAL database when its *last* connection closes,
+    # which would flush the write below into the main file on its own and
+    # mask the exact bug this test exists to catch.
+    live_store = ObservationStore(str(db_path))
+    live_store.record_observations([make_record()], observed_at=DAY_ONE)
+
+    with ObservationStore(str(db_path), read_only=True) as snapshot:
+        assert snapshot.get_current_observations() != []
+
+    live_store.close()
+
+
 def test_read_only_store_against_a_missing_database_does_not_create_a_file(tmp_path):
     """A dry run's first-ever invocation, before any real collection has
     run, points at a database path that doesn't exist yet. It must stay that

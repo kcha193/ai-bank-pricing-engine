@@ -679,6 +679,7 @@ def _brief(service: PricingIntelligenceService, args: argparse.Namespace) -> int
             snapshot=snapshot,
             collector_health=health,
             tracked_banks=service.config.selected_banks,
+            max_observation_age_hours=service.config.max_observation_age_hours,
         )
 
     print(text)

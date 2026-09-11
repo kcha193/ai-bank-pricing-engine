@@ -222,9 +222,9 @@ def test_operational_sections_still_render_when_the_snapshot_is_empty(monkeypatc
     fake = render_dashboard(monkeypatch, outage_store)
 
     subheaders = fake.texts("subheader")
-    assert "Collector health" in subheaders
-    assert "Recent runs" in subheaders
-    assert "Pricing scenarios" in subheaders
+    assert "Collector health (Mortgage)" in subheaders
+    assert "Recent runs (Mortgage)" in subheaders
+    assert "Pricing scenarios (Mortgage)" in subheaders
     # Market-only widgets must still be skipped, though -- there is no
     # market data to show them against.
     assert "Current mortgage market (advertised specials)" not in subheaders
@@ -455,9 +455,12 @@ def test_operational_sections_guide_the_user_with_no_runs_recorded(monkeypatch, 
     fake = render_dashboard(monkeypatch, populated_store)
 
     subheaders = fake.texts("subheader")
-    assert "Collector health" in subheaders
-    assert "Recent runs" in subheaders
-    assert "Pricing scenarios" in subheaders
+    assert "Collector health (Mortgage)" in subheaders
+    assert "Recent runs (Mortgage)" in subheaders
+    assert "Pricing scenarios (Mortgage)" in subheaders
+    assert "Collector health (Term deposit)" in subheaders
+    assert "Recent runs (Term deposit)" in subheaders
+    assert "Pricing scenarios (Term deposit)" in subheaders
     info_texts = fake.texts("info")
     assert any("run `pricing_intelligence run`" in text for text in info_texts)
 
@@ -488,3 +491,33 @@ def test_operational_sections_render_after_a_run_operational_cycle(
     assert "ANZ" in health_frame.index
     runs_frame = next(f for f in frames if "Run id" in f.columns)
     assert list(runs_frame["Status"]) == ["SUCCESS"]
+
+
+def test_term_deposit_collector_activity_appears_in_its_own_operational_section(
+    monkeypatch, populated_store
+):
+    """The operational sections used to query only ProductType.HOME_LOAN --
+    a term-deposit collector's health is real, scheduled data (the workflow
+    script supports `--product term_deposit`) that must be visible in the
+    dashboard too, not silently dropped just because the mortgage section
+    happens to render first."""
+    from balance_pricing_engine.competitor_rates.models import ProductType
+
+    with PricingIntelligenceService(
+        config=PricingIntelligenceConfig(database_path=populated_store),
+        store=ObservationStore(populated_store),
+    ) as service:
+        service.store.update_collector_health(
+            "ANZ", ProductType.TERM_DEPOSIT, success=False, error="boom", at=DAY_TWO
+        )
+
+    fake = render_dashboard(monkeypatch, populated_store)
+
+    subheaders = fake.texts("subheader")
+    assert "Collector health (Term deposit)" in subheaders
+
+    health_frames = [f for f in fake.frames if "Consecutive failures" in f.columns]
+    assert len(health_frames) == 1
+    deposit_health = health_frames[0]
+    assert "ANZ" in deposit_health.index
+    assert deposit_health.loc["ANZ", "Consecutive failures"] == 1

@@ -33,12 +33,12 @@ def _assessment(**overrides):
     return MarketStateAssessment(**payload)
 
 
-def _health(bank, consecutive_failures=0):
+def _health(bank, consecutive_failures=0, last_success_at=DAY_TWO):
     return CollectorHealth(
         bank=bank,
         product_type=ProductType.HOME_LOAN,
         consecutive_failures=consecutive_failures,
-        last_success_at=DAY_TWO,
+        last_success_at=last_success_at,
         last_failure_at=None,
         last_error=None,
         last_alert_sent_at=None,
@@ -157,6 +157,34 @@ def test_a_removed_bank_is_not_counted_in_the_freshness_ratio(make_record, snaps
 
     assert "5/5 banks fresh" in brief
     assert "6/5" not in brief
+
+
+def test_an_aged_bank_with_no_failure_streak_is_not_counted_fresh(make_record, snapshot):
+    """A bank that has simply stopped being attempted (scheduling disabled,
+    the machine off for a week) never accumulates consecutive_failures, so
+    the failures-only check would count it fresh forever -- contradicting
+    the health command and dashboard, which already apply
+    max_observation_age_hours to flag exactly this as STALE. Passing the
+    same threshold here must exclude it from the numerator too."""
+    as_of = DAY_TWO + timedelta(hours=200)
+    health = [_health(bank, last_success_at=as_of - timedelta(hours=10)) for bank, _ in MARKET]
+    health[0] = _health("ANZ", last_success_at=as_of - timedelta(hours=200))
+
+    brief = build_daily_brief(
+        as_of=as_of,
+        today_changes=detect_changes(
+            [make_record(bank="BNZ", rate_pct=4.85)],
+            [make_record(bank="BNZ", rate_pct=4.65, observed_at=as_of)],
+            detected_at=as_of,
+        ),
+        week_assessment=_assessment(),
+        snapshot=snapshot,
+        collector_health=health,
+        tracked_banks=[bank for bank, _ in MARKET],
+        max_observation_age_hours=168,
+    )
+
+    assert "4/5 banks fresh" in brief
 
 
 def test_weekly_brief_with_no_changes(snapshot):

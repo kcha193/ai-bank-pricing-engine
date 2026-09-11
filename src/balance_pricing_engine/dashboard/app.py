@@ -173,41 +173,50 @@ def _render_market_intelligence() -> None:
         st.dataframe(health, width="stretch")
         st.caption("Last-known rates may survive a failed fetch. Freshness is not source verification.")
 
-        st.subheader("Collector health")
-        collector_health = service.store.get_collector_health(product_type=ProductType.HOME_LOAN)
-        if not collector_health:
-            st.info("No operational runs recorded yet -- run `pricing_intelligence run`.")
-        else:
-            st.dataframe(
-                build_collector_health_frame(
-                    collector_health,
-                    now=datetime.now(timezone.utc),
-                    max_observation_age_hours=intelligence_config.max_observation_age_hours,
-                ),
-                width="stretch",
-            )
+        # Rendered once per product -- the operational workflow (`run` /
+        # scripts/collect_market_rates_workflow.py) collects both mortgage
+        # and term-deposit rates under --product, so a HOME_LOAN-only section
+        # here would silently hide deposit collector failures, failed runs,
+        # and persisted deposit scenario comparisons that genuinely exist.
+        for product_type, product_label in (
+            (ProductType.HOME_LOAN, "Mortgage"),
+            (ProductType.TERM_DEPOSIT, "Term deposit"),
+        ):
+            st.subheader(f"Collector health ({product_label})")
+            collector_health = service.store.get_collector_health(product_type=product_type)
+            if not collector_health:
+                st.info("No operational runs recorded yet -- run `pricing_intelligence run`.")
+            else:
+                st.dataframe(
+                    build_collector_health_frame(
+                        collector_health,
+                        now=datetime.now(timezone.utc),
+                        max_observation_age_hours=intelligence_config.max_observation_age_hours,
+                    ),
+                    width="stretch",
+                )
 
-        st.subheader("Recent runs")
-        recent_runs = service.store.get_recent_run_records(
-            product_type=ProductType.HOME_LOAN, limit=10
-        )
-        if not recent_runs:
-            st.info("No operational runs recorded yet -- run `pricing_intelligence run`.")
-        else:
-            st.dataframe(build_recent_runs_frame(recent_runs), width="stretch")
-
-        st.subheader("Pricing scenarios")
-        scenario_runs = service.store.get_recent_scenario_runs(
-            product_type=ProductType.HOME_LOAN, limit=10
-        )
-        if not scenario_runs:
-            st.info(
-                "No auto-triggered scenario comparisons yet -- these appear once a "
-                "meaningful competitor move is detected during a scheduled `run` with "
-                "--config supplied."
+            st.subheader(f"Recent runs ({product_label})")
+            recent_runs = service.store.get_recent_run_records(
+                product_type=product_type, limit=10
             )
-        else:
-            st.dataframe(build_scenario_runs_frame(scenario_runs), width="stretch")
+            if not recent_runs:
+                st.info("No operational runs recorded yet -- run `pricing_intelligence run`.")
+            else:
+                st.dataframe(build_recent_runs_frame(recent_runs), width="stretch")
+
+            st.subheader(f"Pricing scenarios ({product_label})")
+            scenario_runs = service.store.get_recent_scenario_runs(
+                product_type=product_type, limit=10
+            )
+            if not scenario_runs:
+                st.info(
+                    "No auto-triggered scenario comparisons yet -- these appear once a "
+                    "meaningful competitor move is detected during a scheduled `run` with "
+                    "--config supplied."
+                )
+            else:
+                st.dataframe(build_scenario_runs_frame(scenario_runs), width="stretch")
 
 
 try:

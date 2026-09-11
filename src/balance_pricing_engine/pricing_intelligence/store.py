@@ -30,7 +30,6 @@ import logging
 import re
 import os
 from pathlib import Path
-import shutil
 import sqlite3
 import tempfile
 from typing import Iterable, Iterator, Mapping, NamedTuple, Optional, Sequence
@@ -531,7 +530,23 @@ class ObservationStore:
             if Path(self.database_path).exists():
                 fd, temp_path = tempfile.mkstemp(suffix=".sqlite3")
                 os.close(fd)
-                shutil.copyfile(self.database_path, temp_path)
+                # A plain file copy would miss committed pages still sitting
+                # in a WAL sidecar (never checkpointed into the main file),
+                # and could tear mid-write if the database is open
+                # elsewhere -- e.g. the other product's independently locked
+                # collection run. sqlite3's own backup API reads through a
+                # live connection, so it always sees a transactionally
+                # consistent snapshot, the same reason backup_database()
+                # uses it instead of shutil.copyfile.
+                source = sqlite3.connect(self.database_path)
+                try:
+                    destination = sqlite3.connect(temp_path)
+                    try:
+                        source.backup(destination)
+                    finally:
+                        destination.close()
+                finally:
+                    source.close()
                 connect_path = temp_path
                 self._temp_database_path = temp_path
             else:

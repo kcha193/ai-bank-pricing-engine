@@ -19,8 +19,8 @@ future extension points) are intentionally not attempted here.
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime
-from typing import Sequence
+from datetime import datetime, timedelta
+from typing import Optional, Sequence
 
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.alerts import term_name
@@ -47,6 +47,7 @@ def build_daily_brief(
     collector_health: Sequence[CollectorHealth],
     tracked_banks: Sequence[str],
     scenario_triggered_terms: Sequence[int] = (),
+    max_observation_age_hours: Optional[float] = None,
 ) -> str:
     """Render the daily brief for the run just completed.
 
@@ -63,6 +64,16 @@ def build_daily_brief(
     the "FLAGGED SUSPICIOUS -- verify against the source page" warning a live
     alert already carries for the same change (see ``alerts.format_alert``);
     it is never silently presented as ordinary, trusted repricing.
+
+    ``max_observation_age_hours``, when given, applies the same staleness
+    threshold the ``health`` CLI command and dashboard already use: a bank
+    that has simply stopped being attempted (scheduling disabled, the
+    machine off for a week) never fails again, so ``consecutive_failures``
+    alone would count it as fresh indefinitely. Compared against ``as_of``,
+    which carries the same instant as the run's UTC "now" just displayed in
+    NZ-local time, so the comparison against ``last_success_at`` (UTC) is
+    unaffected by the display timezone. Omitted, the count falls back to
+    the previous failures-only behaviour.
     """
     product_label = _product_label(snapshot.product_type)
     rate_moves = [change for change in today_changes if change.is_rate_move]
@@ -115,11 +126,20 @@ def build_daily_brief(
         # numerator against a denominator of only currently-tracked banks
         # could otherwise report an impossible "5/4 banks fresh".
         tracked = set(tracked_banks)
-        fresh = sum(
-            1
-            for health in collector_health
-            if health.bank in tracked and health.consecutive_failures == 0
+        max_age = (
+            timedelta(hours=max_observation_age_hours)
+            if max_observation_age_hours is not None
+            else None
         )
+
+        def _is_fresh(health: CollectorHealth) -> bool:
+            if health.consecutive_failures != 0:
+                return False
+            if max_age is not None and health.last_success_at is not None:
+                return as_of - health.last_success_at <= max_age
+            return True
+
+        fresh = sum(1 for health in collector_health if health.bank in tracked and _is_fresh(health))
         lines.append("")
         lines.append("COLLECTOR HEALTH")
         lines.append(f"{fresh}/{len(tracked_banks)} banks fresh")
