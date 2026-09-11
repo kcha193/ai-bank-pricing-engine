@@ -474,6 +474,31 @@ def _alert_delivered_during_current_streak(previous: CollectorHealth) -> bool:
     return previous.last_alert_sent_at >= previous.last_success_at
 
 
+def _channels_delivered_during_current_streak(
+    previous: Optional[CollectorHealth], channel_sent_at: Mapping[str, datetime]
+) -> set[str]:
+    """Channels whose health escalation alert for this bank falls inside the
+    failure streak that just ended, not a stale send from an earlier streak
+    that already recovered.
+
+    The per-channel companion to :func:`_alert_delivered_during_current_streak`
+    -- same boundary comparison (the streak began right after
+    ``previous.last_success_at``), applied per channel via
+    ``channel_sent_at`` (see :meth:`~.store.ObservationStore.get_collector_health_alert_channels`)
+    instead of collapsing to one bool, so a recovery notice can be limited
+    to exactly the channels that received this streak's own incident.
+    """
+    if previous is None:
+        return set()
+    if previous.last_success_at is None:
+        return set(channel_sent_at)
+    return {
+        channel
+        for channel, sent_at in channel_sent_at.items()
+        if sent_at >= previous.last_success_at
+    }
+
+
 def classify_health_escalation(
     thresholds: HealthThresholds, previous: Optional[CollectorHealth], current: CollectorHealth
 ) -> str:
@@ -740,34 +765,69 @@ def _dispatch_health_alerts(
     if not escalations:
         return 0
 
-    # Recorded only for a bank whose escalation was individually confirmed
-    # delivered to at least one sink -- the same "confirmed, not attempted"
-    # standard _dispatch_rendered_alerts already applies to rate-move
-    # alerts (see dispatch_alerts_safely_detailed). An unconditional record
-    # here would mark an alert as sent even when every sink failed, timed
-    # out, or none was configured at all, leaving the persisted
-    # last_alert_sent_at audit inaccurate.
-    alerts = [alert for _, _, alert in escalations]
-    alert_to_bank = {alert: bank for bank, _, alert in escalations}
-    delivered_banks: set[str] = set()
+    incident_escalations = [
+        (bank, alert) for bank, outcome, alert in escalations if outcome == HEALTH_ALERT
+    ]
+    recovery_escalations = [
+        (bank, alert) for bank, outcome, alert in escalations if outcome == HEALTH_RECOVERY
+    ]
     total_sent = 0
-    for sink in sinks.values():
-        delivered = dispatch_alerts_safely_detailed(alerts, sink)
-        total_sent += len(delivered)
-        for alert in delivered:
-            delivered_banks.add(alert_to_bank[alert])
-    for bank, outcome, _ in escalations:
-        # Only an ALERT delivery counts as "incident delivered" here -- see
-        # classify_health_escalation()'s _alert_delivered_during_current_streak
-        # helper, which reads this same field to decide whether a later
-        # recovery is warranted. Recording a RECOVERY send here too would let
-        # that recovery's own timestamp (always >= its own last_success_at,
-        # since both are stamped from the same successful run) satisfy that
-        # comparison for a *later* streak that never actually got its own
-        # incident alert delivered -- a stale recovery send masquerading as
-        # this streak's incident delivery.
-        if bank in delivered_banks and outcome == HEALTH_ALERT:
-            store.record_collector_health_alert(bank, product_type, at=at)
+
+    if incident_escalations:
+        # Recorded only for a bank+channel individually confirmed delivered
+        # -- the same "confirmed, not attempted" standard
+        # _dispatch_rendered_alerts already applies to rate-move alerts (see
+        # dispatch_alerts_safely_detailed). An unconditional record here
+        # would mark an alert as sent even when a sink failed, timed out, or
+        # none was configured at all, leaving the persisted audit
+        # inaccurate.
+        alerts = [alert for _, alert in incident_escalations]
+        alert_to_bank = {alert: bank for bank, alert in incident_escalations}
+        for channel, sink in sinks.items():
+            delivered = dispatch_alerts_safely_detailed(alerts, sink)
+            total_sent += len(delivered)
+            for alert in delivered:
+                bank = alert_to_bank[alert]
+                # Only an ALERT delivery counts as "incident delivered" --
+                # see classify_health_escalation()'s
+                # _alert_delivered_during_current_streak (and its per-channel
+                # counterpart, _channels_delivered_during_current_streak),
+                # both of which read these same records to decide whether a
+                # later recovery is warranted, and on which channels.
+                # Recording a RECOVERY send here too would let that
+                # recovery's own timestamp (always >= its own
+                # last_success_at, since both are stamped from the same
+                # successful run) satisfy that comparison for a *later*
+                # streak that never actually got its own incident alert
+                # delivered -- a stale recovery send masquerading as this
+                # streak's incident delivery.
+                store.record_collector_health_alert(bank, product_type, at=at)
+                store.record_collector_health_alert_channel(bank, product_type, channel, at=at)
+
+    if recovery_escalations:
+        # Limited per bank to exactly the channels that delivered this
+        # streak's own incident: broadcasting a recovery to every configured
+        # sink regardless (the pre-channel-tracking behaviour) would tell a
+        # channel that never saw the incident -- e.g. Telegram delivered
+        # while the webhook timed out -- that it has "recovered" from an
+        # outage it was never told about. Still batched into one dispatch
+        # call per channel (not one per bank), for the same
+        # blocking-deadline reason incident escalations are batched above.
+        alerts_by_channel: dict[str, list[Alert]] = {channel: [] for channel in sinks}
+        for bank, alert in recovery_escalations:
+            delivered_channels = _channels_delivered_during_current_streak(
+                previous_by_bank.get(bank),
+                store.get_collector_health_alert_channels(bank, product_type),
+            )
+            for channel in delivered_channels & sinks.keys():
+                alerts_by_channel[channel].append(alert)
+        for channel, sink in sinks.items():
+            channel_alerts = alerts_by_channel[channel]
+            if not channel_alerts:
+                continue
+            delivered = dispatch_alerts_safely_detailed(channel_alerts, sink)
+            total_sent += len(delivered)
+
     return total_sent
 
 
@@ -1008,30 +1068,45 @@ def run_operational_cycle(
             run_id=operational_run_id,
         )
 
-        market_state_value = None
-        try:
-            market_state_value = service.get_market_state(product_type=product_type).state.value
-        except Exception:  # noqa: BLE001 - market state is best-effort context on the run record
-            logger.warning("could not classify market state for run %s", operational_run_id)
+        # outcome.already_recorded means this run_id already committed its
+        # observations in an earlier call -- this call's own report/
+        # validation describe only *this* retry's fetch, which can genuinely
+        # diverge from the original (e.g. every bank unreachable on the
+        # retry, after the original succeeded). Classifying a fresh
+        # RunRecord from that and overwriting (write_run_record() is an
+        # INSERT OR REPLACE keyed on run_id) the original would leave the
+        # persisted run status contradicting the persisted observations, so
+        # the already-persisted record is reused untouched instead of
+        # re-derived. Falls through to building a fresh one only if no
+        # RunRecord actually exists yet for this run_id (e.g. a run_id first
+        # touched outside run_operational_cycle, via a bare service.collect()
+        # call) -- best effort, matching pre-existing behaviour there.
+        run_record = service.store.get_run_record(operational_run_id) if outcome.already_recorded else None
+        if run_record is None:
+            market_state_value = None
+            try:
+                market_state_value = service.get_market_state(product_type=product_type).state.value
+            except Exception:  # noqa: BLE001 - market state is best-effort context on the run record
+                logger.warning("could not classify market state for run %s", operational_run_id)
 
-        run_record = RunRecord(
-            run_id=operational_run_id,
-            started_at=started_at,
-            completed_at=datetime.now(timezone.utc),
-            status=_STATUS_BY_CODE[code],
-            product_type=product_type,
-            banks_attempted=tuple(banks_attempted),
-            banks_successful=tuple(summary["banks_succeeded"]),
-            banks_failed=tuple(summary["banks_failed"]),
-            rates_observed=summary["rates_accepted"],
-            rates_changed=summary["changes_detected"],
-            validation_failures=summary["rates_rejected"],
-            suspicious_observations=summary["suspicious_changes"],
-            market_state=market_state_value,
-            error_summary=error_summary,
-            collection_run_id=outcome.write_result.run_id if outcome.write_result else None,
-        )
-        service.store.write_run_record(run_record)
+            run_record = RunRecord(
+                run_id=operational_run_id,
+                started_at=started_at,
+                completed_at=datetime.now(timezone.utc),
+                status=_STATUS_BY_CODE[code],
+                product_type=product_type,
+                banks_attempted=tuple(banks_attempted),
+                banks_successful=tuple(summary["banks_succeeded"]),
+                banks_failed=tuple(summary["banks_failed"]),
+                rates_observed=summary["rates_accepted"],
+                rates_changed=summary["changes_detected"],
+                validation_failures=summary["rates_rejected"],
+                suspicious_observations=summary["suspicious_changes"],
+                market_state=market_state_value,
+                error_summary=error_summary,
+                collection_run_id=outcome.write_result.run_id if outcome.write_result else None,
+            )
+            service.store.write_run_record(run_record)
 
     return OperationalRunResult(
         outcome=outcome, run_record=run_record, alerts_sent=alerts_sent, code=code

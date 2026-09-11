@@ -230,6 +230,27 @@ CREATE TABLE IF NOT EXISTS collector_health (
     PRIMARY KEY (bank, product_type)
 );
 
+-- Per-channel companion to collector_health.last_alert_sent_at. That
+-- bank-level column only answers "was ANY channel notified of this
+-- streak's incident" -- enough to gate whether a recovery is worth
+-- attempting at all (see orchestration.classify_health_escalation()), but
+-- not which channels to actually send the recovery to. When webhook and
+-- Telegram are both configured and only one delivers the incident (the
+-- other times out or errors), sending the recovery to both anyway would
+-- misleadingly tell the channel that missed the incident it has "recovered"
+-- from an outage it was never told about -- see
+-- orchestration._dispatch_health_alerts()'s per-channel recovery gating.
+-- One row per (bank, product_type, channel), replaced (not appended) on
+-- each confirmed delivery -- unlike notified_alerts, this only ever needs
+-- the *latest* delivery per channel, not a full history.
+CREATE TABLE IF NOT EXISTS collector_health_alert_channels (
+    bank            TEXT NOT NULL,
+    product_type    TEXT NOT NULL,
+    channel         TEXT NOT NULL,
+    sent_at         TEXT NOT NULL,
+    PRIMARY KEY (bank, product_type, channel)
+);
+
 -- Auto-triggered pricing-scenario comparisons (see
 -- pricing_intelligence.scenario_trigger), one row per (run_id, term_months)
 -- that a meaningful competitor move triggered analysis for. Keyed on run_id
@@ -2069,6 +2090,49 @@ class ObservationStore:
                 "WHERE bank = ? AND product_type = ?",
                 (_iso(at), bank, product.value),
             )
+
+    def record_collector_health_alert_channel(
+        self,
+        bank: str,
+        product_type: ProductType | str,
+        channel: str,
+        at: Optional[datetime] = None,
+    ) -> None:
+        """Record that a health escalation alert was confirmed delivered to
+        ``channel`` for this bank -- the per-channel companion to
+        :meth:`record_collector_health_alert`'s bank-level column, so a
+        later recovery can be limited to just the channels that actually got
+        this streak's incident. See :meth:`get_collector_health_alert_channels`.
+        """
+        product = ProductType(product_type)
+        at = at or datetime.now(timezone.utc)
+        with self._transaction() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO collector_health_alert_channels "
+                "(bank, product_type, channel, sent_at) VALUES (?, ?, ?, ?)",
+                (bank, product.value, channel, _iso(at)),
+            )
+
+    def get_collector_health_alert_channels(
+        self, bank: str, product_type: ProductType | str
+    ) -> dict[str, datetime]:
+        """Channel -> when a health escalation alert was last confirmed
+        delivered to it for this bank, across all history.
+
+        Not scoped to the current failure streak -- a caller deciding which
+        channels to send a recovery to must filter these against the streak
+        boundary itself (see
+        ``orchestration._channels_delivered_during_current_streak``), the
+        same way :meth:`record_collector_health_alert`'s bank-level
+        ``last_alert_sent_at`` is never trusted on its own either.
+        """
+        product = ProductType(product_type)
+        rows = self._connection.execute(
+            "SELECT channel, sent_at FROM collector_health_alert_channels "
+            "WHERE bank = ? AND product_type = ?",
+            (bank, product.value),
+        ).fetchall()
+        return {row["channel"]: _parse_iso(row["sent_at"]) for row in rows}
 
     # ----------------------------------------------------------------- reads
 

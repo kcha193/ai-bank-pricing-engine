@@ -198,6 +198,45 @@ def test_a_reprice_is_delivered_exactly_once_across_retries(tmp_path, fixture_fe
     assert len(sink.alerts) == 1, "the retried run must not re-deliver the same change"
 
 
+def test_a_zero_accepted_retry_does_not_overwrite_the_original_run_record(
+    tmp_path, fixture_fetcher
+):
+    """A retry under the same run_id whose own fetch happens to come back
+    empty (e.g. a transient outage during the retry, after the original
+    attempt genuinely succeeded) must not have write_run_record() -- an
+    INSERT OR REPLACE keyed on run_id -- overwrite the original SUCCESS
+    RunRecord with a FAILED one classified from this retry's own (empty)
+    report. That would leave the persisted run status contradicting the
+    persisted observations, which the retry left untouched."""
+    config = _config(tmp_path)
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        first = run_operational_cycle(service, captured_at_utc=DAY_ONE, alert_sinks={})
+        assert first.run_record.status == "SUCCESS"
+
+        service._fetcher = fixture_fetcher(
+            empty_banks=["ANZ", "ASB", "BNZ", "Westpac", "Kiwibank"]
+        )
+        second = run_operational_cycle(
+            service,
+            captured_at_utc=DAY_ONE,
+            run_id=first.run_record.run_id,
+            alert_sinks={},
+        )
+
+        stored = service.store.get_current_observations()
+
+    assert second.run_record is not None
+    assert second.run_record.run_id == first.run_record.run_id
+    assert second.run_record.status == "SUCCESS", (
+        "the persisted RunRecord must still reflect the original successful attempt, "
+        "not this retry's own empty fetch"
+    )
+    assert second.run_record.banks_successful == first.run_record.banks_successful
+    assert stored, "the original attempt's observations must still be present"
+
+
 def test_a_change_persisted_but_never_alerted_is_replayed_on_a_later_run(
     tmp_path, fixture_fetcher
 ):
@@ -803,6 +842,52 @@ def test_a_recovery_send_does_not_count_as_a_later_streaks_incident_delivery(tmp
         )
     finally:
         store.close()
+
+
+def test_recovery_is_limited_to_channels_that_delivered_the_incident(tmp_path):
+    """When webhook and Telegram are both configured and only one delivers
+    the incident (the other times out or errors), the recovery notice must
+    reach only the channel that actually got the incident -- broadcasting it
+    to every configured sink regardless would tell the channel that missed
+    the incident it has "recovered" from an outage it was never told about.
+    """
+    from balance_pricing_engine.pricing_intelligence.orchestration import _dispatch_health_alerts
+
+    class AlwaysFailingSink:
+        def __init__(self) -> None:
+            self.attempts: list = []
+
+        def send(self, alert) -> None:
+            self.attempts.append(alert)
+            raise RuntimeError("simulated outage")
+
+    thresholds = HealthThresholds(warning_after_failures=1, alert_after_failures=1)
+    store = ObservationStore(str(tmp_path / "obs.db"))
+    reliable = CollectingAlertSink()
+    unreliable = AlwaysFailingSink()
+    sinks = {"telegram": reliable, "webhook": unreliable}
+    try:
+        _dispatch_health_alerts(
+            store, ProductType.HOME_LOAN, [("ANZ", False, "boom")], thresholds, sinks, DAY_ONE
+        )
+        assert len(unreliable.attempts) == 1, "the incident must still be attempted on both channels"
+
+        _dispatch_health_alerts(
+            store,
+            ProductType.HOME_LOAN,
+            [("ANZ", True, None)],
+            thresholds,
+            sinks,
+            DAY_ONE + timedelta(hours=1),
+        )
+    finally:
+        store.close()
+
+    recovery_alerts = [a for a in reliable.alerts if "recovered" in a.title]
+    assert len(recovery_alerts) == 1, "the channel that delivered the incident must get the recovery"
+    assert len(unreliable.attempts) == 1, (
+        "a channel that never confirmed the incident must not even be attempted for the recovery"
+    )
 
 
 def test_recovery_alert_fires_after_an_escalated_streak(tmp_path, fixture_fetcher):

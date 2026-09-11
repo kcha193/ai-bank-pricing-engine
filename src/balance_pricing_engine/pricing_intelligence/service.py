@@ -519,6 +519,17 @@ class CollectionOutcome:
     #: with no known baseline (first-ever collection) is never included, same
     #: as in the withdrawal-suppression use: an empty range isn't "missing".
     low_coverage_banks: tuple[str, ...] = ()
+    #: True when ``run_id`` had already committed its observations for this
+    #: product in an earlier call -- this outcome's own report/validation
+    #: describe only *this* retry's fetch, which can genuinely diverge from
+    #: the original (e.g. every bank unreachable on the retry, after the
+    #: original succeeded). A caller building a persisted per-run audit
+    #: record (``orchestration.run_operational_cycle``) must not classify
+    #: that record from this outcome's report/validation when this is set --
+    #: doing so can overwrite an already-successful RunRecord with a
+    #: "failed" one despite the underlying observations being untouched and
+    #: still reflecting the original, successful attempt.
+    already_recorded: bool = False
 
     @property
     def succeeded_banks(self) -> tuple[str, ...]:
@@ -710,7 +721,11 @@ class PricingIntelligenceService:
                     [], run_id=run_id, observed_at=captured_at_utc, product_type=product_type
                 )
                 return CollectionOutcome(
-                    report=report, validation=validation, write_result=write_result, changes=()
+                    report=report,
+                    validation=validation,
+                    write_result=write_result,
+                    changes=(),
+                    already_recorded=True,
                 )
             return CollectionOutcome(
                 report=report, validation=validation, write_result=None, changes=()
@@ -907,6 +922,7 @@ class PricingIntelligenceService:
             write_result=write_result,
             changes=tuple(changes),
             low_coverage_banks=low_coverage_banks,
+            already_recorded=already_recorded,
         )
 
     # ------------------------------------------------------------ market view
