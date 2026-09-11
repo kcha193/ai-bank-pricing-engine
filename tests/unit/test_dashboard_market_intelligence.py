@@ -131,6 +131,26 @@ def populated_store(tmp_path, fixture_fetcher):
     return str(path)
 
 
+@pytest.fixture
+def outage_store(tmp_path, fixture_fetcher):
+    """A store with zero current observations (every bank failed) but a
+    real RunRecord and collector-health streaks from that failed run."""
+    from balance_pricing_engine.pricing_intelligence.orchestration import run_operational_cycle
+
+    path = tmp_path / "observations.db"
+    config = PricingIntelligenceConfig(
+        database_path=str(path),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    with PricingIntelligenceService(
+        config=config,
+        store=ObservationStore(path),
+        fetcher=fixture_fetcher(failing_banks=["ANZ", "ASB", "BNZ", "Westpac", "Kiwibank"]),
+    ) as service:
+        run_operational_cycle(service, captured_at_utc=DAY_ONE, alert_sinks={})
+    return str(path)
+
+
 def render_dashboard(monkeypatch, database_path):
     fake = FakeStreamlit()
     monkeypatch.setitem(sys.modules, "streamlit", fake)
@@ -190,6 +210,25 @@ def test_section_renders_grid_ranking_and_changes_frames(monkeypatch, populated_
     changes = next(frame for frame in fake.frames if "Move (bps)" in frame.columns)
     assert "Move (bps)" in changes.columns
     assert -20.0 in list(changes["Move (bps)"])
+
+
+def test_operational_sections_still_render_when_the_snapshot_is_empty(monkeypatch, outage_store):
+    """A total collection outage must still surface the failed RunRecord and
+    collector-health streaks -- an early return for an empty snapshot used
+    to skip the Collector health / Recent runs / Pricing scenarios sections
+    entirely, hiding exactly the diagnostic info an operator needs during a
+    bootstrap outage or prolonged collection failure, leaving only the
+    (equally empty-looking) freshness table visible."""
+    fake = render_dashboard(monkeypatch, outage_store)
+
+    subheaders = fake.texts("subheader")
+    assert "Collector health" in subheaders
+    assert "Recent runs" in subheaders
+    assert "Pricing scenarios" in subheaders
+    # Market-only widgets must still be skipped, though -- there is no
+    # market data to show them against.
+    assert "Current mortgage market (advertised specials)" not in subheaders
+    assert not any(header.startswith("Market state:") for header in subheaders)
 
 
 def test_section_charts_rate_history(monkeypatch, populated_store):

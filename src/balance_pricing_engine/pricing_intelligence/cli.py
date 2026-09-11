@@ -627,7 +627,10 @@ def _brief(service: PricingIntelligenceService, args: argparse.Namespace) -> int
 
     if args.weekly:
         week_changes = service.get_changes(
-            days=lookback_days, product_type=product, rate_category=category
+            days=lookback_days,
+            product_type=product,
+            rate_category=category,
+            scope_to_market=True,
         )
         cutoff = now - timedelta(days=lookback_days)
         run_records = [
@@ -643,7 +646,9 @@ def _brief(service: PricingIntelligenceService, args: argparse.Namespace) -> int
             run_records=run_records,
         )
     else:
-        today_changes = service.get_changes(days=1, product_type=product, rate_category=category)
+        today_changes = service.get_changes(
+            days=1, product_type=product, rate_category=category, scope_to_market=True
+        )
         health = service.store.get_collector_health(product_type=product)
         text = build_daily_brief(
             as_of=now,
@@ -756,7 +761,7 @@ def _health(service: PricingIntelligenceService, args: argparse.Namespace) -> in
     print("PRICING INTELLIGENCE HEALTH")
     print()
 
-    report = service.store.check_integrity()
+    report = service.store.check_integrity(thresholds=service.config.validation)
     print(f"Database: {'OK' if report.ok else 'ISSUES DETECTED'}")
     for issue in report.issues:
         print(f"  - {issue}")

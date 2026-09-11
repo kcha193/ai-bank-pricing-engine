@@ -1014,6 +1014,48 @@ def test_brief_weekly_reports_market_activity(populated_database, capsys):
     assert "NZ MORTGAGE PRICING -- WEEKLY" in output
 
 
+def test_brief_scopes_changes_to_the_configured_market(tmp_path, fixture_fetcher, capsys):
+    """A brief's change query must be scoped to selected_banks/tracked_terms_months
+    the same way get_market_state() already is -- otherwise a bank dropped
+    from the current configuration can still show up in the brief's TODAY
+    listing and repricing counts even though the snapshot and market-state
+    assessment it is delivered alongside no longer include it."""
+    database = tmp_path / "observations.db"
+    broad_config = PricingIntelligenceConfig(
+        database_path=str(database),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+
+    def mutate(bank, html):
+        if bank == "Kiwibank":
+            return html.replace("<td>1 year</td><td>4.89%", "<td>1 year</td><td>4.69%")
+        return html
+
+    with PricingIntelligenceService(
+        config=broad_config, store=ObservationStore(database), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=mutate)
+        service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    engine_config_path = tmp_path / "engine.yaml"
+    engine_config_path.write_text(
+        yaml.dump(
+            _minimal_engine_config(
+                database_path=str(database),
+                # Kiwibank dropped from the current configuration.
+                selected_banks=["ANZ", "BNZ", "ASB", "Westpac"],
+            )
+        )
+    )
+
+    exit_code = run(["--config", str(engine_config_path), "brief"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Kiwibank" not in output
+
+
 def test_brief_with_no_market_data_fails_cleanly(tmp_path, capsys):
     exit_code = run(["--database", str(tmp_path / "empty.db"), "brief"])
     output = capsys.readouterr().out
@@ -1156,6 +1198,31 @@ def test_health_exits_nonzero_when_the_database_is_broken(populated_database, ca
         store._connection.commit()
 
     exit_code = run(["--database", populated_database, "health"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "ISSUES DETECTED" in output
+    assert "plausible rate bounds" in output
+
+
+def test_health_uses_configured_validation_bounds(populated_database, tmp_path, capsys):
+    """A --config-supplied validation band must be what check_integrity()
+    applies, not silently-constructed default thresholds -- otherwise the
+    health command can report 'Database: OK' for a value outside a stricter
+    configured band. populated_database's stored rates are ~4.79-4.89%,
+    comfortably inside the default max_mortgage_rate_pct (15.0); a config
+    tightening it to 4.0 must make the same data flag as implausible."""
+    engine_config_path = tmp_path / "engine.yaml"
+    engine_config_path.write_text(
+        yaml.dump(
+            _minimal_engine_config(
+                database_path=populated_database,
+                validation={"max_mortgage_rate_pct": 4.0},
+            )
+        )
+    )
+
+    exit_code = run(["--config", str(engine_config_path), "health"])
     output = capsys.readouterr().out
 
     assert exit_code == 1

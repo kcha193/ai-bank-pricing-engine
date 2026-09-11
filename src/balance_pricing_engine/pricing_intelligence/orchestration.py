@@ -742,11 +742,13 @@ def run_operational_cycle(
     ``service.collect()``.
 
     ``dry_run`` collects and classifies as normal but does not persist
-    observations (``service.collect(persist=False)``), does not write a
-    :class:`~.store.RunRecord` or update collector health, and does not
-    deliver real alerts -- ``alert_sinks`` is ignored and every alert is
-    routed to a :class:`~.alerts.ConsoleAlertSink` instead, so a dry run is
-    safe to run against a real Telegram/webhook configuration.
+    observations or raw HTML snapshots (``service.collect(persist=False,
+    persist_snapshot=False)``), does not write a :class:`~.store.RunRecord`
+    or update collector health, and does not deliver real alerts --
+    ``alert_sinks`` is ignored and every alert is routed to a
+    :class:`~.alerts.ConsoleAlertSink` instead, so a dry run is safe to run
+    against a real Telegram/webhook configuration and leaves no artifacts
+    behind from what should be a non-mutating preview.
 
     Raises :class:`~.store.ChronologicalOrderError` unchanged (a backwards
     wall clock) -- callers wanting a classified failure for that case should
@@ -760,6 +762,7 @@ def run_operational_cycle(
     outcome = service.collect(
         captured_at_utc=captured_at_utc,
         persist=not dry_run,
+        persist_snapshot=not dry_run,
         product_type=product_type,
         run_id=operational_run_id,
     )
@@ -783,6 +786,7 @@ def run_operational_cycle(
         sinks = built
 
     rate_moves = [change for change in outcome.changes if change.is_rate_move]
+    replayed_moves: list[RateChange] = []
     if not dry_run and sinks:
         # Re-offer any recent, still-undelivered stored change for delivery
         # this run -- see UNDELIVERED_CHANGE_REPLAY_HOURS. A dry run must not
@@ -802,7 +806,11 @@ def run_operational_cycle(
             (change.observation_key, change.change_type, change.detected_at, change.run_id)
             for change in rate_moves
         }
-        rate_moves = rate_moves + _undelivered_change_replay_candidates(
+        # Kept separate from rate_moves, not merged: a replayed change is
+        # rendered without this run's market snapshots (see below) -- it
+        # must not be rendered as if this run's fresh snapshot described the
+        # old change's original detection.
+        replayed_moves = _undelivered_change_replay_candidates(
             service.store, product_type, sinks, already_included, replay_now
         )
 
@@ -836,10 +844,21 @@ def run_operational_cycle(
                 )
 
     alerts_sent = 0
-    if sinks and rate_moves:
+    if sinks and (rate_moves or replayed_moves):
         snapshot = service.get_market_snapshot(product_type=product_type)
         previous_snapshot = service.get_previous_market_snapshot(product_type=product_type)
         rendered = format_alerts(rate_moves, snapshot, previous_snapshot)
+        if replayed_moves:
+            # No snapshot context for a replayed change: this run's fresh
+            # snapshot/previous_snapshot describe the newest run and its
+            # immediate predecessor, not the two market states surrounding
+            # the old change being replayed. Passing them here would let a
+            # change missed yesterday and replayed after today's unchanged
+            # collection report its rank as unchanged, while intervening
+            # moves get attributed to the stale event instead --
+            # format_alert() already omits rank/market context cleanly when
+            # both snapshots are None.
+            rendered = rendered + format_alerts(replayed_moves, None, None)
         if scenarios_by_term:
             rendered = _enrich_with_scenarios(rendered, scenarios_by_term)
         if dry_run:

@@ -98,6 +98,25 @@ def test_dry_run_persists_no_run_record_and_no_observations(tmp_path, fixture_fe
         assert service.store.get_current_observations() == []
 
 
+def test_dry_run_persists_no_raw_html_snapshots(tmp_path, fixture_fetcher):
+    """A dry run promises to persist nothing -- service.collect()'s own
+    persist_snapshot defaults to True independently of persist, so this must
+    be passed explicitly or every collector still writes fetched HTML
+    beneath raw_root, leaving production-like artifacts from what should be
+    a non-mutating preview."""
+    config = _config(tmp_path)
+    raw_root = tmp_path / "raw"
+    with PricingIntelligenceService(
+        config=config,
+        store=ObservationStore(config.database_path),
+        fetcher=fixture_fetcher(),
+        raw_root=raw_root,
+    ) as service:
+        run_operational_cycle(service, captured_at_utc=DAY_ONE, dry_run=True)
+
+    assert not any(raw_root.rglob("*")), "a dry run must not write any raw HTML snapshot"
+
+
 def test_dry_run_routes_alerts_to_the_console_not_real_sinks(tmp_path, fixture_fetcher, monkeypatch):
     monkeypatch.delenv("PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL", raising=False)
 
@@ -222,6 +241,62 @@ def test_a_change_persisted_but_never_alerted_is_replayed_on_a_later_run(
     assert len(result.outcome.changes) == 0, "no fresh change this run -- the replay is the point"
     assert len(sink.alerts) == 1
     assert "ANZ" in sink.alerts[0].title or "ANZ" in sink.alerts[0].body
+    # This run's fresh snapshot/previous_snapshot describe today and
+    # yesterday, not the two market states surrounding the replayed change's
+    # original detection -- rendering rank/market context from them would
+    # misattribute today's intervening movement to the stale event.
+    assert "Market rank:" not in sink.alerts[0].body
+    assert "Market median:" not in sink.alerts[0].body
+
+
+def test_replayed_alerts_are_rendered_without_this_runs_snapshot_context(
+    tmp_path, fixture_fetcher, monkeypatch
+):
+    """A replayed change must be rendered via format_alert's own
+    None-snapshot handling, not this run's fresh snapshot/previous_snapshot
+    -- those describe the newest run and its immediate predecessor, not the
+    two market states surrounding the replayed change's original detection,
+    and passing them would misattribute today's market movement to a stale
+    event (verified directly here since the fixture market's rank/median
+    guards can otherwise mask a wrongly-passed snapshot silently)."""
+    from balance_pricing_engine.pricing_intelligence import orchestration as orchestration_module
+
+    config = _config(tmp_path)
+    sink = CollectingAlertSink()
+
+    def mutate(bank, html):
+        if bank == "ANZ":
+            return html.replace("<td>1 year</td><td>4.79%", "<td>1 year</td><td>4.59%")
+        return html
+
+    calls = []
+    real_format_alerts = orchestration_module.format_alerts
+
+    def spying_format_alerts(changes, snapshot=None, previous_snapshot=None):
+        calls.append((list(changes), snapshot, previous_snapshot))
+        return real_format_alerts(changes, snapshot, previous_snapshot)
+
+    monkeypatch.setattr(orchestration_module, "format_alerts", spying_format_alerts)
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=mutate)
+        service.collect(captured_at_utc=DAY_TWO)  # simulated crash: no dispatch
+
+        run_operational_cycle(
+            service,
+            captured_at_utc=DAY_TWO + timedelta(days=1),
+            alert_sinks={"test": sink},
+        )
+
+    assert len(sink.alerts) == 1
+    replayed_calls = [call for call in calls if call[0] and call[0][0].bank == "ANZ"]
+    assert replayed_calls, "expected format_alerts to be called for the replayed ANZ change"
+    _, snapshot_arg, previous_snapshot_arg = replayed_calls[-1]
+    assert snapshot_arg is None
+    assert previous_snapshot_arg is None
 
 
 def test_a_suspicious_change_persisted_but_never_alerted_is_replayed_too(

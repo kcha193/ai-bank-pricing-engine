@@ -115,55 +115,59 @@ def _render_market_intelligence() -> None:
         incomplete = health[health["Status"] != "Fresh"]
         if not incomplete.empty:
             st.warning("Collection freshness needs review: " + ", ".join(incomplete.index))
+
+        # Market-specific widgets are gated on a non-empty snapshot, but the
+        # operational sections below (collector health, recent runs, pricing
+        # scenarios) never were -- an early return here used to skip them
+        # too, hiding exactly the failed RunRecord and consecutive-failure
+        # streaks an operator most needs during a bootstrap outage or
+        # prolonged collection failure, leaving only the freshness table.
         if not snapshot.terms:
             st.warning("No fresh comparable mortgage rates are available. Run and verify a collection.")
-            st.subheader("Collection freshness")
-            st.dataframe(health, width="stretch")
-            return
+        else:
+            st.subheader("Current mortgage market (advertised specials)")
+            st.dataframe(build_market_grid_frame(snapshot), width="stretch")
 
-        st.subheader("Current mortgage market (advertised specials)")
-        st.dataframe(build_market_grid_frame(snapshot), width="stretch")
-
-        terms = list(snapshot.term_months)
-        default_term = 12 if 12 in terms else terms[0]
-        selected_term = st.selectbox(
-            "Term for market summary", terms, index=terms.index(default_term)
-        )
-
-        summary = build_term_summary(snapshot, selected_term)
-        if summary:
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Best", f"{summary['best_rate']:.2f}%")
-            col2.metric("Median", f"{summary['median_rate']:.2f}%")
-            col3.metric("Highest", f"{summary['highest_rate']:.2f}%")
-            col4.metric("Spread", f"{summary['spread_bps']:.0f} bps")
-            st.caption(
-                f"Market leader: {summary['market_leader']} "
-                f"across {summary['bank_count']} banks"
+            terms = list(snapshot.term_months)
+            default_term = 12 if 12 in terms else terms[0]
+            selected_term = st.selectbox(
+                "Term for market summary", terms, index=terms.index(default_term)
             )
-            st.dataframe(build_ranking_frame(snapshot, selected_term), width="stretch")
 
-        state = service.get_market_state()
-        st.subheader(f"Market state: {state.state.value}")
-        st.caption(state.rationale)
+            summary = build_term_summary(snapshot, selected_term)
+            if summary:
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Best", f"{summary['best_rate']:.2f}%")
+                col2.metric("Median", f"{summary['median_rate']:.2f}%")
+                col3.metric("Highest", f"{summary['highest_rate']:.2f}%")
+                col4.metric("Spread", f"{summary['spread_bps']:.0f} bps")
+                st.caption(
+                    f"Market leader: {summary['market_leader']} "
+                    f"across {summary['bank_count']} banks"
+                )
+                st.dataframe(build_ranking_frame(snapshot, selected_term), width="stretch")
 
-        st.subheader("Recent repricing")
-        changes_frame = build_changes_frame(
-            service.get_changes(days=30, scope_to_market=True)
-        )
-        if changes_frame.empty:
-            st.info("No repricing detected in the last 30 days.")
-        else:
-            st.dataframe(changes_frame, width="stretch")
+            state = service.get_market_state()
+            st.subheader(f"Market state: {state.state.value}")
+            st.caption(state.rationale)
 
-        st.subheader("Rate history")
-        history_series = build_history_series(
-            service.get_rate_history_series(term_months=selected_term, rate_category="special")
-        )
-        if history_series.empty:
-            st.info("Not enough history yet. History builds up as collections run.")
-        else:
-            st.line_chart(history_series)
+            st.subheader("Recent repricing")
+            changes_frame = build_changes_frame(
+                service.get_changes(days=30, scope_to_market=True)
+            )
+            if changes_frame.empty:
+                st.info("No repricing detected in the last 30 days.")
+            else:
+                st.dataframe(changes_frame, width="stretch")
+
+            st.subheader("Rate history")
+            history_series = build_history_series(
+                service.get_rate_history_series(term_months=selected_term, rate_category="special")
+            )
+            if history_series.empty:
+                st.info("Not enough history yet. History builds up as collections run.")
+            else:
+                st.line_chart(history_series)
 
         st.subheader("Collection freshness")
         st.dataframe(health, width="stretch")
