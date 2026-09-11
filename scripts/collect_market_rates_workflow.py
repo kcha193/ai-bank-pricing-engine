@@ -349,7 +349,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.database:
         config = config.model_copy(update={"database_path": args.database})
 
-    lock_file = args.lock_file or default_lock_file_path(args.product)
+    lock_file = args.lock_file or default_lock_file_path(args.product, config.database_path)
     try:
         with _SingleInstanceLock(Path(lock_file)):
             code, summary = run_collection(

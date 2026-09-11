@@ -437,7 +437,7 @@ def _run(
     (see ``tests/unit/test_pricing_intelligence_boundaries.py``). Use the
     scheduled workflow script for scenario-triggered runs.
     """
-    lock_file = args.lock_file or default_lock_file_path(_product(args))
+    lock_file = args.lock_file or default_lock_file_path(_product(args), config.database_path)
     try:
         with SingleInstanceLock(Path(lock_file)):
             with PricingIntelligenceService(

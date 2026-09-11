@@ -70,19 +70,33 @@ def snapshot(make_record):
     return build_market_snapshot(records)
 
 
-def test_no_change_day_is_a_single_line(snapshot):
+def test_a_quiet_today_still_reports_the_rest_of_the_brief(snapshot):
+    """A quiet TODAY section must not short-circuit the rest of the brief --
+    the 7-day market context and collector health are independent of
+    whether today specifically moved, and dropping them used to let the
+    commonly-delivered quiet-day brief mask a tracked bank that is failing
+    or stale, or elevated activity from earlier in the week."""
+    health = [_health(bank) for bank, _ in MARKET]
+    health[0] = _health("ANZ", consecutive_failures=2)
+
     brief = build_daily_brief(
         as_of=DAY_TWO,
         today_changes=[],
         week_assessment=_assessment(),
         snapshot=snapshot,
-        collector_health=[_health(bank) for bank, _ in MARKET],
+        collector_health=health,
         tracked_banks=[bank for bank, _ in MARKET],
     )
-    assert brief == (
-        "NZ PRICING INTELLIGENCE\n21 Aug 2026\n\n"
-        "No material mortgage pricing changes detected today."
-    )
+
+    assert brief.startswith("NZ PRICING INTELLIGENCE\n21 Aug 2026\n\n")
+    assert "Market state: ELEVATED" in brief
+    assert "TODAY" in brief
+    assert "No material mortgage pricing changes detected today." in brief
+    assert "7-DAY MARKET" in brief
+    assert "MOST COMPETITIVE" in brief
+    assert "WIDEST SPREAD" in brief
+    assert "COLLECTOR HEALTH" in brief
+    assert "4/5 banks fresh" in brief, "a failing bank must still be visible on a quiet day"
 
 
 def test_a_reprice_day_reports_the_move_and_market_context(make_record, snapshot):

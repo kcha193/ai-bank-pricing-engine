@@ -4,6 +4,7 @@ and injected sinks, no live bank sites or real Telegram/webhook calls."""
 
 from datetime import datetime, timedelta, timezone
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -23,6 +24,7 @@ from balance_pricing_engine.pricing_intelligence.orchestration import (
     HEALTH_WARNING,
     ScenarioResult,
     classify_health_escalation,
+    default_lock_file_path,
     run_operational_cycle,
 )
 from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
@@ -37,6 +39,36 @@ def _config(tmp_path, **overrides):
         database_path=str(tmp_path / "obs.db"),
         collection=CollectionConfig(inter_request_delay_seconds=0),
         **overrides,
+    )
+
+
+def test_default_lock_file_path_is_stable_for_the_same_resolved_database(tmp_path, monkeypatch):
+    """Two invocations pointed at the very same real database, one spelling
+    it relatively and the other absolutely (or launched from different
+    working directories), must compute the same default lock path -- each
+    reads its baseline before persisting, so two runs racing under
+    different locks against the same database could both detect, store,
+    and alert on the same transition under different run IDs."""
+    monkeypatch.chdir(tmp_path)
+
+    absolute = tmp_path / "observations.db"
+    relative = Path("observations.db")
+
+    assert default_lock_file_path("home_loan", absolute) == default_lock_file_path(
+        "home_loan", relative
+    )
+
+
+def test_default_lock_file_path_differs_for_different_databases(tmp_path):
+    """Two invocations for the same product but genuinely different
+    databases must not collide on the same lock file -- that would block a
+    collection against one database purely because an unrelated one, for
+    the same product, happens to be running."""
+    first = tmp_path / "first.db"
+    second = tmp_path / "second.db"
+
+    assert default_lock_file_path("home_loan", first) != default_lock_file_path(
+        "home_loan", second
     )
 
 

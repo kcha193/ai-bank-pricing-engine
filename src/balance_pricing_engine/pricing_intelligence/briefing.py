@@ -74,24 +74,28 @@ def build_daily_brief(
     NZ-local time, so the comparison against ``last_success_at`` (UTC) is
     unaffected by the display timezone. Omitted, the count falls back to
     the previous failures-only behaviour.
+
+    A quiet TODAY section never short-circuits the rest of the brief: the
+    7-day market context, collector health, and any scenario trigger are
+    independent of whether *today* specifically moved, and dropping them on
+    a quiet day used to let the commonly-delivered brief say "no material
+    changes detected" while masking a tracked bank that is failing or stale,
+    or elevated activity from earlier in the week.
     """
     product_label = _product_label(snapshot.product_type)
     rate_moves = [change for change in today_changes if change.is_rate_move]
-    if not rate_moves:
-        return (
-            "NZ PRICING INTELLIGENCE\n"
-            f"{as_of:%d %b %Y}\n\n"
-            f"No material {product_label.lower()} pricing changes detected today."
-        )
 
     lines = ["NZ PRICING INTELLIGENCE", f"{as_of:%d %b %Y}", ""]
     lines.append(f"Market state: {week_assessment.state.value}")
     lines.append("")
     lines.append("TODAY")
-    for change in sorted(rate_moves, key=lambda c: (-abs(c.change_bps or 0), c.bank)):
-        label = f"{change.bank} {term_name(change.term_months)}"
-        flag = "  [SUSPICIOUS -- verify source]" if change.suspicious else ""
-        lines.append(f"{label:<14}{change.change_bps:+.0f} bps{flag}")
+    if not rate_moves:
+        lines.append(f"No material {product_label.lower()} pricing changes detected today.")
+    else:
+        for change in sorted(rate_moves, key=lambda c: (-abs(c.change_bps or 0), c.bank)):
+            label = f"{change.bank} {term_name(change.term_months)}"
+            flag = "  [SUSPICIOUS -- verify source]" if change.suspicious else ""
+            lines.append(f"{label:<14}{change.change_bps:+.0f} bps{flag}")
 
     lines.append("")
     lines.append(f"{week_assessment.activity.lookback_days}-DAY MARKET")

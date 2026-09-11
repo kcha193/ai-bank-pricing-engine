@@ -1192,7 +1192,12 @@ def test_brief_daily_change_window_uses_nz_midnight_not_a_rolling_24h_window(
     output = capsys.readouterr().out
 
     assert exit_code == 0
-    assert "ANZ" not in output, (
+    # Scoped to the TODAY section specifically, not a blanket "ANZ"/"-20 bps"
+    # not in output check: the 7-DAY MARKET and MOST COMPETITIVE sections
+    # legitimately mention both once a quiet TODAY section stopped
+    # short-circuiting the rest of the brief.
+    today_section = output.split("TODAY\n", 1)[1].split("\n\n", 1)[0]
+    assert today_section.strip() == "No material mortgage pricing changes detected today.", (
         "yesterday's (NZ-local) change must not appear under today's TODAY section"
     )
 
@@ -1276,7 +1281,7 @@ def test_run_command_default_lock_file_is_derived_from_product(tmp_path, capsys,
 
     monkeypatch.chdir(tmp_path)
     database = Path("observations.db")
-    lock_path = Path(default_lock_file_path("home_loan"))
+    lock_path = Path(default_lock_file_path("home_loan", database))
 
     with SingleInstanceLock(lock_path):
         exit_code = run(["--database", str(database), "run"])

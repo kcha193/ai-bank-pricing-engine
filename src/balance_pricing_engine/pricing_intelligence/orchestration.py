@@ -27,7 +27,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
 import logging
+from pathlib import Path
 from typing import Callable, Mapping, NamedTuple, Optional
 import uuid
 
@@ -97,8 +99,11 @@ _STATUS_BY_CODE = {
 }
 
 
-def default_lock_file_path(product_type: ProductType | str) -> str:
-    """Default single-instance lock path for one product's operational cycle.
+def default_lock_file_path(
+    product_type: ProductType | str, database_path: str | Path = ":memory:"
+) -> str:
+    """Default single-instance lock path for one product+database's
+    operational cycle.
 
     Derived from ``product_type`` -- not one shared literal duplicated in
     the interactive CLI's ``run`` command and the scheduled workflow script
@@ -110,9 +115,27 @@ def default_lock_file_path(product_type: ProductType | str) -> str:
     an unqualified ``collection.lock`` that no deployed schedule actually
     uses, so a manual run and the scheduled job for the same product could
     acquire different locks and run concurrently against the same database.
+
+    ``database_path`` is resolved to its canonical absolute form (not used
+    verbatim) before being folded into the path via a short hash: without
+    resolving, two invocations pointed at the very same real database but
+    launched from different working directories, or one spelling it
+    relatively and the other absolutely, would compute different lock
+    paths and could run concurrently against it -- each reads its baseline
+    before persisting, so both could detect, store, and alert on the same
+    transition under different run IDs. Folding it in at all (not just the
+    product) also means two invocations targeting genuinely different
+    databases for the same product no longer block each other
+    unnecessarily. Hashed rather than embedded verbatim to keep the lock
+    path filesystem-safe and short regardless of how long or unusual
+    ``database_path`` is.
     """
     slug = ProductType(product_type).value.replace("_", "-")
-    return f"data/processed/pricing_intelligence/collection-{slug}.lock"
+    resolved = (
+        ":memory:" if str(database_path) == ":memory:" else str(Path(database_path).resolve())
+    )
+    digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:12]
+    return f"data/processed/pricing_intelligence/collection-{slug}-{digest}.lock"
 
 
 # ---------------------------------------------------------------------------
