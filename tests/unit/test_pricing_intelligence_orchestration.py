@@ -621,6 +621,85 @@ def test_health_alert_recorded_only_after_confirmed_delivery(tmp_path):
         store.close()
 
 
+def test_a_recovery_send_does_not_count_as_a_later_streaks_incident_delivery(tmp_path):
+    """A delivered RECOVERY notice must not be recorded into the same
+    last_alert_sent_at field an incident delivery uses. Both a recovery send
+    and the success that triggered it are stamped from the same `at`, so a
+    >= comparison against last_success_at would otherwise treat the
+    recovery itself as "this streak's incident was delivered" for the
+    *next* failure streak -- even when that streak's own incident alert is
+    never confirmed delivered to any sink."""
+    from balance_pricing_engine.pricing_intelligence.orchestration import _dispatch_health_alerts
+
+    thresholds = HealthThresholds(warning_after_failures=1, alert_after_failures=1)
+    store = ObservationStore(str(tmp_path / "obs.db"))
+
+    class ControllableSink:
+        def __init__(self) -> None:
+            self.deliver = True
+            self.received: list = []
+
+        def send(self, alert) -> None:
+            self.received.append(alert)
+            if not self.deliver:
+                raise RuntimeError("simulated delivery failure")
+
+    sink = ControllableSink()
+    try:
+        # Streak 1: one failure escalates immediately (threshold=1),
+        # delivered fully.
+        _dispatch_health_alerts(
+            store,
+            ProductType.HOME_LOAN,
+            [("ANZ", False, "boom")],
+            thresholds,
+            {"test": sink},
+            DAY_ONE,
+        )
+        # Recovers -- the recovery notice is delivered too.
+        sink.received.clear()
+        _dispatch_health_alerts(
+            store,
+            ProductType.HOME_LOAN,
+            [("ANZ", True, None)],
+            thresholds,
+            {"test": sink},
+            DAY_ONE + timedelta(hours=1),
+        )
+        assert any("recovered" in a.title for a in sink.received)
+
+        # Streak 2: a new incident, but this time every delivery fails.
+        sink.deliver = False
+        sink.received.clear()
+        _dispatch_health_alerts(
+            store,
+            ProductType.HOME_LOAN,
+            [("ANZ", False, "boom again")],
+            thresholds,
+            {"test": sink},
+            DAY_ONE + timedelta(hours=2),
+        )
+        sink.deliver = True
+
+        # Recovers again -- streak 2's own incident was never confirmed
+        # delivered, so this must not send a recovery notice.
+        sink.received.clear()
+        _dispatch_health_alerts(
+            store,
+            ProductType.HOME_LOAN,
+            [("ANZ", True, None)],
+            thresholds,
+            {"test": sink},
+            DAY_ONE + timedelta(hours=3),
+        )
+        assert sink.received == [], (
+            "a recovery notice must not fire for a streak whose own incident "
+            "alert was never delivered"
+        )
+    finally:
+        store.close()
+
+
 def test_recovery_alert_fires_after_an_escalated_streak(tmp_path, fixture_fetcher):
     config = _config(tmp_path, health=HealthThresholds(warning_after_failures=2, alert_after_failures=3))
     sink = CollectingAlertSink()

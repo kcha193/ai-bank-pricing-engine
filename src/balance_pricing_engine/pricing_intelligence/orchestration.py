@@ -675,7 +675,7 @@ def _dispatch_health_alerts(
     previous_by_bank = {
         health.bank: health for health in store.get_collector_health(product_type)
     }
-    escalations: list[tuple[str, Alert]] = []
+    escalations: list[tuple[str, str, Alert]] = []
     for bank, success, error in banks:
         current = store.update_collector_health(
             bank, product_type, success=success, error=error, at=at
@@ -695,7 +695,7 @@ def _dispatch_health_alerts(
             if outcome == HEALTH_RECOVERY
             else _health_alert(bank, current)
         )
-        escalations.append((bank, alert))
+        escalations.append((bank, outcome, alert))
 
     if not escalations:
         return
@@ -707,14 +707,23 @@ def _dispatch_health_alerts(
     # here would mark an alert as sent even when every sink failed, timed
     # out, or none was configured at all, leaving the persisted
     # last_alert_sent_at audit inaccurate.
-    alerts = [alert for _, alert in escalations]
-    alert_to_bank = {alert: bank for bank, alert in escalations}
+    alerts = [alert for _, _, alert in escalations]
+    alert_to_bank = {alert: bank for bank, _, alert in escalations}
     delivered_banks: set[str] = set()
     for sink in sinks.values():
         for alert in dispatch_alerts_safely_detailed(alerts, sink):
             delivered_banks.add(alert_to_bank[alert])
-    for bank, _ in escalations:
-        if bank in delivered_banks:
+    for bank, outcome, _ in escalations:
+        # Only an ALERT delivery counts as "incident delivered" here -- see
+        # classify_health_escalation()'s _alert_delivered_during_current_streak
+        # helper, which reads this same field to decide whether a later
+        # recovery is warranted. Recording a RECOVERY send here too would let
+        # that recovery's own timestamp (always >= its own last_success_at,
+        # since both are stamped from the same successful run) satisfy that
+        # comparison for a *later* streak that never actually got its own
+        # incident alert delivered -- a stale recovery send masquerading as
+        # this streak's incident delivery.
+        if bank in delivered_banks and outcome == HEALTH_ALERT:
             store.record_collector_health_alert(bank, product_type, at=at)
 
 

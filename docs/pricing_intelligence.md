@@ -844,8 +844,16 @@ tracking, no scenario runs.
 
 | Time | Timezone | Command | Deployment |
 | --- | --- | --- | --- |
-| 07:30 | Pacific/Auckland (explicit in the `.plist`/crontab, never machine-local) | home-loan collection | `deploy/scheduling/nz.pricing-intelligence.collect.plist` (launchd) or `crontab.example` |
-| 07:35 | Pacific/Auckland | term-deposit collection | sibling `.plist` / second crontab line |
+| 07:30 | Pacific/Auckland, explicit (`TZ=Pacific/Auckland` in the crontab itself) | home-loan collection | `crontab.example` (cron) |
+| 07:35 | Pacific/Auckland, explicit | term-deposit collection | second crontab line |
+| 07:30 | **host system timezone** -- launchd's `StartCalendarInterval` has no per-job timezone key at all; this fires at 07:30 *wherever the Mac's clock is set*, not NZ time unless that happens to be the same | home-loan collection | `deploy/scheduling/nz.pricing-intelligence.collect.plist` (launchd) |
+| 07:35 | host system timezone | term-deposit collection | sibling `.plist` |
+
+Pick cron when the host's system timezone is not already Pacific/Auckland --
+launchd has no equivalent of cron's `TZ=` line, so on a machine set to any
+other timezone the launchd schedule collects at 07:30 in the wrong country
+and misses the intended NZ morning window. Both plists' own comments repeat
+this caveat; see them before installing on a non-NZ-timezone Mac.
 
 Both ready-made schedules in [`deploy/scheduling/`](../deploy/scheduling/)
 document Telegram configuration alongside the existing webhook guidance --
