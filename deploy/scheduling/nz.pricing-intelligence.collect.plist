@@ -8,6 +8,14 @@
   this one; its lock-file and summary-file paths are already distinct from
   this file's, so the two schedules cannot collide.
 
+  The lock-file argument below matches exactly what
+  orchestration.default_lock_file_path() itself computes for the config
+  flag's configs/base.yaml (unconfigured, so default) database path;
+  explicit here rather than relying on that default so an interactive
+  `pricing-intelligence run` against the same database always shares this
+  same lock. If you configure a different pricing_intelligence.database_path,
+  update this path to match.
+
   Install:
     cp deploy/scheduling/nz.pricing-intelligence.collect.plist ~/Library/LaunchAgents/
     # Edit the two REPLACE_ME paths below first.
@@ -80,7 +88,7 @@
         <string>--render-javascript</string>
         <string>--quiet</string>
         <string>--lock-file</string>
-        <string>data/processed/pricing_intelligence/collection-home-loan.lock</string>
+        <string>data/processed/pricing_intelligence/collection-home-loan-observations.lock</string>
         <string>--summary-file</string>
         <string>data/processed/pricing_intelligence/last_run_home_loan.json</string>
     </array>

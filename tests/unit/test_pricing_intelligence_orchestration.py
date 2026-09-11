@@ -59,6 +59,30 @@ def test_default_lock_file_path_is_stable_for_the_same_resolved_database(tmp_pat
     )
 
 
+def test_default_lock_file_path_is_absolute_and_stable_across_working_directories(
+    tmp_path, monkeypatch
+):
+    """The returned path itself must be absolute, not a relative
+    'data/processed/...' literal -- a relative return value gets
+    reinterpreted against whatever the calling process's own working
+    directory happens to be, so two invocations given the same absolute
+    --database but launched from different working directories would
+    otherwise still lock two different files on disk despite the function
+    computing the identical string."""
+    database = tmp_path / "observations.db"
+
+    other_cwd = tmp_path / "elsewhere"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+    from_elsewhere = default_lock_file_path("home_loan", database)
+
+    monkeypatch.chdir(tmp_path)
+    from_here = default_lock_file_path("home_loan", database)
+
+    assert Path(from_elsewhere).is_absolute()
+    assert from_elsewhere == from_here
+
+
 def test_default_lock_file_path_differs_for_different_databases(tmp_path):
     """Two invocations for the same product but genuinely different
     databases must not collide on the same lock file -- that would block a

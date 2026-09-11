@@ -9,6 +9,15 @@
   of one product cannot make the workflow skip the other
   (EXIT_ALREADY_RUNNING) or overwrite its summary file.
 
+  The lock-file argument below matches exactly what
+  orchestration.default_lock_file_path() itself computes for the config
+  flag's configs/base.yaml (unconfigured, so default) database path;
+  explicit here rather than relying on that default so an interactive
+  `pricing-intelligence run` with the product flag set to term_deposit
+  against the same database always shares this same lock. If you configure
+  a different pricing_intelligence.database_path, update this path to
+  match.
+
   Install (in addition to the home-loan plist):
     cp deploy/scheduling/nz.pricing-intelligence.collect-term-deposit.plist ~/Library/LaunchAgents/
     # Edit the two REPLACE_ME paths below first.
@@ -78,7 +87,7 @@
         <string>--render-javascript</string>
         <string>--quiet</string>
         <string>--lock-file</string>
-        <string>data/processed/pricing_intelligence/collection-term-deposit.lock</string>
+        <string>data/processed/pricing_intelligence/collection-term-deposit-observations.lock</string>
         <string>--summary-file</string>
         <string>data/processed/pricing_intelligence/last_run_term_deposit.json</string>
     </array>

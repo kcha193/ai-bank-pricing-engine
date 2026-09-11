@@ -27,7 +27,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import hashlib
 import logging
 from pathlib import Path
 from typing import Callable, Mapping, NamedTuple, Optional
@@ -116,26 +115,37 @@ def default_lock_file_path(
     uses, so a manual run and the scheduled job for the same product could
     acquire different locks and run concurrently against the same database.
 
-    ``database_path`` is resolved to its canonical absolute form (not used
-    verbatim) before being folded into the path via a short hash: without
-    resolving, two invocations pointed at the very same real database but
-    launched from different working directories, or one spelling it
-    relatively and the other absolutely, would compute different lock
-    paths and could run concurrently against it -- each reads its baseline
-    before persisting, so both could detect, store, and alert on the same
-    transition under different run IDs. Folding it in at all (not just the
-    product) also means two invocations targeting genuinely different
-    databases for the same product no longer block each other
-    unnecessarily. Hashed rather than embedded verbatim to keep the lock
-    path filesystem-safe and short regardless of how long or unusual
-    ``database_path`` is.
+    Always returns an absolute path, colocated in the same directory as
+    ``database_path``'s own *resolved* (canonical absolute) location, with
+    the database's filename stem folded into the lock filename alongside
+    the product slug -- not a relative ``data/processed/...`` literal:
+    a relative return value gets reinterpreted against whatever the calling
+    process's own working directory happens to be, so two invocations
+    pointed at the very same real database but launched from different
+    working directories (or one spelling it relatively, the other
+    absolutely) would otherwise still end up locking two different files on
+    disk despite computing the identical *string* -- each reads its
+    baseline before persisting, so both could detect, store, and alert on
+    the same transition under different run IDs. Colocating with the
+    database (rather than a fixed central directory) makes this naturally
+    unique per real database with no separate uniqueness scheme needed: two
+    unrelated databases, even sharing a filename, resolve to different
+    parent directories and so never collide, while genuinely the same
+    database always computes the same lock path. The checked-in
+    cron/launchd artifacts set an explicit ``--lock-file`` matching this
+    same scheme (see ``deploy/scheduling/``) rather than relying on this
+    default, precisely so a scheduled run and an interactive one against the
+    same database always share one lock regardless of which computed it.
     """
     slug = ProductType(product_type).value.replace("_", "-")
-    resolved = (
-        ":memory:" if str(database_path) == ":memory:" else str(Path(database_path).resolve())
-    )
-    digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:12]
-    return f"data/processed/pricing_intelligence/collection-{slug}-{digest}.lock"
+    if str(database_path) == ":memory:":
+        lock_dir = Path("data/processed/pricing_intelligence").resolve()
+        stem = "memory"
+    else:
+        resolved = Path(database_path).resolve()
+        lock_dir = resolved.parent
+        stem = resolved.stem
+    return str(lock_dir / f"collection-{slug}-{stem}.lock")
 
 
 # ---------------------------------------------------------------------------

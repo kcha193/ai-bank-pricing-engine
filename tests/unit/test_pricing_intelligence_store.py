@@ -2577,6 +2577,27 @@ def test_integrity_check_flags_a_home_loan_rate_hiding_behind_the_deposit_band(
     assert any("plausible rate bounds" in issue for issue in report.issues)
 
 
+def test_integrity_check_flags_an_unreadable_term_deposit_row(store, make_record):
+    """get_current_observations() defaults to HOME_LOAN only -- calling it
+    unscoped would silently skip term-deposit rows entirely, so a malformed
+    stored deposit row (e.g. unparseable JSON in validation_warnings) would
+    never surface here, and the health command could report ok=True while
+    the deposit snapshot is actually unrehydratable."""
+    store.record_observations(
+        [make_record(product_type="term_deposit", rate_category="term_deposit")],
+        observed_at=DAY_ONE,
+    )
+    store._connection.execute(
+        "UPDATE observations SET validation_warnings = 'not-json' WHERE product_type = 'term_deposit'"
+    )
+
+    report = store.check_integrity()
+
+    assert report.ok is False
+    assert report.checks["latest_observations_readable"] is False
+    assert any("unreadable" in issue for issue in report.issues)
+
+
 def test_integrity_check_flags_a_broken_timestamp(store, make_record):
     store.record_observations([make_record()], observed_at=DAY_ONE)
     store._connection.execute("UPDATE observations SET last_seen_at = 'not-a-timestamp'")

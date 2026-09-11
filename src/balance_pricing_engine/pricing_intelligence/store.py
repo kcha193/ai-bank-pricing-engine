@@ -2986,13 +2986,23 @@ class ObservationStore:
         if not schema_ok:
             issues.append(f"PRAGMA integrity_check: {pragma_row[0] if pragma_row else 'no result'}")
 
-        try:
-            current = self.get_current_observations()
-            checks["latest_observations_readable"] = True
-        except Exception as exc:  # noqa: BLE001 - reported, not raised
-            current = []
-            checks["latest_observations_readable"] = False
-            issues.append(f"latest observations unreadable: {exc}")
+        # Both products, not get_current_observations()'s own default
+        # (HOME_LOAN only): a malformed stored row (e.g. an unparseable
+        # payment-frequency field) that only exists on the term-deposit side
+        # would otherwise never surface here, and this command could exit
+        # successfully while the deposit snapshot is actually unusable.
+        current: list[CompetitorRateRecord] = []
+        readable = True
+        unreadable_errors: list[str] = []
+        for product in (ProductType.HOME_LOAN, ProductType.TERM_DEPOSIT):
+            try:
+                current.extend(self.get_current_observations(product))
+            except Exception as exc:  # noqa: BLE001 - reported, not raised
+                readable = False
+                unreadable_errors.append(f"{product.value}: {exc}")
+        checks["latest_observations_readable"] = readable
+        if unreadable_errors:
+            issues.append("latest observations unreadable: " + "; ".join(unreadable_errors))
 
         keys = [(record.observation_key(), record.product_type) for record in current]
         checks["no_duplicate_current_keys"] = len(keys) == len(set(keys))

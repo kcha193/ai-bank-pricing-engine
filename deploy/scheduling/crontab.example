@@ -11,6 +11,15 @@
 # sharing either would make the second product's run either get skipped
 # (EXIT_ALREADY_RUNNING) or silently overwrite the other product's summary.
 #
+# --lock-file below matches exactly what orchestration.default_lock_file_path()
+# itself computes for --config configs/base.yaml's (unconfigured, so default)
+# database path -- explicit here rather than relying on that default so an
+# interactive `pricing-intelligence run` against the same database always
+# shares this same lock, not a merely equal-looking one computed
+# independently. If you configure a different pricing_intelligence.database_path,
+# update these two paths to match (or drop --lock-file entirely and let both
+# invocations compute the same default from that path instead).
+#
 # Exit codes:
 #   0  every selected bank collected
 #   1  no bank collected -- the run produced nothing
@@ -58,9 +67,9 @@
 # so it does not depend on TZ being set in its environment either.)
 CRON_TZ=Pacific/Auckland
 
-30 7 * * * cd /path/to/ai-bank-pricing-engine && mkdir -p data/processed/pricing_intelligence && ( .venv/bin/python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --render-javascript --quiet --lock-file data/processed/pricing_intelligence/collection-home-loan.lock --summary-file data/processed/pricing_intelligence/last_run_home_loan.json >> data/processed/pricing_intelligence/collect.log 2>&1; code=$?; [ "$code" -eq 0 ] || echo "NZ home-loan rate collection exited $code $(date)" >> data/processed/pricing_intelligence/collect.err.log; exit "$code" )
+30 7 * * * cd /path/to/ai-bank-pricing-engine && mkdir -p data/processed/pricing_intelligence && ( .venv/bin/python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --render-javascript --quiet --lock-file data/processed/pricing_intelligence/collection-home-loan-observations.lock --summary-file data/processed/pricing_intelligence/last_run_home_loan.json >> data/processed/pricing_intelligence/collect.log 2>&1; code=$?; [ "$code" -eq 0 ] || echo "NZ home-loan rate collection exited $code $(date)" >> data/processed/pricing_intelligence/collect.err.log; exit "$code" )
 
-35 7 * * * cd /path/to/ai-bank-pricing-engine && mkdir -p data/processed/pricing_intelligence && ( .venv/bin/python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --product term_deposit --render-javascript --quiet --lock-file data/processed/pricing_intelligence/collection-term-deposit.lock --summary-file data/processed/pricing_intelligence/last_run_term_deposit.json >> data/processed/pricing_intelligence/collect.log 2>&1; code=$?; [ "$code" -eq 0 ] || echo "NZ term-deposit rate collection exited $code $(date)" >> data/processed/pricing_intelligence/collect.err.log; exit "$code" )
+35 7 * * * cd /path/to/ai-bank-pricing-engine && mkdir -p data/processed/pricing_intelligence && ( .venv/bin/python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --product term_deposit --render-javascript --quiet --lock-file data/processed/pricing_intelligence/collection-term-deposit-observations.lock --summary-file data/processed/pricing_intelligence/last_run_term_deposit.json >> data/processed/pricing_intelligence/collect.log 2>&1; code=$?; [ "$code" -eq 0 ] || echo "NZ term-deposit rate collection exited $code $(date)" >> data/processed/pricing_intelligence/collect.err.log; exit "$code" )
 
 # A daily brief right after the morning run, and an optional second
 # collection later in the day, are both opt-in operator choices -- see

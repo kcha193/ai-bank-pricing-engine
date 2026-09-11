@@ -195,7 +195,7 @@ python3 scripts/collect_market_rates_workflow.py \
     --config configs/base.yaml \
     --product term_deposit \
     --render-javascript \
-    --lock-file data/processed/pricing_intelligence/collection-term-deposit.lock \
+    --lock-file data/processed/pricing_intelligence/collection-term-deposit-observations.lock \
     --summary-file data/processed/pricing_intelligence/last_run_term_deposit.json
 ```
 
@@ -797,13 +797,14 @@ One command: collect → validate → persist → detect changes → classify ma
 state → update collector health → dispatch alerts (webhook/Telegram, whichever
 configured) → persist a `RunRecord`. Prints the same collection report
 `collect` does, plus status/alerts-sent/run id. Takes a single-instance lock
-(`--lock-file`) whose default is derived from `--product` --
-`orchestration.default_lock_file_path()` -- matching the checked-in
-cron/launchd artifacts' own per-product lock files (`collection-home-loan.lock`
-/ `collection-term-deposit.lock`, see "Scheduled run" below), so a manual
-`run` and the scheduled job for the same product genuinely share one lock and
-cannot interleave against the same database. Pass `--lock-file` explicitly
-only to point at something other than that default.
+(`--lock-file`) whose default is derived from both `--product` and the
+resolved database path -- `orchestration.default_lock_file_path()` -- an
+absolute path colocated next to the database itself, matching the checked-in
+cron/launchd artifacts' own per-product lock files (`collection-home-loan-observations.lock`
+/ `collection-term-deposit-observations.lock`, see "Scheduled run" below), so
+a manual `run` and the scheduled job for the same product+database genuinely
+share one lock and cannot interleave against it. Pass `--lock-file`
+explicitly only to point at something other than that default.
 
 Does **not** auto-trigger pricing scenarios (see below) -- that requires the
 optimiser, which `pricing_intelligence` (this CLI included) is architecturally
@@ -833,7 +834,8 @@ python3 scripts/collect_market_rates_workflow.py \
 ```
 
 `--lock-file` is omitted here deliberately -- its default is derived from
-`--product` (`collection-home-loan.lock` for the default `home_loan`), the
+`--product` and the resolved database path (`collection-home-loan-observations.lock`
+for the default `home_loan` product against the default database path), the
 same as the interactive `run` command above; pass it explicitly only to
 override that default.
 
