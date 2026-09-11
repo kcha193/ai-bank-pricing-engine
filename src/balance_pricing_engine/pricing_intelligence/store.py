@@ -28,8 +28,11 @@ from datetime import datetime, timedelta, timezone
 import json
 import logging
 import re
+import os
 from pathlib import Path
+import shutil
 import sqlite3
+import tempfile
 from typing import Iterable, Iterator, Mapping, NamedTuple, Optional, Sequence
 import uuid
 
@@ -514,13 +517,30 @@ def _collector_health_from_row(row: sqlite3.Row) -> "CollectorHealth":
 class ObservationStore:
     """Repository over historical rate observations and detected changes."""
 
-    def __init__(self, database_path: str | Path = ":memory:") -> None:
+    def __init__(self, database_path: str | Path = ":memory:", *, read_only: bool = False) -> None:
         self.database_path = str(database_path)
-        if self.database_path != ":memory:":
-            Path(self.database_path).parent.mkdir(parents=True, exist_ok=True)
+        self._temp_database_path: Optional[str] = None
+        connect_path = self.database_path
+        if read_only and self.database_path != ":memory:":
+            # A dry run must never create or migrate the real database file --
+            # work against a throwaway copy instead, so schema/migration
+            # writes (and any accidental row writes) land there, not on disk
+            # at the configured path. A database that doesn't exist yet has
+            # nothing to copy, so an in-memory store (starts empty, same as a
+            # fresh file would) stands in for it without touching disk at all.
+            if Path(self.database_path).exists():
+                fd, temp_path = tempfile.mkstemp(suffix=".sqlite3")
+                os.close(fd)
+                shutil.copyfile(self.database_path, temp_path)
+                connect_path = temp_path
+                self._temp_database_path = temp_path
+            else:
+                connect_path = ":memory:"
+        if connect_path != ":memory:":
+            Path(connect_path).parent.mkdir(parents=True, exist_ok=True)
         # A single shared connection keeps an in-memory store usable across
         # calls, which is what the tests and the CLI both want.
-        self._connection = sqlite3.connect(self.database_path)
+        self._connection = sqlite3.connect(connect_path)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA foreign_keys = ON")
         self._transaction_depth = 0
@@ -530,6 +550,9 @@ class ObservationStore:
 
     def close(self) -> None:
         self._connection.close()
+        if self._temp_database_path is not None:
+            Path(self._temp_database_path).unlink(missing_ok=True)
+            self._temp_database_path = None
 
     def __enter__(self) -> "ObservationStore":
         return self

@@ -496,6 +496,42 @@ def test_three_consecutive_failures_sends_a_telegram_alert(tmp_path, fixture_fet
     assert result.alerts_sent == 1
 
 
+def test_health_alert_labels_the_affected_product(tmp_path):
+    """Both the checked-in home-loan and term-deposit scheduled collections
+    can share one webhook/Telegram channel -- a bare "{bank} collector
+    failed" message leaves an operator unable to tell which collection
+    pipeline is unhealthy, and they may investigate the wrong market."""
+    from balance_pricing_engine.pricing_intelligence.orchestration import _dispatch_health_alerts
+
+    sink = CollectingAlertSink()
+    store = ObservationStore(str(tmp_path / "obs.db"))
+    thresholds = HealthThresholds(warning_after_failures=1, alert_after_failures=1)
+    try:
+        _dispatch_health_alerts(
+            store,
+            ProductType.TERM_DEPOSIT,
+            [("ANZ", False, "boom")],
+            thresholds,
+            {"test": sink},
+            DAY_ONE,
+        )
+        _dispatch_health_alerts(
+            store,
+            ProductType.TERM_DEPOSIT,
+            [("ANZ", True, None)],
+            thresholds,
+            {"test": sink},
+            DAY_ONE + timedelta(hours=1),
+        )
+    finally:
+        store.close()
+
+    incident = next(a for a in sink.alerts if "COLLECTOR ISSUE" in a.title)
+    recovery = next(a for a in sink.alerts if "recovered" in a.title)
+    assert "TERM DEPOSIT" in incident.body
+    assert "TERM DEPOSIT" in recovery.title
+
+
 def test_a_retried_run_does_not_inflate_the_failure_streak(tmp_path, fixture_fetcher):
     """A retried run_operational_cycle() invocation under the same run_id
     (e.g. crashed then re-run) must not double-count a single logical
@@ -528,6 +564,36 @@ def test_a_retried_run_does_not_inflate_the_failure_streak(tmp_path, fixture_fet
     )
     health_alerts = [a for a in sink.alerts if "COLLECTOR ISSUE" in a.title]
     assert health_alerts == [], "a streak of 1 must not have crossed alert_after_failures=2"
+
+
+def test_a_retried_threshold_crossing_run_does_not_redispatch_the_alert(tmp_path, fixture_fetcher):
+    """A retry of a run whose streak already reached alert_after_failures on
+    the original call must not re-dispatch the same incident alert a second
+    time -- update_collector_health() dedupes the streak itself, but
+    classify_health_escalation() cannot otherwise tell "still at the
+    threshold from last time" apart from "just reached it this call" on
+    streak length alone."""
+    config = _config(
+        tmp_path, health=HealthThresholds(warning_after_failures=1, alert_after_failures=1)
+    )
+    sink = CollectingAlertSink()
+
+    fetcher = fixture_fetcher(failing_banks=["Westpac"])
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fetcher
+    ) as service:
+        first = run_operational_cycle(
+            service, captured_at_utc=DAY_ONE, alert_sinks={"test": sink}
+        )
+        run_operational_cycle(
+            service,
+            captured_at_utc=DAY_ONE,
+            run_id=first.run_record.run_id,
+            alert_sinks={"test": sink},
+        )
+
+    health_alerts = [a for a in sink.alerts if "COLLECTOR ISSUE" in a.title]
+    assert len(health_alerts) == 1, "a retried run must not re-dispatch the same incident alert"
 
 
 def test_two_consecutive_failures_does_not_alert_only_warns(tmp_path, fixture_fetcher, caplog):
@@ -621,8 +687,8 @@ def test_health_alerts_for_several_banks_are_batched_into_one_dispatch_call(tmp_
     assert len(calls) == 1, "both banks' escalation alerts must share a single dispatch call"
     assert len(calls[0]) == 2
     assert {alert.body.split("\n")[0] for alert in calls[0]} == {
-        "ANZ collector failed 1 consecutive runs.",
-        "BNZ collector failed 1 consecutive runs.",
+        "ANZ MORTGAGE collector failed 1 consecutive runs.",
+        "BNZ MORTGAGE collector failed 1 consecutive runs.",
     }
 
 

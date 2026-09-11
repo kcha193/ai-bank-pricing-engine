@@ -504,6 +504,19 @@ def classify_health_escalation(
     return HEALTH_NONE
 
 
+def _health_product_label(product_type: ProductType) -> str:
+    """Display label for a collector-health alert -- matches the
+    "TERM DEPOSIT"/"MORTGAGE" convention ``alerts.format_alert`` and
+    ``briefing._product_label`` already use for the same distinction.
+
+    Both the checked-in home-loan and term-deposit scheduled collections can
+    share one webhook/Telegram channel, so a bare "{bank} collector failed"
+    message cannot tell an operator which collection pipeline is unhealthy --
+    they could investigate the wrong market entirely.
+    """
+    return "TERM DEPOSIT" if product_type is ProductType.TERM_DEPOSIT else "MORTGAGE"
+
+
 def _health_alert(bank: str, health: CollectorHealth) -> Alert:
     title = "⚠️ PRICING INTELLIGENCE COLLECTOR ISSUE"
     last_success = (
@@ -511,7 +524,8 @@ def _health_alert(bank: str, health: CollectorHealth) -> Alert:
     )
     body = "\n".join(
         [
-            f"{bank} collector failed {health.consecutive_failures} consecutive runs.",
+            f"{bank} {_health_product_label(health.product_type)} collector failed "
+            f"{health.consecutive_failures} consecutive runs.",
             "",
             f"Last successful collection: {last_success}",
             f"Error: {health.last_error or 'unknown'}",
@@ -521,7 +535,7 @@ def _health_alert(bank: str, health: CollectorHealth) -> Alert:
 
 
 def _recovery_alert(bank: str, health: CollectorHealth) -> Alert:
-    title = f"✅ {bank} collector recovered"
+    title = f"✅ {bank} {_health_product_label(health.product_type)} collector recovered"
     body = "Rates collected successfully after a prior failure streak."
     return plain_alert(title, body)
 
@@ -694,6 +708,18 @@ def _dispatch_health_alerts(
         current = store.update_collector_health(
             bank, product_type, success=success, error=error, at=at, run_id=run_id
         )
+        if run_id is not None and current == previous_by_bank.get(bank):
+            # update_collector_health() deduplicated this bank's update: this
+            # run_id already advanced its streak in an earlier call (a
+            # retried run_operational_cycle() invocation), so `current` is
+            # the same, untouched row `previous_by_bank` already holds --
+            # not a fresh update. classify_health_escalation() cannot tell
+            # "still at the alert threshold from last time" apart from
+            # "just reached it this call" on streak length alone, so without
+            # this check a retry of a threshold-crossing run would still
+            # classify (and dispatch) the same incident/recovery a second
+            # time even though the streak itself is no longer inflated.
+            continue
         outcome = classify_health_escalation(thresholds, previous_by_bank.get(bank), current)
         if outcome == HEALTH_NONE:
             continue

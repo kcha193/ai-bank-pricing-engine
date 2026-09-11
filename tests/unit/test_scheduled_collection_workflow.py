@@ -1137,6 +1137,94 @@ def test_a_reprice_auto_triggers_pricing_scenarios_end_to_end(
     assert runs[0]["term_months"] == 12
 
 
+def test_scenario_trigger_fn_isolates_a_failing_term_from_the_others(
+    workflow, fixture_fetcher, tmp_path, monkeypatch
+):
+    """When several terms trigger together, one term's scenario computation
+    failing (e.g. no external competitor peer left once our_bank is
+    excluded -- a documented reachable case, not a bug) must not discard
+    every other term's already-computed comparison. orchestration's own
+    catch around the whole callback (see its docstring) only stops a
+    failure from aborting collection -- it doesn't recover per-term results,
+    so this callback must isolate per term itself."""
+    monkeypatch.chdir(tmp_path)
+    custom_db = tmp_path / "obs.db"
+
+    with PricingIntelligenceService(
+        config=PricingIntelligenceConfig(
+            database_path=str(custom_db), collection=CollectionConfig(inter_request_delay_seconds=0)
+        ),
+        store=ObservationStore(custom_db),
+        fetcher=fixture_fetcher(),
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        snapshot = service.get_market_snapshot()
+
+    engine_config_path = tmp_path / "engine.yaml"
+    engine_config_path.write_text(
+        yaml.dump(_minimal_engine_config(database_path=str(custom_db)))
+    )
+
+    class _StopEarly(Exception):
+        pass
+
+    captured_fn = {}
+
+    def fake_run_operational_cycle(service, **kwargs):
+        captured_fn["scenario_trigger_fn"] = kwargs["scenario_trigger_fn"]
+        raise _StopEarly()
+
+    monkeypatch.setattr(workflow, "run_operational_cycle", fake_run_operational_cycle)
+    monkeypatch.setattr(
+        workflow,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"], store=kwargs["store"], fetcher=fixture_fetcher()
+        ),
+    )
+
+    # Patched before main() runs: scenario_trigger_fn's `from ... import
+    # run_triggered_scenarios` executes inside run_collection() itself
+    # (during main()), binding whatever this module attribute resolves to
+    # at that moment -- patching afterwards would be too late to affect the
+    # closure already captured below.
+    import balance_pricing_engine.pricing_scenario_trigger as trigger_module
+
+    real_run_triggered_scenarios = trigger_module.run_triggered_scenarios
+
+    def flaky_run_triggered_scenarios(base_config, *, term_months, snapshot, **kwargs):
+        if term_months == 12:
+            raise RuntimeError("simulated: no external peer remains for this term")
+        return real_run_triggered_scenarios(
+            base_config, term_months=term_months, snapshot=snapshot, **kwargs
+        )
+
+    monkeypatch.setattr(
+        trigger_module, "run_triggered_scenarios", flaky_run_triggered_scenarios
+    )
+
+    try:
+        workflow.main(
+            [
+                "--config",
+                str(engine_config_path),
+                "--lock-file",
+                str(tmp_path / "collection.lock"),
+                "--quiet",
+            ]
+        )
+    except _StopEarly:
+        pass
+
+    scenario_trigger_fn = captured_fn["scenario_trigger_fn"]
+    assert scenario_trigger_fn is not None
+
+    results = scenario_trigger_fn([12, 24], snapshot)
+
+    assert 12 not in results, "the failing term must be skipped, not raised"
+    assert 24 in results, "an unaffected term's comparison must still be returned"
+
+
 def test_no_config_means_no_scenario_trigger(workflow, fixture_fetcher, tmp_path, monkeypatch):
     """--database alone (no --config) has no economic assumptions to run
     scenarios against, so scenario-triggering is silently skipped, not an

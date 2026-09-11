@@ -763,6 +763,57 @@ def test_a_database_with_no_surviving_trace_of_a_run_falls_back_to_home_loan(tmp
         assert row["product_type"] == "home_loan"
 
 
+def test_read_only_store_does_not_migrate_the_database_file_on_disk(tmp_path):
+    """A dry run opening ``read_only=True`` against an older production
+    database (missing a column a later migration adds) must not leave that
+    migration's ``ALTER TABLE`` on disk -- CLI ``--dry-run`` promises nothing
+    persisted, and that has to hold even when the on-disk schema is stale
+    enough to need a migration just to be queryable. Confirmed by opening a
+    legacy ``collector_health`` table (predating ``last_processed_run_id``),
+    then reopening a raw connection afterwards: the column must still be
+    absent from the file, even though the read-only store itself queried
+    successfully as if it were present."""
+    import sqlite3
+
+    db_path = tmp_path / "legacy.db"
+    connection = sqlite3.connect(str(db_path))
+    connection.execute(
+        "CREATE TABLE collector_health ("
+        "bank TEXT NOT NULL, product_type TEXT NOT NULL, "
+        "consecutive_failures INTEGER NOT NULL DEFAULT 0, "
+        "last_success_at TEXT, last_failure_at TEXT, last_error TEXT, "
+        "last_alert_sent_at TEXT, PRIMARY KEY (bank, product_type))"
+    )
+    connection.execute(
+        "INSERT INTO collector_health (bank, product_type, consecutive_failures) "
+        "VALUES ('ANZ', 'home_loan', 2)"
+    )
+    connection.commit()
+    connection.close()
+
+    with ObservationStore(str(db_path), read_only=True) as store:
+        columns = {row["name"] for row in store._connection.execute("PRAGMA table_info(collector_health)")}
+        assert "last_processed_run_id" in columns
+
+    raw = sqlite3.connect(str(db_path))
+    on_disk_columns = {row[1] for row in raw.execute("PRAGMA table_info(collector_health)")}
+    raw.close()
+    assert "last_processed_run_id" not in on_disk_columns
+
+
+def test_read_only_store_against_a_missing_database_does_not_create_a_file(tmp_path):
+    """A dry run's first-ever invocation, before any real collection has
+    run, points at a database path that doesn't exist yet. It must stay that
+    way -- opening a read-only store should serve an empty in-memory
+    database rather than materialising a fresh file on disk."""
+    db_path = tmp_path / "does-not-exist-yet.db"
+
+    with ObservationStore(str(db_path), read_only=True) as store:
+        assert store.get_current_observations() == []
+
+    assert not db_path.exists()
+
+
 def test_a_pre_column_database_infers_product_from_its_existing_history(store, make_record):
     """The --product CLI flag has collected term deposits since before
     collection_runs.product_type existed, so an upgrading database can

@@ -997,6 +997,38 @@ def test_run_command_dry_run_persists_nothing(tmp_path, fixture_fetcher, capsys,
         assert store.get_current_observations() == []
 
 
+def test_run_command_dry_run_does_not_create_the_database_file(
+    tmp_path, fixture_fetcher, capsys, monkeypatch
+):
+    """``run --dry-run`` against a database path that doesn't exist yet must
+    not bring one into existence -- opening ``ObservationStore`` used to
+    create and schema-initialise the file regardless of ``--dry-run``,
+    contradicting the CLI's own 'nothing persisted' message."""
+    database = tmp_path / "observations.db"
+    monkeypatch.setattr(
+        cli,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"], store=kwargs["store"], fetcher=fixture_fetcher()
+        ),
+    )
+
+    exit_code = run(
+        [
+            "--database",
+            str(database),
+            "run",
+            "--dry-run",
+            "--lock-file",
+            str(tmp_path / "collection.lock"),
+        ]
+    )
+    capsys.readouterr()
+
+    assert exit_code == 0
+    assert not database.exists()
+
+
 def test_brief_daily_reports_no_change(populated_database, capsys):
     exit_code = run(["--database", populated_database, "brief"])
     output = capsys.readouterr().out

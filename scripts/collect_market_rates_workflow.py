@@ -173,11 +173,29 @@ def run_collection(
         )
 
         def scenario_trigger_fn(terms, snapshot):
+            # Isolated per term: orchestration.run_operational_cycle() already
+            # catches a failure from this whole callback so one can't abort
+            # collection (see its own docstring), but that all-or-nothing
+            # catch still discards every other term's already-computed
+            # comparison if only one term raises -- e.g. a single term has no
+            # external competitor peer left once our_bank is excluded, a
+            # documented reachable case, not a bug in the others. A per-term
+            # try/except here means the unaffected terms are still persisted
+            # and attached to their own alerts.
             results = {}
             for term in terms:
-                comparison = run_triggered_scenarios(
-                    pricing_config, term_months=term, snapshot=snapshot
-                )
+                try:
+                    comparison = run_triggered_scenarios(
+                        pricing_config, term_months=term, snapshot=snapshot
+                    )
+                except Exception:  # noqa: BLE001 - decision-support only, one term must not cost the rest
+                    logger.warning(
+                        "scenario comparison failed for term=%s; continuing with the "
+                        "remaining triggered terms",
+                        term,
+                        exc_info=True,
+                    )
+                    continue
                 results[term] = ScenarioResult(
                     data=comparison.as_dicts(), alert_block=format_scenario_block(comparison)
                 )

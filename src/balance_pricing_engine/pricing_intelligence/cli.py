@@ -442,7 +442,7 @@ def _run(
         with SingleInstanceLock(Path(lock_file)):
             with PricingIntelligenceService(
                 config=config,
-                store=ObservationStore(config.database_path),
+                store=ObservationStore(config.database_path, read_only=args.dry_run),
                 render_javascript=args.render_javascript,
             ) as service:
                 result = run_operational_cycle(
