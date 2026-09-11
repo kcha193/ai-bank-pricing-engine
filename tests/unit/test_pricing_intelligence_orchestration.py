@@ -627,6 +627,41 @@ def test_health_alert_labels_the_affected_product(tmp_path):
     assert "TERM DEPOSIT" in recovery.title
 
 
+def test_health_alert_reports_last_success_in_nz_local_time(tmp_path):
+    """A collector-health alert's "Last successful collection" timestamp
+    must be NZ-local, matching the corrected daily-brief heading -- under
+    the checked-in 07:30 Pacific/Auckland schedule, UTC is still the
+    previous day at that hour, so formatting it straight from UTC overstates
+    how many calendar days the collector has actually been unavailable."""
+    from balance_pricing_engine.pricing_intelligence.orchestration import _dispatch_health_alerts
+
+    # 20:00 UTC on 20 Aug is already 08:00 NZST on 21 Aug (Pacific/Auckland
+    # is UTC+12 in August, outside NZDT) -- a genuinely different calendar
+    # date, not just a different clock time.
+    last_success_utc = DAY_ONE + timedelta(hours=20)
+    sink = CollectingAlertSink()
+    store = ObservationStore(str(tmp_path / "obs.db"))
+    thresholds = HealthThresholds(warning_after_failures=1, alert_after_failures=1)
+    try:
+        _dispatch_health_alerts(
+            store, ProductType.HOME_LOAN, [("ANZ", True, None)], thresholds, {}, last_success_utc
+        )
+        _dispatch_health_alerts(
+            store,
+            ProductType.HOME_LOAN,
+            [("ANZ", False, "boom")],
+            thresholds,
+            {"test": sink},
+            last_success_utc + timedelta(hours=1),
+        )
+    finally:
+        store.close()
+
+    incident = next(a for a in sink.alerts if "COLLECTOR ISSUE" in a.title)
+    assert "21 Aug 2026" in incident.body
+    assert "20 Aug 2026" not in incident.body
+
+
 def test_a_retried_run_does_not_inflate_the_failure_streak(tmp_path, fixture_fetcher):
     """A retried run_operational_cycle() invocation under the same run_id
     (e.g. crashed then re-run) must not double-count a single logical

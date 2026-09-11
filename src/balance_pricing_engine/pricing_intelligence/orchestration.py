@@ -31,6 +31,7 @@ import logging
 from pathlib import Path
 from typing import Callable, Mapping, NamedTuple, Optional
 import uuid
+from zoneinfo import ZoneInfo
 
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.alerts import (
@@ -96,6 +97,16 @@ _STATUS_BY_CODE = {
     EXIT_PARTIAL_FAILURE: "PARTIAL_SUCCESS",
     EXIT_TOTAL_FAILURE: "FAILED",
 }
+
+#: A second copy of cli.py's own _NZ_TIMEZONE -- importing it from here would
+#: be circular (cli.py imports run_operational_cycle/default_lock_file_path
+#: from this module). Used only to display a collector-health alert's
+#: last_success_at in NZ-local time, the same as the daily brief's own
+#: heading: under the checked-in 07:30 Pacific/Auckland schedule, UTC is
+#: still the previous day at that hour, so formatting last_success_at
+#: straight from UTC would overstate how many calendar days a collector has
+#: actually been unavailable.
+_NZ_TIMEZONE = ZoneInfo("Pacific/Auckland")
 
 
 def default_lock_file_path(
@@ -578,7 +589,9 @@ def _health_product_label(product_type: ProductType) -> str:
 def _health_alert(bank: str, health: CollectorHealth) -> Alert:
     title = "⚠️ PRICING INTELLIGENCE COLLECTOR ISSUE"
     last_success = (
-        health.last_success_at.strftime("%d %b %Y %H:%M") if health.last_success_at else "never"
+        health.last_success_at.astimezone(_NZ_TIMEZONE).strftime("%d %b %Y %H:%M")
+        if health.last_success_at
+        else "never"
     )
     body = "\n".join(
         [
