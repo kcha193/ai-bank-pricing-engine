@@ -454,6 +454,26 @@ HEALTH_ALERT = "alert"
 HEALTH_RECOVERY = "recovery"
 
 
+def _alert_delivered_during_current_streak(previous: CollectorHealth) -> bool:
+    """True when ``previous.last_alert_sent_at`` falls inside the failure
+    streak that just ended, not a stale value from an earlier one.
+
+    ``update_collector_health()`` never clears ``last_alert_sent_at`` -- it
+    only ever moves forward, whenever :meth:`record_collector_health_alert`
+    confirms a delivery (see that method's docstring) -- so on its own it
+    cannot distinguish "delivered during this streak" from "delivered once,
+    long ago, during some earlier streak that already recovered". Comparing
+    it against ``last_success_at`` (the boundary the current streak began
+    right after) resolves that: no success recorded yet means the streak
+    covers this bank's entire history, so any recorded alert counts.
+    """
+    if previous.last_alert_sent_at is None:
+        return False
+    if previous.last_success_at is None:
+        return True
+    return previous.last_alert_sent_at >= previous.last_success_at
+
+
 def classify_health_escalation(
     thresholds: HealthThresholds, previous: Optional[CollectorHealth], current: CollectorHealth
 ) -> str:
@@ -463,14 +483,19 @@ def classify_health_escalation(
     ``warning_after_failures``'th is a structured warning log (no Telegram
     send); the ``alert_after_failures``'th and beyond sends a Telegram health
     alert; a success that follows a streak which had already reached
-    ``alert_after_failures`` is a recovery, alerted the same way. A success
-    that recovers from a shorter streak (never escalated to an alert) is
-    ``"none"`` -- nothing was ever sent to recover *from*.
+    ``alert_after_failures`` *and* whose escalation alert was actually
+    confirmed delivered (see :func:`_alert_delivered_during_current_streak`)
+    is a recovery, alerted the same way. A success that recovers from a
+    shorter streak, or from one long enough but whose alert never reached
+    any channel (no sinks configured, or every delivery failed), is
+    ``"none"`` -- nothing was ever sent to recover *from*, so a recovery
+    notice would reach a channel that never saw the original incident.
     """
     if current.consecutive_failures == 0:
         previous_streak = previous.consecutive_failures if previous is not None else 0
-        if previous_streak >= thresholds.alert_after_failures:
-            return HEALTH_RECOVERY
+        if previous_streak >= thresholds.alert_after_failures and previous is not None:
+            if _alert_delivered_during_current_streak(previous):
+                return HEALTH_RECOVERY
         return HEALTH_NONE
     if current.consecutive_failures >= thresholds.alert_after_failures:
         return HEALTH_ALERT

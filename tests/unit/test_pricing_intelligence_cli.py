@@ -1006,6 +1006,45 @@ def test_brief_daily_reports_no_change(populated_database, capsys):
     assert "No material mortgage pricing changes detected today." in output
 
 
+def test_brief_daily_date_uses_new_zealand_time_not_utc(populated_database, capsys, monkeypatch):
+    """Under the checked-in 07:30 Pacific/Auckland schedule, UTC is still
+    the previous day at that hour -- the brief's displayed calendar date
+    must reflect NZ local time, not raw UTC, or every morning brief is
+    headed with yesterday's date.
+
+    The frozen instant is derived from the real "now" via .replace()/
+    timedelta, not a fixed datetime(YYYY, ...) literal -- this module is one
+    of test_no_wallclock_timebombs.py's guarded CLOCK_SENSITIVE_MODULES, and
+    a hard-coded calendar date there is exactly the timebomb it screens for.
+    """
+    from zoneinfo import ZoneInfo
+
+    from balance_pricing_engine.pricing_intelligence import cli as cli_module
+
+    # NZ is always UTC+12 or UTC+13, so 23:30 UTC on any date always lands
+    # on the *next* calendar day in NZ time, regardless of whether NZDT is
+    # active -- no fixed calendar anchor needed to reproduce the crossover.
+    real_now = datetime.now(timezone.utc)
+    fixed_utc = real_now.replace(hour=23, minute=30, second=0, microsecond=0)
+    expected_nz_date = fixed_utc.astimezone(ZoneInfo("Pacific/Auckland")).strftime("%d %b %Y")
+    utc_date_string = fixed_utc.strftime("%d %b %Y")
+    assert expected_nz_date != utc_date_string, "the two dates must actually differ for this test"
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_utc.astimezone(tz) if tz is not None else fixed_utc
+
+    monkeypatch.setattr(cli_module, "datetime", FrozenDatetime)
+
+    exit_code = run(["--database", populated_database, "brief"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert expected_nz_date in output
+    assert utc_date_string not in output
+
+
 def test_brief_weekly_reports_market_activity(populated_database, capsys):
     exit_code = run(["--database", populated_database, "brief", "--weekly"])
     output = capsys.readouterr().out

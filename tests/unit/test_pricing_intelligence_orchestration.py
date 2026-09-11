@@ -398,18 +398,24 @@ def test_collector_health_tracks_per_bank_streaks(tmp_path, fixture_fetcher):
 
 
 @pytest.mark.parametrize(
-    "previous_streak, current_streak, expected",
+    "previous_streak, current_streak, previous_alert_sent, expected",
     [
-        (0, 0, HEALTH_NONE),
-        (0, 1, HEALTH_NONE),
-        (1, 2, HEALTH_WARNING),
-        (2, 3, HEALTH_ALERT),
-        (3, 4, HEALTH_ALERT),
-        (3, 0, HEALTH_RECOVERY),
-        (1, 0, HEALTH_NONE),  # recovered from a streak that never escalated
+        (0, 0, False, HEALTH_NONE),
+        (0, 1, False, HEALTH_NONE),
+        (1, 2, False, HEALTH_WARNING),
+        (2, 3, False, HEALTH_ALERT),
+        (3, 4, False, HEALTH_ALERT),
+        (3, 0, True, HEALTH_RECOVERY),
+        # A streak long enough to have escalated, but whose alert was never
+        # actually confirmed delivered (no sinks configured, or every send
+        # failed) -- nothing was sent to recover *from*.
+        (3, 0, False, HEALTH_NONE),
+        (1, 0, False, HEALTH_NONE),  # recovered from a streak that never escalated
     ],
 )
-def test_classify_health_escalation_policy(previous_streak, current_streak, expected):
+def test_classify_health_escalation_policy(
+    previous_streak, current_streak, previous_alert_sent, expected
+):
     thresholds = HealthThresholds(warning_after_failures=2, alert_after_failures=3)
     previous = CollectorHealth(
         bank="ANZ",
@@ -418,7 +424,7 @@ def test_classify_health_escalation_policy(previous_streak, current_streak, expe
         last_success_at=None,
         last_failure_at=None,
         last_error=None,
-        last_alert_sent_at=None,
+        last_alert_sent_at=DAY_ONE if previous_alert_sent else None,
     )
     current = CollectorHealth(
         bank="ANZ",
@@ -431,6 +437,37 @@ def test_classify_health_escalation_policy(previous_streak, current_streak, expe
     )
 
     assert classify_health_escalation(thresholds, previous, current) == expected
+
+
+def test_recovery_requires_the_alert_to_fall_within_the_current_streak(tmp_path):
+    """last_alert_sent_at is never cleared by update_collector_health(), so
+    a value from a much earlier streak that already recovered must not make
+    a *later*, undelivered streak look recovery-worthy -- only an alert
+    timestamped after the most recent success (the boundary the current
+    streak began right after) counts."""
+    thresholds = HealthThresholds(warning_after_failures=1, alert_after_failures=1)
+    stale_alert_from_a_prior_streak = DAY_ONE
+    last_success = DAY_ONE + timedelta(days=1)
+    previous = CollectorHealth(
+        bank="ANZ",
+        product_type=ProductType.HOME_LOAN,
+        consecutive_failures=1,
+        last_success_at=last_success,
+        last_failure_at=last_success + timedelta(hours=1),
+        last_error="boom",
+        last_alert_sent_at=stale_alert_from_a_prior_streak,
+    )
+    current = CollectorHealth(
+        bank="ANZ",
+        product_type=ProductType.HOME_LOAN,
+        consecutive_failures=0,
+        last_success_at=last_success + timedelta(hours=2),
+        last_failure_at=previous.last_failure_at,
+        last_error=None,
+        last_alert_sent_at=stale_alert_from_a_prior_streak,
+    )
+
+    assert classify_health_escalation(thresholds, previous, current) == HEALTH_NONE
 
 
 def test_three_consecutive_failures_sends_a_telegram_alert(tmp_path, fixture_fetcher):

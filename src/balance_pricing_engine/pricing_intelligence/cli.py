@@ -25,6 +25,7 @@ import logging
 import math
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from balance_pricing_engine.competitor_rates.collection_config import CollectionConfig
 from balance_pricing_engine.config import load_config
@@ -57,6 +58,13 @@ from balance_pricing_engine.pricing_intelligence.strategy import (
     CompetitorRateStrategy,
     resolve_cash_rate,
 )
+
+#: Used only for the daily brief's displayed calendar date -- every other
+#: timestamp (lookback windows, run records, stored observations) stays in
+#: UTC. Under the checked-in 07:30 Pacific/Auckland schedule, UTC is still
+#: the previous day at that hour, so formatting the brief's header straight
+#: from a UTC "now" would date every morning brief a day behind.
+_NZ_TIMEZONE = ZoneInfo("Pacific/Auckland")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -651,7 +659,10 @@ def _brief(service: PricingIntelligenceService, args: argparse.Namespace) -> int
         )
         health = service.store.get_collector_health(product_type=product)
         text = build_daily_brief(
-            as_of=now,
+            # NZ-local, not now's UTC -- see _NZ_TIMEZONE. Every other
+            # timestamp in this branch (today_changes' own lookback window,
+            # collector health) already resolves independently in UTC.
+            as_of=now.astimezone(_NZ_TIMEZONE),
             today_changes=today_changes,
             week_assessment=assessment,
             snapshot=snapshot,
