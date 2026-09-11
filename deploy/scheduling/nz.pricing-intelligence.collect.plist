@@ -29,7 +29,7 @@
 
   "07:30 local" means the HOST'S system timezone: launchd's
   StartCalendarInterval takes only Hour/Minute/etc, with no per-job timezone
-  key at all, unlike cron (see crontab.example's TZ=Pacific/Auckland line).
+  key at all, unlike cron (see crontab.example's CRON_TZ=Pacific/Auckland line).
   If this machine's system timezone is not already Pacific/Auckland, either
   set it there, or prefer the cron deployment for an explicit, host-timezone-
   independent schedule.

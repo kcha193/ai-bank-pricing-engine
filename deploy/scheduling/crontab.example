@@ -45,12 +45,18 @@
 # your installed crontab should carry real values. Unset is the default (no
 # delivery), and a broken channel never fails the collection run.
 #
-# TZ pins every schedule below to Pacific/Auckland explicitly, regardless of
-# the host machine's own system timezone -- cron (vixie-cron/cronie, and
-# macOS's built-in cron) honours a TZ= line placed in the crontab itself.
-# Without this, "07:30" silently means the machine's local time, which is
-# wrong the moment this runs on a host not already set to NZ time.
-TZ=Pacific/Auckland
+# CRON_TZ pins every schedule below to Pacific/Auckland explicitly, regardless
+# of the host machine's own system timezone -- vixie-cron 4.0+, cronie, and
+# macOS's built-in cron (a vixie-cron 4.1 descendant) all read CRON_TZ to
+# decide which timezone "30 7" is evaluated in. A plain TZ= line does NOT do
+# this: cron(8)/crontab(5) only pass TZ through as an environment variable
+# for the launched command's own use -- it has no effect on when the job
+# actually fires. Without CRON_TZ, "07:30" silently means the machine's local
+# time, which is wrong the moment this runs on a host not already set to NZ
+# time. (The launched command itself already resolves NZ-local time
+# explicitly via zoneinfo where it matters -- e.g. cli.py's _NZ_TIMEZONE --
+# so it does not depend on TZ being set in its environment either.)
+CRON_TZ=Pacific/Auckland
 
 30 7 * * * cd /path/to/ai-bank-pricing-engine && mkdir -p data/processed/pricing_intelligence && ( .venv/bin/python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --render-javascript --quiet --lock-file data/processed/pricing_intelligence/collection-home-loan.lock --summary-file data/processed/pricing_intelligence/last_run_home_loan.json >> data/processed/pricing_intelligence/collect.log 2>&1; code=$?; [ "$code" -eq 0 ] || echo "NZ home-loan rate collection exited $code $(date)" >> data/processed/pricing_intelligence/collect.err.log; exit "$code" )
 

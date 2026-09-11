@@ -241,6 +241,46 @@ def test_a_retried_run_id_with_a_changed_payload_does_not_record_a_phantom_chang
     assert len(all_anz_changes) == 1, "the retry must not have persisted a second, phantom change"
 
 
+def test_a_zero_accepted_retry_does_not_erase_the_original_run_participation(fixture_fetcher):
+    """A retried run_id whose retry fetch happens to produce zero accepted
+    rows (e.g. a transient outage during the retry, after the original
+    attempt succeeded) must not be read as though nothing had ever been
+    collected -- collect()'s own "no accepted records" early return used to
+    bypass the has_run_participation() check entirely, handing the caller
+    write_result=None as if this run_id had never committed anything, even
+    though the original attempt's observations are still safely stored.
+    That would let orchestration.run_operational_cycle overwrite this
+    run_id's RunRecord history with a phantom failure."""
+    with build_service(fixture_fetcher()) as service:
+        original = service.collect(
+            captured_at_utc=DAY_ONE, run_id="run-1", persist_snapshot=False
+        )
+        assert original.write_result is not None
+        assert original.write_result.inserted > 0
+
+        # Simulate a retry of the same physical run (same run_id, same
+        # timestamp) whose fetch this time comes back empty for every bank.
+        service._fetcher = fixture_fetcher(
+            empty_banks=["ANZ", "ASB", "Westpac", "BNZ", "Kiwibank"]
+        )
+        retried = service.collect(
+            captured_at_utc=DAY_ONE, run_id="run-1", persist_snapshot=False
+        )
+
+        stored = service.store.get_current_observations()
+
+    assert not retried.validation.accepted
+    assert retried.write_result is not None, (
+        "a zero-accepted retry of an already-recorded run_id must still report "
+        "the original write, not write_result=None"
+    )
+    assert retried.write_result.run_id == "run-1"
+    assert retried.write_result.inserted == original.write_result.inserted
+    assert retried.write_result.unchanged == original.write_result.unchanged
+    assert retried.changes == ()
+    assert stored, "the original attempt's observations must still be present"
+
+
 def test_collect_accepts_a_naive_captured_at_utc_after_an_earlier_aware_run(fixture_fetcher):
     """record_observations() (via store._iso()) already interprets a naive
     timestamp as UTC once persisted -- collect()'s preflight chronology

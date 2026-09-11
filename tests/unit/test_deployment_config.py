@@ -156,6 +156,21 @@ def test_scheduling_recipes_pass_config_flag():
     assert "--config" in crontab_example
 
 
+def test_crontab_example_pins_schedule_evaluation_with_cron_tz():
+    """A plain TZ= line in a crontab only sets the environment variable seen
+    by the launched command -- it has no effect on what timezone cron itself
+    evaluates "30 7" in (see crontab(5): CRON_TZ is "the time zone specific
+    for the cron table"). Only CRON_TZ actually pins the schedule to NZ time
+    on vixie-cron 4.0+/cronie/macOS's built-in cron; a bare TZ= here would
+    silently mean the host's own system timezone, not Pacific/Auckland."""
+    crontab_example = (
+        REPO_ROOT / "deploy" / "scheduling" / "crontab.example"
+    ).read_text(encoding="utf-8")
+
+    assert re.search(r"^CRON_TZ=Pacific/Auckland$", crontab_example, re.MULTILINE)
+    assert not re.search(r"^TZ=Pacific/Auckland$", crontab_example, re.MULTILINE)
+
+
 def test_collector_canary_cron_targets_nz_weekdays():
     """GitHub evaluates schedule cron in UTC only, with no IANA timezone
     support. NZST (UTC+12) puts NZ local Monday 07:30 at UTC Sunday 19:30 --

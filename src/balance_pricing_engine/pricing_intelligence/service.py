@@ -684,6 +684,34 @@ class PricingIntelligenceService:
             logger.warning("validation: %s", issue)
 
         if not validation.accepted:
+            # A retried run_id that already committed real observations in
+            # an earlier attempt must not be read as though nothing had ever
+            # been collected just because *this* retry's fetch happens to
+            # produce zero accepted rows (e.g. a transient outage on the
+            # retry, after the original attempt succeeded) -- returning
+            # write_result=None here would let the caller
+            # (orchestration.run_operational_cycle) overwrite this run_id's
+            # RunRecord history with a failure despite its original,
+            # still-committed observations, and leave collector_health
+            # stuck on whatever this retry's outcome implies. Checked via
+            # has_run_participation() -- the read-only equivalent of
+            # record_observations()'s own idempotent short-circuit -- so a
+            # zero-row retry lands on exactly the same "already recorded"
+            # handling as a non-empty retry does further down: the store
+            # call below is itself a no-op (see record_observations()'s
+            # docstring: "any retry an inert no-op"), just returning the
+            # original write untouched.
+            if (
+                persist
+                and run_id is not None
+                and self.store.has_run_participation(run_id, product_type)
+            ):
+                write_result = self.store.record_observations(
+                    [], run_id=run_id, observed_at=captured_at_utc, product_type=product_type
+                )
+                return CollectionOutcome(
+                    report=report, validation=validation, write_result=write_result, changes=()
+                )
             return CollectionOutcome(
                 report=report, validation=validation, write_result=None, changes=()
             )
