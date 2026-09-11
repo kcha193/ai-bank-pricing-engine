@@ -106,7 +106,17 @@ def build_daily_brief(
         lines.append(f"{term_name(widest_term)}: {widest_market.spread_bps:.0f} bps")
 
     if tracked_banks:
-        fresh = sum(1 for health in collector_health if health.consecutive_failures == 0)
+        # Filtered to the current tracked-bank set before counting: a bank
+        # removed from selected_banks after health history accumulated
+        # still has a collector_health row, and counting it in the
+        # numerator against a denominator of only currently-tracked banks
+        # could otherwise report an impossible "5/4 banks fresh".
+        tracked = set(tracked_banks)
+        fresh = sum(
+            1
+            for health in collector_health
+            if health.bank in tracked and health.consecutive_failures == 0
+        )
         lines.append("")
         lines.append("COLLECTOR HEALTH")
         lines.append(f"{fresh}/{len(tracked_banks)} banks fresh")

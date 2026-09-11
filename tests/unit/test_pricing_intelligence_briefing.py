@@ -134,6 +134,31 @@ def test_a_bank_with_a_failure_streak_is_not_counted_fresh(make_record, snapshot
     assert "4/5 banks fresh" in brief
 
 
+def test_a_removed_bank_is_not_counted_in_the_freshness_ratio(make_record, snapshot):
+    """A bank dropped from selected_banks after health history accumulated
+    still has a collector_health row; it must not be counted in the
+    numerator against a denominator of only currently-tracked banks, or the
+    brief can report an impossible ratio like 6/5 banks fresh."""
+    health = [_health(bank) for bank, _ in MARKET]
+    health.append(_health("Rabobank"))  # no longer in tracked_banks
+
+    brief = build_daily_brief(
+        as_of=DAY_TWO,
+        today_changes=detect_changes(
+            [make_record(bank="ANZ", rate_pct=4.79)],
+            [make_record(bank="ANZ", rate_pct=4.59, observed_at=DAY_TWO)],
+            detected_at=DAY_TWO,
+        ),
+        week_assessment=_assessment(),
+        snapshot=snapshot,
+        collector_health=health,
+        tracked_banks=[bank for bank, _ in MARKET],
+    )
+
+    assert "5/5 banks fresh" in brief
+    assert "6/5" not in brief
+
+
 def test_weekly_brief_with_no_changes(snapshot):
     brief = build_weekly_brief(
         as_of=DAY_TWO,

@@ -675,11 +675,22 @@ def _dispatch_health_alerts(
     if not escalations:
         return
 
+    # Recorded only for a bank whose escalation was individually confirmed
+    # delivered to at least one sink -- the same "confirmed, not attempted"
+    # standard _dispatch_rendered_alerts already applies to rate-move
+    # alerts (see dispatch_alerts_safely_detailed). An unconditional record
+    # here would mark an alert as sent even when every sink failed, timed
+    # out, or none was configured at all, leaving the persisted
+    # last_alert_sent_at audit inaccurate.
     alerts = [alert for _, alert in escalations]
+    alert_to_bank = {alert: bank for bank, alert in escalations}
+    delivered_banks: set[str] = set()
     for sink in sinks.values():
-        dispatch_alerts_safely(alerts, sink)
+        for alert in dispatch_alerts_safely_detailed(alerts, sink):
+            delivered_banks.add(alert_to_bank[alert])
     for bank, _ in escalations:
-        store.record_collector_health_alert(bank, product_type, at=at)
+        if bank in delivered_banks:
+            store.record_collector_health_alert(bank, product_type, at=at)
 
 
 # ---------------------------------------------------------------------------
@@ -848,6 +859,15 @@ def run_operational_cycle(
         snapshot = service.get_market_snapshot(product_type=product_type)
         previous_snapshot = service.get_previous_market_snapshot(product_type=product_type)
         rendered = format_alerts(rate_moves, snapshot, previous_snapshot)
+        if scenarios_by_term:
+            # Enriched before the replay batch is appended below: a
+            # scenario comparison was computed from *this run's* current
+            # snapshot (see scenario_snapshot above), so it must only ever
+            # land on a live alert -- attaching it to a replayed alert from
+            # an old change would attribute today's model comparison to
+            # yesterday's event, the same current-run-context leak the
+            # snapshot omission below exists to avoid.
+            rendered = _enrich_with_scenarios(rendered, scenarios_by_term)
         if replayed_moves:
             # No snapshot context for a replayed change: this run's fresh
             # snapshot/previous_snapshot describe the newest run and its
@@ -859,8 +879,6 @@ def run_operational_cycle(
             # format_alert() already omits rank/market context cleanly when
             # both snapshots are None.
             rendered = rendered + format_alerts(replayed_moves, None, None)
-        if scenarios_by_term:
-            rendered = _enrich_with_scenarios(rendered, scenarios_by_term)
         if dry_run:
             # No dedup ledger writes on a dry run -- record_notification()
             # would otherwise let a later real run believe these changes

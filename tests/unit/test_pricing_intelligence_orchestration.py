@@ -524,9 +524,9 @@ def test_health_alerts_for_several_banks_are_batched_into_one_dispatch_call(tmp_
 
     def fake_dispatch(alerts, sink, **kwargs):
         calls.append(list(alerts))
-        return len(alerts)
+        return list(alerts)
 
-    monkeypatch.setattr(orchestration_module, "dispatch_alerts_safely", fake_dispatch)
+    monkeypatch.setattr(orchestration_module, "dispatch_alerts_safely_detailed", fake_dispatch)
 
     store = ObservationStore(str(tmp_path / "obs.db"))
     thresholds = HealthThresholds(warning_after_failures=1, alert_after_failures=1)
@@ -548,6 +548,40 @@ def test_health_alerts_for_several_banks_are_batched_into_one_dispatch_call(tmp_
         "ANZ collector failed 1 consecutive runs.",
         "BNZ collector failed 1 consecutive runs.",
     }
+
+
+def test_health_alert_recorded_only_after_confirmed_delivery(tmp_path):
+    """record_collector_health_alert() must only be called for a bank whose
+    escalation alert was individually confirmed delivered to at least one
+    sink -- an unconditional record (regardless of delivery outcome) would
+    stamp last_alert_sent_at even when every sink failed, timed out, or
+    none was configured at all, leaving the persisted audit inaccurate."""
+    from balance_pricing_engine.pricing_intelligence.orchestration import _dispatch_health_alerts
+
+    class PartiallyFailingSink:
+        def send(self, alert) -> None:
+            if "BNZ" in alert.body:
+                raise RuntimeError("simulated webhook outage")
+
+    store = ObservationStore(str(tmp_path / "obs.db"))
+    thresholds = HealthThresholds(warning_after_failures=1, alert_after_failures=1)
+    try:
+        _dispatch_health_alerts(
+            store,
+            ProductType.HOME_LOAN,
+            [("ANZ", False, "boom"), ("BNZ", False, "boom")],
+            thresholds,
+            {"test": PartiallyFailingSink()},
+            DAY_ONE,
+        )
+
+        health_by_bank = {h.bank: h for h in store.get_collector_health(ProductType.HOME_LOAN)}
+        assert health_by_bank["ANZ"].last_alert_sent_at is not None
+        assert health_by_bank["BNZ"].last_alert_sent_at is None, (
+            "a failed send must not be recorded as a delivered health alert"
+        )
+    finally:
+        store.close()
 
 
 def test_recovery_alert_fires_after_an_escalated_streak(tmp_path, fixture_fetcher):
@@ -749,6 +783,59 @@ def test_triggered_scenario_enriches_the_rate_move_alert(tmp_path, fixture_fetch
     assert "NZ MORTGAGE RATE CHANGE" in sink.alerts[0].title
     assert "PRICING ENGINE" in sink.alerts[0].body
     assert "No-change optimum:5.49%" in sink.alerts[0].body
+
+
+def test_scenario_enrichment_does_not_leak_onto_a_replayed_alert(tmp_path, fixture_fetcher):
+    """A scenario comparison is computed from *this run's* current snapshot,
+    so it must only ever attach to a live alert this run's scenario_trigger_fn
+    was actually invoked for -- not to a replayed alert from an old,
+    undelivered change that happens to share the same term. Attaching it
+    there would attribute today's model comparison to yesterday's event, on
+    top of the current-run snapshot leak the rank/market-context omission
+    for replayed alerts already guards against."""
+    config = _config(tmp_path)
+    sink = CollectingAlertSink()
+
+    def trigger_fn(terms, snapshot):
+        return {term: _fake_scenario_result(term) for term in terms}
+
+    def mutate_anz_then_bnz(bank, html):
+        if bank == "ANZ":
+            return html.replace("<td>1 year</td><td>4.79%", "<td>1 year</td><td>4.59%")
+        if bank == "BNZ":
+            return html.replace("<td>1 year</td><td>4.85%", "<td>1 year</td><td>4.65%")
+        return html
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+        # Simulate the crash: ANZ's move is persisted but never dispatched
+        # (run_operational_cycle, which would dispatch it, is never called).
+        service._fetcher = fixture_fetcher(mutate=_mutate_anz_one_year)
+        service.collect(captured_at_utc=DAY_TWO)
+
+        # The next scheduled run: BNZ moves too, on the same term (12
+        # months, "1 year") -- triggering a scenario comparison for that
+        # term. ANZ's rate stays at its already-persisted 4.59%, so it
+        # produces no *fresh* change this run -- only the replay.
+        service._fetcher = fixture_fetcher(mutate=mutate_anz_then_bnz)
+        run_operational_cycle(
+            service,
+            captured_at_utc=DAY_TWO + timedelta(days=1),
+            alert_sinks={"telegram": sink},
+            scenario_trigger_fn=trigger_fn,
+        )
+
+    assert len(sink.alerts) == 2
+    live_alert = next(a for a in sink.alerts if "BNZ" in a.body)
+    replayed_alert = next(a for a in sink.alerts if "ANZ" in a.body)
+    assert "PRICING ENGINE" in live_alert.body
+    assert "PRICING ENGINE" not in replayed_alert.body, (
+        "a scenario computed from today's snapshot must not attach to a replayed, "
+        "historical alert"
+    )
 
 
 def test_dry_run_still_previews_scenarios_but_persists_nothing(tmp_path, fixture_fetcher):
