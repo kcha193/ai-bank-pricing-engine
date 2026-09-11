@@ -474,12 +474,13 @@ def test_three_consecutive_failures_sends_a_telegram_alert(tmp_path, fixture_fet
     config = _config(tmp_path, health=HealthThresholds(warning_after_failures=2, alert_after_failures=3))
     sink = CollectingAlertSink()
 
+    result = None
     for day in range(3):
         fetcher = fixture_fetcher(failing_banks=["Westpac"])
         with PricingIntelligenceService(
             config=config, store=ObservationStore(config.database_path), fetcher=fetcher
         ) as service:
-            run_operational_cycle(
+            result = run_operational_cycle(
                 service,
                 captured_at_utc=DAY_ONE + timedelta(days=day),
                 alert_sinks={"telegram": sink},
@@ -489,6 +490,10 @@ def test_three_consecutive_failures_sends_a_telegram_alert(tmp_path, fixture_fet
     assert len(health_alerts) == 1
     assert "Westpac" in health_alerts[0].body
     assert "3 consecutive" in health_alerts[0].body
+    # The 3rd run has no rate movement of its own -- Westpac merely keeps
+    # failing to fetch -- so a health-only alert must still be reflected in
+    # the run's reported alerts_sent, not discarded as if nothing was sent.
+    assert result.alerts_sent == 1
 
 
 def test_two_consecutive_failures_does_not_alert_only_warns(tmp_path, fixture_fetcher, caplog):

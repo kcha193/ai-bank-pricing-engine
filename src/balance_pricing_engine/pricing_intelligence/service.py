@@ -994,11 +994,18 @@ class PricingIntelligenceService:
         scope_to_market: bool = False,
         product_type: ProductType | str = ProductType.HOME_LOAN,
         rate_category: Optional[str] = None,
+        since: Optional[datetime] = None,
     ) -> list[RateChange]:
         """Return detected changes inside a lookback window, newest first.
 
         ``days=None`` returns every stored change with no lookback limit,
         matching :meth:`get_rate_history`'s own ``days=None`` convention.
+
+        ``since``, when given, takes precedence over ``days`` (matching
+        :meth:`~.store.ObservationStore.get_changes_since`'s own contract)
+        -- pass an explicit calendar boundary (e.g. local midnight converted
+        to UTC) instead of a rolling N-day lookback for a caller that means
+        "since the start of today", not "the last N*24 hours".
 
         ``scope_to_market=True`` additionally restricts to
         ``selected_banks``/``tracked_terms_months`` -- the same scope every
@@ -1007,6 +1014,7 @@ class PricingIntelligenceService:
         activity for a bank or term the rest of the market view doesn't show.
         """
         rows = self.store.get_changes_since(
+            since=since,
             days=days,
             bank=bank,
             term_months=term_months,

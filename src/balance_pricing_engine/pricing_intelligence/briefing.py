@@ -50,10 +50,13 @@ def build_daily_brief(
 ) -> str:
     """Render the daily brief for the run just completed.
 
-    ``today_changes`` should be exactly the changes the triggering run
-    detected (``OperationalRunResult.outcome.changes``), not a re-query --
-    "today" means this run, not a rolling 24h window that could straddle two
-    scheduled runs.
+    ``today_changes`` should cover exactly "today" -- the NZ calendar day so
+    far (see the CLI's ``_brief``, which queries since NZ-local midnight
+    converted to UTC) -- not a rolling 24h UTC window: around the
+    Pacific/Auckland DST transition consecutive scheduled runs are only 23
+    hours apart, and a delayed or manual run has the same problem any day of
+    the year, so a rolling window can re-present yesterday's already-seen
+    change under today's TODAY section.
 
     A suspicious movement is still listed under TODAY -- it is a genuine
     detected event worth an operator's attention -- but flagged, matching

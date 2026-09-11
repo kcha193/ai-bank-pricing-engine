@@ -660,7 +660,7 @@ def _dispatch_health_alerts(
     thresholds: HealthThresholds,
     sinks: Mapping[str, AlertSink],
     at: datetime,
-) -> None:
+) -> int:
     """Update every attempted bank's health streak and deliver an
     escalation/recovery alert where the policy calls for one.
 
@@ -671,6 +671,13 @@ def _dispatch_health_alerts(
     banks * deadline seconds of blocking while this run's single-instance
     lock is still held -- one shared deadline per sink bounds that to a
     single deadline regardless of how many banks escalated.
+
+    Returns how many health alerts were confirmed delivered, summed across
+    every configured sink -- the same per-sink counting convention
+    :func:`_dispatch_rendered_alerts` uses for its own return value -- so a
+    caller folding this into a run's total ``alerts_sent`` is not missing a
+    health notice that reached a channel purely because no rate move
+    happened this run.
     """
     previous_by_bank = {
         health.bank: health for health in store.get_collector_health(product_type)
@@ -698,7 +705,7 @@ def _dispatch_health_alerts(
         escalations.append((bank, outcome, alert))
 
     if not escalations:
-        return
+        return 0
 
     # Recorded only for a bank whose escalation was individually confirmed
     # delivered to at least one sink -- the same "confirmed, not attempted"
@@ -710,8 +717,11 @@ def _dispatch_health_alerts(
     alerts = [alert for _, _, alert in escalations]
     alert_to_bank = {alert: bank for bank, _, alert in escalations}
     delivered_banks: set[str] = set()
+    total_sent = 0
     for sink in sinks.values():
-        for alert in dispatch_alerts_safely_detailed(alerts, sink):
+        delivered = dispatch_alerts_safely_detailed(alerts, sink)
+        total_sent += len(delivered)
+        for alert in delivered:
             delivered_banks.add(alert_to_bank[alert])
     for bank, outcome, _ in escalations:
         # Only an ALERT delivery counts as "incident delivered" here -- see
@@ -725,6 +735,7 @@ def _dispatch_health_alerts(
         # this streak's incident delivery.
         if bank in delivered_banks and outcome == HEALTH_ALERT:
             store.record_collector_health_alert(bank, product_type, at=at)
+    return total_sent
 
 
 # ---------------------------------------------------------------------------
@@ -936,7 +947,11 @@ def run_operational_cycle(
         # with no webhook/Telegram configured, the documented default. Only
         # the alert-level outcome's `for sink in sinks.values(): ...` loop
         # depends on sinks being non-empty, and naturally no-ops when it is.
-        _dispatch_health_alerts(
+        # Folded into alerts_sent (not discarded): a collector reaching the
+        # alert threshold with no rate movement this run still delivers a
+        # real notice, and the run's reported alert count must not read zero
+        # when a sink actually received one.
+        alerts_sent += _dispatch_health_alerts(
             service.store,
             product_type,
             [

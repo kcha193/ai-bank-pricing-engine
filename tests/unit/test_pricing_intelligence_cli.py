@@ -1095,6 +1095,76 @@ def test_brief_scopes_changes_to_the_configured_market(tmp_path, fixture_fetcher
     assert "Kiwibank" not in output
 
 
+def test_brief_daily_change_window_uses_nz_midnight_not_a_rolling_24h_window(
+    tmp_path, fixture_fetcher, capsys, monkeypatch
+):
+    """Around the Pacific/Auckland DST transition, consecutive 07:30 runs
+    are only 23 hours apart -- a rolling 24h UTC lookback would re-include
+    yesterday's already-reported change under today's TODAY section; a
+    delayed or manual run has the same problem any day of the year. The
+    brief's change query must instead be bounded by NZ-local midnight, the
+    same boundary its displayed date now uses.
+
+    The frozen instant and the change's timestamp are both derived from the
+    real "now" via .replace()/timedelta, not fixed datetime(YYYY, ...)
+    literals -- this module is one of test_no_wallclock_timebombs.py's
+    guarded CLOCK_SENSITIVE_MODULES."""
+    from zoneinfo import ZoneInfo
+
+    from balance_pricing_engine.pricing_intelligence import cli as cli_module
+    from balance_pricing_engine.pricing_intelligence import store as store_module
+
+    nz = ZoneInfo("Pacific/Auckland")
+    real_now = datetime.now(timezone.utc)
+    nz_midnight_today = real_now.astimezone(nz).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    frozen_now_utc = (nz_midnight_today + timedelta(minutes=30)).astimezone(timezone.utc)
+    # 20 hours before "now" -- inside any rolling 24h UTC window, but ~19.5
+    # hours before today's NZ midnight, i.e. yesterday, NZ-local.
+    change_detected_at = frozen_now_utc - timedelta(hours=20)
+
+    database = tmp_path / "observations.db"
+    config = PricingIntelligenceConfig(
+        database_path=str(database),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(database), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(
+            captured_at_utc=change_detected_at - timedelta(hours=1), persist_snapshot=False
+        )
+        service._fetcher = fixture_fetcher(
+            mutate=lambda bank, html: (
+                html.replace("<td>1 year</td><td>4.79%", "<td>1 year</td><td>4.59%")
+                if bank == "ANZ"
+                else html
+            )
+        )
+        service.collect(captured_at_utc=change_detected_at, persist_snapshot=False)
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen_now_utc.astimezone(tz) if tz is not None else frozen_now_utc
+
+    monkeypatch.setattr(cli_module, "datetime", FrozenDatetime)
+    # store.get_changes_since()'s own now=None default must resolve to the
+    # same frozen instant -- otherwise its upper bound (detected_at <= now)
+    # is anchored to the real wall clock instead, decoupling it from the
+    # since= boundary _brief computed from its own (frozen) now.
+    monkeypatch.setattr(store_module, "datetime", FrozenDatetime)
+
+    exit_code = run(["--database", str(database), "brief"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "ANZ" not in output, (
+        "yesterday's (NZ-local) change must not appear under today's TODAY section"
+    )
+
+
 def test_brief_with_no_market_data_fails_cleanly(tmp_path, capsys):
     exit_code = run(["--database", str(tmp_path / "empty.db"), "brief"])
     output = capsys.readouterr().out
@@ -1218,6 +1288,57 @@ def test_health_reports_a_run_and_collector_status(tmp_path, fixture_fetcher, ca
     assert "Last run:" in output
     assert "FRESH" in output
     assert "Latest market snapshot: VALID" in output
+
+
+def test_health_marks_a_bank_stale_once_past_the_freshness_window(
+    tmp_path, fixture_fetcher, capsys
+):
+    """A bank that stops being attempted at all (scheduling disabled, the
+    machine off for a while) never fails again, so consecutive_failures
+    alone would report it FRESH indefinitely -- even once its last success
+    is older than max_observation_age_hours and the market snapshot has
+    already discarded its rates as stale. The two must not contradict each
+    other.
+
+    Collector-health timestamps come from run_operational_cycle's own
+    started_at (real wall-clock), not the simulated captured_at_utc, so a
+    stale last_success_at is set up directly via update_collector_health()
+    rather than by backdating a full operational cycle."""
+    database = tmp_path / "observations.db"
+    config = PricingIntelligenceConfig(
+        database_path=str(database),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+        max_observation_age_hours=1.0,
+    )
+    stale_capture = datetime.now(timezone.utc) - timedelta(hours=2)
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=stale_capture, persist_snapshot=False)
+        for bank in config.selected_banks:
+            service.store.update_collector_health(
+                bank, "home_loan", success=True, at=stale_capture
+            )
+
+    # --database alone only overrides database_path -- max_observation_age_hours
+    # must come from a --config YAML, or the CLI falls back to the default
+    # 168h band and this 2-hour-old observation never reads as stale.
+    engine_config_path = tmp_path / "engine.yaml"
+    engine_config_path.write_text(
+        yaml.dump(
+            _minimal_engine_config(
+                database_path=str(database),
+                max_observation_age_hours=1.0,
+            )
+        )
+    )
+
+    exit_code = run(["--config", str(engine_config_path), "health"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "STALE" in output
+    assert "Latest market snapshot: EMPTY" in output
 
 
 def test_health_reports_telegram_configured(populated_database, capsys, monkeypatch):

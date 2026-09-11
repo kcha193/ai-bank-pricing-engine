@@ -654,14 +654,25 @@ def _brief(service: PricingIntelligenceService, args: argparse.Namespace) -> int
             run_records=run_records,
         )
     else:
+        # Bounded by the NZ calendar day (local midnight, converted back to
+        # UTC), not a rolling 24h window: around the Pacific/Auckland DST
+        # transition, consecutive 07:30 runs are only 23 hours apart, so a
+        # rolling window would re-include yesterday's already-reported
+        # change under today's TODAY section -- and a delayed or manual run
+        # has the same problem any day of the year.
+        nz_midnight = now.astimezone(_NZ_TIMEZONE).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
         today_changes = service.get_changes(
-            days=1, product_type=product, rate_category=category, scope_to_market=True
+            since=nz_midnight.astimezone(timezone.utc),
+            product_type=product,
+            rate_category=category,
+            scope_to_market=True,
         )
         health = service.store.get_collector_health(product_type=product)
         text = build_daily_brief(
-            # NZ-local, not now's UTC -- see _NZ_TIMEZONE. Every other
-            # timestamp in this branch (today_changes' own lookback window,
-            # collector health) already resolves independently in UTC.
+            # NZ-local, not now's UTC -- see _NZ_TIMEZONE. Collector health
+            # still resolves independently in UTC.
             as_of=now.astimezone(_NZ_TIMEZONE),
             today_changes=today_changes,
             week_assessment=assessment,
@@ -786,12 +797,25 @@ def _health(service: PricingIntelligenceService, args: argparse.Namespace) -> in
     print()
 
     health_by_bank = {h.bank: h for h in service.store.get_collector_health(product_type=product)}
+    now = datetime.now(timezone.utc)
+    max_age = timedelta(hours=service.config.max_observation_age_hours)
     for bank in service.config.selected_banks:
         health = health_by_bank.get(bank)
         if health is None:
             print(f"  {bank:<12}{'UNKNOWN':<16}no collection recorded yet")
             continue
-        status = "FRESH" if health.consecutive_failures == 0 else f"FAILING ({health.consecutive_failures}x)"
+        # A bank that stops being attempted at all (scheduling disabled, the
+        # machine off for a week) never fails again, so consecutive_failures
+        # alone would report FRESH indefinitely -- exactly the run this
+        # command exists to diagnose, and directly contradicting "Latest
+        # market snapshot: EMPTY" below, which does apply this same
+        # max_observation_age_hours staleness check.
+        if health.consecutive_failures > 0:
+            status = f"FAILING ({health.consecutive_failures}x)"
+        elif health.last_success_at is not None and now - health.last_success_at > max_age:
+            status = "STALE"
+        else:
+            status = "FRESH"
         last_seen = (
             health.last_success_at.strftime("%d %b %H:%M") if health.last_success_at else "never"
         )
