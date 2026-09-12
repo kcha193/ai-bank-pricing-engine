@@ -1211,6 +1211,10 @@ def test_brief_with_no_market_data_fails_cleanly(tmp_path, capsys):
 
 
 def test_brief_send_reports_when_no_channel_is_configured(populated_database, capsys, monkeypatch):
+    """--send was explicitly requested but nothing is configured to deliver
+    to (e.g. a scheduled job whose environment failed to load its secrets)
+    -- the briefing was not delivered, so the exit code must say so rather
+    than reading as healthy to cron/monitoring."""
     monkeypatch.delenv("PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
@@ -1218,7 +1222,7 @@ def test_brief_send_reports_when_no_channel_is_configured(populated_database, ca
     exit_code = run(["--database", populated_database, "brief", "--send"])
     output = capsys.readouterr().out
 
-    assert exit_code == 0
+    assert exit_code == 1
     assert "no webhook or Telegram channel is configured" in output
 
 

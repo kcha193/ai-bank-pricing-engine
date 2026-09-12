@@ -2690,6 +2690,33 @@ def test_update_collector_health_skips_an_out_of_order_retry_of_an_older_run_id(
     assert delayed_retry_of_a.last_failure_at == run_b.last_failure_at
 
 
+def test_a_pre_ledger_database_backfills_collector_health_processed_runs(store):
+    """A database upgraded from before collector_health_processed_runs
+    existed already has last_processed_run_id populated per bank from the
+    older schema -- the migration must backfill the new ledger from it, or a
+    retry of exactly the last pre-upgrade run would find the ledger empty,
+    miss the already-processed lookup, and advance the streak again."""
+    store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom", at=DAY_ONE, run_id="run-1"
+    )
+
+    # Simulate a database that predates the ledger table: drop it (the
+    # collector_health row, including last_processed_run_id="run-1",
+    # survives), then reopen (re-running _create_schema()'s migrations) as a
+    # fresh ObservationStore would when it first encounters that older file.
+    store._connection.execute("DROP TABLE collector_health_processed_runs")
+    store._create_schema()
+
+    retried = store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom again", at=DAY_TWO, run_id="run-1"
+    )
+
+    assert retried.consecutive_failures == 1, (
+        "the backfilled ledger must recognise run-1 as already processed"
+    )
+    assert retried.last_error == "boom", "the retry must not overwrite the original error"
+
+
 def test_update_collector_health_without_run_id_always_advances(store):
     """Omitting run_id (the default) preserves the unconditional-advance
     behaviour for a caller not tracking operational runs."""

@@ -662,6 +662,7 @@ class ObservationStore:
             self._migrate_collection_run_products(connection)
             self._migrate_rate_named_mortgages(connection)
             self._migrate_collector_health_run_id(connection)
+            self._migrate_collector_health_processed_runs(connection)
             row = connection.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
                 connection.execute(
@@ -795,6 +796,28 @@ class ObservationStore:
         if "last_processed_run_id" in columns:
             return
         connection.execute("ALTER TABLE collector_health ADD COLUMN last_processed_run_id TEXT")
+
+    def _migrate_collector_health_processed_runs(self, connection: sqlite3.Connection) -> None:
+        """Backfill ``collector_health_processed_runs`` from every
+        pre-existing, non-null ``collector_health.last_processed_run_id``,
+        for a database created before this ledger table existed.
+
+        Without this, a database upgraded from before the ledger existed
+        would find it empty even though ``last_processed_run_id`` already
+        names the run_id that last advanced each bank's streak -- a retry of
+        exactly that pre-upgrade run would then miss the (empty) ledger
+        lookup in :meth:`update_collector_health`, advance the streak again,
+        and could emit a false escalation or recovery. Runs after
+        :meth:`_migrate_collector_health_run_id`, which guarantees the
+        column exists (even if only just added and therefore entirely
+        ``NULL`` -- this is then a no-op, same as a fresh database).
+        ``INSERT OR IGNORE`` makes this idempotent across repeated opens.
+        """
+        connection.execute(
+            "INSERT OR IGNORE INTO collector_health_processed_runs (bank, product_type, run_id) "
+            "SELECT bank, product_type, last_processed_run_id FROM collector_health "
+            "WHERE last_processed_run_id IS NOT NULL"
+        )
 
     def _migrate_collection_runs_product_type(self, connection: sqlite3.Connection) -> None:
         """Add ``collection_runs.product_type`` for a database created before
