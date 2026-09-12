@@ -636,7 +636,16 @@ class PricingIntelligenceService:
         # fetched and validated -- work whose results would otherwise be
         # thrown away once the later guard raises. Only relevant when this
         # call will actually persist; a dry run never reaches that guard.
-        if persist:
+        # Skipped when this exact (run_id, product_type) was already
+        # recorded: record_observations() itself checks participation before
+        # its own chronological guard, so a delayed retry of an earlier,
+        # already-committed run must stay the inert no-op that contract
+        # promises, not fail here purely because a later run has since been
+        # stored under a newer timestamp.
+        already_recorded_run = (
+            run_id is not None and self.store.has_run_participation(run_id, product_type)
+        )
+        if persist and not already_recorded_run:
             latest = self.store.latest_collection_timestamp(product_type=product_type)
             if latest is not None and captured_at_utc < latest:
                 raise ChronologicalOrderError(

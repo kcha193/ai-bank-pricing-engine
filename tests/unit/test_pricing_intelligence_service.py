@@ -297,6 +297,41 @@ def test_collect_accepts_a_naive_captured_at_utc_after_an_earlier_aware_run(fixt
     assert outcome.report.records
 
 
+def test_a_delayed_retry_of_an_earlier_run_does_not_trip_the_chronological_guard(
+    fixture_fetcher,
+):
+    """collect()'s preflight chronology check (checked before fetching, so a
+    scheduled run fails fast rather than after every bank is refetched) must
+    defer to has_run_participation() first, the same way
+    record_observations()'s own chronological guard already does. Without
+    that, a delayed retry of an earlier run_id -- arriving after a later run
+    has since been stored under a newer timestamp -- would raise
+    ChronologicalOrderError here purely because its captured_at_utc now
+    trails the latest stored timestamp, even though the retry is otherwise
+    the inert no-op collect() promises for an already-recorded run_id."""
+    with build_service(fixture_fetcher()) as service:
+        original = service.collect(
+            captured_at_utc=DAY_ONE, run_id="run-1", persist_snapshot=False
+        )
+        assert original.write_result is not None
+
+        later = service.collect(
+            captured_at_utc=DAY_TWO, run_id="run-2", persist_snapshot=False
+        )
+        assert later.write_result is not None
+
+        # A delayed retry of the *earlier* run: same run_id and capture time
+        # as `original`, but latest_collection_timestamp() is now DAY_TWO.
+        retried = service.collect(
+            captured_at_utc=DAY_ONE, run_id="run-1", persist_snapshot=False
+        )
+
+    assert retried.already_recorded is True
+    assert retried.write_result is not None
+    assert retried.write_result.run_id == "run-1"
+    assert retried.changes == ()
+
+
 def test_one_failing_bank_does_not_fail_the_run(fixture_fetcher):
     with build_service(fixture_fetcher(failing_banks=["Westpac"])) as service:
         outcome = service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
