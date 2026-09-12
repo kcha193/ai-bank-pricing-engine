@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 
+import pandas as pd
 import pytest
 
 from balance_pricing_engine.competitor_rates.models import ProductType
@@ -204,14 +205,16 @@ def _health(bank, consecutive_failures=0, last_error=None):
 
 
 def test_collector_health_frame_of_no_data_is_empty_with_the_right_columns():
-    frame = build_collector_health_frame([])
+    frame = build_collector_health_frame([], [])
 
     assert frame.empty
     assert list(frame.columns) == ["Consecutive failures", "Status", "Last success", "Last error"]
 
 
 def test_collector_health_frame_marks_failing_banks():
-    frame = build_collector_health_frame([_health("ANZ"), _health("Westpac", 3, "ParserError")])
+    frame = build_collector_health_frame(
+        [_health("ANZ"), _health("Westpac", 3, "ParserError")], ["ANZ", "Westpac"]
+    )
 
     assert frame.loc["ANZ", "Status"] == "FRESH"
     assert frame.loc["Westpac", "Status"] == "FAILING"
@@ -227,6 +230,7 @@ def test_collector_health_frame_marks_a_stale_success_once_past_the_freshness_wi
     matching the pricing_intelligence health CLI command's own check."""
     frame = build_collector_health_frame(
         [_health("ANZ")],
+        ["ANZ"],
         now=DAY_ONE + timedelta(hours=2),
         max_observation_age_hours=1.0,
     )
@@ -237,9 +241,29 @@ def test_collector_health_frame_marks_a_stale_success_once_past_the_freshness_wi
 def test_collector_health_frame_without_freshness_params_stays_fresh_indefinitely():
     """Backward-compatible default: omitting now/max_observation_age_hours
     never classifies a zero-failure bank as anything but FRESH."""
-    frame = build_collector_health_frame([_health("ANZ")])
+    frame = build_collector_health_frame([_health("ANZ")], ["ANZ"])
 
     assert frame.loc["ANZ", "Status"] == "FRESH"
+
+
+def test_collector_health_frame_shows_a_newly_tracked_bank_as_unknown():
+    """A bank just added to selected_banks has no collector_health row yet --
+    it must appear as UNKNOWN, not be silently omitted from the table."""
+    frame = build_collector_health_frame([_health("ANZ")], ["ANZ", "BNZ"])
+
+    assert list(frame.index) == ["ANZ", "BNZ"]
+    assert frame.loc["BNZ", "Status"] == "UNKNOWN"
+    assert frame.loc["BNZ", "Consecutive failures"] == 0
+    assert pd.isna(frame.loc["BNZ", "Last success"])
+
+
+def test_collector_health_frame_drops_a_bank_no_longer_tracked():
+    """A bank removed from selected_banks must not linger in the table just
+    because its old collector_health row is still persisted."""
+    frame = build_collector_health_frame([_health("ANZ"), _health("Westpac")], ["ANZ"])
+
+    assert list(frame.index) == ["ANZ"]
+    assert "Westpac" not in frame.index
 
 
 def _run_record(run_id, status="SUCCESS"):

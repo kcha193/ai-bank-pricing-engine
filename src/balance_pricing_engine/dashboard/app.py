@@ -190,6 +190,7 @@ def _render_market_intelligence() -> None:
                 st.dataframe(
                     build_collector_health_frame(
                         collector_health,
+                        intelligence_config.selected_banks,
                         now=datetime.now(timezone.utc),
                         max_observation_age_hours=intelligence_config.max_observation_age_hours,
                     ),

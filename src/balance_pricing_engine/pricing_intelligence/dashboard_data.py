@@ -190,27 +190,36 @@ def build_history_series(series: Sequence[tuple]) -> pd.DataFrame:
 
 def build_collector_health_frame(
     health: Sequence[CollectorHealth],
+    banks: Sequence[str],
     *,
     now: Optional[datetime] = None,
     max_observation_age_hours: Optional[float] = None,
 ) -> pd.DataFrame:
     """Per-bank collector status, for the operational dashboard section.
 
+    Shaped against ``banks`` (``PricingIntelligenceConfig.selected_banks``),
+    not against ``health`` directly -- matching the ``pricing_intelligence
+    health`` CLI command's own ``health_by_bank``/``selected_banks`` loop.
+    A bank in ``banks`` with no persisted row is ``UNKNOWN`` rather than
+    silently absent (it may simply be newly added, never yet collected); a
+    persisted row for a bank no longer in ``banks`` is dropped rather than
+    lingering forever once a bank is removed from the tracked set.
+
     ``now``/``max_observation_age_hours`` classify a bank whose scheduling
     has simply stopped (no new attempts at all, so ``consecutive_failures``
     stays zero forever) as ``STALE`` once its last success is older than the
-    configured freshness threshold -- matching the ``pricing_intelligence
-    health`` CLI command's own check. Without both, staleness is not
+    configured freshness threshold. Without both, staleness is not
     evaluated and a bank with zero consecutive failures is always ``FRESH``,
     the previous behaviour -- callers should pass both wherever the
     freshness table/market snapshot alongside this frame already apply that
     same threshold, so the two cannot contradict each other.
     """
-    if not health:
+    if not banks:
         return pd.DataFrame(
             columns=["Consecutive failures", "Status", "Last success", "Last error"],
             index=pd.Index([], name="Bank"),
         )
+    health_by_bank = {entry.bank: entry for entry in health}
     max_age = (
         timedelta(hours=max_observation_age_hours)
         if max_observation_age_hours is not None
@@ -229,16 +238,29 @@ def build_collector_health_frame(
             return "STALE"
         return "FRESH"
 
-    rows = [
-        {
-            "Bank": entry.bank,
-            "Consecutive failures": entry.consecutive_failures,
-            "Status": _status(entry),
-            "Last success": entry.last_success_at,
-            "Last error": entry.last_error or "",
-        }
-        for entry in health
-    ]
+    rows = []
+    for bank in banks:
+        entry = health_by_bank.get(bank)
+        if entry is None:
+            rows.append(
+                {
+                    "Bank": bank,
+                    "Consecutive failures": 0,
+                    "Status": "UNKNOWN",
+                    "Last success": None,
+                    "Last error": "",
+                }
+            )
+            continue
+        rows.append(
+            {
+                "Bank": bank,
+                "Consecutive failures": entry.consecutive_failures,
+                "Status": _status(entry),
+                "Last success": entry.last_success_at,
+                "Last error": entry.last_error or "",
+            }
+        )
     return pd.DataFrame(rows).set_index("Bank")
 
 
