@@ -717,6 +717,54 @@ def _scenario_trigger_candidates(
     return sorted(terms)
 
 
+def _missed_scenario_trigger_terms(
+    store,
+    product_type: ProductType,
+    config: PricingIntelligenceConfig,
+    now: datetime,
+) -> list[int]:
+    """Tracked, comparable-category terms whose rate move in the same recent
+    window ``_undelivered_change_replay_candidates`` uses never got a
+    scenario computed for it.
+
+    Covers the same class of gap as that alert-replay recovery, applied to
+    scenario triggering instead: the process can die between
+    ``service.collect()`` committing a change and this run reaching its own
+    ``scenario_trigger_fn`` call, or a transient per-term failure there
+    (caught above and logged) can mean a term's scenario is simply never
+    written. ``outcome.changes``/``_scenario_trigger_candidates`` alone
+    cannot see either case on a later run: the baseline already reflects the
+    committed change, so it is not reported as new again.
+
+    Checked against every recent ``scenario_runs`` row regardless of which
+    run wrote it, not just the change's own ``run_id`` -- so a term already
+    caught up by an earlier retry (this run's predecessor already recovered
+    it) is not re-triggered every cycle for the rest of the replay window.
+    """
+    since = now - timedelta(hours=UNDELIVERED_CHANGE_REPLAY_HOURS)
+    rows = store.get_changes_since(since=since, now=now, product_type=product_type)
+    target_category = _resolve_rate_category(product_type, None)
+    candidates = [
+        change
+        for change in load_changes(rows)
+        if change.is_rate_move
+        and not change.suspicious
+        and change.rate_category == target_category
+        and change.term_months in config.tracked_terms_months
+    ]
+    if not candidates:
+        return []
+    recent_scenarios = store.get_recent_scenario_runs(product_type=product_type, limit=200)
+    covered_terms = {
+        change.term_months
+        for change in candidates
+        for row in recent_scenarios
+        if row["term_months"] == change.term_months and row["generated_at"] >= change.detected_at
+    }
+    missing = {change.term_months for change in candidates} - covered_terms
+    return sorted(missing)
+
+
 def _enrich_with_scenarios(
     alerts: list[Alert], scenarios_by_term: Mapping[int, "ScenarioResult"]
 ) -> list[Alert]:
@@ -985,6 +1033,19 @@ def run_operational_cycle(
         sinks = built
 
     rate_moves = [change for change in outcome.changes if change.is_rate_move]
+    # Anchored on captured_at_utc (the same business-time clock detected_at
+    # is stamped from -- see service.collect()), not started_at's wall
+    # clock: a caller backfilling or replaying a past captured_at_utc must
+    # get a lookback window relative to that simulated "now", not the real
+    # time this process happens to run at. Shared by the undelivered-alert
+    # replay below and the missed-scenario-trigger recovery further down --
+    # both recover from the same class of gap (a crash, or a transient
+    # per-channel/per-term failure, between this run's own commit and its
+    # own delivery/trigger step).
+    replay_now = captured_at_utc or started_at
+    if replay_now.tzinfo is None:
+        replay_now = replay_now.replace(tzinfo=timezone.utc)
+
     replayed_moves: list[RateChange] = []
     if not dry_run and sinks:
         # Re-offer any recent, still-undelivered stored change for delivery
@@ -992,15 +1053,6 @@ def run_operational_cycle(
         # participate: it never writes to the notified_alerts ledger, so its
         # ad-hoc "console" channel would never look delivered and every
         # candidate would resurface on every dry-run preview indefinitely.
-        #
-        # Anchored on captured_at_utc (the same business-time clock
-        # detected_at is stamped from -- see service.collect()), not
-        # started_at's wall clock: a caller backfilling or replaying a past
-        # captured_at_utc must get a lookback window relative to that
-        # simulated "now", not the real time this process happens to run at.
-        replay_now = captured_at_utc or started_at
-        if replay_now.tzinfo is None:
-            replay_now = replay_now.replace(tzinfo=timezone.utc)
         already_included = {
             (change.observation_key, change.change_type, change.detected_at, change.run_id)
             for change in rate_moves
@@ -1014,11 +1066,16 @@ def run_operational_cycle(
         )
 
     scenarios_by_term: dict[int, ScenarioResult] = {}
-    triggered_terms = (
-        _scenario_trigger_candidates(outcome.changes, product_type, service.config)
-        if scenario_trigger_fn is not None
-        else []
-    )
+    triggered_terms = []
+    if scenario_trigger_fn is not None:
+        triggered_terms = sorted(
+            set(_scenario_trigger_candidates(outcome.changes, product_type, service.config))
+            | set(
+                _missed_scenario_trigger_terms(
+                    service.store, product_type, service.config, replay_now
+                )
+            )
+        )
     if triggered_terms:
         scenario_snapshot = service.get_market_snapshot(product_type=product_type)
         try:
@@ -1044,8 +1101,18 @@ def run_operational_cycle(
 
     alerts_sent = 0
     if sinks and (rate_moves or replayed_moves):
-        snapshot = service.get_market_snapshot(product_type=product_type)
-        previous_snapshot = service.get_previous_market_snapshot(product_type=product_type)
+        if dry_run:
+            # A dry run never persists (persist=False, persist_snapshot=False
+            # above), so the store's snapshot still describes the pre-run
+            # committed state, not what this run's prospective changes
+            # propose -- passing it as market context (median, rank
+            # movement) would misrepresent the preview with stale data.
+            # Mirrors the `collect --no-persist --alerts` CLI path, which
+            # omits snapshot context for the identical reason.
+            snapshot, previous_snapshot = None, None
+        else:
+            snapshot = service.get_market_snapshot(product_type=product_type)
+            previous_snapshot = service.get_previous_market_snapshot(product_type=product_type)
         rendered = format_alerts(rate_moves, snapshot, previous_snapshot)
         if scenarios_by_term:
             # Enriched before the replay batch is appended below: a

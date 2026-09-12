@@ -204,6 +204,42 @@ def test_dry_run_routes_alerts_to_the_console_not_real_sinks(tmp_path, fixture_f
     assert result.alerts_sent == 1  # delivered to the console sink instead
 
 
+def test_dry_run_alerts_omit_stale_snapshot_context(tmp_path, fixture_fetcher, capsys):
+    """A dry run never persists (persist=False, persist_snapshot=False above),
+    so service.get_market_snapshot()/get_previous_market_snapshot() still
+    describe the pre-run committed state, not what this run's prospective
+    change proposes. Passing that stale-but-real snapshot as alert context
+    would misrepresent the preview with an old median/rank -- mirrors the
+    `collect --no-persist --alerts` CLI path, which already omits snapshot
+    context for the identical reason.
+
+    Anchored on datetime.now(), not the module's fixed DAY_ONE/DAY_TWO:
+    those are weeks in the past by the time this suite runs, well outside
+    max_observation_age_hours, which would make get_market_snapshot() return
+    an already-empty snapshot regardless of this fix -- a false pass."""
+    recent_day_one = datetime.now(timezone.utc) - timedelta(days=2)
+    recent_day_two = recent_day_one + timedelta(days=1)
+    config = _config(tmp_path)
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=recent_day_one, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(
+            mutate=lambda bank, html: html.replace(
+                "<td>1 year</td><td>4.79%", "<td>1 year</td><td>4.59%"
+            )
+            if bank == "ANZ"
+            else html
+        )
+        result = run_operational_cycle(service, captured_at_utc=recent_day_two, dry_run=True)
+
+    output = capsys.readouterr().out
+    assert len(result.outcome.changes) == 1
+    assert result.alerts_sent == 1
+    assert "Market median:" not in output
+    assert "Market rank:" not in output
+
+
 def test_no_change_run_sends_no_alert(tmp_path, fixture_fetcher):
     config = _config(tmp_path)
     sink = CollectingAlertSink()
@@ -1274,6 +1310,52 @@ def test_triggered_scenario_is_persisted_and_linked_to_the_run(tmp_path, fixture
     assert len(runs) == 1
     assert runs[0]["term_months"] == 12
     assert runs[0]["scenarios"] == [{"label": "No change", "our_rate": 0.0549}]
+
+
+def test_a_missed_scenario_is_recovered_on_a_later_run_with_no_new_change(
+    tmp_path, fixture_fetcher
+):
+    """When the original attempt commits a rate change but no scenario ever
+    gets triggered for it -- a crash between service.collect() and this
+    run's own scenario_trigger_fn call, or (as reproduced here) simply no
+    scenario_trigger_fn being wired up that run -- a later run must still
+    recover it. outcome.changes/_scenario_trigger_candidates alone cannot
+    see this on a later run: the baseline already reflects the committed
+    change, so it is never reported as new again. Mirrors the existing
+    undelivered-alert replay's recent-window recovery, applied to scenario
+    triggering."""
+    config = _config(tmp_path)
+    calls = []
+
+    def trigger_fn(terms, snapshot):
+        calls.append(tuple(terms))
+        return {term: _fake_scenario_result(term) for term in terms}
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=_mutate_anz_one_year)
+        # No scenario_trigger_fn this run -- the change is committed and
+        # detected, but (as if the process died right here) no scenario is
+        # ever triggered or persisted for it.
+        missed = run_operational_cycle(service, captured_at_utc=DAY_TWO, alert_sinks={})
+        assert len(missed.outcome.changes) == 1
+
+        # A later, otherwise-quiet cycle: the fetch is unchanged from
+        # DAY_TWO's committed rate, so this run detects no new change of its
+        # own -- yet it must still recover DAY_TWO's un-triggered scenario.
+        day_three = DAY_TWO + timedelta(days=1)
+        result = run_operational_cycle(
+            service, captured_at_utc=day_three, alert_sinks={}, scenario_trigger_fn=trigger_fn
+        )
+
+    assert result.outcome.changes == ()
+    assert calls == [(12,)]
+    with ObservationStore(config.database_path) as store:
+        runs = store.get_scenario_runs(result.run_record.run_id)
+    assert len(runs) == 1
+    assert runs[0]["term_months"] == 12
 
 
 def test_triggered_scenario_enriches_the_rate_move_alert(tmp_path, fixture_fetcher):
