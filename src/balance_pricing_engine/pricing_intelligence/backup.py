@@ -36,16 +36,32 @@ def backup_database(
     now = now or datetime.now(timezone.utc)
     timestamp = now.strftime("%Y%m%dT%H%M%SZ")
     destination_path = destination_dir / f"{database_path.stem}-{timestamp}.db"
+    # Written to a temporary path first, and only renamed into place once
+    # source.backup() has fully succeeded: connecting sqlite3 straight to
+    # destination_path creates that file immediately, before a single page
+    # is copied, so a mid-backup failure (e.g. the destination disk filling
+    # up) would otherwise leave an empty or truncated file sitting at the
+    # real name -- list_backups() and _prune_old_backups() below both treat
+    # any *.db file there as a genuine backup, so an operator could restore
+    # the corrupt one, and a later successful backup could prune an older,
+    # still-good copy while keeping it. The temp suffix keeps it out of both
+    # functions' `*.db` glob even if cleanup below somehow doesn't run.
+    temp_path = destination_path.with_name(destination_path.name + ".tmp")
 
     source = sqlite3.connect(str(database_path))
     try:
-        destination = sqlite3.connect(str(destination_path))
         try:
-            source.backup(destination)
-        finally:
-            destination.close()
+            destination = sqlite3.connect(str(temp_path))
+            try:
+                source.backup(destination)
+            finally:
+                destination.close()
+        except BaseException:
+            temp_path.unlink(missing_ok=True)
+            raise
     finally:
         source.close()
+    temp_path.rename(destination_path)
 
     _prune_old_backups(destination_dir, database_path.stem, keep=keep)
     return destination_path
