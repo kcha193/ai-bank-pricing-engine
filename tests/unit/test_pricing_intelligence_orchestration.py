@@ -358,12 +358,17 @@ def test_a_retry_with_no_existing_run_record_leaves_it_incomplete_not_wrong(
         )
 
         stored_after = service.store.get_current_observations()
+        health_after = {h.bank: h for h in service.store.get_collector_health(ProductType.HOME_LOAN)}
 
     assert result.run_record is None, (
         "with no original RunRecord to reuse and no way to reconstruct it, "
         "the operational record must be left incomplete, not built wrong from the retry"
     )
     assert stored_after == stored_before, "the retry must not have touched the real observations"
+    assert not health_after, (
+        "collector health must not be advanced from this retry's own (all-failed) fetch report "
+        "when the original, successful attempt's health processing is not known to have run"
+    )
 
 
 def test_a_change_persisted_but_never_alerted_is_replayed_on_a_later_run(

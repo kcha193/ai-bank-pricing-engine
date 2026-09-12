@@ -1084,39 +1084,65 @@ def run_operational_cycle(
 
     run_record: Optional[RunRecord] = None
     if not dry_run:
-        # Always classified, sinks or not: classify_health_escalation()'s
-        # warning-level escalation (a structured log line, not a delivery) is
-        # unconditional policy -- it must fire at warning_after_failures even
-        # with no webhook/Telegram configured, the documented default. Only
-        # the alert-level outcome's `for sink in sinks.values(): ...` loop
-        # depends on sinks being non-empty, and naturally no-ops when it is.
-        # Folded into alerts_sent (not discarded): a collector reaching the
-        # alert threshold with no rate movement this run still delivers a
-        # real notice, and the run's reported alert count must not read zero
-        # when a sink actually received one.
-        alerts_sent += _dispatch_health_alerts(
-            service.store,
-            product_type,
-            [
-                (
-                    bank,
-                    bank in summary["banks_succeeded"],
-                    next(
-                        (
-                            failure["error"]
-                            for failure in summary["failures"]
-                            if failure["bank"] == bank
-                        ),
-                        None,
-                    ),
-                )
-                for bank in banks_attempted
-            ],
-            service.config.health,
-            sinks,
-            started_at,
-            run_id=operational_run_id,
+        # Looked up once, before the health dispatch below, and reused for
+        # the RunRecord handling further down: whether this run_id's
+        # operational bookkeeping already fully completed in an earlier
+        # call. Only meaningful together with outcome.already_recorded -- a
+        # run_id touching this store for the first time also has no
+        # RunRecord yet, but should still update health and write a fresh
+        # one normally (see the branches below).
+        existing_run_record = (
+            service.store.get_run_record(operational_run_id) if outcome.already_recorded else None
         )
+
+        # outcome.already_recorded but existing_run_record is None means the
+        # original attempt committed its observations and then crashed
+        # before ever reaching write_run_record() -- possibly before ever
+        # reaching this health dispatch too (e.g. during scenario
+        # persistence or the rate-move alert dispatch above, both of which
+        # run earlier in this function). There is then no health-ledger
+        # entry for this run_id either, so update_collector_health() below
+        # cannot recognise it as already-processed and would advance (or
+        # reset) a bank's streak from this retry's own, potentially very
+        # different fetch report -- an all-failed retry after a genuinely
+        # successful, committed collection could otherwise emit a false
+        # incident. Skipped entirely rather than process health from data
+        # that isn't actually authoritative for this run_id.
+        if not (outcome.already_recorded and existing_run_record is None):
+            # Always classified, sinks or not: classify_health_escalation()'s
+            # warning-level escalation (a structured log line, not a delivery)
+            # is unconditional policy -- it must fire at warning_after_failures
+            # even with no webhook/Telegram configured, the documented
+            # default. Only the alert-level outcome's
+            # `for sink in sinks.values(): ...` loop depends on sinks being
+            # non-empty, and naturally no-ops when it is. Folded into
+            # alerts_sent (not discarded): a collector reaching the alert
+            # threshold with no rate movement this run still delivers a real
+            # notice, and the run's reported alert count must not read zero
+            # when a sink actually received one.
+            alerts_sent += _dispatch_health_alerts(
+                service.store,
+                product_type,
+                [
+                    (
+                        bank,
+                        bank in summary["banks_succeeded"],
+                        next(
+                            (
+                                failure["error"]
+                                for failure in summary["failures"]
+                                if failure["bank"] == bank
+                            ),
+                            None,
+                        ),
+                    )
+                    for bank in banks_attempted
+                ],
+                service.config.health,
+                sinks,
+                started_at,
+                run_id=operational_run_id,
+            )
 
         # outcome.already_recorded means this run_id already committed its
         # observations in an earlier call -- this call's own report/
@@ -1128,7 +1154,7 @@ def run_operational_cycle(
         # persisted run status contradicting the persisted observations, so
         # the already-persisted record is reused untouched instead of
         # re-derived.
-        run_record = service.store.get_run_record(operational_run_id) if outcome.already_recorded else None
+        run_record = existing_run_record
         if run_record is not None:
             # code (and therefore OperationalRunResult.status) was derived
             # above from *this* retry's own report/validation, which can
