@@ -97,6 +97,10 @@ _STATUS_BY_CODE = {
     EXIT_PARTIAL_FAILURE: "PARTIAL_SUCCESS",
     EXIT_TOTAL_FAILURE: "FAILED",
 }
+#: Reverse of _STATUS_BY_CODE -- lets an already-processed run_id's reused
+#: RunRecord (see run_operational_cycle()'s already_recorded handling) drive
+#: OperationalRunResult.code/.status too, not just the persisted record.
+_CODE_BY_STATUS = {status: code for code, status in _STATUS_BY_CODE.items()}
 
 #: A second copy of cli.py's own _NZ_TIMEZONE -- importing it from here would
 #: be circular (cli.py imports run_operational_cycle/default_lock_file_path
@@ -1128,6 +1132,19 @@ def run_operational_cycle(
         # touched outside run_operational_cycle, via a bare service.collect()
         # call) -- best effort, matching pre-existing behaviour there.
         run_record = service.store.get_run_record(operational_run_id) if outcome.already_recorded else None
+        if run_record is not None:
+            # code (and therefore OperationalRunResult.status) was derived
+            # above from *this* retry's own report/validation, which can
+            # genuinely diverge from the original (e.g. every bank
+            # unreachable on the retry, after the original succeeded) --
+            # restored from the reused record's own status so a caller never
+            # sees e.g. status="FAILED" alongside run_record.status=
+            # "SUCCESS" for what is the same run. A caller that separately
+            # re-derives its own summary from `outcome` (e.g.
+            # scripts/collect_market_rates_workflow.py's --summary-file)
+            # must check outcome.already_recorded itself before doing so, the
+            # same reason this reused record is never rebuilt from outcome.
+            code = _CODE_BY_STATUS[run_record.status]
         if run_record is None:
             market_state_value = None
             try:

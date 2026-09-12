@@ -293,6 +293,41 @@ def test_a_zero_accepted_retry_does_not_overwrite_the_original_run_record(
     assert stored, "the original attempt's observations must still be present"
 
 
+def test_a_zero_accepted_retry_reports_the_original_status_not_the_retrys(
+    tmp_path, fixture_fetcher
+):
+    """Reusing the original RunRecord (see the sibling test above) is not
+    enough on its own -- OperationalRunResult.code/.status were still
+    derived from this retry's own empty report, so a caller reading
+    result.status (the interactive CLI's "Status:" line) or result.code
+    (the scheduled workflow's own process exit code and --summary-file
+    write) would see FAILED/EXIT_TOTAL_FAILURE while run_record.status
+    says SUCCESS for the very same run."""
+    config = _config(tmp_path)
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        first = run_operational_cycle(service, captured_at_utc=DAY_ONE, alert_sinks={})
+        assert first.status == "SUCCESS"
+        assert first.code == EXIT_OK
+
+        service._fetcher = fixture_fetcher(
+            empty_banks=["ANZ", "ASB", "BNZ", "Westpac", "Kiwibank"]
+        )
+        second = run_operational_cycle(
+            service,
+            captured_at_utc=DAY_ONE,
+            run_id=first.run_record.run_id,
+            alert_sinks={},
+        )
+
+    assert second.status == "SUCCESS", (
+        "OperationalRunResult.status must match the reused run_record.status, "
+        "not this retry's own empty report"
+    )
+    assert second.code == EXIT_OK
+
+
 def test_a_change_persisted_but_never_alerted_is_replayed_on_a_later_run(
     tmp_path, fixture_fetcher
 ):

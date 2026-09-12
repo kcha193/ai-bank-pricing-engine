@@ -2,6 +2,7 @@
 
 import plistlib
 import re
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -204,3 +205,25 @@ def test_deployment_doc_covers_required_topics():
         "Production boundaries",
     ]:
         assert heading in deployment_doc
+
+
+def test_env_example_leaves_the_api_key_var_genuinely_unset_when_sourced():
+    """api/auth.py::require_api_key() treats PRICING_ENGINE_API_KEYS "set but
+    empty" as a misconfigured secret and fails closed with a 500 on every
+    protected request -- distinct from "unset" (auth disabled). Following
+    .env.example's own recommended workflow (`cp .env.example .env` then
+    `set -a; source .env; set +a`) must not export this var as an empty
+    string just because an operator left the optional line blank, or every
+    protected API request breaks the moment auth is not being configured."""
+    env_example = REPO_ROOT / ".env.example"
+
+    result = subprocess.run(
+        ["bash", "-c", f"set -a; source {env_example}; set +a; echo \"${{PRICING_ENGINE_API_KEYS-UNSET}}\""],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout.strip() == "UNSET", (
+        "sourcing .env.example must not export PRICING_ENGINE_API_KEYS as an empty string"
+    )

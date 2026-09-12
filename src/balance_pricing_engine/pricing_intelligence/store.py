@@ -230,6 +230,24 @@ CREATE TABLE IF NOT EXISTS collector_health (
     PRIMARY KEY (bank, product_type)
 );
 
+-- Write-once ledger of every (bank, product_type, run_id)
+-- update_collector_health() has already advanced the streak for.
+-- collector_health.last_processed_run_id alone only remembers the single
+-- most recent run_id, so once a *later*, different run_id has updated the
+-- same bank, a delayed retry of an *earlier* run_id no longer matches that
+-- one slot and is not recognised as already-processed -- it can advance, or
+-- even reset, the streak a second time from a stale retry's report.
+-- Membership here is checked instead (mirrors collection_run_products' own
+-- role for record_observations()), so an out-of-order retry of any
+-- already-processed run_id is caught regardless of how many other runs have
+-- updated this bank since.
+CREATE TABLE IF NOT EXISTS collector_health_processed_runs (
+    bank            TEXT NOT NULL,
+    product_type    TEXT NOT NULL,
+    run_id          TEXT NOT NULL,
+    PRIMARY KEY (bank, product_type, run_id)
+);
+
 -- Per-channel companion to collector_health.last_alert_sent_at. That
 -- bank-level column only answers "was ANY channel notified of this
 -- streak's incident" -- enough to gate whether a recovery is worth
@@ -1948,39 +1966,48 @@ class ObservationStore:
         only once an alert is actually sent, via
         :meth:`record_collector_health_alert`.
 
-        ``run_id``, when given and it matches this bank's stored
-        ``last_processed_run_id``, means this exact operational run already
-        advanced the streak -- the call is a retried ``run_operational_cycle()``
-        invocation under the same ``run_id`` (e.g. crashed then re-run), not
-        a new attempt. The streak is left untouched and the current state is
-        returned as-is: without this, a single logical failed run retried
-        several times would increment ``consecutive_failures`` once per
-        retry, reaching ``alert_after_failures`` and firing a premature
-        incident alert even though every other idempotent write in this run
+        ``run_id``, when given and already present in
+        ``collector_health_processed_runs`` for this bank/product, means
+        this exact operational run already advanced the streak -- the call
+        is a retried ``run_operational_cycle()`` invocation under the same
+        ``run_id`` (e.g. crashed then re-run), not a new attempt. The streak
+        is left untouched and the current state is returned as-is: without
+        this, a single logical failed run retried several times would
+        increment ``consecutive_failures`` once per retry, reaching
+        ``alert_after_failures`` and firing a premature incident alert even
+        though every other idempotent write in this run
         (``record_observations``, ``record_changes``, ``notified_alerts``)
-        already treats a repeated ``run_id`` as a no-op. Omitting ``run_id``
+        already treats a repeated ``run_id`` as a no-op. Checked against a
+        write-once ledger, not just ``last_processed_run_id`` (still updated,
+        but no longer authoritative for this check): that single column only
+        remembers the *most recent* run_id, so a delayed retry of an earlier
+        run_id arriving after a later, different run_id has already updated
+        this bank would otherwise no longer match it and advance the streak
+        a second time from stale, out-of-order data. Omitting ``run_id``
         (the default) preserves the unconditional-advance behaviour for any
         caller not tracking operational runs.
         """
         product = ProductType(product_type)
         at = at or datetime.now(timezone.utc)
         with self._transaction() as connection:
+            if run_id is not None:
+                already_processed = connection.execute(
+                    "SELECT 1 FROM collector_health_processed_runs "
+                    "WHERE bank = ? AND product_type = ? AND run_id = ?",
+                    (bank, product.value, run_id),
+                ).fetchone()
+                if already_processed is not None:
+                    return _collector_health_from_row(
+                        connection.execute(
+                            "SELECT * FROM collector_health WHERE bank = ? AND product_type = ?",
+                            (bank, product.value),
+                        ).fetchone()
+                    )
             existing = connection.execute(
-                "SELECT consecutive_failures, last_processed_run_id FROM collector_health "
+                "SELECT consecutive_failures FROM collector_health "
                 "WHERE bank = ? AND product_type = ?",
                 (bank, product.value),
             ).fetchone()
-            if (
-                existing is not None
-                and run_id is not None
-                and existing["last_processed_run_id"] == run_id
-            ):
-                return _collector_health_from_row(
-                    connection.execute(
-                        "SELECT * FROM collector_health WHERE bank = ? AND product_type = ?",
-                        (bank, product.value),
-                    ).fetchone()
-                )
             previous_streak = existing["consecutive_failures"] if existing is not None else 0
             new_streak = 0 if success else previous_streak + 1
             connection.execute(
@@ -2005,6 +2032,12 @@ class ObservationStore:
                     run_id,
                 ),
             )
+            if run_id is not None:
+                connection.execute(
+                    "INSERT OR IGNORE INTO collector_health_processed_runs "
+                    "(bank, product_type, run_id) VALUES (?, ?, ?)",
+                    (bank, product.value, run_id),
+                )
             row = connection.execute(
                 "SELECT * FROM collector_health WHERE bank = ? AND product_type = ?",
                 (bank, product.value),

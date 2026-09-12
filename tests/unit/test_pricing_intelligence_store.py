@@ -2659,6 +2659,37 @@ def test_update_collector_health_skips_advancing_for_a_retried_run_id(store):
     assert third.consecutive_failures == 2
 
 
+def test_update_collector_health_skips_an_out_of_order_retry_of_an_older_run_id(store):
+    """last_processed_run_id alone only remembers the single most recent
+    run_id -- once a later, different run_id (run-B) has updated this bank,
+    a delayed retry of an *earlier* run_id (run-A) no longer matches that one
+    slot and would otherwise be treated as a brand new attempt, advancing
+    (or resetting) the streak a second time from run-A's stale, out-of-order
+    retry report even though run-A's own processing was already folded into
+    the streak once."""
+    run_a = store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom from A", at=DAY_ONE, run_id="run-A"
+    )
+    run_b = store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom from B", at=DAY_TWO, run_id="run-B"
+    )
+    assert run_a.consecutive_failures == 1
+    assert run_b.consecutive_failures == 2
+
+    delayed_retry_of_a = store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom from A retried", at=DAY_THREE, run_id="run-A"
+    )
+
+    assert delayed_retry_of_a.consecutive_failures == 2, (
+        "a delayed retry of an already-processed (but no longer most-recent) run_id "
+        "must not advance the streak again"
+    )
+    assert delayed_retry_of_a.last_error == "boom from B", (
+        "the out-of-order retry must not overwrite run-B's already-recorded state"
+    )
+    assert delayed_retry_of_a.last_failure_at == run_b.last_failure_at
+
+
 def test_update_collector_health_without_run_id_always_advances(store):
     """Omitting run_id (the default) preserves the unconditional-advance
     behaviour for a caller not tracking operational runs."""
