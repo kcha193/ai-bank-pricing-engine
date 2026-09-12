@@ -684,6 +684,44 @@ def test_config_flag_loads_pricing_intelligence_settings(
     assert not (tmp_path / "data" / "processed" / "pricing_intelligence").exists()
 
 
+def test_config_flag_preserves_env_db_path_when_yaml_omits_it(
+    workflow, fixture_fetcher, tmp_path, monkeypatch
+):
+    """A --config whose pricing_intelligence block omits database_path must not
+    discard PRICING_INTELLIGENCE_DB_PATH in favour of PricingIntelligenceConfig()'s
+    hard-coded default -- same fix as the interactive CLI's config-loading
+    branch, applied to this scheduler entry point's equivalent branch."""
+    monkeypatch.chdir(tmp_path)
+    env_db = tmp_path / "from_env.db"
+    monkeypatch.setenv("PRICING_INTELLIGENCE_DB_PATH", str(env_db))
+    monkeypatch.setattr(
+        workflow,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"],
+            store=kwargs["store"],
+            fetcher=fixture_fetcher(),
+        ),
+    )
+
+    engine_config_path = tmp_path / "engine.yaml"
+    engine_config_path.write_text(yaml.dump(_minimal_engine_config(selected_banks=["ANZ"])))
+
+    code = workflow.main(
+        [
+            "--config",
+            str(engine_config_path),
+            "--lock-file",
+            str(tmp_path / "collection.lock"),
+            "--quiet",
+        ]
+    )
+
+    assert code == workflow.EXIT_OK
+    assert env_db.exists()
+    assert not (tmp_path / "data" / "processed" / "pricing_intelligence").exists()
+
+
 def test_logger_is_under_the_configured_json_logging_hierarchy(workflow):
     """configure_json_logging() only attaches its handler to "balance_pricing_engine".
 

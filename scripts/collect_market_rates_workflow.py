@@ -345,7 +345,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         # in the pricing_intelligence CLI.
         engine_config = load_config(args.config)
         if engine_config.pricing_intelligence is not None:
-            config = engine_config.pricing_intelligence
+            yaml_config = engine_config.pricing_intelligence
+            if "database_path" in yaml_config.model_fields_set:
+                config = yaml_config
+            else:
+                # The YAML block didn't set database_path itself, so
+                # Pydantic filled in the hard-coded default -- adopting
+                # yaml_config wholesale here would silently discard the
+                # PRICING_INTELLIGENCE_DB_PATH override resolved above.
+                config = yaml_config.model_copy(update={"database_path": config.database_path})
     if args.database:
         config = config.model_copy(update={"database_path": args.database})
 

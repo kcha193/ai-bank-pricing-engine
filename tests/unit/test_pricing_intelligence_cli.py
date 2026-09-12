@@ -230,6 +230,32 @@ def test_explicit_database_flag_overrides_the_env_var(tmp_path, populated_databa
     assert not (tmp_path / "unused.db").exists(), "the env-var path must not have been touched"
 
 
+def test_config_flag_preserves_env_db_path_when_yaml_omits_it(
+    tmp_path, populated_database, monkeypatch, capsys
+):
+    """A --config whose pricing_intelligence block omits database_path must
+    not silently discard PRICING_INTELLIGENCE_DB_PATH in favour of
+    PricingIntelligenceConfig()'s hard-coded default -- the env-resolved path
+    should only be replaced when the YAML explicitly sets database_path,
+    while other YAML settings (e.g. selected_banks) still take effect."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PRICING_INTELLIGENCE_DB_PATH", populated_database)
+
+    engine_config_path = tmp_path / "engine.yaml"
+    engine_config_path.write_text(yaml.dump(_minimal_engine_config(selected_banks=["ANZ"])))
+
+    exit_code = run(["--config", str(engine_config_path), "snapshot"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "NZ MORTGAGE MARKET" in output
+    assert "ANZ" in output
+    assert "BNZ" not in output, "selected_banks from the YAML block must still apply"
+    assert not Path("data/processed/pricing_intelligence/observations.db").exists(), (
+        "the hard-coded default path must not have been touched"
+    )
+
+
 def test_snapshot_renders_the_market_grid(populated_database, capsys):
     exit_code = run(["--database", populated_database, "snapshot"])
     output = capsys.readouterr().out
