@@ -1187,7 +1187,18 @@ def run_operational_cycle(
                 rates_observed=summary["rates_accepted"],
                 rates_changed=summary["changes_detected"],
                 validation_failures=summary["rates_rejected"],
-                suspicious_observations=summary["suspicious_changes"],
+                # Not summary["suspicious_changes"] (a count of *change
+                # events* this run emitted): a quarantined suspicious rate
+                # collected again unchanged is flagged again by validation
+                # (see validate_observations()'s "suspicious_movement" issue)
+                # but detect_changes() emits no new event for it, since
+                # nothing changed -- that would under-report the run's own
+                # audit signal as 0 even though it observed and warned about
+                # suspicious data. suspicious_keys already deduplicates by
+                # observation_key, matching "how many distinct advertised
+                # states this run flagged", not one count per validation
+                # issue raised against the same key.
+                suspicious_observations=len(outcome.validation.suspicious_keys),
                 market_state=market_state_value,
                 error_summary=error_summary,
                 collection_run_id=outcome.write_result.run_id if outcome.write_result else None,

@@ -1199,6 +1199,48 @@ def test_scenario_trigger_fn_is_not_called_for_a_suspicious_change(tmp_path, fix
     assert calls == []
 
 
+def test_run_record_counts_a_still_quarantined_rate_even_with_no_new_change(
+    tmp_path, fixture_fetcher
+):
+    """A quarantined suspicious rate collected again unchanged is re-flagged
+    by validation (compared against the last *confirmed* rate, not the
+    quarantined one -- see service.collect()'s own _resolve_suspicious use)
+    even though detect_changes() emits no new event for it, since nothing
+    changed from the already-quarantined stored state. RunRecord.
+    suspicious_observations must still count it -- deriving it from
+    summary["suspicious_changes"] (a count of change *events*) would
+    silently report 0 for a run that genuinely observed and warned about
+    suspicious data."""
+    config = _config(tmp_path)
+
+    def mutate_to_suspicious(bank, html):
+        if bank == "ANZ":
+            # A move far larger than suspicious_change_bps (75 bps default).
+            return html.replace("<td>1 year</td><td>4.79%", "<td>1 year</td><td>8.49%")
+        return html
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        run_operational_cycle(service, captured_at_utc=DAY_ONE, alert_sinks={})
+
+        service._fetcher = fixture_fetcher(mutate=mutate_to_suspicious)
+        first_spike = run_operational_cycle(service, captured_at_utc=DAY_TWO, alert_sinks={})
+        assert any(change.suspicious for change in first_spike.outcome.changes)
+        assert first_spike.run_record.suspicious_observations == 1
+
+        # Re-observed at the same suspicious value: unchanged from the
+        # already-quarantined stored state, so no new change event fires.
+        result = run_operational_cycle(
+            service, captured_at_utc=DAY_TWO + timedelta(days=1), alert_sinks={}
+        )
+
+    assert len(result.outcome.changes) == 0, "no new change -- the point is nothing here changed"
+    assert result.run_record.suspicious_observations == 1, (
+        "the still-quarantined rate must still be counted even though no new change fired"
+    )
+
+
 def test_no_scenario_trigger_fn_means_no_scenario_runs_persisted(tmp_path, fixture_fetcher):
     config = _config(tmp_path)
     with PricingIntelligenceService(
