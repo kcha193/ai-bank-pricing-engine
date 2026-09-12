@@ -1038,6 +1038,29 @@ def test_brief_daily_reports_no_change(populated_database, capsys):
     assert "No material mortgage pricing changes detected today." in output
 
 
+def test_brief_daily_reports_a_persisted_scenario_trigger(populated_database, capsys):
+    """A scenario comparison persisted by the scheduled `run --config` (see
+    orchestration.run_operational_cycle's scenario_trigger_fn) must be
+    surfaced by `brief` -- previously the only production call to
+    build_daily_brief() never passed scenario_triggered_terms at all,
+    leaving that section of the brief permanently unreachable regardless of
+    what was actually triggered and persisted."""
+    with ObservationStore(populated_database) as store:
+        store.write_scenario_run(
+            run_id="run-1",
+            product_type=ProductType.HOME_LOAN,
+            term_months=12,
+            scenarios=[{"scenario": "example"}],
+        )
+
+    exit_code = run(["--database", populated_database, "brief"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Pricing scenario analysis triggered for:" in output
+    assert "1 Year" in output
+
+
 def test_brief_daily_date_uses_new_zealand_time_not_utc(populated_database, capsys, monkeypatch):
     """Under the checked-in 07:30 Pacific/Auckland schedule, UTC is still
     the previous day at that hour -- the brief's displayed calendar date

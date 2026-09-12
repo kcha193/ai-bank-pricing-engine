@@ -680,6 +680,20 @@ def _brief(service: PricingIntelligenceService, args: argparse.Namespace) -> int
             scope_to_market=True,
         )
         health = service.store.get_collector_health(product_type=product)
+        # Same NZ-midnight window as today_changes above: a scenario run
+        # persisted by the scheduled `run --config` (see
+        # orchestration.run_operational_cycle's scenario_trigger_fn) is
+        # otherwise never surfaced by this command at all -- the only
+        # production caller of build_daily_brief() -- leaving its "Pricing
+        # scenario analysis triggered for" section unreachable outside a
+        # direct unit call.
+        scenario_triggered_terms = sorted(
+            {
+                run["term_months"]
+                for run in service.store.get_recent_scenario_runs(product_type=product, limit=200)
+                if run["generated_at"] >= nz_midnight.astimezone(timezone.utc)
+            }
+        )
         text = build_daily_brief(
             # NZ-local, not now's UTC -- see _NZ_TIMEZONE. Collector health
             # still resolves independently in UTC.
@@ -690,6 +704,7 @@ def _brief(service: PricingIntelligenceService, args: argparse.Namespace) -> int
             collector_health=health,
             tracked_banks=service.config.selected_banks,
             max_observation_age_hours=service.config.max_observation_age_hours,
+            scenario_triggered_terms=scenario_triggered_terms,
         )
 
     print(text)

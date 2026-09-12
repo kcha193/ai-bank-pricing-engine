@@ -1127,10 +1127,7 @@ def run_operational_cycle(
         # INSERT OR REPLACE keyed on run_id) the original would leave the
         # persisted run status contradicting the persisted observations, so
         # the already-persisted record is reused untouched instead of
-        # re-derived. Falls through to building a fresh one only if no
-        # RunRecord actually exists yet for this run_id (e.g. a run_id first
-        # touched outside run_operational_cycle, via a bare service.collect()
-        # call) -- best effort, matching pre-existing behaviour there.
+        # re-derived.
         run_record = service.store.get_run_record(operational_run_id) if outcome.already_recorded else None
         if run_record is not None:
             # code (and therefore OperationalRunResult.status) was derived
@@ -1145,7 +1142,7 @@ def run_operational_cycle(
             # must check outcome.already_recorded itself before doing so, the
             # same reason this reused record is never rebuilt from outcome.
             code = _CODE_BY_STATUS[run_record.status]
-        if run_record is None:
+        elif not outcome.already_recorded:
             market_state_value = None
             try:
                 market_state_value = service.get_market_state(product_type=product_type).state.value
@@ -1170,6 +1167,17 @@ def run_operational_cycle(
                 collection_run_id=outcome.write_result.run_id if outcome.write_result else None,
             )
             service.store.write_run_record(run_record)
+        # else: outcome.already_recorded is True but no RunRecord exists yet
+        # for this run_id -- the original attempt must have committed its
+        # observations and then crashed before ever reaching this point
+        # (e.g. during scenario persistence or alert bookkeeping, both of
+        # which run earlier in this same function). There is no way to
+        # reconstruct what the original attempt's own report/validation
+        # looked like from here, and building one from this retry's outcome
+        # risks persisting a completely wrong classification (e.g. FAILED
+        # with zero rates observed, even though the committed observations
+        # show the run actually succeeded). Left incomplete -- run_record
+        # stays None and nothing is written -- rather than guessed.
 
     return OperationalRunResult(
         outcome=outcome, run_record=run_record, alerts_sent=alerts_sent, code=code

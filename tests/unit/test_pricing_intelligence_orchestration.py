@@ -328,6 +328,44 @@ def test_a_zero_accepted_retry_reports_the_original_status_not_the_retrys(
     assert second.code == EXIT_OK
 
 
+def test_a_retry_with_no_existing_run_record_leaves_it_incomplete_not_wrong(
+    tmp_path, fixture_fetcher
+):
+    """If the original attempt committed its observations but crashed before
+    ever reaching write_run_record() (e.g. during scenario persistence or
+    alert bookkeeping, both of which run earlier in run_operational_cycle),
+    a retry under the same run_id has outcome.already_recorded=True but no
+    existing RunRecord to reuse. Building a fresh one from the retry's own
+    report would risk persisting e.g. FAILED with zero rates observed even
+    though the committed observations show the run actually succeeded --
+    simulated here by calling service.collect() directly under an explicit
+    run_id (bypassing run_operational_cycle entirely, so no RunRecord is
+    ever written for it), then retrying that same run_id through
+    run_operational_cycle with a fetch that fails outright."""
+    config = _config(tmp_path)
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, run_id="run-1", persist_snapshot=False)
+        stored_before = service.store.get_current_observations()
+        assert stored_before
+
+        service._fetcher = fixture_fetcher(
+            empty_banks=["ANZ", "ASB", "BNZ", "Westpac", "Kiwibank"]
+        )
+        result = run_operational_cycle(
+            service, captured_at_utc=DAY_ONE, run_id="run-1", alert_sinks={}
+        )
+
+        stored_after = service.store.get_current_observations()
+
+    assert result.run_record is None, (
+        "with no original RunRecord to reuse and no way to reconstruct it, "
+        "the operational record must be left incomplete, not built wrong from the retry"
+    )
+    assert stored_after == stored_before, "the retry must not have touched the real observations"
+
+
 def test_a_change_persisted_but_never_alerted_is_replayed_on_a_later_run(
     tmp_path, fixture_fetcher
 ):
