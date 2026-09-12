@@ -20,6 +20,7 @@ Mirrors the argparse subcommand style already used by
 from __future__ import annotations
 
 import argparse
+import contextlib
 from datetime import datetime, timedelta, timezone
 import logging
 import math
@@ -438,8 +439,17 @@ def _run(
     scheduled workflow script for scenario-triggered runs.
     """
     lock_file = args.lock_file or default_lock_file_path(_product(args), config.database_path)
+    # A dry run never writes an observation (see the read_only store below),
+    # so it cannot race a concurrent run into duplicate/corrupted writes --
+    # the only thing this lock exists to prevent. Acquiring it anyway would
+    # still create the lock directory and open a persistent lock file for
+    # writing (see SingleInstanceLock.__enter__()), contradicting the CLI's
+    # own "nothing persisted" dry-run message, and would make a dry run
+    # against a read-only directory or an already-locked real run fail for
+    # no reason.
+    lock = contextlib.nullcontext() if args.dry_run else SingleInstanceLock(Path(lock_file))
     try:
-        with SingleInstanceLock(Path(lock_file)):
+        with lock:
             with PricingIntelligenceService(
                 config=config,
                 store=ObservationStore(config.database_path, read_only=args.dry_run),

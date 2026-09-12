@@ -1278,6 +1278,72 @@ def test_brief_send_fails_when_every_configured_channel_fails_to_deliver(
     assert "Delivered to 0/1 configured channel(s)." in output
 
 
+def test_run_command_dry_run_does_not_create_the_lock_file(
+    tmp_path, fixture_fetcher, capsys, monkeypatch
+):
+    """``run --dry-run`` never writes an observation (see the read-only
+    store), so it cannot race a concurrent run into duplicate/corrupted
+    writes -- the only thing SingleInstanceLock exists to prevent.
+    Acquiring it anyway would still create the lock directory and open a
+    persistent lock file for writing, contradicting the CLI's own "nothing
+    persisted" dry-run message."""
+    monkeypatch.setattr(
+        cli,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"], store=kwargs["store"], fetcher=fixture_fetcher()
+        ),
+    )
+    lock_path = tmp_path / "collection.lock"
+
+    exit_code = run(
+        [
+            "--database",
+            str(tmp_path / "observations.db"),
+            "run",
+            "--dry-run",
+            "--lock-file",
+            str(lock_path),
+        ]
+    )
+    capsys.readouterr()
+
+    assert exit_code == 0
+    assert not lock_path.exists()
+
+
+def test_run_command_dry_run_ignores_a_held_lock(tmp_path, fixture_fetcher, capsys, monkeypatch):
+    """A dry run needs no exclusivity (it writes nothing), so it must not be
+    skipped as EXIT_ALREADY_RUNNING just because a real collection currently
+    holds the same lock file -- a preview should always be available."""
+    from balance_pricing_engine.pricing_intelligence.locking import SingleInstanceLock
+
+    monkeypatch.setattr(
+        cli,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"], store=kwargs["store"], fetcher=fixture_fetcher()
+        ),
+    )
+    lock_path = tmp_path / "collection.lock"
+
+    with SingleInstanceLock(lock_path):
+        exit_code = run(
+            [
+                "--database",
+                str(tmp_path / "observations.db"),
+                "run",
+                "--dry-run",
+                "--lock-file",
+                str(lock_path),
+            ]
+        )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Skipped" not in output
+
+
 def test_run_command_reports_already_running(tmp_path, capsys):
     from balance_pricing_engine.pricing_intelligence.locking import SingleInstanceLock
 
