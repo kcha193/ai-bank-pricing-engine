@@ -20,14 +20,34 @@ python3 examples/run_governed_scenario.py      # governed PricingService path (d
 python3 -m balance_pricing_engine.competitor_rates.cli fetch --output-dir data/processed/competitor_rates
 python3 examples/run_with_competitor_rates.py  # with live competitor rate ingestion
 
-# NZ public-market pricing intelligence
+# NZ public-market pricing intelligence (market observation only — never prices anything)
 python3 -m balance_pricing_engine.pricing_intelligence collect --render-javascript
 python3 -m balance_pricing_engine.pricing_intelligence snapshot
+python3 -m balance_pricing_engine.pricing_intelligence ocr           # RBNZ Official Cash Rate
+python3 -m balance_pricing_engine.pricing_intelligence run --dry-run # full operational cycle, no persistence/alerts
+python3 -m balance_pricing_engine.pricing_intelligence brief         # daily intelligence brief
+python3 -m balance_pricing_engine.pricing_intelligence health        # DB/collector/alert-channel status
 python3 examples/run_market_intelligence_scenarios.py
 python3 examples/run_llm_diagnostics.py        # LLM scenario narration (requires ANTHROPIC_API_KEY)
 python3 examples/run_multiperiod.py            # multi-period scenario
 python3 examples/train_response_models.py      # diagnostic ML layer
 ```
+
+Optional extras (`pip install -e ".[extra]"`, comma-separate for more than one):
+
+| Extra | Adds |
+| --- | --- |
+| `dev` | test/lint tooling plus everything needed to run the suite locally |
+| `api` | FastAPI + uvicorn for the serving layer |
+| `dashboard` | Streamlit dashboard (`scripts/streamlit_dashboard.py`) |
+| `llm` | Anthropic client for the decision-support narration layer |
+| `ml` | LightGBM/XGBoost/lifelines candidate models for the diagnostic ML layer |
+| `kafka` | `KafkaEventPublisher` for the domain-event seam |
+| `browser` | Playwright, required for live competitor-rate/market-intelligence collection (`--render-javascript`) |
+
+Every optional environment variable (alert webhooks, Telegram, `ANTHROPIC_API_KEY`, API auth keys,
+pricing-intelligence DB path) is documented in [.env.example](.env.example) — each gated feature is
+off by default and the engine runs with none of it set.
 
 If your environment cannot download build dependencies, see the restricted-network setup notes in
 [docs/usage_guide.md](docs/usage_guide.md#restricted-network-setup).
@@ -44,6 +64,7 @@ For model-risk and architecture notes, see:
 - [docs/deployment.md](docs/deployment.md) — local and Docker deployment, health/readiness,
   production boundaries
 - [docs/adr/](docs/adr/) — architecture decision records for the modular-monolith design
+- [CHANGELOG.md](CHANGELOG.md) — release history
 
 ## Current Scope
 
@@ -66,13 +87,25 @@ The project also includes:
 - A governance control plane (`governance/`) that evaluates typed gates (boundary warnings, policy
   band, funding shortfall, model/feature compatibility, etc.), derives a `RECOMMENDED` /
   `REVIEW_REQUIRED` / `BLOCKED` decision status, and writes an additive `decision_record.json`.
-- An in-process domain-event seam (`events/`) with local implementations
-  (no-op / in-memory / JSONL) — a future Kafka/Pub/Sub adapter can implement the same protocol.
+- An in-process domain-event seam (`events/`) with no-op / in-memory / JSONL implementations plus
+  a `KafkaEventPublisher` (optional `kafka` extra) — a broken or slow publisher is logged and
+  never fails, blocks, or alters a pricing decision.
 - An LLM decision-support layer (`llm/`) for plain-language narration and config anomaly detection
   (human review required — never wired into automated decisions).
 - A FastAPI serving layer (`api/`) with the original `POST /run-scenario` endpoint (stable,
   backward-compatible) and a versioned `POST /v1/pricing/scenarios` endpoint backed by
-  `PricingService`, plus `GET /health` and `GET /ready`.
+  `PricingService`, plus `GET /health` and `GET /ready`. Both `POST` routes accept an optional
+  `X-API-Key` header, enforced only when `PRICING_ENGINE_API_KEYS` is set.
+- A **pricing-intelligence operations layer** (`pricing_intelligence/`) that turns NZ public-market
+  observation into a daily operating workflow, entirely separate from pricing itself: scheduled
+  collection (`scripts/collect_market_rates_workflow.py`, launchd/cron examples under
+  `deploy/scheduling/`), a persisted operational run ledger, per-bank collector health monitoring
+  with escalation, webhook and Telegram alert delivery, daily/weekly intelligence briefs, decision-
+  support scenarios auto-triggered on a meaningful rate move, and database backup/health-check
+  commands. See [docs/pricing_intelligence.md](docs/pricing_intelligence.md)'s "Pricing
+  Intelligence Operations" section. It also tracks the RBNZ Official Cash Rate (`ocr` command)
+  alongside the bank-rate collectors. This layer only ever answers "what is the market doing?" —
+  it cannot import the optimiser and never changes a price on its own.
 
 Every pricing run produces an auditable ledger under `data/outputs/runs/` containing a config
 snapshot, run metadata, a business-facing pricing memo, a governance checklist, and (when run
@@ -80,7 +113,7 @@ through `PricingService`) an additive decision record — all generated offline 
 dependencies. See [docs/run_ledger_guide.md](docs/run_ledger_guide.md).
 
 A minimal, secure local Docker deployment path exists (see
-[docs/deployment.md](docs/deployment.md)). Dashboards remain a `streamlit` extra
-(`dashboard/`); full production deployment (authentication, TLS, durable event/feature/model
-stores, autoscaling, enterprise monitoring) is out of scope — see the production-boundaries list
-in [docs/deployment.md](docs/deployment.md).
+[docs/deployment.md](docs/deployment.md)). The Streamlit dashboard remains an optional `dashboard`
+extra; full production deployment (authentication, TLS, durable event/feature/model stores,
+autoscaling, enterprise monitoring) is out of scope — see the production-boundaries list in
+[docs/deployment.md](docs/deployment.md).
