@@ -85,7 +85,7 @@ def build_daily_brief(
     product_label = _product_label(snapshot.product_type)
     rate_moves = [change for change in today_changes if change.is_rate_move]
 
-    lines = ["NZ PRICING INTELLIGENCE", f"{as_of:%d %b %Y}", ""]
+    lines = [f"NZ {product_label} PRICING INTELLIGENCE", f"{as_of:%d %b %Y}", ""]
     lines.append(f"Market state: {week_assessment.state.value}")
     lines.append("")
     lines.append("TODAY")

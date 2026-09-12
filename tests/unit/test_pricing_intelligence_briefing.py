@@ -88,7 +88,7 @@ def test_a_quiet_today_still_reports_the_rest_of_the_brief(snapshot):
         tracked_banks=[bank for bank, _ in MARKET],
     )
 
-    assert brief.startswith("NZ PRICING INTELLIGENCE\n21 Aug 2026\n\n")
+    assert brief.startswith("NZ MORTGAGE PRICING INTELLIGENCE\n21 Aug 2026\n\n")
     assert "Market state: ELEVATED" in brief
     assert "TODAY" in brief
     assert "No material mortgage pricing changes detected today." in brief
@@ -316,6 +316,10 @@ def test_daily_brief_labels_a_term_deposit_snapshot(make_record):
         tracked_banks=[bank for bank, _ in MARKET],
     )
 
+    assert brief.startswith("NZ TERM DEPOSIT PRICING INTELLIGENCE\n"), (
+        "the heading itself must identify the product -- home-loan and term-deposit "
+        "briefs delivered to the same channel would otherwise be indistinguishable"
+    )
     assert "No material term deposit pricing changes detected today." in brief
     assert "mortgage" not in brief.lower()
 

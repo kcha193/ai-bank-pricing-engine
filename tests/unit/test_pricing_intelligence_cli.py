@@ -1034,7 +1034,7 @@ def test_brief_daily_reports_no_change(populated_database, capsys):
     output = capsys.readouterr().out
 
     assert exit_code == 0
-    assert "NZ PRICING INTELLIGENCE" in output
+    assert "NZ MORTGAGE PRICING INTELLIGENCE" in output
     assert "No material mortgage pricing changes detected today." in output
 
 
