@@ -722,6 +722,7 @@ def _missed_scenario_trigger_terms(
     product_type: ProductType,
     config: PricingIntelligenceConfig,
     now: datetime,
+    not_after_run_id: Optional[str] = None,
 ) -> list[int]:
     """Tracked, comparable-category terms whose rate move in the same recent
     window ``_undelivered_change_replay_candidates`` uses never got a
@@ -740,6 +741,20 @@ def _missed_scenario_trigger_terms(
     run wrote it, not just the change's own ``run_id`` -- so a term already
     caught up by an earlier retry (this run's predecessor already recovered
     it) is not re-triggered every cycle for the rest of the replay window.
+
+    ``not_after_run_id``, when given, excludes any candidate whose own run
+    is ordered strictly after it (via
+    :meth:`~.store.ObservationStore.run_ordered_at_or_after`, evaluated at
+    ``now`` for that run's own position) -- the caller's run_id for a
+    normal, fresh run, where every stored candidate is by definition from
+    an earlier run already, making this a no-op. It matters for an
+    already-recorded retry: the caller then builds one snapshot anchored on
+    that specific retried run's own position (see
+    ``run_operational_cycle``'s ``as_of_run_id`` branch), so a genuinely
+    later run's own uncovered trigger must not be pulled into this call and
+    computed against that stale, retried-run snapshot -- it is left for
+    that later run's own (or a subsequent recovery) pass, which will use
+    its own correct market context.
     """
     since = now - timedelta(hours=UNDELIVERED_CHANGE_REPLAY_HOURS)
     rows = store.get_changes_since(since=since, now=now, product_type=product_type)
@@ -752,6 +767,14 @@ def _missed_scenario_trigger_terms(
         and change.rate_category == target_category
         and change.term_months in config.tracked_terms_months
     ]
+    if not_after_run_id is not None:
+        candidates = [
+            change
+            for change in candidates
+            if store.run_ordered_at_or_after(
+                not_after_run_id, now, change.run_id, change.detected_at
+            )
+        ]
     if not candidates:
         return []
     # Collapsed to the latest change per term, not every candidate: if the
@@ -1102,7 +1125,11 @@ def run_operational_cycle(
             set(_scenario_trigger_candidates(outcome.changes, product_type, service.config))
             | set(
                 _missed_scenario_trigger_terms(
-                    service.store, product_type, service.config, replay_now
+                    service.store,
+                    product_type,
+                    service.config,
+                    replay_now,
+                    not_after_run_id=operational_run_id,
                 )
             )
         )

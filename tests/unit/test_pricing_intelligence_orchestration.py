@@ -1448,6 +1448,60 @@ def test_a_retried_run_reconstructs_its_scenario_snapshot_as_of_itself(tmp_path,
     )
 
 
+def test_a_retried_run_does_not_recover_a_later_runs_uncovered_trigger(
+    tmp_path, fixture_fetcher
+):
+    """A retry of an already-recorded run A computes its recovered scenario
+    off a snapshot anchored on A's own position (see the sibling test
+    above). A *different* term whose latest uncovered trigger belongs to a
+    genuinely later run B -- sharing A's exact captured_at_utc, a
+    supported backfill/replay tie (see
+    ObservationStore.record_observations) -- must not be swept into that
+    same call and computed against A's stale snapshot: that would persist
+    an invalid comparison under A's identity while B's own term stays
+    uncovered. Retrying A must recover only A's own missed trigger."""
+    config = _config(tmp_path)
+    calls = []
+
+    def trigger_fn(terms, snapshot):
+        calls.append(tuple(sorted(terms)))
+        return {term: _fake_scenario_result(term) for term in terms}
+
+    def mutate_bnz_two_year(bank, html):
+        if bank == "BNZ":
+            return html.replace("<td>2 years</td><td>4.99%", "<td>2 years</td><td>4.79%")
+        return html
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+        # Run A: ANZ moves term 12 -- no scenario_trigger_fn, a missed trigger.
+        service._fetcher = fixture_fetcher(mutate=_mutate_anz_one_year)
+        run_operational_cycle(service, captured_at_utc=DAY_TWO, run_id="run-a", alert_sinks={})
+
+        # Run B (a later, unrelated run_id, persisted after run-a but
+        # sharing its exact captured_at_utc): BNZ moves a *different*
+        # tracked term -- also no scenario_trigger_fn, also a missed
+        # trigger.
+        service._fetcher = fixture_fetcher(mutate=mutate_bnz_two_year)
+        run_operational_cycle(service, captured_at_utc=DAY_TWO, alert_sinks={})
+
+        # Retry run-a (same run_id, same captured_at_utc) with
+        # scenario_trigger_fn wired: must recover only term 12 (A's own
+        # trigger), not term 24 (B's, a genuinely later run).
+        run_operational_cycle(
+            service,
+            captured_at_utc=DAY_TWO,
+            run_id="run-a",
+            alert_sinks={},
+            scenario_trigger_fn=trigger_fn,
+        )
+
+    assert calls == [(12,)], "the retry of run-a must not also recover run-b's own missed trigger"
+
+
 def test_a_scenario_triggered_this_run_is_not_recomputed_later(tmp_path, fixture_fetcher):
     """generated_at must reflect real scenario-completion time (replay_now),
     not the run's pre-collection started_at -- started_at is captured
