@@ -1107,7 +1107,15 @@ def run_operational_cycle(
             )
         )
     if triggered_terms:
-        scenario_snapshot = service.get_market_snapshot(product_type=product_type)
+        # now=replay_now, not the default real wall clock: a caller
+        # backfilling/replaying a captured_at_utc more than
+        # max_observation_age_hours behind actual "now" would otherwise have
+        # every just-collected observation filtered as stale, handing
+        # scenario_trigger_fn an empty snapshot that cannot resolve the
+        # triggering term -- silently dropping the scenario comparison for a
+        # run whose change and replay window were both evaluated on the
+        # historical clock.
+        scenario_snapshot = service.get_market_snapshot(product_type=product_type, now=replay_now)
         try:
             scenarios_by_term = dict(scenario_trigger_fn(triggered_terms, scenario_snapshot))
         except Exception:  # noqa: BLE001 - decision-support only, must not abort the cycle

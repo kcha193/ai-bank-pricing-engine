@@ -1358,6 +1358,40 @@ def test_a_missed_scenario_is_recovered_on_a_later_run_with_no_new_change(
     assert runs[0]["term_months"] == 12
 
 
+def test_scenario_snapshot_uses_the_replay_clock_not_real_time(tmp_path, fixture_fetcher):
+    """A caller backfilling/replaying a captured_at_utc more than
+    max_observation_age_hours behind the actual wall clock must still get a
+    usable market snapshot for scenario_trigger_fn. get_market_snapshot()'s
+    default now=None filters by the real wall clock, which would treat
+    every just-collected observation as stale and hand the callback an
+    empty snapshot that cannot resolve the triggering term -- silently
+    dropping the scenario comparison for a run whose change and replay
+    window were both evaluated on the historical clock.
+
+    The module's fixed DAY_ONE/DAY_TWO are weeks in the past by the time
+    this suite runs (well past the default 168-hour max_observation_age),
+    so this is exactly that case -- not a contrived date."""
+    config = _config(tmp_path)
+    snapshots = []
+
+    def trigger_fn(terms, snapshot):
+        snapshots.append(snapshot)
+        return {term: _fake_scenario_result(term) for term in terms}
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=_mutate_anz_one_year)
+        run_operational_cycle(
+            service, captured_at_utc=DAY_TWO, alert_sinks={}, scenario_trigger_fn=trigger_fn
+        )
+
+    assert len(snapshots) == 1
+    assert snapshots[0].terms, "must not be empty just because DAY_TWO is weeks in the past"
+    assert 12 in snapshots[0].terms
+
+
 def test_a_scenario_triggered_this_run_is_not_recomputed_later(tmp_path, fixture_fetcher):
     """generated_at must reflect real scenario-completion time (replay_now),
     not the run's pre-collection started_at -- started_at is captured
