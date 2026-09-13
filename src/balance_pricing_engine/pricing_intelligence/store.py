@@ -33,6 +33,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 from typing import Iterable, Iterator, Mapping, NamedTuple, Optional, Sequence
+from urllib.parse import quote
 import uuid
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
@@ -577,7 +578,19 @@ class ObservationStore:
                 # live connection, so it always sees a transactionally
                 # consistent snapshot, the same reason backup_database()
                 # uses it instead of shutil.copyfile.
-                source = sqlite3.connect(self.database_path)
+                #
+                # Opened read-only via URI, not plain sqlite3.connect(): the
+                # exists() check above leaves a time-of-check-to-time-of-use
+                # gap (a restore or rotation removing the file in between),
+                # and an ordinary read-write connection would silently
+                # *create* a new, empty database at the real configured
+                # path in that case -- exactly the artifact a dry run
+                # promises never to leave behind, with the "preview" then
+                # silently starting from an empty store instead of failing
+                # loudly. See backup_database()'s own read-only URI fix for
+                # the identical race.
+                source_uri = f"file:{quote(str(Path(self.database_path).resolve()))}?mode=ro"
+                source = sqlite3.connect(source_uri, uri=True)
                 try:
                     destination = sqlite3.connect(temp_path)
                     try:

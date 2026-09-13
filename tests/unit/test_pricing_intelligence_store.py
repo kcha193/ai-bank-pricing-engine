@@ -844,6 +844,28 @@ def test_read_only_store_against_a_missing_database_does_not_create_a_file(tmp_p
     assert not db_path.exists()
 
 
+def test_read_only_store_source_open_rejects_a_toctou_removed_database(tmp_path, monkeypatch):
+    """The exists() check above the WAL-aware snapshot leaves a narrow
+    time-of-check-to-time-of-use gap -- the configured database can vanish
+    (e.g. a restore or rotation) between that check and the source
+    connection. Simulated here by making exists() lie: the read-only URI
+    connection must still fail loudly with sqlite3.OperationalError rather
+    than an ordinary read-write sqlite3.connect() silently creating a
+    fresh, empty database at the real configured path -- exactly the
+    artifact a dry run promises never to leave behind."""
+    import os
+    import sqlite3
+    from pathlib import Path as PathlibPath
+
+    db_path = tmp_path / "does-not-exist.db"
+    monkeypatch.setattr(PathlibPath, "exists", lambda self: True)
+
+    with pytest.raises(sqlite3.OperationalError):
+        ObservationStore(str(db_path), read_only=True)
+
+    assert not os.path.exists(str(db_path)), "must not have created an empty database"
+
+
 def test_a_pre_column_database_infers_product_from_its_existing_history(store, make_record):
     """The --product CLI flag has collected term deposits since before
     collection_runs.product_type existed, so an upgrading database can
