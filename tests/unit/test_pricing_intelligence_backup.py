@@ -1,6 +1,7 @@
 """Timestamped SQLite backups and count-based pruning."""
 
 from datetime import datetime, timezone
+from pathlib import Path
 import sqlite3
 
 import pytest
@@ -62,13 +63,15 @@ class _FailingSourceConnection(sqlite3.Connection):
 
 def _patch_source_connect_to_fail(monkeypatch, backup_module, db_path):
     """Make backup_database()'s *source* connection (opened against
-    db_path) fail its own .backup() call, while every other sqlite3.connect
-    call (the temp destination, this test's own setup/assertions) behaves
-    normally."""
+    db_path, as the same read-only URI string backup_database() itself
+    builds -- see its own source_uri) fail its own .backup() call, while
+    every other sqlite3.connect call (the temp destination, this test's own
+    setup/assertions) behaves normally."""
     real_connect = sqlite3.connect
+    source_uri = f"file:{backup_module.quote(str(db_path.resolve()))}?mode=ro"
 
     def fake_connect(path, *args, **kwargs):
-        if str(path) == str(db_path):
+        if path == source_uri:
             return real_connect(path, *args, factory=_FailingSourceConnection, **kwargs)
         return real_connect(path, *args, **kwargs)
 
@@ -134,6 +137,23 @@ def test_backup_refuses_a_missing_source_database(tmp_path):
         backup_database(db, dest)
 
     assert not dest.exists(), "must fail before creating the destination directory"
+    assert not db.exists(), "must not have created an empty database at the missing source path"
+
+
+def test_backup_source_open_read_only_rejects_a_toctou_removed_file(tmp_path, monkeypatch):
+    """A narrow time-of-check-to-time-of-use gap remains between the
+    is_file() guard and the source connection -- the source can vanish (or,
+    as simulated here, the check can simply be wrong) in between. The
+    read-only URI connection must still fail loudly rather than an ordinary
+    read-write sqlite3.connect() silently creating a fresh, empty database
+    to "successfully" back up nothing."""
+    db = tmp_path / "does-not-exist.db"
+    dest = tmp_path / "backups"
+    monkeypatch.setattr(Path, "is_file", lambda self: True)
+
+    with pytest.raises(sqlite3.OperationalError):
+        backup_database(db, dest)
+
     assert not db.exists(), "must not have created an empty database at the missing source path"
 
 

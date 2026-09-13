@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
+from urllib.parse import quote
 
 
 def backup_database(
@@ -28,15 +29,22 @@ def backup_database(
     consistent, rather than risking a torn read mid-write.
 
     Raises ``FileNotFoundError`` if ``database_path`` does not exist --
-    checked here, not left to the caller: ``sqlite3.connect()`` silently
-    *creates* a new, empty database file for a nonexistent path instead of
-    failing, which would otherwise let this function "successfully" back up
-    nothing and prune older, still-good backups via that empty copy's
-    presence. The CLI's own existence check (see ``cli._backup``) narrows
-    the window but cannot close it -- the source can still disappear
-    between that check and this call, and this function is also called
-    directly (e.g. in tests, or a future scheduled workflow) without going
-    through the CLI at all.
+    checked here, not left to the caller: an ordinary read-write
+    ``sqlite3.connect()`` silently *creates* a new, empty database file for
+    a nonexistent path instead of failing, which would otherwise let this
+    function "successfully" back up nothing and prune older, still-good
+    backups via that empty copy's presence. The CLI's own existence check
+    (see ``cli._backup``) narrows the window but cannot close it -- the
+    source can still disappear between that check and this call, and this
+    function is also called directly (e.g. in tests, or a future scheduled
+    workflow) without going through the CLI at all.
+
+    This upfront check still leaves a narrow time-of-check-to-time-of-use
+    gap before the source connection below -- closed by opening that
+    connection in SQLite's read-only URI mode rather than plain
+    read-write: a nonexistent (or since-removed) path then fails the
+    connection itself with ``sqlite3.OperationalError`` instead of
+    silently creating an empty database to "successfully" back up.
 
     Returns the path of the backup just written.
     """
@@ -61,7 +69,16 @@ def backup_database(
     # functions' `*.db` glob even if cleanup below somehow doesn't run.
     temp_path = destination_path.with_name(destination_path.name + ".tmp")
 
-    source = sqlite3.connect(str(database_path))
+    # Read-only URI connection, not plain sqlite3.connect(str(database_path)):
+    # the latter creates a new, empty database file for a nonexistent path
+    # instead of failing, so it would silently "succeed" at backing up
+    # nothing if the source vanished between the is_file() check above and
+    # this call. Percent-encoded and resolved to an absolute path: SQLite's
+    # URI filenames are '?'/'#'-delimited themselves, so an unescaped path
+    # containing either (or a relative path resolved against a later cwd
+    # change) could otherwise be misparsed or point at the wrong file.
+    source_uri = f"file:{quote(str(database_path.resolve()))}?mode=ro"
+    source = sqlite3.connect(source_uri, uri=True)
     try:
         try:
             destination = sqlite3.connect(str(temp_path))
