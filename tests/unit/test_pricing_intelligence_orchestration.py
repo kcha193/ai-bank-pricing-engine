@@ -1507,6 +1507,73 @@ def test_scenario_coverage_uses_run_order_not_a_tied_timestamp(tmp_path, fixture
     assert runs[0]["term_months"] == 12
 
 
+def test_scenario_coverage_from_an_unresolvable_run_rejects_a_tied_timestamp(
+    tmp_path, fixture_fetcher
+):
+    """A total-failure cycle accepts nothing, so it earns no collection_runs
+    row -- but missed-scenario-trigger recovery still runs off historical
+    changes regardless of this run's own outcome, and can persist a
+    scenario under that unresolvable run_id. If a later, genuinely
+    successful run then detects a new change on the same term at the exact
+    same supported replay timestamp, run_ordered_at_or_after() must not
+    treat the tie as evidence of "at or after" just because run identity
+    already ruled out the two being the same run -- one side having no
+    collection_runs row to compare means there is nothing to disambiguate
+    the tie with, so it must not count as coverage."""
+    config = _config(tmp_path)
+    calls = []
+
+    def trigger_fn(terms, snapshot):
+        calls.append(tuple(terms))
+        return {term: _fake_scenario_result(term) for term in terms}
+
+    def mutate_bnz_one_year(bank, html):
+        if bank == "ANZ":
+            return html.replace("<td>1 year</td><td>4.79%", "<td>1 year</td><td>4.59%")
+        if bank == "BNZ":
+            return html.replace("<td>1 year</td><td>4.85%", "<td>1 year</td><td>4.65%")
+        return html
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+        # ANZ moves -- no scenario_trigger_fn wired, so the change is
+        # detected but never gets its own scenario (a missed trigger).
+        service._fetcher = fixture_fetcher(mutate=_mutate_anz_one_year)
+        run_operational_cycle(service, captured_at_utc=DAY_TWO, alert_sinks={})
+
+        # A later, total-failure cycle: every bank fails, so nothing is
+        # accepted and this run earns no collection_runs row -- but missed-
+        # trigger recovery still fires for ANZ's uncovered DAY_TWO change,
+        # persisting a scenario under this run's own (unresolvable) run_id.
+        day_three = DAY_TWO + timedelta(days=1)
+        service._fetcher = fixture_fetcher(failing_banks=[c.bank for c in COLLECTOR_CLASSES])
+        failed = run_operational_cycle(
+            service, captured_at_utc=day_three, alert_sinks={}, scenario_trigger_fn=trigger_fn
+        )
+        assert calls == [(12,)]
+        assert failed.run_record.status == "FAILED"
+
+        # BNZ moves the same term in a genuinely successful run that
+        # happens to share the exact same captured_at_utc as the failed
+        # cycle above.
+        service._fetcher = fixture_fetcher(mutate=mutate_bnz_one_year)
+        missed = run_operational_cycle(service, captured_at_utc=day_three, alert_sinks={})
+        assert len(missed.outcome.changes) == 1
+
+        # A later, otherwise-quiet cycle must still recover BNZ's change --
+        # the failed run's unresolvable, tied-timestamp scenario must not
+        # make the term look covered.
+        day_four = day_three + timedelta(days=1)
+        run_operational_cycle(
+            service, captured_at_utc=day_four, alert_sinks={}, scenario_trigger_fn=trigger_fn
+        )
+
+    assert calls == [(12,), (12,)]
+
+
 def test_triggered_scenario_enriches_the_rate_move_alert(tmp_path, fixture_fetcher):
     config = _config(tmp_path)
     sink = CollectingAlertSink()

@@ -2151,10 +2151,21 @@ class ObservationStore:
         timestamp reused across calls is a supported case; see
         :meth:`record_observations`) are still ordered correctly by which
         run was actually persisted first, rather than comparing the tied
-        timestamps directly and treating them as simultaneous. Falls back to
-        comparing ``later_timestamp``/``earlier_timestamp`` directly when
-        either run_id does not correlate to a stored ``collection_runs`` row
-        (or is ``None``) -- there is nothing to compare against.
+        timestamps directly and treating them as simultaneous.
+
+        Falls back to comparing ``later_timestamp``/``earlier_timestamp``
+        directly only when *both* run_ids resolve to no ``collection_run``
+        row (or are ``None``) -- there is nothing to compare against, so an
+        exact tie there is accepted the same as the metadata-backed case.
+        When exactly one side resolves (e.g. a total-failure collection
+        cycle can still run scenario-trigger recovery and call
+        :meth:`write_scenario_run` under a run_id that never earned a
+        ``collection_runs`` row, since nothing was accepted to persist), a
+        tied fallback timestamp is *not* accepted as evidence of ordering:
+        the whole point of the ``collection_runs`` lookup is to disambiguate
+        a tie, so a tie on the one side that couldn't be resolved must not
+        silently count as "at or after" merely because run identity already
+        ruled out the two being the same run.
         """
         if later_run_id is not None and later_run_id == earlier_run_id:
             return True
@@ -2172,6 +2183,8 @@ class ObservationStore:
         earlier_key = order_keys.get(earlier_run_id) if earlier_run_id is not None else None
         if later_key is not None and earlier_key is not None:
             return later_key >= earlier_key
+        if later_key is not None or earlier_key is not None:
+            return later_timestamp > earlier_timestamp
         return later_timestamp >= earlier_timestamp
 
     def record_collector_health_alert(
