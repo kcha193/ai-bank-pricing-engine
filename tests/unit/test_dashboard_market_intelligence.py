@@ -445,6 +445,63 @@ def test_resolve_intelligence_config_falls_back_to_defaults_on_invalid_yaml(
     assert resolved == PricingIntelligenceConfig()
 
 
+def _import_dashboard_module(monkeypatch):
+    """Import the dashboard module without render_dashboard()'s
+    PricingIntelligenceConfig.__init__ patch: that patch injects a test
+    database_path default into *every* PricingIntelligenceConfig()
+    construction (via kwargs.setdefault, before pydantic even sees the
+    call), which makes database_path look explicitly "set" on any config
+    built during the test -- masking exactly the "YAML omits database_path"
+    branch these env-override tests need to exercise."""
+    fake = FakeStreamlit()
+    monkeypatch.setitem(sys.modules, "streamlit", fake)
+    sys.modules.pop("balance_pricing_engine.dashboard.app", None)
+    spec = importlib.util.find_spec("balance_pricing_engine.dashboard.app")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["balance_pricing_engine.dashboard.app"] = module
+    with pytest.raises(DashboardStop):
+        spec.loader.exec_module(module)
+    fake.module = module
+    return fake
+
+
+def test_resolve_intelligence_config_falls_back_to_the_env_override(monkeypatch, tmp_path):
+    """A sidebar YAML that doesn't set database_path itself must fall back to
+    PRICING_INTELLIGENCE_DB_PATH -- the same env override the CLI and
+    scheduled workflow honour (see resolve_database_path_from_env) -- not
+    the package's hard-coded default. Without this, a deployment relying
+    on that env var has the dashboard silently read a different database
+    than the rest of the operational tooling, reporting no market data (or
+    someone else's) despite collection working fine."""
+    fake = _import_dashboard_module(monkeypatch)
+    env_db = tmp_path / "env-configured.db"
+    monkeypatch.setenv("PRICING_INTELLIGENCE_DB_PATH", str(env_db))
+
+    resolved = fake.module._resolve_intelligence_config(
+        _minimal_engine_yaml(selected_banks=["ANZ", "ASB"])
+    )
+
+    assert resolved.database_path == str(env_db)
+    assert resolved.selected_banks == ["ANZ", "ASB"]
+
+
+def test_resolve_intelligence_config_yaml_database_path_wins_over_the_env_override(
+    monkeypatch, tmp_path
+):
+    """An explicit database_path in the sidebar YAML must still win over
+    PRICING_INTELLIGENCE_DB_PATH, matching the CLI's own precedence: an
+    operator's explicit choice always beats the environment."""
+    fake = _import_dashboard_module(monkeypatch)
+    yaml_db = tmp_path / "yaml-configured.db"
+    monkeypatch.setenv("PRICING_INTELLIGENCE_DB_PATH", str(tmp_path / "unused.db"))
+
+    resolved = fake.module._resolve_intelligence_config(
+        _minimal_engine_yaml(database_path=str(yaml_db))
+    )
+
+    assert resolved.database_path == str(yaml_db)
+
+
 # ------------------------------------------------------- operational sections
 
 

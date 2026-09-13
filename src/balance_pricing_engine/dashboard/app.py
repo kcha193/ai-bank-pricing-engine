@@ -11,7 +11,10 @@ import streamlit as st
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.config import EngineConfig
 from balance_pricing_engine.diagnostics import run_sensitivity_analysis
-from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
+from balance_pricing_engine.pricing_intelligence.config import (
+    PricingIntelligenceConfig,
+    resolve_database_path_from_env,
+)
 from balance_pricing_engine.pricing_intelligence.dashboard_data import (
     build_changes_frame,
     build_collector_health_frame,
@@ -68,12 +71,28 @@ def _resolve_intelligence_config(config_yaml_str: str) -> PricingIntelligenceCon
     otherwise invalid, and a config author's bank selection/freshness/
     validation settings should still take effect when it is valid rather
     than being silently ignored in favour of defaults.
+
+    Applies the ``PRICING_INTELLIGENCE_DB_PATH`` env override the same way
+    the CLI/scheduled workflow do (see ``resolve_database_path_from_env``):
+    an explicit ``database_path`` in the sidebar YAML always wins, but a
+    YAML block that omits it -- or no YAML block at all -- falls back to
+    the env override instead of the package's hard-coded default. Without
+    this, a deployment relying on that env var would have the dashboard
+    silently read a different database than the CLI/scheduled workflow do,
+    reporting no market data (or someone else's) despite collection
+    working fine.
     """
+    env_default = resolve_database_path_from_env(PricingIntelligenceConfig())
     try:
         engine_config = EngineConfig(**yaml.safe_load(config_yaml_str))
     except Exception:  # noqa: BLE001 - falls back to defaults on any bad YAML
-        return PricingIntelligenceConfig()
-    return engine_config.pricing_intelligence or PricingIntelligenceConfig()
+        return env_default
+    yaml_config = engine_config.pricing_intelligence
+    if yaml_config is None:
+        return env_default
+    if "database_path" in yaml_config.model_fields_set:
+        return yaml_config
+    return yaml_config.model_copy(update={"database_path": env_default.database_path})
 
 
 def _render_market_intelligence() -> None:
