@@ -1,0 +1,1385 @@
+"""Operational orchestration for pricing-intelligence collection runs.
+
+This is the "one implementation, several entry points" seam: the interactive
+``pricing_intelligence run`` CLI command and the unattended
+``scripts/collect_market_rates_workflow.py`` scheduler both call
+:func:`run_operational_cycle`, so collection health classification, alert
+dispatch, and run-record persistence cannot drift between the two.
+
+``build_summary``/``exit_code_for`` (and their private bank-scoped-failure
+helpers) originated in the scheduler script and are relocated here verbatim:
+they are core domain logic -- "how do I classify a collection run's health" --
+not scheduler-specific concerns, and the interactive CLI command needs the
+exact same classification the scheduler already relies on. The script
+re-imports these names so nothing that already depended on them breaks.
+
+Pricing-scenario auto-triggering is deliberately *not* imported
+here: this package is architecturally forbidden from depending on the
+optimiser at all (see ``tests/unit/test_pricing_intelligence_boundaries.py``
+-- "nothing in the intelligence layer may price"). ``run_operational_cycle``
+instead accepts an optional ``scenario_trigger_fn`` the caller supplies --
+only a caller *outside* this package (the scheduler script) can actually
+build one, since only it may import a scenario-computation module that
+touches the optimiser.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+import logging
+from pathlib import Path
+from typing import Callable, Mapping, NamedTuple, Optional
+import uuid
+from zoneinfo import ZoneInfo
+
+from balance_pricing_engine.competitor_rates.models import ProductType
+from balance_pricing_engine.pricing_intelligence.alerts import (
+    Alert,
+    AlertSink,
+    ConsoleAlertSink,
+    build_telegram_sink_from_env,
+    build_webhook_sink_from_env,
+    dispatch_alerts_safely,
+    dispatch_alerts_safely_detailed,
+    format_alerts,
+    plain_alert,
+)
+from balance_pricing_engine.pricing_intelligence.changes import RateChange, load_changes
+from balance_pricing_engine.pricing_intelligence.config import (
+    HealthThresholds,
+    PricingIntelligenceConfig,
+)
+from balance_pricing_engine.pricing_intelligence.service import (
+    CollectionOutcome,
+    PricingIntelligenceService,
+    _resolve_rate_category,
+)
+from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot
+from balance_pricing_engine.pricing_intelligence.store import CollectorHealth, RunRecord
+
+
+class ScenarioResult(NamedTuple):
+    """What a ``ScenarioTriggerFn`` returns for one triggered term.
+
+    Both fields are pre-computed by the caller, not by this module -- ``data``
+    for :meth:`~.store.ObservationStore.write_scenario_run` (JSON-serialisable),
+    ``alert_block`` for :func:`_enrich_with_scenarios` to append verbatim.
+    This package must not know how to compute or render either (see the
+    module docstring), only how to persist/attach them.
+    """
+
+    data: list[dict]
+    alert_block: str
+
+
+#: A caller-supplied hook: given the tracked/comparable terms this run's
+#: changes triggered and the current market snapshot, return a
+#: :class:`ScenarioResult` per term. Injected rather than imported because
+#: this package must not depend on how a scenario comparison is actually
+#: computed -- see the module docstring.
+ScenarioTriggerFn = Callable[[list[int], MarketSnapshot], Mapping[int, ScenarioResult]]
+
+logger = logging.getLogger(__name__)
+
+#: Every bank collected and stored.
+EXIT_OK = 0
+#: No bank could be collected -- the run produced nothing.
+EXIT_TOTAL_FAILURE = 1
+#: Some banks collected, at least one failed. The market view is incomplete, so
+#: a scheduler should surface this rather than treat it as success.
+EXIT_PARTIAL_FAILURE = 2
+#: Another collection is already running; this invocation did nothing.
+EXIT_ALREADY_RUNNING = 3
+
+_STATUS_BY_CODE = {
+    EXIT_OK: "SUCCESS",
+    EXIT_PARTIAL_FAILURE: "PARTIAL_SUCCESS",
+    EXIT_TOTAL_FAILURE: "FAILED",
+}
+#: Reverse of _STATUS_BY_CODE -- lets an already-processed run_id's reused
+#: RunRecord (see run_operational_cycle()'s already_recorded handling) drive
+#: OperationalRunResult.code/.status too, not just the persisted record.
+_CODE_BY_STATUS = {status: code for code, status in _STATUS_BY_CODE.items()}
+
+#: A second copy of cli.py's own _NZ_TIMEZONE -- importing it from here would
+#: be circular (cli.py imports run_operational_cycle/default_lock_file_path
+#: from this module). Used only to display a collector-health alert's
+#: last_success_at in NZ-local time, the same as the daily brief's own
+#: heading: under the checked-in 07:30 Pacific/Auckland schedule, UTC is
+#: still the previous day at that hour, so formatting last_success_at
+#: straight from UTC would overstate how many calendar days a collector has
+#: actually been unavailable.
+_NZ_TIMEZONE = ZoneInfo("Pacific/Auckland")
+
+
+def default_lock_file_path(
+    product_type: ProductType | str, database_path: str | Path = ":memory:"
+) -> str:
+    """Default single-instance lock path for one product+database's
+    operational cycle.
+
+    Derived from ``product_type`` -- not one shared literal duplicated in
+    the interactive CLI's ``run`` command and the scheduled workflow script
+    -- so the two agree by construction on which lock file protects which
+    product+database. Matches the naming the checked-in cron/launchd
+    artifacts already use (``collection-home-loan.lock`` /
+    ``collection-term-deposit.lock`` -- see ``deploy/scheduling/``): before
+    this, an ordinary interactive ``pricing-intelligence run`` defaulted to
+    an unqualified ``collection.lock`` that no deployed schedule actually
+    uses, so a manual run and the scheduled job for the same product could
+    acquire different locks and run concurrently against the same database.
+
+    Always returns an absolute path, colocated in the same directory as
+    ``database_path``'s own *resolved* (canonical absolute) location, with
+    the database's filename stem folded into the lock filename alongside
+    the product slug -- not a relative ``data/processed/...`` literal:
+    a relative return value gets reinterpreted against whatever the calling
+    process's own working directory happens to be, so two invocations
+    pointed at the very same real database but launched from different
+    working directories (or one spelling it relatively, the other
+    absolutely) would otherwise still end up locking two different files on
+    disk despite computing the identical *string* -- each reads its
+    baseline before persisting, so both could detect, store, and alert on
+    the same transition under different run IDs. Colocating with the
+    database (rather than a fixed central directory) makes this naturally
+    unique per real database with no separate uniqueness scheme needed: two
+    unrelated databases, even sharing a filename, resolve to different
+    parent directories and so never collide, while genuinely the same
+    database always computes the same lock path. The checked-in
+    cron/launchd artifacts set an explicit ``--lock-file`` matching this
+    same scheme (see ``deploy/scheduling/``) rather than relying on this
+    default, precisely so a scheduled run and an interactive one against the
+    same database always share one lock regardless of which computed it.
+    """
+    slug = ProductType(product_type).value.replace("_", "-")
+    if str(database_path) == ":memory:":
+        lock_dir = Path("data/processed/pricing_intelligence").resolve()
+        stem = "memory"
+    else:
+        resolved = Path(database_path).resolve()
+        lock_dir = resolved.parent
+        stem = resolved.stem
+    return str(lock_dir / f"collection-{slug}-{stem}.lock")
+
+
+# ---------------------------------------------------------------------------
+# Run classification (relocated from scripts/collect_market_rates_workflow.py)
+# ---------------------------------------------------------------------------
+
+
+def _banks_with_zero_accepted_rates(outcome: CollectionOutcome) -> set[str]:
+    accepted_banks = {record.bank for record in outcome.validation.accepted}
+    return {bank for bank in outcome.succeeded_banks if bank not in accepted_banks}
+
+
+def _comparable_rate_count(
+    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
+) -> int:
+    """Accepted rows in the product's default scheduled comparison category.
+
+    Not "every accepted row that isn't ``non_comparable``": a term-deposit
+    collection can validation-accept a real, non-``non_comparable`` category
+    such as ``pie_term_deposit`` while missing every ordinary
+    ``term_deposit`` row entirely (e.g. a parser regression that only
+    matches the PIE table) -- those PIE rows are genuine data, but the
+    service's default deposit snapshot filters to ``rate_category=
+    "term_deposit"`` specifically (see :func:`_resolve_rate_category`), so
+    they can never enter it. The same applies to home loans: a bank
+    contributing only its ``standard`` tier while missing ``special``
+    leaves the default comparison view empty for that bank even though
+    ``rate_count`` is positive. Resolved via the same
+    :func:`_resolve_rate_category` the market snapshot itself uses, so this
+    cannot drift from what "usable" actually means for a given product.
+    """
+    target_category = _resolve_rate_category(product_type, None)
+    return sum(
+        1 for record in outcome.validation.accepted if record.rate_category == target_category
+    )
+
+
+def _banks_with_zero_comparable_rates(
+    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
+) -> set[str]:
+    """Banks that fetched and had rows accepted, but none in the product's
+    default scheduled comparison category (see :func:`_comparable_rate_count`).
+
+    One step further down the pipeline than :func:`_banks_with_zero_accepted_rates`:
+    a bank whose only accepted rows fall outside the default comparison
+    category contributed nothing the scheduled market view can use, the
+    same as a bank with zero accepted rows at all -- just not yet caught,
+    since validation genuinely accepted the rows. Banks with zero accepted
+    rows at all are excluded here; :func:`_validation_only_failures`
+    already reports those.
+    """
+    zero_accepted = _banks_with_zero_accepted_rates(outcome)
+    target_category = _resolve_rate_category(product_type, None)
+    comparable_banks = {
+        record.bank
+        for record in outcome.validation.accepted
+        if record.rate_category == target_category
+    }
+    return {
+        bank
+        for bank in outcome.succeeded_banks
+        if bank not in zero_accepted and bank not in comparable_banks
+    }
+
+
+def _validation_only_failures(outcome: CollectionOutcome) -> list[dict]:
+    """Banks that fetched successfully but contributed zero accepted rows.
+
+    A bank can fetch and parse cleanly (so it never reaches report.failed)
+    while every one of its rows still gets rejected by validation -- e.g. a
+    bank-scoped parser regression. Without this, such a bank stays listed as
+    succeeded everywhere a scheduler or summary consumer looks, even though
+    nothing usable was actually stored for it.
+    """
+    failures = []
+    for bank in sorted(_banks_with_zero_accepted_rates(outcome)):
+        codes = sorted(
+            {
+                issue.code
+                for issue in outcome.validation.issues
+                if issue.bank == bank and issue.severity == "error"
+            }
+        )
+        failures.append(
+            {
+                "bank": bank,
+                "error_type": "validation_rejected",
+                "error": (
+                    "every row was rejected by validation ("
+                    f"{', '.join(codes) if codes else 'no accepted rows'})"
+                ),
+            }
+        )
+    return failures
+
+
+def _zero_comparable_rate_failures(
+    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
+) -> list[dict]:
+    """Banks with no accepted row in the product's default comparison category.
+
+    See :func:`_banks_with_zero_comparable_rates` -- a bank in this state
+    reads as succeeded everywhere else (it fetched, and validation genuinely
+    accepted its rows), but contributed nothing a market snapshot or pricing
+    assumption can use.
+    """
+    target_category = _resolve_rate_category(product_type, None)
+    return [
+        {
+            "bank": bank,
+            "error_type": "no_comparable_rates",
+            "error": f"no accepted row in the default comparison category ({target_category})",
+        }
+        for bank in sorted(_banks_with_zero_comparable_rates(outcome, product_type))
+    ]
+
+
+def _low_coverage_failures(outcome: CollectionOutcome) -> list[dict]:
+    """Banks that matched too few of their previously known rate lines.
+
+    A page-layout regression can leave one row parseable while silently
+    dropping the rest of a bank's table: the fetch succeeds, at least one row
+    is accepted, and nothing is rejected by validation either (the missing
+    rows were never parsed at all, so there is nothing to reject) -- so
+    neither report.failed nor validation.rejected catches it. The service
+    already computes this via its withdrawal-suppression coverage check
+    (CollectionOutcome.low_coverage_banks); this surfaces the same signal
+    here. Banks with zero accepted rows are reported by
+    _validation_only_failures() instead, so they are excluded to avoid a
+    duplicate entry.
+    """
+    zero_accepted = _banks_with_zero_accepted_rates(outcome)
+    return [
+        {
+            "bank": bank,
+            "error_type": "low_coverage",
+            "error": (
+                "matched fewer of this bank's known rate lines than the "
+                "configured coverage threshold"
+            ),
+        }
+        for bank in outcome.low_coverage_banks
+        if bank not in zero_accepted
+    ]
+
+
+def _partial_rejection_failures(outcome: CollectionOutcome, already_flagged: set[str]) -> list[dict]:
+    """Banks with at least one rejected row, not already flagged more specifically.
+
+    exit_code_for() already treats any rejected observation as a partial
+    failure (a term-specific parser regression can corrupt a single row
+    while the bank's other rows still collect cleanly), but a bank in that
+    state has some accepted rows and adequate coverage, so neither
+    _validation_only_failures() nor _low_coverage_failures() catches it --
+    the summary would report rates_rejected > 0 while listing the affected
+    bank as succeeded with no bank-specific entry to point at.
+    """
+    rejected_banks = {record.bank for record in outcome.validation.rejected}
+    failures = []
+    for bank in sorted(rejected_banks - already_flagged):
+        codes = sorted(
+            {
+                issue.code
+                for issue in outcome.validation.issues
+                if issue.bank == bank and issue.severity == "error"
+            }
+        )
+        rejected_count = sum(1 for record in outcome.validation.rejected if record.bank == bank)
+        failures.append(
+            {
+                "bank": bank,
+                "error_type": "validation_rejected",
+                "error": (
+                    f"{rejected_count} row(s) rejected by validation ("
+                    f"{', '.join(codes) if codes else 'unknown reason'})"
+                ),
+            }
+        )
+    return failures
+
+
+def _hard_skipped_row_failures(outcome: CollectionOutcome, already_flagged: set[str]) -> list[dict]:
+    """Banks with at least one row that failed record construction outright,
+    not already flagged more specifically.
+
+    A row that fails ``CompetitorRateRecord`` construction (see
+    ``competitor_rates.extractors.parse_html_rates``'s ``skipped_row_keys``)
+    never reaches ``validate_observations()`` at all, so it shows up in
+    neither ``report.failed`` nor ``validation.rejected`` -- previously
+    ``exit_code_for()`` could return success while a market-derived snapshot
+    and pricing assumption were built from an incomplete bank range. On a
+    bootstrap run there is not even a stored predecessor for the skipped row
+    to fall back on, so this is the only place the gap is visible at all.
+    """
+    failures = []
+    for result in outcome.report.results:
+        if result.bank in already_flagged or not result.skipped_row_keys:
+            continue
+        failures.append(
+            {
+                "bank": result.bank,
+                "error_type": "row_skipped",
+                "error": (
+                    f"{len(result.skipped_row_keys)} row(s) failed to parse into a "
+                    "record and were skipped"
+                ),
+            }
+        )
+    return failures
+
+
+def _bank_scoped_failures(
+    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
+) -> list[dict]:
+    """Every bank-scoped failure not already visible in report.failed.
+
+    Checked in order of specificity so a bank is reported once, under its
+    most informative category: zero accepted rows, then zero comparable
+    rows, then coverage below threshold, then any remaining bank with at
+    least one rejected row, then any remaining bank with at least one
+    hard-skipped row.
+    """
+    zero_accepted_failures = _validation_only_failures(outcome)
+    zero_comparable_failures = _zero_comparable_rate_failures(outcome, product_type)
+    low_coverage_failures = _low_coverage_failures(outcome)
+    already_flagged = (
+        {failure["bank"] for failure in zero_accepted_failures}
+        | {failure["bank"] for failure in zero_comparable_failures}
+        | {failure["bank"] for failure in low_coverage_failures}
+    )
+    partial_rejection_failures = _partial_rejection_failures(outcome, already_flagged)
+    already_flagged |= {failure["bank"] for failure in partial_rejection_failures}
+    hard_skipped_row_failures = _hard_skipped_row_failures(outcome, already_flagged)
+    return (
+        zero_accepted_failures
+        + zero_comparable_failures
+        + low_coverage_failures
+        + partial_rejection_failures
+        + hard_skipped_row_failures
+    )
+
+
+def build_summary(
+    outcome: CollectionOutcome,
+    product_type: ProductType | str = ProductType.HOME_LOAN,
+) -> dict:
+    """Machine-readable summary of one collection run.
+
+    ``product_type`` is embedded so a summary file can be told apart from
+    the other product's when both are scheduled -- see ``--product`` and
+    ``run_collection()``. Defaults to ``HOME_LOAN`` to match this module's
+    other single-product defaults; every existing caller collecting the
+    default product keeps working unchanged.
+    """
+    bank_scoped_failures = _bank_scoped_failures(outcome, product_type)
+    bank_scoped_failed_banks = {failure["bank"] for failure in bank_scoped_failures}
+    return {
+        "product_type": ProductType(product_type).value,
+        "collected_at_utc": outcome.report.captured_at_utc.isoformat(),
+        "banks_succeeded": [
+            bank for bank in outcome.succeeded_banks if bank not in bank_scoped_failed_banks
+        ],
+        "banks_failed": list(outcome.failed_banks) + sorted(bank_scoped_failed_banks),
+        "rates_accepted": outcome.rate_count,
+        "rates_rejected": len(outcome.validation.rejected),
+        "rows_skipped": len(outcome.report.skipped_row_keys),
+        "validation_errors": len(outcome.validation.errors),
+        "validation_warnings": len(outcome.validation.warnings),
+        "new_states_stored": (
+            outcome.write_result.inserted if outcome.write_result else 0
+        ),
+        "unchanged_states": (
+            outcome.write_result.unchanged if outcome.write_result else 0
+        ),
+        "changes_detected": len(outcome.changes),
+        "suspicious_changes": sum(1 for change in outcome.changes if change.suspicious),
+        "changes": [change.describe() for change in outcome.changes],
+        "failures": [
+            {"bank": result.bank, "error_type": result.error_type, "error": result.error}
+            for result in outcome.report.failed
+        ]
+        + bank_scoped_failures,
+    }
+
+
+def exit_code_for(
+    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
+) -> int:
+    # A run where every bank failed to fetch is a failure, and so is one where
+    # pages parsed but validation rejected every record -- either way nothing
+    # usable was stored, and a scheduler must not treat that as success. Zero
+    # rows in the product's default *comparison category* is the same failure
+    # one step further down the pipeline: a run whose only accepted rows fall
+    # outside that category (non_comparable audit-only rows, or a real but
+    # off-default category like pie_term_deposit) passes rate_count > 0 while
+    # the market snapshot it can actually build is empty -- see
+    # _comparable_rate_count()'s docstring.
+    if (
+        not outcome.report.any_success
+        or outcome.rate_count == 0
+        or _comparable_rate_count(outcome, product_type) == 0
+    ):
+        return EXIT_TOTAL_FAILURE
+    # Any rejected observation -- not just a bank where every row was
+    # rejected -- means the collection is incomplete: a term-specific parser
+    # regression can silently drop one product from an otherwise-healthy
+    # bank. A low-coverage bank catches the case validation can't: rows that
+    # were never parsed at all (not rejected -- simply missing) because a
+    # page-layout regression silently dropped most of a bank's table. A bank
+    # whose accepted rows fall entirely outside the default comparison
+    # category is the same gap as a zero-accepted bank, just caught one step
+    # later in the pipeline (see _banks_with_zero_comparable_rates()) --
+    # most relevant on a bootstrap run, where there is no prior baseline for
+    # low_coverage_banks to compare against at all. A hard-skipped row
+    # (failed CompetitorRateRecord construction outright, before
+    # validate_observations() ever saw it) is the same kind of gap as a
+    # rejected observation, just one step earlier in the pipeline, and must
+    # not let a run with an incomplete bank range report success. Warnings
+    # (e.g. a suspicious but plausible movement) stay non-fatal.
+    if (
+        outcome.report.failed
+        or outcome.validation.rejected
+        or outcome.low_coverage_banks
+        or outcome.report.skipped_row_keys
+        or _banks_with_zero_comparable_rates(outcome, product_type)
+    ):
+        return EXIT_PARTIAL_FAILURE
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# Collector health escalation
+# ---------------------------------------------------------------------------
+
+#: Escalation outcomes classify_health_escalation() can return.
+HEALTH_NONE = "none"
+HEALTH_WARNING = "warning"
+HEALTH_ALERT = "alert"
+HEALTH_RECOVERY = "recovery"
+
+
+def _alert_delivered_during_current_streak(previous: CollectorHealth) -> bool:
+    """True when ``previous.last_alert_sent_at`` falls inside the failure
+    streak that just ended, not a stale value from an earlier one.
+
+    ``update_collector_health()`` never clears ``last_alert_sent_at`` -- it
+    only ever moves forward, whenever :meth:`record_collector_health_alert`
+    confirms a delivery (see that method's docstring) -- so on its own it
+    cannot distinguish "delivered during this streak" from "delivered once,
+    long ago, during some earlier streak that already recovered". Comparing
+    it against ``last_success_at`` (the boundary the current streak began
+    right after) resolves that: no success recorded yet means the streak
+    covers this bank's entire history, so any recorded alert counts.
+    """
+    if previous.last_alert_sent_at is None:
+        return False
+    if previous.last_success_at is None:
+        return True
+    return previous.last_alert_sent_at >= previous.last_success_at
+
+
+def _channels_delivered_during_current_streak(
+    previous: Optional[CollectorHealth], channel_sent_at: Mapping[str, datetime]
+) -> set[str]:
+    """Channels whose health escalation alert for this bank falls inside the
+    failure streak that just ended, not a stale send from an earlier streak
+    that already recovered.
+
+    The per-channel companion to :func:`_alert_delivered_during_current_streak`
+    -- same boundary comparison (the streak began right after
+    ``previous.last_success_at``), applied per channel via
+    ``channel_sent_at`` (see :meth:`~.store.ObservationStore.get_collector_health_alert_channels`)
+    instead of collapsing to one bool, so a recovery notice can be limited
+    to exactly the channels that received this streak's own incident.
+    """
+    if previous is None:
+        return set()
+    if previous.last_success_at is None:
+        return set(channel_sent_at)
+    return {
+        channel
+        for channel, sent_at in channel_sent_at.items()
+        if sent_at >= previous.last_success_at
+    }
+
+
+def classify_health_escalation(
+    thresholds: HealthThresholds, previous: Optional[CollectorHealth], current: CollectorHealth
+) -> str:
+    """Decide what, if anything, a collector's new health state warrants.
+
+    Policy (configurable via ``thresholds``): a 1st failure logs only; the
+    ``warning_after_failures``'th is a structured warning log (no Telegram
+    send); the ``alert_after_failures``'th and beyond sends a Telegram health
+    alert; a success that follows a streak which had already reached
+    ``alert_after_failures`` *and* whose escalation alert was actually
+    confirmed delivered (see :func:`_alert_delivered_during_current_streak`)
+    is a recovery, alerted the same way. A success that recovers from a
+    shorter streak, or from one long enough but whose alert never reached
+    any channel (no sinks configured, or every delivery failed), is
+    ``"none"`` -- nothing was ever sent to recover *from*, so a recovery
+    notice would reach a channel that never saw the original incident.
+    """
+    if current.consecutive_failures == 0:
+        previous_streak = previous.consecutive_failures if previous is not None else 0
+        if previous_streak >= thresholds.alert_after_failures and previous is not None:
+            if _alert_delivered_during_current_streak(previous):
+                return HEALTH_RECOVERY
+        return HEALTH_NONE
+    if current.consecutive_failures >= thresholds.alert_after_failures:
+        return HEALTH_ALERT
+    if current.consecutive_failures >= thresholds.warning_after_failures:
+        return HEALTH_WARNING
+    return HEALTH_NONE
+
+
+def _health_product_label(product_type: ProductType) -> str:
+    """Display label for a collector-health alert -- matches the
+    "TERM DEPOSIT"/"MORTGAGE" convention ``alerts.format_alert`` and
+    ``briefing._product_label`` already use for the same distinction.
+
+    Both the checked-in home-loan and term-deposit scheduled collections can
+    share one webhook/Telegram channel, so a bare "{bank} collector failed"
+    message cannot tell an operator which collection pipeline is unhealthy --
+    they could investigate the wrong market entirely.
+    """
+    return "TERM DEPOSIT" if product_type is ProductType.TERM_DEPOSIT else "MORTGAGE"
+
+
+def _health_alert(bank: str, health: CollectorHealth) -> Alert:
+    title = "⚠️ PRICING INTELLIGENCE COLLECTOR ISSUE"
+    last_success = (
+        health.last_success_at.astimezone(_NZ_TIMEZONE).strftime("%d %b %Y %H:%M")
+        if health.last_success_at
+        else "never"
+    )
+    body = "\n".join(
+        [
+            f"{bank} {_health_product_label(health.product_type)} collector failed "
+            f"{health.consecutive_failures} consecutive runs.",
+            "",
+            f"Last successful collection: {last_success}",
+            f"Error: {health.last_error or 'unknown'}",
+        ]
+    )
+    return plain_alert(title, body)
+
+
+def _recovery_alert(bank: str, health: CollectorHealth) -> Alert:
+    title = f"✅ {bank} {_health_product_label(health.product_type)} collector recovered"
+    body = "Rates collected successfully after a prior failure streak."
+    return plain_alert(title, body)
+
+
+# ---------------------------------------------------------------------------
+# Alert dispatch with per-channel dedup
+# ---------------------------------------------------------------------------
+
+
+def _dispatch_rendered_alerts(
+    store, alerts: list[Alert], sinks: Mapping[str, AlertSink]
+) -> int:
+    """Dispatch already-rendered rate-move alerts once per configured
+    channel, skipping any change already delivered on that channel (see
+    ``store.notified_alerts``). Rendered (not raw changes) so scenario
+    enrichment (see ``_enrich_with_scenarios``) happens once, before dedup
+    filtering, rather than once per channel.
+
+    Only alerts individually confirmed delivered are recorded as notified --
+    a send that failed or timed out must remain eligible for retry on the
+    next run, not be marked as if it succeeded (see
+    :func:`~.alerts.dispatch_alerts_safely_detailed`)."""
+    total_sent = 0
+    for channel, sink in sinks.items():
+        unnotified = [alert for alert in alerts if not store.was_notified(alert.change, channel)]
+        if not unnotified:
+            continue
+        delivered = dispatch_alerts_safely_detailed(unnotified, sink)
+        total_sent += len(delivered)
+        for alert in delivered:
+            store.record_notification(alert.change, channel)
+    return total_sent
+
+
+#: How far back to look for a stored rate move that was never delivered on
+#: every currently configured alert channel -- most often because the
+#: process exited after service.collect() committed the change but before
+#: this module reached alert dispatch on that same run: the *next* scheduled
+#: invocation's own collect() then sees the already-persisted rate as
+#: unchanged, so the change would otherwise never be detected -- and
+#: therefore never alerted -- again. Bounded so a change nobody has ever
+#: configured a channel for (or one from a long-abandoned collection) does
+#: not resurface forever.
+UNDELIVERED_CHANGE_REPLAY_HOURS = 48.0
+
+
+def _undelivered_change_replay_candidates(
+    store,
+    product_type: ProductType,
+    sinks: Mapping[str, AlertSink],
+    already_included: set[tuple],
+    now: datetime,
+) -> list[RateChange]:
+    """Stored rate moves from a recent prior run that still have not reached
+    every currently configured channel.
+
+    ``was_notified()`` is checked per channel, the same dedup
+    :func:`_dispatch_rendered_alerts` already applies to a live batch, so a
+    change already delivered everywhere it needed to be is never re-sent --
+    this only replays a change still missing on at least one channel.
+
+    Includes suspicious changes: the live path (``rate_moves`` above) already
+    delivers a suspicious move, rendered with its explicit "FLAGGED
+    SUSPICIOUS -- verify against the source page" warning (see
+    :func:`~.alerts.format_alert`) rather than dropping it -- excluding
+    suspicious changes here would silently lose exactly the alert a parser
+    fault most needs a human to see, on top of losing it to a channel outage.
+    """
+    since = now - timedelta(hours=UNDELIVERED_CHANGE_REPLAY_HOURS)
+    rows = store.get_changes_since(since=since, now=now, product_type=product_type)
+    candidates = []
+    for change in load_changes(rows):
+        if not change.is_rate_move:
+            continue
+        key = (change.observation_key, change.change_type, change.detected_at, change.run_id)
+        if key in already_included:
+            continue
+        if all(store.was_notified(change, channel) for channel in sinks):
+            continue
+        candidates.append(change)
+    return candidates
+
+
+def _scenario_trigger_candidates(
+    changes: list[RateChange], product_type: ProductType, config: PricingIntelligenceConfig
+) -> list[int]:
+    """Tracked, comparable-category terms with a genuine (non-suspicious)
+    rate move this run -- passed to ``scenario_trigger_fn`` (see
+    :data:`ScenarioTriggerFn`).
+
+    Any bank's move counts, not just ``our_bank`` -- this triggers on a
+    *competitor* reprice, which is exactly what a market-wide collection
+    detects regardless of which bank moved.
+    """
+    target_category = _resolve_rate_category(product_type, None)
+    terms = {
+        change.term_months
+        for change in changes
+        if change.is_rate_move
+        and not change.suspicious
+        and change.rate_category == target_category
+        and change.term_months in config.tracked_terms_months
+    }
+    return sorted(terms)
+
+
+def _missed_scenario_trigger_terms(
+    store,
+    product_type: ProductType,
+    config: PricingIntelligenceConfig,
+    now: datetime,
+    not_after_run_id: Optional[str] = None,
+) -> list[int]:
+    """Tracked, comparable-category terms whose rate move in the same recent
+    window ``_undelivered_change_replay_candidates`` uses never got a
+    scenario computed for it.
+
+    Covers the same class of gap as that alert-replay recovery, applied to
+    scenario triggering instead: the process can die between
+    ``service.collect()`` committing a change and this run reaching its own
+    ``scenario_trigger_fn`` call, or a transient per-term failure there
+    (caught above and logged) can mean a term's scenario is simply never
+    written. ``outcome.changes``/``_scenario_trigger_candidates`` alone
+    cannot see either case on a later run: the baseline already reflects the
+    committed change, so it is not reported as new again.
+
+    Checked against every recent ``scenario_runs`` row regardless of which
+    run wrote it, not just the change's own ``run_id`` -- so a term already
+    caught up by an earlier retry (this run's predecessor already recovered
+    it) is not re-triggered every cycle for the rest of the replay window.
+
+    ``not_after_run_id``, when given, excludes any candidate whose own run
+    is ordered strictly after it (via
+    :meth:`~.store.ObservationStore.run_ordered_at_or_after`, evaluated at
+    ``now`` for that run's own position) -- the caller's run_id for a
+    normal, fresh run, where every stored candidate is by definition from
+    an earlier run already, making this a no-op. It matters for an
+    already-recorded retry: the caller then builds one snapshot anchored on
+    that specific retried run's own position (see
+    ``run_operational_cycle``'s ``as_of_run_id`` branch), so a genuinely
+    later run's own uncovered trigger must not be pulled into this call and
+    computed against that stale, retried-run snapshot -- it is left for
+    that later run's own (or a subsequent recovery) pass, which will use
+    its own correct market context.
+    """
+    since = now - timedelta(hours=UNDELIVERED_CHANGE_REPLAY_HOURS)
+    rows = store.get_changes_since(since=since, now=now, product_type=product_type)
+    target_category = _resolve_rate_category(product_type, None)
+    candidates = [
+        change
+        for change in load_changes(rows)
+        if change.is_rate_move
+        and not change.suspicious
+        and change.rate_category == target_category
+        and change.term_months in config.tracked_terms_months
+    ]
+    if not_after_run_id is not None:
+        candidates = [
+            change
+            for change in candidates
+            if store.run_ordered_at_or_after(
+                not_after_run_id, now, change.run_id, change.detected_at
+            )
+        ]
+    if not candidates:
+        return []
+    # Collapsed to the latest change per term, not every candidate: if the
+    # same term moved twice in the replay window and only the older change
+    # has a scenario generated after it, a per-candidate union would still
+    # mark the term covered even though the newer, later-detected change
+    # triggered no analysis of its own.
+    latest_by_term: dict[int, RateChange] = {}
+    for change in candidates:
+        current = latest_by_term.get(change.term_months)
+        if current is None or change.detected_at > current.detected_at:
+            latest_by_term[change.term_months] = change
+    recent_scenarios = store.get_recent_scenario_runs(product_type=product_type, limit=200)
+    covered_terms = {
+        term_months
+        for term_months, change in latest_by_term.items()
+        if any(
+            row["term_months"] == term_months
+            # run-order aware, not a bare generated_at >= detected_at
+            # timestamp compare: two different runs can share the exact
+            # same captured_at_utc (an explicit backfill/replay timestamp
+            # reused across calls is supported -- see
+            # ObservationStore.record_observations), which would otherwise
+            # let an older run's scenario satisfy the >= check for a
+            # different, later-persisted run's change on the same term.
+            and store.run_ordered_at_or_after(
+                row["run_id"], row["generated_at"], change.run_id, change.detected_at
+            )
+            for row in recent_scenarios
+        )
+    }
+    missing = set(latest_by_term) - covered_terms
+    return sorted(missing)
+
+
+def _enrich_with_scenarios(
+    alerts: list[Alert], scenarios_by_term: Mapping[int, "ScenarioResult"]
+) -> list[Alert]:
+    """Append each triggered term's pre-formatted alert block to
+    the alert whose change landed on it.
+
+    Takes the already-rendered ``ScenarioResult.alert_block`` rather than
+    formatting the comparison itself -- this module must not know how to
+    render one (see the module docstring), only that
+    ``scenario_trigger_fn``'s caller already did.
+    """
+    from dataclasses import replace
+
+    enriched = []
+    for alert in alerts:
+        comparison = (
+            scenarios_by_term.get(alert.change.term_months) if alert.change is not None else None
+        )
+        if comparison is None:
+            enriched.append(alert)
+            continue
+        enriched.append(replace(alert, body=alert.body + "\n\n" + comparison.alert_block))
+    return enriched
+
+
+def _dispatch_health_alerts(
+    store,
+    product_type: ProductType,
+    banks: list[str],
+    thresholds: HealthThresholds,
+    sinks: Mapping[str, AlertSink],
+    at: datetime,
+    run_id: Optional[str] = None,
+) -> int:
+    """Update every attempted bank's health streak and deliver an
+    escalation/recovery alert where the policy calls for one.
+
+    Escalation/recovery alerts are batched into one ``dispatch_alerts_safely``
+    call per sink, not one call per bank: a per-bank call would give each
+    bank its own fresh ``DEFAULT_ALERT_DISPATCH_DEADLINE_SECONDS`` budget, so
+    several banks escalating against one hung sink could serialise into
+    banks * deadline seconds of blocking while this run's single-instance
+    lock is still held -- one shared deadline per sink bounds that to a
+    single deadline regardless of how many banks escalated.
+
+    ``run_id``, when given, is threaded through to
+    :meth:`~.store.ObservationStore.update_collector_health` so a retried
+    ``run_operational_cycle()`` invocation under the same ``run_id`` does not
+    advance a bank's failure streak a second time for what is logically one
+    collection attempt -- see that method's own docstring.
+
+    Returns how many health alerts were confirmed delivered, summed across
+    every configured sink -- the same per-sink counting convention
+    :func:`_dispatch_rendered_alerts` uses for its own return value -- so a
+    caller folding this into a run's total ``alerts_sent`` is not missing a
+    health notice that reached a channel purely because no rate move
+    happened this run.
+    """
+    previous_by_bank = {
+        health.bank: health for health in store.get_collector_health(product_type)
+    }
+    escalations: list[tuple[str, str, Alert]] = []
+    for bank, success, error in banks:
+        current = store.update_collector_health(
+            bank, product_type, success=success, error=error, at=at, run_id=run_id
+        )
+        if run_id is not None and current == previous_by_bank.get(bank):
+            # update_collector_health() deduplicated this bank's update: this
+            # run_id already advanced its streak in an earlier call (a
+            # retried run_operational_cycle() invocation), so `current` is
+            # the same, untouched row `previous_by_bank` already holds --
+            # not a fresh update. classify_health_escalation() cannot tell
+            # "still at the alert threshold from last time" apart from
+            # "just reached it this call" on streak length alone, so without
+            # this check a retry of a threshold-crossing run would still
+            # classify (and dispatch) the same incident/recovery a second
+            # time even though the streak itself is no longer inflated.
+            continue
+        outcome = classify_health_escalation(thresholds, previous_by_bank.get(bank), current)
+        if outcome == HEALTH_NONE:
+            continue
+        if outcome == HEALTH_WARNING:
+            logger.warning(
+                "collector health: %s has failed %d consecutive runs",
+                bank,
+                current.consecutive_failures,
+            )
+            continue
+        alert = (
+            _recovery_alert(bank, current)
+            if outcome == HEALTH_RECOVERY
+            else _health_alert(bank, current)
+        )
+        escalations.append((bank, outcome, alert))
+
+    if not escalations:
+        return 0
+
+    incident_escalations = [
+        (bank, alert) for bank, outcome, alert in escalations if outcome == HEALTH_ALERT
+    ]
+    recovery_escalations = [
+        (bank, alert) for bank, outcome, alert in escalations if outcome == HEALTH_RECOVERY
+    ]
+    total_sent = 0
+
+    if incident_escalations:
+        # Recorded only for a bank+channel individually confirmed delivered
+        # -- the same "confirmed, not attempted" standard
+        # _dispatch_rendered_alerts already applies to rate-move alerts (see
+        # dispatch_alerts_safely_detailed). An unconditional record here
+        # would mark an alert as sent even when a sink failed, timed out, or
+        # none was configured at all, leaving the persisted audit
+        # inaccurate.
+        alerts = [alert for _, alert in incident_escalations]
+        alert_to_bank = {alert: bank for bank, alert in incident_escalations}
+        for channel, sink in sinks.items():
+            delivered = dispatch_alerts_safely_detailed(alerts, sink)
+            total_sent += len(delivered)
+            for alert in delivered:
+                bank = alert_to_bank[alert]
+                # Only an ALERT delivery counts as "incident delivered" --
+                # see classify_health_escalation()'s
+                # _alert_delivered_during_current_streak (and its per-channel
+                # counterpart, _channels_delivered_during_current_streak),
+                # both of which read these same records to decide whether a
+                # later recovery is warranted, and on which channels.
+                # Recording a RECOVERY send here too would let that
+                # recovery's own timestamp (always >= its own
+                # last_success_at, since both are stamped from the same
+                # successful run) satisfy that comparison for a *later*
+                # streak that never actually got its own incident alert
+                # delivered -- a stale recovery send masquerading as this
+                # streak's incident delivery.
+                store.record_collector_health_alert(bank, product_type, at=at)
+                store.record_collector_health_alert_channel(bank, product_type, channel, at=at)
+
+    if recovery_escalations:
+        # Limited per bank to exactly the channels that delivered this
+        # streak's own incident: broadcasting a recovery to every configured
+        # sink regardless (the pre-channel-tracking behaviour) would tell a
+        # channel that never saw the incident -- e.g. Telegram delivered
+        # while the webhook timed out -- that it has "recovered" from an
+        # outage it was never told about. Still batched into one dispatch
+        # call per channel (not one per bank), for the same
+        # blocking-deadline reason incident escalations are batched above.
+        alerts_by_channel: dict[str, list[Alert]] = {channel: [] for channel in sinks}
+        for bank, alert in recovery_escalations:
+            delivered_channels = _channels_delivered_during_current_streak(
+                previous_by_bank.get(bank),
+                store.get_collector_health_alert_channels(bank, product_type),
+            )
+            for channel in delivered_channels & sinks.keys():
+                alerts_by_channel[channel].append(alert)
+        for channel, sink in sinks.items():
+            channel_alerts = alerts_by_channel[channel]
+            if not channel_alerts:
+                continue
+            delivered = dispatch_alerts_safely_detailed(channel_alerts, sink)
+            total_sent += len(delivered)
+
+    return total_sent
+
+
+# ---------------------------------------------------------------------------
+# The operational cycle
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class OperationalRunResult:
+    """Everything one ``run_operational_cycle()`` call produced."""
+
+    outcome: CollectionOutcome
+    run_record: Optional[RunRecord]
+    alerts_sent: int
+    code: int
+
+    @property
+    def status(self) -> str:
+        return _STATUS_BY_CODE[self.code]
+
+
+def run_operational_cycle(
+    service: PricingIntelligenceService,
+    *,
+    product_type: ProductType | str = ProductType.HOME_LOAN,
+    captured_at_utc: Optional[datetime] = None,
+    run_id: Optional[str] = None,
+    dry_run: bool = False,
+    alert_sinks: Optional[Mapping[str, AlertSink]] = None,
+    webhook_text_field: str = "text",
+    scenario_trigger_fn: Optional[ScenarioTriggerFn] = None,
+) -> OperationalRunResult:
+    """Run one full collect -> validate -> persist -> detect -> alert cycle.
+
+    ``alert_sinks`` maps a channel name (``"webhook"``, ``"telegram"``, ...)
+    to the :class:`~.alerts.AlertSink` to deliver on; omit to build the
+    default set from the environment (webhook + Telegram, whichever are
+    configured -- see :mod:`.alerts`). Pass an explicit ``{}`` to disable
+    alert delivery entirely. ``webhook_text_field`` is only used when
+    building that default webhook sink (ignored when ``alert_sinks`` is
+    supplied directly) -- ``"text"`` (the default) is read by Slack/Teams,
+    ``"content"`` by Discord.
+
+    ``scenario_trigger_fn`` enables auto-triggered pricing scenarios: when
+    supplied, it is called once with every tracked/comparable term that had a
+    genuine (non-suspicious) rate move this run, plus the current market
+    snapshot, and must return a comparison object per term. Each is persisted
+    (:meth:`~.store.ObservationStore.write_scenario_run`,
+    skipped on a dry run) and appended to the corresponding rate-move
+    alert(s) for that term. Omitted (the default) simply skips scenario-
+    triggering. See :data:`ScenarioTriggerFn` and the module docstring for
+    why this is injected rather than imported.
+
+    A ``scenario_trigger_fn`` failure (e.g. no external competitor peer
+    remains once ``our_bank`` is excluded from the only bank that moved this
+    run -- a documented, reachable case, not a bug in the callback) is caught
+    and logged, not propagated: this decision-support enrichment must never
+    cost the collection its alerts, collector-health update, run record, or
+    summary, all of which are otherwise still valid off a successful
+    ``service.collect()``.
+
+    ``dry_run`` collects and classifies as normal but does not persist
+    observations or raw HTML snapshots (``service.collect(persist=False,
+    persist_snapshot=False)``), does not write a :class:`~.store.RunRecord`
+    or update collector health, and does not deliver real alerts --
+    ``alert_sinks`` is ignored and every alert is routed to a
+    :class:`~.alerts.ConsoleAlertSink` instead, so a dry run is safe to run
+    against a real Telegram/webhook configuration and leaves no artifacts
+    behind from what should be a non-mutating preview.
+
+    Raises :class:`~.store.ChronologicalOrderError` unchanged (a backwards
+    wall clock) -- callers wanting a classified failure for that case should
+    catch it themselves, the same way ``scripts/collect_market_rates_workflow.py``
+    already does.
+    """
+    product_type = ProductType(product_type)
+    started_at = datetime.now(timezone.utc)
+    # Resolved here, not left for service.collect() to default internally:
+    # that would call its own later datetime.now(), always strictly after
+    # started_at, so replay_now/generated_at below (captured_at_utc or
+    # started_at) would keep pairing with an earlier timestamp than the
+    # detected_at collect() actually stamped -- reintroducing the
+    # generated_at-before-detected_at bug for every real-time caller that
+    # (like a live scheduled run) does not pass an explicit captured_at_utc.
+    captured_at_utc = captured_at_utc or started_at
+    operational_run_id = run_id or uuid.uuid4().hex
+
+    outcome = service.collect(
+        captured_at_utc=captured_at_utc,
+        persist=not dry_run,
+        persist_snapshot=not dry_run,
+        product_type=product_type,
+        run_id=operational_run_id,
+    )
+
+    code = exit_code_for(outcome, product_type)
+    summary = build_summary(outcome, product_type)
+    banks_attempted = sorted({result.bank for result in outcome.report.results})
+
+    if dry_run:
+        sinks: Mapping[str, AlertSink] = {"console": ConsoleAlertSink()}
+    elif alert_sinks is not None:
+        sinks = alert_sinks
+    else:
+        built: dict[str, AlertSink] = {}
+        webhook = build_webhook_sink_from_env(text_field=webhook_text_field)
+        if webhook is not None:
+            built["webhook"] = webhook
+        telegram = build_telegram_sink_from_env()
+        if telegram is not None:
+            built["telegram"] = telegram
+        sinks = built
+
+    rate_moves = [change for change in outcome.changes if change.is_rate_move]
+    # Anchored on captured_at_utc (the same business-time clock detected_at
+    # is stamped from -- see service.collect()), not started_at's wall
+    # clock: a caller backfilling or replaying a past captured_at_utc must
+    # get a lookback window relative to that simulated "now", not the real
+    # time this process happens to run at. Shared by the undelivered-alert
+    # replay below and the missed-scenario-trigger recovery further down --
+    # both recover from the same class of gap (a crash, or a transient
+    # per-channel/per-term failure, between this run's own commit and its
+    # own delivery/trigger step).
+    replay_now = captured_at_utc or started_at
+    if replay_now.tzinfo is None:
+        replay_now = replay_now.replace(tzinfo=timezone.utc)
+
+    replayed_moves: list[RateChange] = []
+    if not dry_run and sinks:
+        # Re-offer any recent, still-undelivered stored change for delivery
+        # this run -- see UNDELIVERED_CHANGE_REPLAY_HOURS. A dry run must not
+        # participate: it never writes to the notified_alerts ledger, so its
+        # ad-hoc "console" channel would never look delivered and every
+        # candidate would resurface on every dry-run preview indefinitely.
+        already_included = {
+            (change.observation_key, change.change_type, change.detected_at, change.run_id)
+            for change in rate_moves
+        }
+        # Kept separate from rate_moves, not merged: a replayed change is
+        # rendered without this run's market snapshots (see below) -- it
+        # must not be rendered as if this run's fresh snapshot described the
+        # old change's original detection.
+        replayed_moves = _undelivered_change_replay_candidates(
+            service.store, product_type, sinks, already_included, replay_now
+        )
+
+    scenarios_by_term: dict[int, ScenarioResult] = {}
+    triggered_terms = []
+    if scenario_trigger_fn is not None:
+        triggered_terms = sorted(
+            set(_scenario_trigger_candidates(outcome.changes, product_type, service.config))
+            | set(
+                _missed_scenario_trigger_terms(
+                    service.store,
+                    product_type,
+                    service.config,
+                    replay_now,
+                    not_after_run_id=operational_run_id,
+                )
+            )
+        )
+    if triggered_terms:
+        if outcome.already_recorded:
+            # Reconstructed as of this specific run's own committed
+            # position, not a staleness clock: outcome.already_recorded
+            # means operational_run_id was already persisted by an earlier
+            # attempt, so its collection_runs row already exists -- but a
+            # plain now=replay_now snapshot still reads
+            # get_current_observations()'s *latest* rows regardless of
+            # "now", which can belong to genuinely newer runs committed
+            # since this one. A missed scenario recovered for this old,
+            # retried run must be computed from the market as it stood at
+            # that run, not from rates a later collection has since moved.
+            scenario_snapshot = service.get_market_snapshot(
+                product_type=product_type, as_of_run_id=operational_run_id
+            )
+        else:
+            # now=replay_now, not the default real wall clock: a caller
+            # backfilling/replaying a captured_at_utc more than
+            # max_observation_age_hours behind actual "now" would otherwise
+            # have every just-collected observation filtered as stale,
+            # handing scenario_trigger_fn an empty snapshot that cannot
+            # resolve the triggering term -- silently dropping the scenario
+            # comparison for a run whose change and replay window were both
+            # evaluated on the historical clock. Not used for an
+            # already-recorded retry (see above): as_of_run_id there
+            # reconstructs an exact position rather than applying a cutoff,
+            # and this run's own collection_runs row may not exist at all
+            # for a fresh run that failed outright, which as_of_run_id
+            # would otherwise misread as "no observations".
+            scenario_snapshot = service.get_market_snapshot(product_type=product_type, now=replay_now)
+        try:
+            scenarios_by_term = dict(scenario_trigger_fn(triggered_terms, scenario_snapshot))
+        except Exception:  # noqa: BLE001 - decision-support only, must not abort the cycle
+            logger.warning(
+                "scenario_trigger_fn failed for run %s (terms=%s); continuing the "
+                "operational cycle without scenario enrichment this run",
+                operational_run_id,
+                triggered_terms,
+                exc_info=True,
+            )
+            scenarios_by_term = {}
+        if not dry_run:
+            # Anchored on replay_now (== captured_at_utc when the caller
+            # provides one, exactly matching service.collect()'s own
+            # detected_at=captured_at_utc), not started_at: started_at is
+            # captured before service.collect() runs, so generated_at=
+            # started_at would always sort before a triggering change's
+            # detected_at and _missed_scenario_trigger_terms() would treat
+            # this just-written scenario as not yet covering the change that
+            # triggered it -- redundantly rerunning scenario_trigger_fn for
+            # the same term on every run within the replay window. A fresh
+            # datetime.now(timezone.utc) would only mask this by coincidence
+            # for real-time callers and reintroduce it for anyone backfilling
+            # a past captured_at_utc.
+            for term, comparison in scenarios_by_term.items():
+                service.store.write_scenario_run(
+                    operational_run_id,
+                    product_type,
+                    term,
+                    comparison.data,
+                    generated_at=replay_now,
+                )
+
+    alerts_sent = 0
+    if sinks and (rate_moves or replayed_moves):
+        if dry_run:
+            # A dry run never persists (persist=False, persist_snapshot=False
+            # above), so the store's snapshot still describes the pre-run
+            # committed state, not what this run's prospective changes
+            # propose -- passing it as market context (median, rank
+            # movement) would misrepresent the preview with stale data.
+            # Mirrors the `collect --no-persist --alerts` CLI path, which
+            # omits snapshot context for the identical reason.
+            snapshot, previous_snapshot = None, None
+        else:
+            snapshot = service.get_market_snapshot(product_type=product_type)
+            previous_snapshot = service.get_previous_market_snapshot(product_type=product_type)
+        rendered = format_alerts(rate_moves, snapshot, previous_snapshot)
+        if scenarios_by_term:
+            # Enriched before the replay batch is appended below: a
+            # scenario comparison was computed from *this run's* current
+            # snapshot (see scenario_snapshot above), so it must only ever
+            # land on a live alert -- attaching it to a replayed alert from
+            # an old change would attribute today's model comparison to
+            # yesterday's event, the same current-run-context leak the
+            # snapshot omission below exists to avoid.
+            rendered = _enrich_with_scenarios(rendered, scenarios_by_term)
+        if replayed_moves:
+            # No snapshot context for a replayed change: this run's fresh
+            # snapshot/previous_snapshot describe the newest run and its
+            # immediate predecessor, not the two market states surrounding
+            # the old change being replayed. Passing them here would let a
+            # change missed yesterday and replayed after today's unchanged
+            # collection report its rank as unchanged, while intervening
+            # moves get attributed to the stale event instead --
+            # format_alert() already omits rank/market context cleanly when
+            # both snapshots are None.
+            rendered = rendered + format_alerts(replayed_moves, None, None)
+        if dry_run:
+            # No dedup ledger writes on a dry run -- record_notification()
+            # would otherwise let a later real run believe these changes
+            # were already delivered.
+            for sink in sinks.values():
+                alerts_sent += dispatch_alerts_safely(rendered, sink)
+        else:
+            alerts_sent = _dispatch_rendered_alerts(service.store, rendered, sinks)
+
+    error_summary = None
+    if code != EXIT_OK:
+        error_summary = "; ".join(
+            f"{failure['bank']}: {failure['error']}" for failure in summary["failures"]
+        ) or None
+
+    run_record: Optional[RunRecord] = None
+    if not dry_run:
+        # Looked up once, before the health dispatch below, and reused for
+        # the RunRecord handling further down: whether this run_id's
+        # operational bookkeeping already fully completed in an earlier
+        # call. Only meaningful together with outcome.already_recorded -- a
+        # run_id touching this store for the first time also has no
+        # RunRecord yet, but should still update health and write a fresh
+        # one normally (see the branches below).
+        existing_run_record = (
+            service.store.get_run_record(operational_run_id) if outcome.already_recorded else None
+        )
+
+        # outcome.already_recorded but existing_run_record is None means the
+        # original attempt committed its observations and then crashed
+        # before ever reaching write_run_record() -- possibly before ever
+        # reaching this health dispatch too (e.g. during scenario
+        # persistence or the rate-move alert dispatch above, both of which
+        # run earlier in this function). There is then no health-ledger
+        # entry for this run_id either, so update_collector_health() below
+        # cannot recognise it as already-processed and would advance (or
+        # reset) a bank's streak from this retry's own, potentially very
+        # different fetch report -- an all-failed retry after a genuinely
+        # successful, committed collection could otherwise emit a false
+        # incident. Skipped entirely rather than process health from data
+        # that isn't actually authoritative for this run_id.
+        if not (outcome.already_recorded and existing_run_record is None):
+            # Always classified, sinks or not: classify_health_escalation()'s
+            # warning-level escalation (a structured log line, not a delivery)
+            # is unconditional policy -- it must fire at warning_after_failures
+            # even with no webhook/Telegram configured, the documented
+            # default. Only the alert-level outcome's
+            # `for sink in sinks.values(): ...` loop depends on sinks being
+            # non-empty, and naturally no-ops when it is. Folded into
+            # alerts_sent (not discarded): a collector reaching the alert
+            # threshold with no rate movement this run still delivers a real
+            # notice, and the run's reported alert count must not read zero
+            # when a sink actually received one.
+            alerts_sent += _dispatch_health_alerts(
+                service.store,
+                product_type,
+                [
+                    (
+                        bank,
+                        bank in summary["banks_succeeded"],
+                        next(
+                            (
+                                failure["error"]
+                                for failure in summary["failures"]
+                                if failure["bank"] == bank
+                            ),
+                            None,
+                        ),
+                    )
+                    for bank in banks_attempted
+                ],
+                service.config.health,
+                sinks,
+                started_at,
+                run_id=operational_run_id,
+            )
+
+        # outcome.already_recorded means this run_id already committed its
+        # observations in an earlier call -- this call's own report/
+        # validation describe only *this* retry's fetch, which can genuinely
+        # diverge from the original (e.g. every bank unreachable on the
+        # retry, after the original succeeded). Classifying a fresh
+        # RunRecord from that and overwriting (write_run_record() is an
+        # INSERT OR REPLACE keyed on run_id) the original would leave the
+        # persisted run status contradicting the persisted observations, so
+        # the already-persisted record is reused untouched instead of
+        # re-derived.
+        run_record = existing_run_record
+        if run_record is not None:
+            # code (and therefore OperationalRunResult.status) was derived
+            # above from *this* retry's own report/validation, which can
+            # genuinely diverge from the original (e.g. every bank
+            # unreachable on the retry, after the original succeeded) --
+            # restored from the reused record's own status so a caller never
+            # sees e.g. status="FAILED" alongside run_record.status=
+            # "SUCCESS" for what is the same run. A caller that separately
+            # re-derives its own summary from `outcome` (e.g.
+            # scripts/collect_market_rates_workflow.py's --summary-file)
+            # must check outcome.already_recorded itself before doing so, the
+            # same reason this reused record is never rebuilt from outcome.
+            code = _CODE_BY_STATUS[run_record.status]
+        elif not outcome.already_recorded:
+            market_state_value = None
+            try:
+                market_state_value = service.get_market_state(product_type=product_type).state.value
+            except Exception:  # noqa: BLE001 - market state is best-effort context on the run record
+                logger.warning("could not classify market state for run %s", operational_run_id)
+
+            run_record = RunRecord(
+                run_id=operational_run_id,
+                started_at=started_at,
+                completed_at=datetime.now(timezone.utc),
+                status=_STATUS_BY_CODE[code],
+                product_type=product_type,
+                banks_attempted=tuple(banks_attempted),
+                banks_successful=tuple(summary["banks_succeeded"]),
+                banks_failed=tuple(summary["banks_failed"]),
+                rates_observed=summary["rates_accepted"],
+                rates_changed=summary["changes_detected"],
+                validation_failures=summary["rates_rejected"],
+                # Not summary["suspicious_changes"] (a count of *change
+                # events* this run emitted): a quarantined suspicious rate
+                # collected again unchanged is flagged again by validation
+                # (see validate_observations()'s "suspicious_movement" issue)
+                # but detect_changes() emits no new event for it, since
+                # nothing changed -- that would under-report the run's own
+                # audit signal as 0 even though it observed and warned about
+                # suspicious data. suspicious_keys already deduplicates by
+                # observation_key, matching "how many distinct advertised
+                # states this run flagged", not one count per validation
+                # issue raised against the same key.
+                suspicious_observations=len(outcome.validation.suspicious_keys),
+                market_state=market_state_value,
+                error_summary=error_summary,
+                collection_run_id=outcome.write_result.run_id if outcome.write_result else None,
+            )
+            service.store.write_run_record(run_record)
+        # else: outcome.already_recorded is True but no RunRecord exists yet
+        # for this run_id -- the original attempt must have committed its
+        # observations and then crashed before ever reaching this point
+        # (e.g. during scenario persistence or alert bookkeeping, both of
+        # which run earlier in this same function). There is no way to
+        # reconstruct what the original attempt's own report/validation
+        # looked like from here, and building one from this retry's outcome
+        # risks persisting a completely wrong classification (e.g. FAILED
+        # with zero rates observed, even though the committed observations
+        # show the run actually succeeded). Left incomplete -- run_record
+        # stays None and nothing is written -- rather than guessed.
+
+    return OperationalRunResult(
+        outcome=outcome, run_record=run_record, alerts_sent=alerts_sent, code=code
+    )

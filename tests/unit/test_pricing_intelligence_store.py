@@ -763,6 +763,109 @@ def test_a_database_with_no_surviving_trace_of_a_run_falls_back_to_home_loan(tmp
         assert row["product_type"] == "home_loan"
 
 
+def test_read_only_store_does_not_migrate_the_database_file_on_disk(tmp_path):
+    """A dry run opening ``read_only=True`` against an older production
+    database (missing a column a later migration adds) must not leave that
+    migration's ``ALTER TABLE`` on disk -- CLI ``--dry-run`` promises nothing
+    persisted, and that has to hold even when the on-disk schema is stale
+    enough to need a migration just to be queryable. Confirmed by opening a
+    legacy ``collector_health`` table (predating ``last_processed_run_id``),
+    then reopening a raw connection afterwards: the column must still be
+    absent from the file, even though the read-only store itself queried
+    successfully as if it were present."""
+    import sqlite3
+
+    db_path = tmp_path / "legacy.db"
+    connection = sqlite3.connect(str(db_path))
+    connection.execute(
+        "CREATE TABLE collector_health ("
+        "bank TEXT NOT NULL, product_type TEXT NOT NULL, "
+        "consecutive_failures INTEGER NOT NULL DEFAULT 0, "
+        "last_success_at TEXT, last_failure_at TEXT, last_error TEXT, "
+        "last_alert_sent_at TEXT, PRIMARY KEY (bank, product_type))"
+    )
+    connection.execute(
+        "INSERT INTO collector_health (bank, product_type, consecutive_failures) "
+        "VALUES ('ANZ', 'home_loan', 2)"
+    )
+    connection.commit()
+    connection.close()
+
+    with ObservationStore(str(db_path), read_only=True) as store:
+        columns = {row["name"] for row in store._connection.execute("PRAGMA table_info(collector_health)")}
+        assert "last_processed_run_id" in columns
+
+    raw = sqlite3.connect(str(db_path))
+    on_disk_columns = {row[1] for row in raw.execute("PRAGMA table_info(collector_health)")}
+    raw.close()
+    assert "last_processed_run_id" not in on_disk_columns
+
+
+def test_read_only_store_snapshots_committed_wal_data(tmp_path, make_record):
+    """A production database can run in WAL mode, where a committed write
+    sits only in the '-wal' sidecar until checkpointed -- a plain file copy
+    of just the main '.db' file would silently miss it, showing a dry run
+    stale or empty data. The snapshot must use sqlite's own backup API (the
+    way backup_database() already does), which reads through a live
+    connection and always sees committed WAL pages too."""
+    import sqlite3
+
+    db_path = tmp_path / "wal.db"
+
+    with ObservationStore(str(db_path)):
+        pass
+    raw = sqlite3.connect(str(db_path))
+    raw.execute("PRAGMA journal_mode=WAL")
+    raw.close()
+
+    # Keep this writer connection open for the whole test: SQLite
+    # auto-checkpoints a WAL database when its *last* connection closes,
+    # which would flush the write below into the main file on its own and
+    # mask the exact bug this test exists to catch.
+    live_store = ObservationStore(str(db_path))
+    live_store.record_observations([make_record()], observed_at=DAY_ONE)
+
+    with ObservationStore(str(db_path), read_only=True) as snapshot:
+        assert snapshot.get_current_observations() != []
+
+    live_store.close()
+
+
+def test_read_only_store_against_a_missing_database_does_not_create_a_file(tmp_path):
+    """A dry run's first-ever invocation, before any real collection has
+    run, points at a database path that doesn't exist yet. It must stay that
+    way -- opening a read-only store should serve an empty in-memory
+    database rather than materialising a fresh file on disk."""
+    db_path = tmp_path / "does-not-exist-yet.db"
+
+    with ObservationStore(str(db_path), read_only=True) as store:
+        assert store.get_current_observations() == []
+
+    assert not db_path.exists()
+
+
+def test_read_only_store_source_open_rejects_a_toctou_removed_database(tmp_path, monkeypatch):
+    """The exists() check above the WAL-aware snapshot leaves a narrow
+    time-of-check-to-time-of-use gap -- the configured database can vanish
+    (e.g. a restore or rotation) between that check and the source
+    connection. Simulated here by making exists() lie: the read-only URI
+    connection must still fail loudly with sqlite3.OperationalError rather
+    than an ordinary read-write sqlite3.connect() silently creating a
+    fresh, empty database at the real configured path -- exactly the
+    artifact a dry run promises never to leave behind."""
+    import os
+    import sqlite3
+    from pathlib import Path as PathlibPath
+
+    db_path = tmp_path / "does-not-exist.db"
+    monkeypatch.setattr(PathlibPath, "exists", lambda self: True)
+
+    with pytest.raises(sqlite3.OperationalError):
+        ObservationStore(str(db_path), read_only=True)
+
+    assert not os.path.exists(str(db_path)), "must not have created an empty database"
+
+
 def test_a_pre_column_database_infers_product_from_its_existing_history(store, make_record):
     """The --product CLI flag has collected term deposits since before
     collection_runs.product_type existed, so an upgrading database can
@@ -2391,3 +2494,256 @@ def test_legacy_rate_named_migration_does_not_quarantine_an_ordinary_reprice_his
         assert len(current) == 1
         assert current[0].advertised_rate_pct == 5.49
         assert current[0].validation_status != "warning"
+
+
+def _build_change(make_record, run_id="run-1", **overrides):
+    record = make_record()
+    payload = dict(
+        observation_key=record.observation_key(),
+        bank=record.bank,
+        product_type=ProductType.HOME_LOAN,
+        product_name=record.product_name,
+        rate_category=record.rate_category,
+        term_months=record.term_months_normalised,
+        change_type=ChangeType.RATE_DECREASE,
+        detected_at=DAY_ONE,
+        previous_rate_pct=4.99,
+        current_rate_pct=4.79,
+        change_bps=-20.0,
+        run_id=run_id,
+    )
+    payload.update(overrides)
+    return RateChange(**payload)
+
+
+def test_a_change_is_not_notified_until_recorded(store, make_record):
+    change = _build_change(make_record)
+
+    assert store.was_notified(change, "telegram") is False
+
+    store.record_notification(change, "telegram")
+
+    assert store.was_notified(change, "telegram") is True
+
+
+def test_notification_channels_are_independent(store, make_record):
+    """A webhook delivery succeeding must not suppress a separate Telegram
+    delivery of the same change, and vice versa."""
+    change = _build_change(make_record)
+
+    store.record_notification(change, "webhook")
+
+    assert store.was_notified(change, "webhook") is True
+    assert store.was_notified(change, "telegram") is False
+
+
+def test_recording_the_same_notification_twice_is_not_an_error(store, make_record):
+    change = _build_change(make_record)
+
+    store.record_notification(change, "telegram")
+    store.record_notification(change, "telegram")  # must not raise
+
+    assert store.was_notified(change, "telegram") is True
+
+
+def test_a_different_run_id_is_a_distinct_notification(store, make_record):
+    """Guards delivery idempotency for one already-detected change, not
+    cross-run suppression of a genuinely new event that happens to share
+    every other identity field but the run it was detected in."""
+    first = _build_change(make_record, run_id="run-1")
+    second = _build_change(make_record, run_id="run-2")
+
+    store.record_notification(first, "telegram")
+
+    assert store.was_notified(first, "telegram") is True
+    assert store.was_notified(second, "telegram") is False
+
+
+def test_integrity_check_passes_on_a_clean_database(store, make_record):
+    store.record_observations([make_record()], observed_at=DAY_ONE)
+
+    report = store.check_integrity()
+
+    assert report.ok is True
+    assert report.issues == ()
+    assert all(report.checks.values())
+
+
+def test_integrity_check_flags_an_implausible_rate(store, make_record):
+    store.record_observations([make_record()], observed_at=DAY_ONE)
+    store._connection.execute("UPDATE observations SET rate_pct = 999")
+
+    report = store.check_integrity()
+
+    assert report.ok is False
+    assert report.checks["rates_within_plausible_bounds"] is False
+    assert any("plausible rate bounds" in issue for issue in report.issues)
+
+
+def test_integrity_check_flags_a_home_loan_rate_hiding_behind_the_deposit_band(
+    store, make_record
+):
+    """A corrupted home-loan rate must be validated against the mortgage
+    band, not the widest union of mortgage and deposit bounds -- with the
+    default thresholds (min_deposit_rate_pct=0.0), a 0.1% home-loan rate
+    would otherwise pass because 0% is a valid deposit minimum, even though
+    ordinary ingestion validation (which selects bounds by product_type)
+    would reject it outright."""
+    store.record_observations([make_record(product_type="home_loan")], observed_at=DAY_ONE)
+    store._connection.execute("UPDATE observations SET rate_pct = 0.1")
+
+    report = store.check_integrity()
+
+    assert report.ok is False
+    assert report.checks["rates_within_plausible_bounds"] is False
+    assert any("plausible rate bounds" in issue for issue in report.issues)
+
+
+def test_integrity_check_flags_an_unreadable_term_deposit_row(store, make_record):
+    """get_current_observations() defaults to HOME_LOAN only -- calling it
+    unscoped would silently skip term-deposit rows entirely, so a malformed
+    stored deposit row (e.g. unparseable JSON in validation_warnings) would
+    never surface here, and the health command could report ok=True while
+    the deposit snapshot is actually unrehydratable."""
+    store.record_observations(
+        [make_record(product_type="term_deposit", rate_category="term_deposit")],
+        observed_at=DAY_ONE,
+    )
+    store._connection.execute(
+        "UPDATE observations SET validation_warnings = 'not-json' WHERE product_type = 'term_deposit'"
+    )
+
+    report = store.check_integrity()
+
+    assert report.ok is False
+    assert report.checks["latest_observations_readable"] is False
+    assert any("unreadable" in issue for issue in report.issues)
+
+
+def test_integrity_check_flags_a_broken_timestamp(store, make_record):
+    store.record_observations([make_record()], observed_at=DAY_ONE)
+    store._connection.execute("UPDATE observations SET last_seen_at = 'not-a-timestamp'")
+
+    report = store.check_integrity()
+
+    assert report.ok is False
+    assert report.checks["timestamps_parse"] is False
+
+
+def test_integrity_check_reports_pragma_failure(store, make_record):
+    from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
+
+    report = store.check_integrity(thresholds=ValidationThresholds())
+
+    assert report.checks["schema_accessible"] is True
+
+
+# ------------------------------------------------------ collector health
+
+
+def test_update_collector_health_advances_the_streak_normally(store):
+    first = store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom", at=DAY_ONE, run_id="run-1"
+    )
+    second = store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom", at=DAY_TWO, run_id="run-2"
+    )
+
+    assert first.consecutive_failures == 1
+    assert second.consecutive_failures == 2
+
+
+def test_update_collector_health_skips_advancing_for_a_retried_run_id(store):
+    """A retried run_operational_cycle() invocation under the same run_id
+    (e.g. crashed then re-run) must not advance the streak a second time
+    for what is logically one failed collection attempt -- every other
+    idempotent write in a run (record_observations, record_changes,
+    notified_alerts) already treats a repeated run_id as a no-op, and an
+    unguarded streak update was the one place that didn't."""
+    first = store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom", at=DAY_ONE, run_id="run-1"
+    )
+    retried = store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom again", at=DAY_TWO, run_id="run-1"
+    )
+
+    assert first.consecutive_failures == 1
+    assert retried.consecutive_failures == 1, "the same run_id must not double-count a failure"
+    assert retried.last_failure_at == first.last_failure_at, (
+        "a deduplicated retry must return the original, untouched state"
+    )
+    assert retried.last_error == "boom", "the retry's error must not overwrite the original"
+
+    # A genuinely new run_id after the retry must still advance normally.
+    third = store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom", at=DAY_THREE, run_id="run-2"
+    )
+    assert third.consecutive_failures == 2
+
+
+def test_update_collector_health_skips_an_out_of_order_retry_of_an_older_run_id(store):
+    """last_processed_run_id alone only remembers the single most recent
+    run_id -- once a later, different run_id (run-B) has updated this bank,
+    a delayed retry of an *earlier* run_id (run-A) no longer matches that one
+    slot and would otherwise be treated as a brand new attempt, advancing
+    (or resetting) the streak a second time from run-A's stale, out-of-order
+    retry report even though run-A's own processing was already folded into
+    the streak once."""
+    run_a = store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom from A", at=DAY_ONE, run_id="run-A"
+    )
+    run_b = store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom from B", at=DAY_TWO, run_id="run-B"
+    )
+    assert run_a.consecutive_failures == 1
+    assert run_b.consecutive_failures == 2
+
+    delayed_retry_of_a = store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom from A retried", at=DAY_THREE, run_id="run-A"
+    )
+
+    assert delayed_retry_of_a.consecutive_failures == 2, (
+        "a delayed retry of an already-processed (but no longer most-recent) run_id "
+        "must not advance the streak again"
+    )
+    assert delayed_retry_of_a.last_error == "boom from B", (
+        "the out-of-order retry must not overwrite run-B's already-recorded state"
+    )
+    assert delayed_retry_of_a.last_failure_at == run_b.last_failure_at
+
+
+def test_a_pre_ledger_database_backfills_collector_health_processed_runs(store):
+    """A database upgraded from before collector_health_processed_runs
+    existed already has last_processed_run_id populated per bank from the
+    older schema -- the migration must backfill the new ledger from it, or a
+    retry of exactly the last pre-upgrade run would find the ledger empty,
+    miss the already-processed lookup, and advance the streak again."""
+    store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom", at=DAY_ONE, run_id="run-1"
+    )
+
+    # Simulate a database that predates the ledger table: drop it (the
+    # collector_health row, including last_processed_run_id="run-1",
+    # survives), then reopen (re-running _create_schema()'s migrations) as a
+    # fresh ObservationStore would when it first encounters that older file.
+    store._connection.execute("DROP TABLE collector_health_processed_runs")
+    store._create_schema()
+
+    retried = store.update_collector_health(
+        "ANZ", "home_loan", success=False, error="boom again", at=DAY_TWO, run_id="run-1"
+    )
+
+    assert retried.consecutive_failures == 1, (
+        "the backfilled ledger must recognise run-1 as already processed"
+    )
+    assert retried.last_error == "boom", "the retry must not overwrite the original error"
+
+
+def test_update_collector_health_without_run_id_always_advances(store):
+    """Omitting run_id (the default) preserves the unconditional-advance
+    behaviour for a caller not tracking operational runs."""
+    first = store.update_collector_health("ANZ", "home_loan", success=False, at=DAY_ONE)
+    second = store.update_collector_health("ANZ", "home_loan", success=False, at=DAY_TWO)
+
+    assert first.consecutive_failures == 1
+    assert second.consecutive_failures == 2

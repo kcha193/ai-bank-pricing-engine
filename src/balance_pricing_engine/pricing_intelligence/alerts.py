@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 #: in a config file. Unset means "no webhook delivery configured".
 ALERT_WEBHOOK_URL_SECRET_NAME = "PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL"
 
+#: Same pattern, for Telegram delivery. Both must be set for
+#: :func:`build_telegram_sink_from_env` to return a sink -- a bot token with
+#: no destination chat (or vice versa) is not a usable configuration.
+TELEGRAM_BOT_TOKEN_SECRET_NAME = "TELEGRAM_BOT_TOKEN"
+TELEGRAM_CHAT_ID_SECRET_NAME = "TELEGRAM_CHAT_ID"
+
 #: Posts a JSON-encoded payload to a URL and returns nothing, raising on
 #: failure. Injectable so tests never reach the network -- the same pattern
 #: as the collector ``Fetcher`` type in ``collectors/base.py``.
@@ -58,14 +64,27 @@ _TERM_NAMES = {
 
 @dataclass(frozen=True)
 class Alert:
-    """A rendered, delivery-agnostic alert."""
+    """A rendered, delivery-agnostic alert.
+
+    ``change`` is ``None`` for an alert not tied to one specific detected
+    change -- a collector health/recovery notice or an intelligence brief
+    (see ``pricing_intelligence.orchestration``/``briefing``). Sinks and
+    ``dispatch_alerts_safely`` degrade their change-specific behaviour
+    (structured webhook fields, per-alert log context) gracefully when it is
+    absent, rather than requiring a fabricated placeholder change.
+    """
 
     title: str
     body: str
-    change: RateChange
+    change: Optional[RateChange] = None
 
     def render(self) -> str:
         return f"{self.title}\n\n{self.body}"
+
+
+def plain_alert(title: str, body: str) -> Alert:
+    """Build a change-less alert (collector health, recovery, briefs)."""
+    return Alert(title=title, body=body, change=None)
 
 
 @runtime_checkable
@@ -200,15 +219,18 @@ class WebhookAlertSink:
         self._poster = poster if poster is not None else build_default_poster()
 
     def send(self, alert: Alert) -> None:
+        payload = {self.text_field: alert.render()}
         change = alert.change
-        payload = {
-            self.text_field: alert.render(),
-            "bank": change.bank,
-            "change_type": change.change_type.value,
-            "change_bps": change.change_bps,
-            "suspicious": change.suspicious,
-            "detected_at": change.detected_at.isoformat(),
-        }
+        if change is not None:
+            payload.update(
+                {
+                    "bank": change.bank,
+                    "change_type": change.change_type.value,
+                    "change_bps": change.change_bps,
+                    "suspicious": change.suspicious,
+                    "detected_at": change.detected_at.isoformat(),
+                }
+            )
         self._poster(self.webhook_url, json.dumps(payload).encode("utf-8"))
 
 
@@ -234,6 +256,73 @@ def build_webhook_sink_from_env(
     if not webhook_url:
         return None
     return WebhookAlertSink(webhook_url, text_field=text_field)
+
+
+class TelegramAlertSink:
+    """Sends a rendered alert as a plain-text Telegram message.
+
+    Uses the Bot API's ``sendMessage`` method directly (``POST
+    https://api.telegram.org/bot<token>/sendMessage``) -- no third-party
+    Telegram client dependency, same rationale as :class:`WebhookAlertSink`
+    using bare ``urlopen``. No ``parse_mode`` is set: every alert body in this
+    module is plain text with emoji markers, not Markdown/HTML, and sending it
+    unescaped through a parse mode would risk a stray ``_``/``*``/``[`` in a
+    bank or product name breaking Telegram's parser and losing the whole
+    message.
+
+    Reuses :func:`build_default_poster` for delivery, including its 429
+    retry loop. Telegram's own rate-limit response carries its suggested
+    delay in the JSON body (``parameters.retry_after``), not the
+    ``Retry-After`` header ``_parse_retry_after_seconds`` reads -- so a 429
+    here retries after :data:`DEFAULT_RETRY_AFTER_SECONDS` rather than
+    Telegram's exact suggested delay. That is an accepted simplification:
+    ``dispatch_alerts_safely``'s own deadline already bounds total wait time
+    regardless of the per-retry delay chosen, and adding a second,
+    Telegram-specific retry-delay parser for a non-safety-critical value
+    is not worth the extra surface area.
+
+    ``send()`` raises on failure, same contract as ``WebhookAlertSink.send`` --
+    callers wanting a broken Telegram channel to never affect a collection
+    run should go through :func:`dispatch_alerts_safely`.
+    """
+
+    def __init__(
+        self,
+        bot_token: str,
+        chat_id: str,
+        poster: Optional[WebhookPoster] = None,
+    ) -> None:
+        self.bot_token = bot_token
+        self.chat_id = chat_id
+        # `is not None`, not `or` -- same falsey-injected-poster reasoning as
+        # WebhookAlertSink.__init__.
+        self._poster = poster if poster is not None else build_default_poster()
+
+    def send(self, alert: Alert) -> None:
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        payload = {"chat_id": self.chat_id, "text": alert.render()}
+        self._poster(url, json.dumps(payload).encode("utf-8"))
+
+
+def build_telegram_sink_from_env(
+    secrets: Optional[SecretsProvider] = None,
+    bot_token_secret_name: str = TELEGRAM_BOT_TOKEN_SECRET_NAME,
+    chat_id_secret_name: str = TELEGRAM_CHAT_ID_SECRET_NAME,
+) -> Optional[TelegramAlertSink]:
+    """Build a Telegram sink from the configured secrets, or None if either is unset.
+
+    Same "no delivery channel is the default" shape as
+    :func:`build_webhook_sink_from_env`. Both the token and the chat id must
+    be present -- one without the other cannot deliver anything.
+    """
+    # `is None`, not `or` -- same falsey-injected-provider reasoning as
+    # build_webhook_sink_from_env.
+    secrets = EnvSecretsProvider() if secrets is None else secrets
+    bot_token = secrets.get_secret(bot_token_secret_name)
+    chat_id = secrets.get_secret(chat_id_secret_name)
+    if not bot_token or not chat_id:
+        return None
+    return TelegramAlertSink(bot_token, chat_id)
 
 
 def term_name(term_months: Optional[int]) -> str:
@@ -384,6 +473,13 @@ def dispatch_alerts(alerts: Sequence[Alert], sink: AlertSink) -> int:
 DEFAULT_ALERT_DISPATCH_DEADLINE_SECONDS = 30.0
 
 
+def _alert_log_label(alert: Alert) -> str:
+    """Identify an alert in a log line, whether or not it carries a change."""
+    if alert.change is None:
+        return alert.title
+    return f"{alert.change.bank} {alert.change.change_type.value}"
+
+
 def dispatch_alerts_safely(
     alerts: Sequence[Alert],
     sink: AlertSink,
@@ -399,6 +495,31 @@ def dispatch_alerts_safely(
     on. Each alert is attempted independently, so one failure does not cost
     the rest. Failures are logged, not silently dropped.
 
+    Returns how many alerts were confirmed delivered. Callers that must know
+    *which* alerts succeeded (not just the count) -- e.g. to record per-alert
+    delivery state in a dedup ledger -- should use
+    :func:`dispatch_alerts_safely_detailed` instead; this is a thin wrapper
+    over it.
+    """
+    return len(dispatch_alerts_safely_detailed(alerts, sink, deadline_seconds=deadline_seconds))
+
+
+def dispatch_alerts_safely_detailed(
+    alerts: Sequence[Alert],
+    sink: AlertSink,
+    *,
+    deadline_seconds: float = DEFAULT_ALERT_DISPATCH_DEADLINE_SECONDS,
+) -> list[Alert]:
+    """Deliver alerts through a sink, never letting a delivery failure escape.
+
+    Same delivery behaviour as :func:`dispatch_alerts_safely` (see there for
+    the full rationale), but returns the list of alerts individually
+    confirmed delivered rather than just a count -- a caller that marks
+    alerts as notified (so a retried run does not re-send them) must persist
+    that only for sends actually confirmed, not for every alert attempted;
+    persisting an attempt as delivered would suppress a genuinely failed send
+    on every future retry.
+
     Each ``sink.send()`` call runs on its own daemon thread, joined with
     whatever time remains of ``deadline_seconds``. A per-alert deadline check
     alone would not be enough: ``WebhookAlertSink``'s own 429 retries can
@@ -412,15 +533,14 @@ def dispatch_alerts_safely(
     same as any other delivery failure -- it must not propagate out of this
     "never fails the run" helper either.
     """
-    sent = 0
+    sent: list[Alert] = []
     deadline = time.monotonic() + deadline_seconds
     for alert in alerts:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             logger.warning(
-                "alert delivery skipped for %s %s: dispatch deadline of %.0fs exceeded",
-                alert.change.bank,
-                alert.change.change_type.value,
+                "alert delivery skipped for %s: dispatch deadline of %.0fs exceeded",
+                _alert_log_label(alert),
                 deadline_seconds,
             )
             continue
@@ -439,9 +559,8 @@ def dispatch_alerts_safely(
             worker.start()
         except Exception as exc:  # noqa: BLE001 - e.g. RuntimeError: can't start new thread
             logger.warning(
-                "alert delivery failed for %s %s: could not start delivery thread: %s",
-                alert.change.bank,
-                alert.change.change_type.value,
+                "alert delivery failed for %s: could not start delivery thread: %s",
+                _alert_log_label(alert),
                 exc,
             )
             continue
@@ -449,18 +568,16 @@ def dispatch_alerts_safely(
 
         if worker.is_alive():
             logger.warning(
-                "alert delivery timed out for %s %s: exceeded dispatch deadline of %.0fs",
-                alert.change.bank,
-                alert.change.change_type.value,
+                "alert delivery timed out for %s: exceeded dispatch deadline of %.0fs",
+                _alert_log_label(alert),
                 deadline_seconds,
             )
         elif outcome.get("ok"):
-            sent += 1
+            sent.append(alert)
         else:
             logger.warning(
-                "alert delivery failed for %s %s: %s",
-                alert.change.bank,
-                alert.change.change_type.value,
+                "alert delivery failed for %s: %s",
+                _alert_log_label(alert),
                 outcome.get("error"),
             )
     return sent

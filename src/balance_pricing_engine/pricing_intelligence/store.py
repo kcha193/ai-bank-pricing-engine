@@ -28,14 +28,18 @@ from datetime import datetime, timedelta, timezone
 import json
 import logging
 import re
+import os
 from pathlib import Path
 import sqlite3
+import tempfile
 from typing import Iterable, Iterator, Mapping, NamedTuple, Optional, Sequence
+from urllib.parse import quote
 import uuid
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
-from balance_pricing_engine.pricing_intelligence.changes import ChangeType
+from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange
+from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +164,131 @@ CREATE INDEX IF NOT EXISTS idx_observations_bank_term
     ON observations (bank, product_type, term_months);
 CREATE INDEX IF NOT EXISTS idx_observations_last_seen
     ON observations (last_seen_run_id);
+
+-- Idempotency ledger for alert *delivery* (not detection -- detect_changes()
+-- itself only ever fires a given transition once, since an unchanged
+-- re-observation never re-inserts a rate_changes row; see the module
+-- docstring). This exists for the narrower case of re-processing the same
+-- already-detected change -- a crashed run retried under the same run_id, or
+-- a future manual "resend recent alerts" tool -- which must not re-notify a
+-- channel that already delivered it. Keyed on the same identity
+-- rate_changes' own UNIQUE constraint uses, plus the channel, since Telegram
+-- and a webhook are independent deliveries and one succeeding must not
+-- suppress the other.
+CREATE TABLE IF NOT EXISTS notified_alerts (
+    observation_key     TEXT NOT NULL,
+    change_type         TEXT NOT NULL,
+    detected_at         TEXT NOT NULL,
+    run_id              TEXT NOT NULL,
+    channel             TEXT NOT NULL,
+    notified_at         TEXT NOT NULL,
+    PRIMARY KEY (observation_key, change_type, detected_at, run_id, channel)
+);
+
+-- One row per run_operational_cycle() invocation -- see RunRecord's
+-- docstring for why this is a separate table from collection_runs rather
+-- than additional columns on it.
+CREATE TABLE IF NOT EXISTS operational_runs (
+    run_id                   TEXT PRIMARY KEY,
+    started_at               TEXT NOT NULL,
+    completed_at             TEXT,
+    status                   TEXT NOT NULL,
+    product_type             TEXT NOT NULL,
+    banks_attempted          TEXT NOT NULL,
+    banks_successful         TEXT NOT NULL,
+    banks_failed             TEXT NOT NULL,
+    rates_observed           INTEGER NOT NULL DEFAULT 0,
+    rates_changed            INTEGER NOT NULL DEFAULT 0,
+    validation_failures      INTEGER NOT NULL DEFAULT 0,
+    suspicious_observations  INTEGER NOT NULL DEFAULT 0,
+    market_state             TEXT,
+    error_summary            TEXT,
+    collection_run_id        TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_operational_runs_started_at
+    ON operational_runs (product_type, started_at);
+
+-- Consecutive-failure streak per bank/product, surviving across scheduler
+-- process restarts (each scheduled run is a separate process). Updated once
+-- per bank per run_operational_cycle() call; see
+-- orchestration.classify_health_escalation() for the alerting policy this
+-- drives.
+CREATE TABLE IF NOT EXISTS collector_health (
+    bank                   TEXT NOT NULL,
+    product_type           TEXT NOT NULL,
+    consecutive_failures   INTEGER NOT NULL DEFAULT 0,
+    last_success_at        TEXT,
+    last_failure_at        TEXT,
+    last_error             TEXT,
+    last_alert_sent_at     TEXT,
+    -- The operational run_id that last advanced this streak. Lets
+    -- update_collector_health() recognise a retried run_operational_cycle()
+    -- invocation (e.g. crashed then re-run under the same run_id) and skip
+    -- advancing the streak a second time for what is logically one failed
+    -- or successful collection attempt -- see that method's docstring.
+    last_processed_run_id  TEXT,
+    PRIMARY KEY (bank, product_type)
+);
+
+-- Write-once ledger of every (bank, product_type, run_id)
+-- update_collector_health() has already advanced the streak for.
+-- collector_health.last_processed_run_id alone only remembers the single
+-- most recent run_id, so once a *later*, different run_id has updated the
+-- same bank, a delayed retry of an *earlier* run_id no longer matches that
+-- one slot and is not recognised as already-processed -- it can advance, or
+-- even reset, the streak a second time from a stale retry's report.
+-- Membership here is checked instead (mirrors collection_run_products' own
+-- role for record_observations()), so an out-of-order retry of any
+-- already-processed run_id is caught regardless of how many other runs have
+-- updated this bank since.
+CREATE TABLE IF NOT EXISTS collector_health_processed_runs (
+    bank            TEXT NOT NULL,
+    product_type    TEXT NOT NULL,
+    run_id          TEXT NOT NULL,
+    PRIMARY KEY (bank, product_type, run_id)
+);
+
+-- Per-channel companion to collector_health.last_alert_sent_at. That
+-- bank-level column only answers "was ANY channel notified of this
+-- streak's incident" -- enough to gate whether a recovery is worth
+-- attempting at all (see orchestration.classify_health_escalation()), but
+-- not which channels to actually send the recovery to. When webhook and
+-- Telegram are both configured and only one delivers the incident (the
+-- other times out or errors), sending the recovery to both anyway would
+-- misleadingly tell the channel that missed the incident it has "recovered"
+-- from an outage it was never told about -- see
+-- orchestration._dispatch_health_alerts()'s per-channel recovery gating.
+-- One row per (bank, product_type, channel), replaced (not appended) on
+-- each confirmed delivery -- unlike notified_alerts, this only ever needs
+-- the *latest* delivery per channel, not a full history.
+CREATE TABLE IF NOT EXISTS collector_health_alert_channels (
+    bank            TEXT NOT NULL,
+    product_type    TEXT NOT NULL,
+    channel         TEXT NOT NULL,
+    sent_at         TEXT NOT NULL,
+    PRIMARY KEY (bank, product_type, channel)
+);
+
+-- Auto-triggered pricing-scenario comparisons (see
+-- pricing_intelligence.scenario_trigger), one row per (run_id, term_months)
+-- that a meaningful competitor move triggered analysis for. Keyed on run_id
+-- rather than a rate_changes.id foreign key -- run_id already identifies
+-- both the triggering operational_runs row and every rate_changes row it
+-- produced, and a term can have more than one contributing change (several
+-- banks moving the same term in one run) with no single natural change to
+-- point at instead.
+CREATE TABLE IF NOT EXISTS scenario_runs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id        TEXT NOT NULL,
+    product_type  TEXT NOT NULL,
+    term_months   INTEGER NOT NULL,
+    generated_at  TEXT NOT NULL,
+    scenarios_json TEXT NOT NULL,
+    UNIQUE (run_id, product_type, term_months)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scenario_runs_run_id ON scenario_runs (run_id);
 """ + _RATE_CHANGES_SCHEMA
 
 # Fields whose movement makes an observation a genuinely new advertised state.
@@ -281,6 +410,7 @@ class ChronologicalOrderError(ValueError):
     """
 
 
+
 @dataclass(frozen=True)
 class WriteResult:
     """Outcome of persisting one collection run."""
@@ -292,6 +422,62 @@ class WriteResult:
     @property
     def total(self) -> int:
         return self.inserted + self.unchanged
+
+
+@dataclass(frozen=True)
+class RunRecord:
+    """One operational run of :func:`~.orchestration.run_operational_cycle`.
+
+    Distinct from ``collection_runs`` (written by :meth:`record_observations`,
+    keyed by whatever run_id that call is given): this is the orchestration
+    layer's own ledger, and it always gets a row -- including a total-failure
+    run where ``record_observations`` is never reached at all (zero accepted
+    records short-circuits before persistence), which ``collection_runs``
+    cannot represent. ``collection_run_id`` links back to that row when one
+    exists, for cross-referencing.
+    """
+
+    run_id: str
+    started_at: datetime
+    completed_at: datetime
+    status: str  # "SUCCESS" | "PARTIAL_SUCCESS" | "FAILED"
+    product_type: ProductType
+    banks_attempted: tuple[str, ...]
+    banks_successful: tuple[str, ...]
+    banks_failed: tuple[str, ...]
+    rates_observed: int
+    rates_changed: int
+    validation_failures: int
+    suspicious_observations: int
+    market_state: Optional[str]
+    error_summary: Optional[str]
+    collection_run_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class CollectorHealth:
+    """Current failure-streak state for one bank/product collector."""
+
+    bank: str
+    product_type: ProductType
+    consecutive_failures: int
+    last_success_at: Optional[datetime]
+    last_failure_at: Optional[datetime]
+    last_error: Optional[str]
+    last_alert_sent_at: Optional[datetime]
+    #: The operational run_id that last advanced this streak, or None for a
+    #: pre-migration row or one never updated with a run_id. See
+    #: ObservationStore.update_collector_health()'s retry-dedup docstring.
+    last_processed_run_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class IntegrityReport:
+    """Result of :meth:`ObservationStore.check_integrity`."""
+
+    ok: bool
+    checks: dict[str, bool]
+    issues: tuple[str, ...]
 
 
 class PreviousRun(NamedTuple):
@@ -332,16 +518,96 @@ def _parse_iso(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _run_record_from_row(row: sqlite3.Row) -> "RunRecord":
+    return RunRecord(
+        run_id=row["run_id"],
+        started_at=_parse_iso(row["started_at"]),
+        completed_at=_parse_iso(row["completed_at"]) if row["completed_at"] else None,
+        status=row["status"],
+        product_type=ProductType(row["product_type"]),
+        banks_attempted=tuple(json.loads(row["banks_attempted"])),
+        banks_successful=tuple(json.loads(row["banks_successful"])),
+        banks_failed=tuple(json.loads(row["banks_failed"])),
+        rates_observed=row["rates_observed"],
+        rates_changed=row["rates_changed"],
+        validation_failures=row["validation_failures"],
+        suspicious_observations=row["suspicious_observations"],
+        market_state=row["market_state"],
+        error_summary=row["error_summary"],
+        collection_run_id=row["collection_run_id"],
+    )
+
+
+def _collector_health_from_row(row: sqlite3.Row) -> "CollectorHealth":
+    return CollectorHealth(
+        bank=row["bank"],
+        product_type=ProductType(row["product_type"]),
+        consecutive_failures=row["consecutive_failures"],
+        last_success_at=_parse_iso(row["last_success_at"]) if row["last_success_at"] else None,
+        last_failure_at=_parse_iso(row["last_failure_at"]) if row["last_failure_at"] else None,
+        last_error=row["last_error"],
+        last_alert_sent_at=(
+            _parse_iso(row["last_alert_sent_at"]) if row["last_alert_sent_at"] else None
+        ),
+        last_processed_run_id=row["last_processed_run_id"],
+    )
+
+
 class ObservationStore:
     """Repository over historical rate observations and detected changes."""
 
-    def __init__(self, database_path: str | Path = ":memory:") -> None:
+    def __init__(self, database_path: str | Path = ":memory:", *, read_only: bool = False) -> None:
         self.database_path = str(database_path)
-        if self.database_path != ":memory:":
-            Path(self.database_path).parent.mkdir(parents=True, exist_ok=True)
+        self._temp_database_path: Optional[str] = None
+        connect_path = self.database_path
+        if read_only and self.database_path != ":memory:":
+            # A dry run must never create or migrate the real database file --
+            # work against a throwaway copy instead, so schema/migration
+            # writes (and any accidental row writes) land there, not on disk
+            # at the configured path. A database that doesn't exist yet has
+            # nothing to copy, so an in-memory store (starts empty, same as a
+            # fresh file would) stands in for it without touching disk at all.
+            if Path(self.database_path).exists():
+                fd, temp_path = tempfile.mkstemp(suffix=".sqlite3")
+                os.close(fd)
+                # A plain file copy would miss committed pages still sitting
+                # in a WAL sidecar (never checkpointed into the main file),
+                # and could tear mid-write if the database is open
+                # elsewhere -- e.g. the other product's independently locked
+                # collection run. sqlite3's own backup API reads through a
+                # live connection, so it always sees a transactionally
+                # consistent snapshot, the same reason backup_database()
+                # uses it instead of shutil.copyfile.
+                #
+                # Opened read-only via URI, not plain sqlite3.connect(): the
+                # exists() check above leaves a time-of-check-to-time-of-use
+                # gap (a restore or rotation removing the file in between),
+                # and an ordinary read-write connection would silently
+                # *create* a new, empty database at the real configured
+                # path in that case -- exactly the artifact a dry run
+                # promises never to leave behind, with the "preview" then
+                # silently starting from an empty store instead of failing
+                # loudly. See backup_database()'s own read-only URI fix for
+                # the identical race.
+                source_uri = f"file:{quote(str(Path(self.database_path).resolve()))}?mode=ro"
+                source = sqlite3.connect(source_uri, uri=True)
+                try:
+                    destination = sqlite3.connect(temp_path)
+                    try:
+                        source.backup(destination)
+                    finally:
+                        destination.close()
+                finally:
+                    source.close()
+                connect_path = temp_path
+                self._temp_database_path = temp_path
+            else:
+                connect_path = ":memory:"
+        if connect_path != ":memory:":
+            Path(connect_path).parent.mkdir(parents=True, exist_ok=True)
         # A single shared connection keeps an in-memory store usable across
         # calls, which is what the tests and the CLI both want.
-        self._connection = sqlite3.connect(self.database_path)
+        self._connection = sqlite3.connect(connect_path)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA foreign_keys = ON")
         self._transaction_depth = 0
@@ -351,6 +617,9 @@ class ObservationStore:
 
     def close(self) -> None:
         self._connection.close()
+        if self._temp_database_path is not None:
+            Path(self._temp_database_path).unlink(missing_ok=True)
+            self._temp_database_path = None
 
     def __enter__(self) -> "ObservationStore":
         return self
@@ -405,6 +674,8 @@ class ObservationStore:
             self._migrate_rate_changes_run_scoped_uniqueness(connection)
             self._migrate_collection_run_products(connection)
             self._migrate_rate_named_mortgages(connection)
+            self._migrate_collector_health_run_id(connection)
+            self._migrate_collector_health_processed_runs(connection)
             row = connection.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
                 connection.execute(
@@ -522,6 +793,44 @@ class ObservationStore:
                 "Review these historical events against the source before relying on them.",
                 skipped,
             )
+
+    def _migrate_collector_health_run_id(self, connection: sqlite3.Connection) -> None:
+        """Add ``collector_health.last_processed_run_id`` for a database
+        created before this column existed.
+
+        No backfill: the concept ("which operational run last advanced this
+        streak") did not exist before this column, so there is nothing
+        historical to recover -- every pre-existing row simply starts with
+        ``NULL``, which :meth:`update_collector_health` already treats as
+        "no known prior run" (never matches a provided ``run_id``, so the
+        first update after upgrade advances normally).
+        """
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(collector_health)")}
+        if "last_processed_run_id" in columns:
+            return
+        connection.execute("ALTER TABLE collector_health ADD COLUMN last_processed_run_id TEXT")
+
+    def _migrate_collector_health_processed_runs(self, connection: sqlite3.Connection) -> None:
+        """Backfill ``collector_health_processed_runs`` from every
+        pre-existing, non-null ``collector_health.last_processed_run_id``,
+        for a database created before this ledger table existed.
+
+        Without this, a database upgraded from before the ledger existed
+        would find it empty even though ``last_processed_run_id`` already
+        names the run_id that last advanced each bank's streak -- a retry of
+        exactly that pre-upgrade run would then miss the (empty) ledger
+        lookup in :meth:`update_collector_health`, advance the streak again,
+        and could emit a false escalation or recovery. Runs after
+        :meth:`_migrate_collector_health_run_id`, which guarantees the
+        column exists (even if only just added and therefore entirely
+        ``NULL`` -- this is then a no-op, same as a fresh database).
+        ``INSERT OR IGNORE`` makes this idempotent across repeated opens.
+        """
+        connection.execute(
+            "INSERT OR IGNORE INTO collector_health_processed_runs (bank, product_type, run_id) "
+            "SELECT bank, product_type, last_processed_run_id FROM collector_health "
+            "WHERE last_processed_run_id IS NOT NULL"
+        )
 
     def _migrate_collection_runs_product_type(self, connection: sqlite3.Connection) -> None:
         """Add ``collection_runs.product_type`` for a database created before
@@ -1152,6 +1461,26 @@ class ObservationStore:
         )
         return WriteResult(run_id=run_id, inserted=inserted, unchanged=unchanged)
 
+    def has_run_participation(self, run_id: str, product_type: ProductType | str) -> bool:
+        """True when ``run_id`` already has recorded participation for
+        ``product_type`` -- i.e. :meth:`record_observations` would
+        short-circuit as a no-op (not touch ``observations`` at all) if
+        called again with this exact ``(run_id, product_type)`` pair.
+
+        Exposed so a caller like ``service.PricingIntelligenceService.collect()``
+        can check this *before* deciding whether to run change detection
+        against a freshly-fetched payload: comparing that payload to the
+        stored baseline is only meaningful when this call's own write will
+        actually land. See ``collect()``'s own handling for why.
+        """
+        return (
+            self._connection.execute(
+                "SELECT 1 FROM collection_run_products WHERE run_id = ? AND product_type = ?",
+                (run_id, ProductType(product_type).value),
+            ).fetchone()
+            is not None
+        )
+
     def _run_ordered_after_fixed_reference(
         self,
         connection: sqlite3.Connection,
@@ -1571,7 +1900,398 @@ class ObservationStore:
                         (key, *rate_types, stale_current_rate_pct, current.advertised_rate_pct),
                     )
 
+    def was_notified(self, change: RateChange, channel: str) -> bool:
+        """True when this exact change has already been delivered on this channel.
+
+        See the ``notified_alerts`` schema comment for why this exists
+        despite ``detect_changes()`` already firing a given transition only
+        once: this guards delivery, not detection.
+        """
+        row = self._connection.execute(
+            "SELECT 1 FROM notified_alerts WHERE observation_key = ? AND change_type = ? "
+            "AND detected_at = ? AND run_id = ? AND channel = ?",
+            (
+                change.observation_key,
+                change.change_type.value,
+                _iso(change.detected_at),
+                change.run_id or "",
+                channel,
+            ),
+        ).fetchone()
+        return row is not None
+
+    def record_notification(
+        self, change: RateChange, channel: str, notified_at: Optional[datetime] = None
+    ) -> None:
+        """Record that ``change`` was delivered on ``channel``, for future dedup.
+
+        ``INSERT OR IGNORE``: recording the same (change, channel) pair twice
+        (e.g. a caller re-marking after already checking :meth:`was_notified`)
+        is a no-op, not an error -- this ledger only ever needs to know
+        whether delivery happened at least once.
+        """
+        notified_at = notified_at or datetime.now(timezone.utc)
+        with self._transaction() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO notified_alerts "
+                "(observation_key, change_type, detected_at, run_id, channel, notified_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    change.observation_key,
+                    change.change_type.value,
+                    _iso(change.detected_at),
+                    change.run_id or "",
+                    channel,
+                    _iso(notified_at),
+                ),
+            )
+
+    def write_run_record(self, record: RunRecord) -> None:
+        """Persist one operational run. Overwrites on a retried run_id.
+
+        Unlike ``collection_runs``, nothing else joins against this table's
+        rowid or relies on its insertion order for chronological tie-breaking,
+        so a plain ``INSERT OR REPLACE`` (rather than the upsert-preserving-
+        original-rowid dance ``record_observations`` uses) is sufficient.
+        """
+        with self._transaction() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO operational_runs "
+                "(run_id, started_at, completed_at, status, product_type, banks_attempted, "
+                "banks_successful, banks_failed, rates_observed, rates_changed, "
+                "validation_failures, suspicious_observations, market_state, error_summary, "
+                "collection_run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    record.run_id,
+                    _iso(record.started_at),
+                    _iso(record.completed_at) if record.completed_at else None,
+                    record.status,
+                    ProductType(record.product_type).value,
+                    json.dumps(list(record.banks_attempted)),
+                    json.dumps(list(record.banks_successful)),
+                    json.dumps(list(record.banks_failed)),
+                    record.rates_observed,
+                    record.rates_changed,
+                    record.validation_failures,
+                    record.suspicious_observations,
+                    record.market_state,
+                    record.error_summary,
+                    record.collection_run_id,
+                ),
+            )
+
+    def update_collector_health(
+        self,
+        bank: str,
+        product_type: ProductType | str,
+        *,
+        success: bool,
+        error: Optional[str] = None,
+        at: Optional[datetime] = None,
+        run_id: Optional[str] = None,
+    ) -> CollectorHealth:
+        """Advance one bank's consecutive-failure streak and return the new state.
+
+        A success resets the streak to zero (a recovery, if the streak was
+        previously at or above the alert threshold, is the caller's to
+        detect by comparing the returned state against what
+        :meth:`get_collector_health` held before this call). A failure
+        increments it. Both update the corresponding ``last_*_at`` timestamp;
+        ``last_alert_sent_at`` is left untouched here -- the caller
+        (``orchestration.classify_health_escalation``) sets it separately,
+        only once an alert is actually sent, via
+        :meth:`record_collector_health_alert`.
+
+        ``run_id``, when given and already present in
+        ``collector_health_processed_runs`` for this bank/product, means
+        this exact operational run already advanced the streak -- the call
+        is a retried ``run_operational_cycle()`` invocation under the same
+        ``run_id`` (e.g. crashed then re-run), not a new attempt. The streak
+        is left untouched and the current state is returned as-is: without
+        this, a single logical failed run retried several times would
+        increment ``consecutive_failures`` once per retry, reaching
+        ``alert_after_failures`` and firing a premature incident alert even
+        though every other idempotent write in this run
+        (``record_observations``, ``record_changes``, ``notified_alerts``)
+        already treats a repeated ``run_id`` as a no-op. Checked against a
+        write-once ledger, not just ``last_processed_run_id`` (still updated,
+        but no longer authoritative for this check): that single column only
+        remembers the *most recent* run_id, so a delayed retry of an earlier
+        run_id arriving after a later, different run_id has already updated
+        this bank would otherwise no longer match it and advance the streak
+        a second time from stale, out-of-order data. Omitting ``run_id``
+        (the default) preserves the unconditional-advance behaviour for any
+        caller not tracking operational runs.
+        """
+        product = ProductType(product_type)
+        at = at or datetime.now(timezone.utc)
+        with self._transaction() as connection:
+            if run_id is not None:
+                already_processed = connection.execute(
+                    "SELECT 1 FROM collector_health_processed_runs "
+                    "WHERE bank = ? AND product_type = ? AND run_id = ?",
+                    (bank, product.value, run_id),
+                ).fetchone()
+                if already_processed is not None:
+                    return _collector_health_from_row(
+                        connection.execute(
+                            "SELECT * FROM collector_health WHERE bank = ? AND product_type = ?",
+                            (bank, product.value),
+                        ).fetchone()
+                    )
+            existing = connection.execute(
+                "SELECT consecutive_failures FROM collector_health "
+                "WHERE bank = ? AND product_type = ?",
+                (bank, product.value),
+            ).fetchone()
+            previous_streak = existing["consecutive_failures"] if existing is not None else 0
+            new_streak = 0 if success else previous_streak + 1
+            connection.execute(
+                "INSERT INTO collector_health "
+                "(bank, product_type, consecutive_failures, last_success_at, last_failure_at, "
+                "last_error, last_processed_run_id) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(bank, product_type) DO UPDATE SET "
+                "consecutive_failures = excluded.consecutive_failures, "
+                "last_success_at = COALESCE(excluded.last_success_at, collector_health.last_success_at), "
+                "last_failure_at = COALESCE(excluded.last_failure_at, collector_health.last_failure_at), "
+                "last_error = CASE WHEN excluded.last_error IS NOT NULL THEN excluded.last_error "
+                "ELSE collector_health.last_error END, "
+                "last_processed_run_id = COALESCE(excluded.last_processed_run_id, "
+                "collector_health.last_processed_run_id)",
+                (
+                    bank,
+                    product.value,
+                    new_streak,
+                    _iso(at) if success else None,
+                    _iso(at) if not success else None,
+                    error if not success else None,
+                    run_id,
+                ),
+            )
+            if run_id is not None:
+                connection.execute(
+                    "INSERT OR IGNORE INTO collector_health_processed_runs "
+                    "(bank, product_type, run_id) VALUES (?, ?, ?)",
+                    (bank, product.value, run_id),
+                )
+            row = connection.execute(
+                "SELECT * FROM collector_health WHERE bank = ? AND product_type = ?",
+                (bank, product.value),
+            ).fetchone()
+        return _collector_health_from_row(row)
+
+    def write_scenario_run(
+        self,
+        run_id: str,
+        product_type: ProductType | str,
+        term_months: int,
+        scenarios: list[dict],
+        generated_at: Optional[datetime] = None,
+    ) -> None:
+        """Persist one triggered scenario comparison for (run_id, term_months).
+
+        ``scenarios`` is whatever JSON-serialisable structure the caller
+        computed (see ``scenario_trigger.ScenarioComparison.as_dicts()``) --
+        this method is deliberately agnostic to that module's dataclasses, so
+        storage does not couple to the scenario-computation layer's types.
+        """
+        generated_at = generated_at or datetime.now(timezone.utc)
+        with self._transaction() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO scenario_runs "
+                "(run_id, product_type, term_months, generated_at, scenarios_json) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    ProductType(product_type).value,
+                    term_months,
+                    _iso(generated_at),
+                    json.dumps(scenarios),
+                ),
+            )
+
+    def get_scenario_runs(
+        self, run_id: str, product_type: ProductType | str = ProductType.HOME_LOAN
+    ) -> list[dict]:
+        """Every triggered scenario comparison for one run, one dict per term."""
+        rows = self._connection.execute(
+            "SELECT term_months, generated_at, scenarios_json FROM scenario_runs "
+            "WHERE run_id = ? AND product_type = ? ORDER BY term_months",
+            (run_id, ProductType(product_type).value),
+        ).fetchall()
+        return [
+            {
+                "term_months": row["term_months"],
+                "generated_at": _parse_iso(row["generated_at"]),
+                "scenarios": json.loads(row["scenarios_json"]),
+            }
+            for row in rows
+        ]
+
+    def get_recent_scenario_runs(
+        self, product_type: ProductType | str = ProductType.HOME_LOAN, limit: int = 20
+    ) -> list[dict]:
+        """Most recent triggered scenario comparisons, newest first."""
+        rows = self._connection.execute(
+            "SELECT run_id, term_months, generated_at, scenarios_json FROM scenario_runs "
+            "WHERE product_type = ? ORDER BY generated_at DESC, id DESC LIMIT ?",
+            (ProductType(product_type).value, limit),
+        ).fetchall()
+        return [
+            {
+                "run_id": row["run_id"],
+                "term_months": row["term_months"],
+                "generated_at": _parse_iso(row["generated_at"]),
+                "scenarios": json.loads(row["scenarios_json"]),
+            }
+            for row in rows
+        ]
+
+    def run_ordered_at_or_after(
+        self,
+        later_run_id: Optional[str],
+        later_timestamp: datetime,
+        earlier_run_id: Optional[str],
+        earlier_timestamp: datetime,
+    ) -> bool:
+        """True when the run named by ``later_run_id`` happened at the same
+        moment as or strictly after ``earlier_run_id``.
+
+        Compares each side's ``collection_runs`` row by ``(started_at,
+        rowid)`` -- the same ordering :meth:`latest_run_id` and the
+        module-level ``_run_ordered_after`` SQL fragment use -- so two runs
+        sharing a ``captured_at_utc`` tie (an explicit backfill/replay
+        timestamp reused across calls is a supported case; see
+        :meth:`record_observations`) are still ordered correctly by which
+        run was actually persisted first, rather than comparing the tied
+        timestamps directly and treating them as simultaneous.
+
+        Falls back to comparing ``later_timestamp``/``earlier_timestamp``
+        directly only when *both* run_ids resolve to no ``collection_run``
+        row (or are ``None``) -- there is nothing to compare against, so an
+        exact tie there is accepted the same as the metadata-backed case.
+        When exactly one side resolves (e.g. a total-failure collection
+        cycle can still run scenario-trigger recovery and call
+        :meth:`write_scenario_run` under a run_id that never earned a
+        ``collection_runs`` row, since nothing was accepted to persist), a
+        tied fallback timestamp is *not* accepted as evidence of ordering:
+        the whole point of the ``collection_runs`` lookup is to disambiguate
+        a tie, so a tie on the one side that couldn't be resolved must not
+        silently count as "at or after" merely because run identity already
+        ruled out the two being the same run.
+        """
+        if later_run_id is not None and later_run_id == earlier_run_id:
+            return True
+        order_keys: dict[str, tuple[str, int]] = {}
+        run_ids = [run_id for run_id in (later_run_id, earlier_run_id) if run_id is not None]
+        if run_ids:
+            placeholders = ", ".join("?" for _ in run_ids)
+            rows = self._connection.execute(
+                f"SELECT run_id, started_at, rowid FROM collection_runs "
+                f"WHERE run_id IN ({placeholders})",
+                run_ids,
+            ).fetchall()
+            order_keys = {row["run_id"]: (row["started_at"], row["rowid"]) for row in rows}
+        later_key = order_keys.get(later_run_id) if later_run_id is not None else None
+        earlier_key = order_keys.get(earlier_run_id) if earlier_run_id is not None else None
+        if later_key is not None and earlier_key is not None:
+            return later_key >= earlier_key
+        if later_key is not None or earlier_key is not None:
+            return later_timestamp > earlier_timestamp
+        return later_timestamp >= earlier_timestamp
+
+    def record_collector_health_alert(
+        self, bank: str, product_type: ProductType | str, at: Optional[datetime] = None
+    ) -> None:
+        """Record that a health escalation/recovery alert was just sent for this bank."""
+        product = ProductType(product_type)
+        at = at or datetime.now(timezone.utc)
+        with self._transaction() as connection:
+            connection.execute(
+                "UPDATE collector_health SET last_alert_sent_at = ? "
+                "WHERE bank = ? AND product_type = ?",
+                (_iso(at), bank, product.value),
+            )
+
+    def record_collector_health_alert_channel(
+        self,
+        bank: str,
+        product_type: ProductType | str,
+        channel: str,
+        at: Optional[datetime] = None,
+    ) -> None:
+        """Record that a health escalation alert was confirmed delivered to
+        ``channel`` for this bank -- the per-channel companion to
+        :meth:`record_collector_health_alert`'s bank-level column, so a
+        later recovery can be limited to just the channels that actually got
+        this streak's incident. See :meth:`get_collector_health_alert_channels`.
+        """
+        product = ProductType(product_type)
+        at = at or datetime.now(timezone.utc)
+        with self._transaction() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO collector_health_alert_channels "
+                "(bank, product_type, channel, sent_at) VALUES (?, ?, ?, ?)",
+                (bank, product.value, channel, _iso(at)),
+            )
+
+    def get_collector_health_alert_channels(
+        self, bank: str, product_type: ProductType | str
+    ) -> dict[str, datetime]:
+        """Channel -> when a health escalation alert was last confirmed
+        delivered to it for this bank, across all history.
+
+        Not scoped to the current failure streak -- a caller deciding which
+        channels to send a recovery to must filter these against the streak
+        boundary itself (see
+        ``orchestration._channels_delivered_during_current_streak``), the
+        same way :meth:`record_collector_health_alert`'s bank-level
+        ``last_alert_sent_at`` is never trusted on its own either.
+        """
+        product = ProductType(product_type)
+        rows = self._connection.execute(
+            "SELECT channel, sent_at FROM collector_health_alert_channels "
+            "WHERE bank = ? AND product_type = ?",
+            (bank, product.value),
+        ).fetchall()
+        return {row["channel"]: _parse_iso(row["sent_at"]) for row in rows}
+
     # ----------------------------------------------------------------- reads
+
+    def get_run_record(self, run_id: str) -> Optional[RunRecord]:
+        row = self._connection.execute(
+            "SELECT * FROM operational_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        return _run_record_from_row(row) if row is not None else None
+
+    def get_latest_run_record(
+        self, product_type: ProductType | str = ProductType.HOME_LOAN
+    ) -> Optional[RunRecord]:
+        row = self._connection.execute(
+            "SELECT * FROM operational_runs WHERE product_type = ? "
+            "ORDER BY started_at DESC, rowid DESC LIMIT 1",
+            (ProductType(product_type).value,),
+        ).fetchone()
+        return _run_record_from_row(row) if row is not None else None
+
+    def get_recent_run_records(
+        self, product_type: ProductType | str = ProductType.HOME_LOAN, limit: int = 10
+    ) -> list[RunRecord]:
+        rows = self._connection.execute(
+            "SELECT * FROM operational_runs WHERE product_type = ? "
+            "ORDER BY started_at DESC, rowid DESC LIMIT ?",
+            (ProductType(product_type).value, limit),
+        ).fetchall()
+        return [_run_record_from_row(row) for row in rows]
+
+    def get_collector_health(
+        self, product_type: ProductType | str = ProductType.HOME_LOAN
+    ) -> list[CollectorHealth]:
+        rows = self._connection.execute(
+            "SELECT * FROM collector_health WHERE product_type = ? ORDER BY bank",
+            (ProductType(product_type).value,),
+        ).fetchall()
+        return [_collector_health_from_row(row) for row in rows]
 
     def latest_run_id(
         self, product_type: Optional[ProductType | str] = None
@@ -2364,6 +3084,95 @@ class ObservationStore:
             (_product_value(product_type),),
         ).fetchall()
         return [row["term_months"] for row in rows]
+
+    def check_integrity(self, thresholds: Optional[ValidationThresholds] = None) -> IntegrityReport:
+        """Lightweight, read-only database health check for the ``health`` CLI command.
+
+        Deliberately narrow -- this is an operational smoke check, not a
+        replacement for ``PRAGMA integrity_check`` (which it also runs) or a
+        full re-validation pass. ``no_duplicate_current_keys`` checks
+        :meth:`get_current_observations`'s own result rather than the raw
+        ``observations`` table: several rows legitimately share one
+        ``observation_key`` across history (one per distinct advertised
+        state), so the invariant that matters is "at most one *current* row
+        per key", which only that method's own current-state logic can
+        answer correctly.
+        """
+        thresholds = thresholds or ValidationThresholds()
+        issues: list[str] = []
+        checks: dict[str, bool] = {}
+
+        pragma_row = self._connection.execute("PRAGMA integrity_check").fetchone()
+        schema_ok = pragma_row is not None and pragma_row[0] == "ok"
+        checks["schema_accessible"] = schema_ok
+        if not schema_ok:
+            issues.append(f"PRAGMA integrity_check: {pragma_row[0] if pragma_row else 'no result'}")
+
+        # Both products, not get_current_observations()'s own default
+        # (HOME_LOAN only): a malformed stored row (e.g. an unparseable
+        # payment-frequency field) that only exists on the term-deposit side
+        # would otherwise never surface here, and this command could exit
+        # successfully while the deposit snapshot is actually unusable.
+        current: list[CompetitorRateRecord] = []
+        readable = True
+        unreadable_errors: list[str] = []
+        for product in (ProductType.HOME_LOAN, ProductType.TERM_DEPOSIT):
+            try:
+                current.extend(self.get_current_observations(product))
+            except Exception as exc:  # noqa: BLE001 - reported, not raised
+                readable = False
+                unreadable_errors.append(f"{product.value}: {exc}")
+        checks["latest_observations_readable"] = readable
+        if unreadable_errors:
+            issues.append("latest observations unreadable: " + "; ".join(unreadable_errors))
+
+        keys = [(record.observation_key(), record.product_type) for record in current]
+        checks["no_duplicate_current_keys"] = len(keys) == len(set(keys))
+        if not checks["no_duplicate_current_keys"]:
+            issues.append("more than one current row shares the same observation_key")
+
+        # Queried per product_type, each against its own bounds -- collapsing
+        # loan and deposit thresholds into their widest union (as a single
+        # combined query would) lets a corrupted rate on one product hide
+        # behind the other's wider band: with the defaults, a 0.1% home-loan
+        # rate would pass because 0% is a valid deposit minimum, even though
+        # ordinary ingestion validation (which selects bounds by
+        # product_type) would reject it outright.
+        product_bounds = {
+            ProductType.HOME_LOAN: (
+                thresholds.min_mortgage_rate_pct,
+                thresholds.max_mortgage_rate_pct,
+            ),
+            ProductType.TERM_DEPOSIT: (
+                thresholds.min_deposit_rate_pct,
+                thresholds.max_deposit_rate_pct,
+            ),
+        }
+        bad_rate_count = 0
+        for product, (min_rate, max_rate) in product_bounds.items():
+            bad_rate_count += self._connection.execute(
+                "SELECT COUNT(*) FROM observations "
+                "WHERE product_type = ? AND (rate_pct < ? OR rate_pct > ?)",
+                (product.value, min_rate, max_rate),
+            ).fetchone()[0]
+        checks["rates_within_plausible_bounds"] = bad_rate_count == 0
+        if bad_rate_count:
+            issues.append(f"{bad_rate_count} stored observation(s) fall outside plausible rate bounds")
+
+        broken_timestamps = 0
+        for row in self._connection.execute(
+            "SELECT first_observed_at, last_seen_at FROM observations"
+        ):
+            for value in row:
+                try:
+                    _parse_iso(value)
+                except (ValueError, TypeError):
+                    broken_timestamps += 1
+        checks["timestamps_parse"] = broken_timestamps == 0
+        if broken_timestamps:
+            issues.append(f"{broken_timestamps} stored timestamp(s) failed to parse")
+
+        return IntegrityReport(ok=all(checks.values()), checks=checks, issues=tuple(issues))
 
 
 def _product_value(product_type: ProductType | str) -> str:

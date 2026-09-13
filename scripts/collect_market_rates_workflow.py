@@ -8,10 +8,14 @@ needs and an interactive CLI session does not:
 * structured JSON logging, reusing ``observability.logging``
 * exit codes a scheduler can alert on (see EXIT_* below)
 * a machine-readable summary written to disk for the next job in a pipeline
-* alert delivery: detected rate moves are pushed to a webhook when
-  ``PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL`` is set (Slack/Teams/Discord-
-  compatible; see ``pricing_intelligence.alerts.WebhookAlertSink``). Unset by
-  default, and a broken webhook never fails the run.
+* alert delivery: detected rate moves are pushed to a webhook and/or Telegram
+  when configured (see ``pricing_intelligence.alerts``). Unset by default,
+  and a broken channel never fails the run.
+* collector health tracking and escalation, and a persisted
+  ``RunRecord`` -- both via ``pricing_intelligence.orchestration.
+  run_operational_cycle``, the same function the interactive
+  ``pricing_intelligence run`` CLI command uses, so scheduled and manual
+  runs classify and alert identically.
 
 Collection history cannot be backfilled -- a day not collected is gone -- so
 this is written to fail loudly rather than exit quietly on a partial run.
@@ -25,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import errno
 import json
 import logging
 from pathlib import Path
@@ -35,17 +38,33 @@ from typing import Optional
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.observability.logging import configure_json_logging, log_event
-from balance_pricing_engine.pricing_intelligence.alerts import (
-    build_webhook_sink_from_env,
-    dispatch_alerts_safely,
-    format_alerts,
+from balance_pricing_engine.pricing_intelligence.config import (
+    PricingIntelligenceConfig,
+    resolve_database_path_from_env,
 )
-from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
-from balance_pricing_engine.pricing_intelligence.service import (
-    CollectionOutcome,
-    PricingIntelligenceService,
-    _resolve_rate_category,
+from balance_pricing_engine.pricing_intelligence.locking import (
+    AlreadyRunningError,
+    SingleInstanceLock as _SingleInstanceLock,
 )
+# Several of these (EXIT_OK, the three underscored helpers, exit_code_for)
+# are not called directly in this module any more -- they are re-imported
+# purely so this module's own namespace still carries them, for any test or
+# tool written against the pre-relocation module (see orchestration.py's
+# docstring for why they moved).
+from balance_pricing_engine.pricing_intelligence.orchestration import (
+    EXIT_ALREADY_RUNNING,
+    EXIT_OK,  # noqa: F401
+    EXIT_PARTIAL_FAILURE,
+    EXIT_TOTAL_FAILURE,
+    _banks_with_zero_comparable_rates,  # noqa: F401
+    _comparable_rate_count,  # noqa: F401
+    _validation_only_failures,  # noqa: F401
+    build_summary,
+    default_lock_file_path,
+    exit_code_for,  # noqa: F401
+    run_operational_cycle,
+)
+from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
 from balance_pricing_engine.pricing_intelligence.store import (
     ChronologicalOrderError,
     ObservationStore,
@@ -56,378 +75,6 @@ from balance_pricing_engine.pricing_intelligence.store import (
 # outside that hierarchy and silently drops INFO events while WARNING/ERROR
 # fall through to logging's unformatted last-resort handler instead of JSON.
 logger = logging.getLogger("balance_pricing_engine.pricing_intelligence.scheduled_collection")
-
-#: Every bank collected and stored.
-EXIT_OK = 0
-#: No bank could be collected -- the run produced nothing.
-EXIT_TOTAL_FAILURE = 1
-#: Some banks collected, at least one failed. The market view is incomplete, so
-#: a scheduler should surface this rather than treat it as success.
-EXIT_PARTIAL_FAILURE = 2
-#: Another collection is already running; this invocation did nothing.
-EXIT_ALREADY_RUNNING = 3
-
-
-class _SingleInstanceLock:
-    """Advisory file lock ensuring one collection runs at a time.
-
-    A slow browser-rendered collection can overrun its schedule. Without this,
-    the next invocation would start against the same store and both would write
-    a run, producing duplicate observations and spurious changes.
-    """
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self._handle = None
-
-    def __enter__(self) -> "_SingleInstanceLock":
-        import fcntl
-
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._handle = self.path.open("w")
-        try:
-            fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            self._handle.close()
-            self._handle = None
-            if exc.errno in (errno.EACCES, errno.EAGAIN):
-                raise AlreadyRunningError(f"another collection holds {self.path}") from exc
-            raise
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        if self._handle is not None:
-            import fcntl
-
-            fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
-            self._handle.close()
-
-
-class AlreadyRunningError(RuntimeError):
-    """A collection is already in progress."""
-
-
-def _banks_with_zero_accepted_rates(outcome: CollectionOutcome) -> set[str]:
-    accepted_banks = {record.bank for record in outcome.validation.accepted}
-    return {bank for bank in outcome.succeeded_banks if bank not in accepted_banks}
-
-
-def _comparable_rate_count(
-    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
-) -> int:
-    """Accepted rows in the product's default scheduled comparison category.
-
-    Not "every accepted row that isn't ``non_comparable``": a term-deposit
-    collection can validation-accept a real, non-``non_comparable`` category
-    such as ``pie_term_deposit`` while missing every ordinary
-    ``term_deposit`` row entirely (e.g. a parser regression that only
-    matches the PIE table) -- those PIE rows are genuine data, but the
-    service's default deposit snapshot filters to ``rate_category=
-    "term_deposit"`` specifically (see :func:`_resolve_rate_category`), so
-    they can never enter it. The same applies to home loans: a bank
-    contributing only its ``standard`` tier while missing ``special``
-    leaves the default comparison view empty for that bank even though
-    ``rate_count`` is positive. Resolved via the same
-    :func:`_resolve_rate_category` the market snapshot itself uses, so this
-    cannot drift from what "usable" actually means for a given product.
-    """
-    target_category = _resolve_rate_category(product_type, None)
-    return sum(
-        1 for record in outcome.validation.accepted if record.rate_category == target_category
-    )
-
-
-def _banks_with_zero_comparable_rates(
-    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
-) -> set[str]:
-    """Banks that fetched and had rows accepted, but none in the product's
-    default scheduled comparison category (see :func:`_comparable_rate_count`).
-
-    One step further down the pipeline than :func:`_banks_with_zero_accepted_rates`:
-    a bank whose only accepted rows fall outside the default comparison
-    category contributed nothing the scheduled market view can use, the
-    same as a bank with zero accepted rows at all -- just not yet caught,
-    since validation genuinely accepted the rows. Banks with zero accepted
-    rows at all are excluded here; :func:`_validation_only_failures`
-    already reports those.
-    """
-    zero_accepted = _banks_with_zero_accepted_rates(outcome)
-    target_category = _resolve_rate_category(product_type, None)
-    comparable_banks = {
-        record.bank
-        for record in outcome.validation.accepted
-        if record.rate_category == target_category
-    }
-    return {
-        bank
-        for bank in outcome.succeeded_banks
-        if bank not in zero_accepted and bank not in comparable_banks
-    }
-
-
-def _validation_only_failures(outcome: CollectionOutcome) -> list[dict]:
-    """Banks that fetched successfully but contributed zero accepted rows.
-
-    A bank can fetch and parse cleanly (so it never reaches report.failed)
-    while every one of its rows still gets rejected by validation -- e.g. a
-    bank-scoped parser regression. Without this, such a bank stays listed as
-    succeeded everywhere a scheduler or summary consumer looks, even though
-    nothing usable was actually stored for it.
-    """
-    failures = []
-    for bank in sorted(_banks_with_zero_accepted_rates(outcome)):
-        codes = sorted(
-            {
-                issue.code
-                for issue in outcome.validation.issues
-                if issue.bank == bank and issue.severity == "error"
-            }
-        )
-        failures.append(
-            {
-                "bank": bank,
-                "error_type": "validation_rejected",
-                "error": (
-                    "every row was rejected by validation ("
-                    f"{', '.join(codes) if codes else 'no accepted rows'})"
-                ),
-            }
-        )
-    return failures
-
-
-def _zero_comparable_rate_failures(
-    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
-) -> list[dict]:
-    """Banks with no accepted row in the product's default comparison category.
-
-    See :func:`_banks_with_zero_comparable_rates` -- a bank in this state
-    reads as succeeded everywhere else (it fetched, and validation genuinely
-    accepted its rows), but contributed nothing a market snapshot or pricing
-    assumption can use.
-    """
-    target_category = _resolve_rate_category(product_type, None)
-    return [
-        {
-            "bank": bank,
-            "error_type": "no_comparable_rates",
-            "error": f"no accepted row in the default comparison category ({target_category})",
-        }
-        for bank in sorted(_banks_with_zero_comparable_rates(outcome, product_type))
-    ]
-
-
-def _low_coverage_failures(outcome: CollectionOutcome) -> list[dict]:
-    """Banks that matched too few of their previously known rate lines.
-
-    A page-layout regression can leave one row parseable while silently
-    dropping the rest of a bank's table: the fetch succeeds, at least one row
-    is accepted, and nothing is rejected by validation either (the missing
-    rows were never parsed at all, so there is nothing to reject) -- so
-    neither report.failed nor validation.rejected catches it. The service
-    already computes this via its withdrawal-suppression coverage check
-    (CollectionOutcome.low_coverage_banks); this surfaces the same signal
-    here. Banks with zero accepted rows are reported by
-    _validation_only_failures() instead, so they are excluded to avoid a
-    duplicate entry.
-    """
-    zero_accepted = _banks_with_zero_accepted_rates(outcome)
-    return [
-        {
-            "bank": bank,
-            "error_type": "low_coverage",
-            "error": (
-                "matched fewer of this bank's known rate lines than the "
-                "configured coverage threshold"
-            ),
-        }
-        for bank in outcome.low_coverage_banks
-        if bank not in zero_accepted
-    ]
-
-
-def _partial_rejection_failures(outcome: CollectionOutcome, already_flagged: set[str]) -> list[dict]:
-    """Banks with at least one rejected row, not already flagged more specifically.
-
-    exit_code_for() already treats any rejected observation as a partial
-    failure (a term-specific parser regression can corrupt a single row
-    while the bank's other rows still collect cleanly), but a bank in that
-    state has some accepted rows and adequate coverage, so neither
-    _validation_only_failures() nor _low_coverage_failures() catches it --
-    the summary would report rates_rejected > 0 while listing the affected
-    bank as succeeded with no bank-specific entry to point at.
-    """
-    rejected_banks = {record.bank for record in outcome.validation.rejected}
-    failures = []
-    for bank in sorted(rejected_banks - already_flagged):
-        codes = sorted(
-            {
-                issue.code
-                for issue in outcome.validation.issues
-                if issue.bank == bank and issue.severity == "error"
-            }
-        )
-        rejected_count = sum(1 for record in outcome.validation.rejected if record.bank == bank)
-        failures.append(
-            {
-                "bank": bank,
-                "error_type": "validation_rejected",
-                "error": (
-                    f"{rejected_count} row(s) rejected by validation ("
-                    f"{', '.join(codes) if codes else 'unknown reason'})"
-                ),
-            }
-        )
-    return failures
-
-
-def _hard_skipped_row_failures(outcome: CollectionOutcome, already_flagged: set[str]) -> list[dict]:
-    """Banks with at least one row that failed record construction outright,
-    not already flagged more specifically.
-
-    A row that fails ``CompetitorRateRecord`` construction (see
-    ``competitor_rates.extractors.parse_html_rates``'s ``skipped_row_keys``)
-    never reaches ``validate_observations()`` at all, so it shows up in
-    neither ``report.failed`` nor ``validation.rejected`` -- previously
-    ``exit_code_for()`` could return success while a market-derived snapshot
-    and pricing assumption were built from an incomplete bank range. On a
-    bootstrap run there is not even a stored predecessor for the skipped row
-    to fall back on, so this is the only place the gap is visible at all.
-    """
-    failures = []
-    for result in outcome.report.results:
-        if result.bank in already_flagged or not result.skipped_row_keys:
-            continue
-        failures.append(
-            {
-                "bank": result.bank,
-                "error_type": "row_skipped",
-                "error": (
-                    f"{len(result.skipped_row_keys)} row(s) failed to parse into a "
-                    "record and were skipped"
-                ),
-            }
-        )
-    return failures
-
-
-def _bank_scoped_failures(
-    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
-) -> list[dict]:
-    """Every bank-scoped failure not already visible in report.failed.
-
-    Checked in order of specificity so a bank is reported once, under its
-    most informative category: zero accepted rows, then zero comparable
-    rows, then coverage below threshold, then any remaining bank with at
-    least one rejected row, then any remaining bank with at least one
-    hard-skipped row.
-    """
-    zero_accepted_failures = _validation_only_failures(outcome)
-    zero_comparable_failures = _zero_comparable_rate_failures(outcome, product_type)
-    low_coverage_failures = _low_coverage_failures(outcome)
-    already_flagged = (
-        {failure["bank"] for failure in zero_accepted_failures}
-        | {failure["bank"] for failure in zero_comparable_failures}
-        | {failure["bank"] for failure in low_coverage_failures}
-    )
-    partial_rejection_failures = _partial_rejection_failures(outcome, already_flagged)
-    already_flagged |= {failure["bank"] for failure in partial_rejection_failures}
-    hard_skipped_row_failures = _hard_skipped_row_failures(outcome, already_flagged)
-    return (
-        zero_accepted_failures
-        + zero_comparable_failures
-        + low_coverage_failures
-        + partial_rejection_failures
-        + hard_skipped_row_failures
-    )
-
-
-def build_summary(
-    outcome: CollectionOutcome,
-    product_type: ProductType | str = ProductType.HOME_LOAN,
-) -> dict:
-    """Machine-readable summary of one collection run.
-
-    ``product_type`` is embedded so a summary file can be told apart from
-    the other product's when both are scheduled -- see ``--product`` and
-    ``run_collection()``. Defaults to ``HOME_LOAN`` to match this module's
-    other single-product defaults; every existing caller collecting the
-    default product keeps working unchanged.
-    """
-    bank_scoped_failures = _bank_scoped_failures(outcome, product_type)
-    bank_scoped_failed_banks = {failure["bank"] for failure in bank_scoped_failures}
-    return {
-        "product_type": ProductType(product_type).value,
-        "collected_at_utc": outcome.report.captured_at_utc.isoformat(),
-        "banks_succeeded": [
-            bank for bank in outcome.succeeded_banks if bank not in bank_scoped_failed_banks
-        ],
-        "banks_failed": list(outcome.failed_banks) + sorted(bank_scoped_failed_banks),
-        "rates_accepted": outcome.rate_count,
-        "rates_rejected": len(outcome.validation.rejected),
-        "rows_skipped": len(outcome.report.skipped_row_keys),
-        "validation_errors": len(outcome.validation.errors),
-        "validation_warnings": len(outcome.validation.warnings),
-        "new_states_stored": (
-            outcome.write_result.inserted if outcome.write_result else 0
-        ),
-        "unchanged_states": (
-            outcome.write_result.unchanged if outcome.write_result else 0
-        ),
-        "changes_detected": len(outcome.changes),
-        "suspicious_changes": sum(1 for change in outcome.changes if change.suspicious),
-        "changes": [change.describe() for change in outcome.changes],
-        "failures": [
-            {"bank": result.bank, "error_type": result.error_type, "error": result.error}
-            for result in outcome.report.failed
-        ]
-        + bank_scoped_failures,
-    }
-
-
-def exit_code_for(
-    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
-) -> int:
-    # A run where every bank failed to fetch is a failure, and so is one where
-    # pages parsed but validation rejected every record -- either way nothing
-    # usable was stored, and a scheduler must not treat that as success. Zero
-    # rows in the product's default *comparison category* is the same failure
-    # one step further down the pipeline: a run whose only accepted rows fall
-    # outside that category (non_comparable audit-only rows, or a real but
-    # off-default category like pie_term_deposit) passes rate_count > 0 while
-    # the market snapshot it can actually build is empty -- see
-    # _comparable_rate_count()'s docstring.
-    if (
-        not outcome.report.any_success
-        or outcome.rate_count == 0
-        or _comparable_rate_count(outcome, product_type) == 0
-    ):
-        return EXIT_TOTAL_FAILURE
-    # Any rejected observation -- not just a bank where every row was
-    # rejected -- means the collection is incomplete: a term-specific parser
-    # regression can silently drop one product from an otherwise-healthy
-    # bank. A low-coverage bank catches the case validation can't: rows that
-    # were never parsed at all (not rejected -- simply missing) because a
-    # page-layout regression silently dropped most of a bank's table. A bank
-    # whose accepted rows fall entirely outside the default comparison
-    # category is the same gap as a zero-accepted bank, just caught one step
-    # later in the pipeline (see _banks_with_zero_comparable_rates()) --
-    # most relevant on a bootstrap run, where there is no prior baseline for
-    # low_coverage_banks to compare against at all. A hard-skipped row
-    # (failed CompetitorRateRecord construction outright, before
-    # validate_observations() ever saw it) is the same kind of gap as a
-    # rejected observation, just one step earlier in the pipeline, and must
-    # not let a run with an incomplete bank range report success. Warnings
-    # (e.g. a suspicious but plausible movement) stay non-fatal.
-    if (
-        outcome.report.failed
-        or outcome.validation.rejected
-        or outcome.low_coverage_banks
-        or outcome.report.skipped_row_keys
-        or _banks_with_zero_comparable_rates(outcome, product_type)
-    ):
-        return EXIT_PARTIAL_FAILURE
-    return EXIT_OK
 
 
 def _clock_regression_failure(
@@ -489,6 +136,7 @@ def run_collection(
     summary_path: Optional[Path] = None,
     product_type: ProductType | str = ProductType.HOME_LOAN,
     webhook_text_field: str = "text",
+    pricing_config: Optional[object] = None,
 ) -> tuple[int, dict]:
     """Run one collection and return ``(exit_code, summary)``.
 
@@ -499,18 +147,72 @@ def run_collection(
     ``--summary-file``, so it does not collide with the home-loan run) -- see
     ``docs/pricing_intelligence.md``.
 
-    Detected rate moves are pushed to a webhook when
-    ``PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL`` is set in the environment; no
-    webhook configured is the default and changes anything.
+    Detected rate moves are pushed to a webhook and/or Telegram when
+    configured (see ``pricing_intelligence.alerts``); ``webhook_text_field``
+    ("text" for Slack/Teams, "content" for Discord) only affects the webhook
+    payload's message field.
+
+    ``pricing_config`` (the full ``EngineConfig`` loaded from ``--config``,
+    ``None`` when this ran on ``--database`` alone) enables auto-triggered
+    pricing scenarios: every tracked/comparable term with a genuine rate move
+    this run gets a scenario comparison built via
+    ``pricing_scenario_trigger.run_triggered_scenarios`` -- imported here,
+    not inside ``pricing_intelligence``, which is architecturally forbidden
+    from depending on the optimiser (see
+    ``tests/unit/test_pricing_intelligence_boundaries.py``). ``None`` (the
+    default, matching a ``--database``-only invocation with no economic
+    assumptions loaded) simply skips scenario-triggering.
     """
     product_type = ProductType(product_type)
+    scenario_trigger_fn = None
+    if pricing_config is not None:
+        from balance_pricing_engine.pricing_intelligence.orchestration import ScenarioResult
+        from balance_pricing_engine.pricing_scenario_trigger import (
+            format_scenario_block,
+            run_triggered_scenarios,
+        )
+
+        def scenario_trigger_fn(terms, snapshot):
+            # Isolated per term: orchestration.run_operational_cycle() already
+            # catches a failure from this whole callback so one can't abort
+            # collection (see its own docstring), but that all-or-nothing
+            # catch still discards every other term's already-computed
+            # comparison if only one term raises -- e.g. a single term has no
+            # external competitor peer left once our_bank is excluded, a
+            # documented reachable case, not a bug in the others. A per-term
+            # try/except here means the unaffected terms are still persisted
+            # and attached to their own alerts.
+            results = {}
+            for term in terms:
+                try:
+                    comparison = run_triggered_scenarios(
+                        pricing_config, term_months=term, snapshot=snapshot
+                    )
+                except Exception:  # noqa: BLE001 - decision-support only, one term must not cost the rest
+                    logger.warning(
+                        "scenario comparison failed for term=%s; continuing with the "
+                        "remaining triggered terms",
+                        term,
+                        exc_info=True,
+                    )
+                    continue
+                results[term] = ScenarioResult(
+                    data=comparison.as_dicts(), alert_block=format_scenario_block(comparison)
+                )
+            return results
+
     with PricingIntelligenceService(
         config=config,
         store=ObservationStore(config.database_path),
         render_javascript=render_javascript,
     ) as service:
         try:
-            outcome = service.collect(product_type=product_type)
+            result = run_operational_cycle(
+                service,
+                product_type=product_type,
+                webhook_text_field=webhook_text_field,
+                scenario_trigger_fn=scenario_trigger_fn,
+            )
         except ChronologicalOrderError as exc:
             # service.collect() stamps its own datetime.now, so this fires on
             # an ordinary scheduled run whenever the wall clock steps
@@ -519,24 +221,11 @@ def run_collection(
             # worker still writes a summary for the canary to upload and
             # returns a classified code instead of an unhandled traceback.
             return _clock_regression_failure(exc, product_type, summary_path)
-
-        alerts_sent = 0
-        webhook_sink = build_webhook_sink_from_env(text_field=webhook_text_field)
-        rate_moves = [change for change in outcome.changes if change.is_rate_move]
-        if webhook_sink is not None and rate_moves:
-            # Fetched inside the `with` block: the service (and its store
-            # connection) is unusable once this scope exits.
-            snapshot = service.get_market_snapshot(product_type=product_type)
-            previous_snapshot = service.get_previous_market_snapshot(
-                product_type=product_type
-            )
-            alerts_sent = dispatch_alerts_safely(
-                format_alerts(rate_moves, snapshot, previous_snapshot), webhook_sink
-            )
+        outcome = result.outcome
 
     summary = build_summary(outcome, product_type)
-    summary["alerts_sent"] = alerts_sent
-    code = exit_code_for(outcome, product_type)
+    summary["alerts_sent"] = result.alerts_sent
+    code = result.code
 
     if code == EXIT_TOTAL_FAILURE:
         completion_level = logging.ERROR
@@ -617,8 +306,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument(
         "--lock-file",
-        default="data/processed/pricing_intelligence/collection.lock",
-        help="Single-instance lock path",
+        default=None,
+        help=(
+            "Single-instance lock path (default: derived from --product, "
+            "matching the checked-in cron/launchd artifacts' per-product "
+            "lock files -- see deploy/scheduling/ and "
+            "docs/pricing_intelligence.md)"
+        ),
     )
     parser.add_argument(
         "--summary-file", default=None, help="Write a JSON run summary here"
@@ -638,7 +332,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     configure_json_logging()
 
-    config = PricingIntelligenceConfig()
+    config = resolve_database_path_from_env(PricingIntelligenceConfig())
+    # Retained (not just its .pricing_intelligence block) so scheduled runs
+    # can auto-trigger pricing scenarios -- see run_collection()'s
+    # pricing_config docstring.
+    engine_config = None
     if args.config:
         # configs/base.yaml's pricing_intelligence block would otherwise be
         # silently ignored -- scheduled production runs could then contact
@@ -647,18 +345,28 @@ def main(argv: Optional[list[str]] = None) -> int:
         # in the pricing_intelligence CLI.
         engine_config = load_config(args.config)
         if engine_config.pricing_intelligence is not None:
-            config = engine_config.pricing_intelligence
+            yaml_config = engine_config.pricing_intelligence
+            if "database_path" in yaml_config.model_fields_set:
+                config = yaml_config
+            else:
+                # The YAML block didn't set database_path itself, so
+                # Pydantic filled in the hard-coded default -- adopting
+                # yaml_config wholesale here would silently discard the
+                # PRICING_INTELLIGENCE_DB_PATH override resolved above.
+                config = yaml_config.model_copy(update={"database_path": config.database_path})
     if args.database:
         config = config.model_copy(update={"database_path": args.database})
 
+    lock_file = args.lock_file or default_lock_file_path(args.product, config.database_path)
     try:
-        with _SingleInstanceLock(Path(args.lock_file)):
+        with _SingleInstanceLock(Path(lock_file)):
             code, summary = run_collection(
                 config,
                 render_javascript=args.render_javascript,
                 summary_path=Path(args.summary_file) if args.summary_file else None,
                 product_type=args.product,
                 webhook_text_field=args.webhook_text_field,
+                pricing_config=engine_config,
             )
     except AlreadyRunningError as exc:
         log_event(logger, "collection skipped", level=logging.WARNING, reason=str(exc))

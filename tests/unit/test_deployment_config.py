@@ -2,6 +2,7 @@
 
 import plistlib
 import re
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -156,6 +157,21 @@ def test_scheduling_recipes_pass_config_flag():
     assert "--config" in crontab_example
 
 
+def test_crontab_example_pins_schedule_evaluation_with_cron_tz():
+    """A plain TZ= line in a crontab only sets the environment variable seen
+    by the launched command -- it has no effect on what timezone cron itself
+    evaluates "30 7" in (see crontab(5): CRON_TZ is "the time zone specific
+    for the cron table"). Only CRON_TZ actually pins the schedule to NZ time
+    on vixie-cron 4.0+/cronie/macOS's built-in cron; a bare TZ= here would
+    silently mean the host's own system timezone, not Pacific/Auckland."""
+    crontab_example = (
+        REPO_ROOT / "deploy" / "scheduling" / "crontab.example"
+    ).read_text(encoding="utf-8")
+
+    assert re.search(r"^CRON_TZ=Pacific/Auckland$", crontab_example, re.MULTILINE)
+    assert not re.search(r"^TZ=Pacific/Auckland$", crontab_example, re.MULTILINE)
+
+
 def test_collector_canary_cron_targets_nz_weekdays():
     """GitHub evaluates schedule cron in UTC only, with no IANA timezone
     support. NZST (UTC+12) puts NZ local Monday 07:30 at UTC Sunday 19:30 --
@@ -189,3 +205,25 @@ def test_deployment_doc_covers_required_topics():
         "Production boundaries",
     ]:
         assert heading in deployment_doc
+
+
+def test_env_example_leaves_the_api_key_var_genuinely_unset_when_sourced():
+    """api/auth.py::require_api_key() treats PRICING_ENGINE_API_KEYS "set but
+    empty" as a misconfigured secret and fails closed with a 500 on every
+    protected request -- distinct from "unset" (auth disabled). Following
+    .env.example's own recommended workflow (`cp .env.example .env` then
+    `set -a; source .env; set +a`) must not export this var as an empty
+    string just because an operator left the optional line blank, or every
+    protected API request breaks the moment auth is not being configured."""
+    env_example = REPO_ROOT / ".env.example"
+
+    result = subprocess.run(
+        ["bash", "-c", f"set -a; source {env_example}; set +a; echo \"${{PRICING_ENGINE_API_KEYS-UNSET}}\""],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout.strip() == "UNSET", (
+        "sourcing .env.example must not export PRICING_ENGINE_API_KEYS as an empty string"
+    )

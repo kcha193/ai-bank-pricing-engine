@@ -8,7 +8,11 @@ import pytest
 
 from balance_pricing_engine.pricing_intelligence.alerts import (
     ALERT_WEBHOOK_URL_SECRET_NAME,
+    TELEGRAM_BOT_TOKEN_SECRET_NAME,
+    TELEGRAM_CHAT_ID_SECRET_NAME,
+    TelegramAlertSink,
     WebhookAlertSink,
+    build_telegram_sink_from_env,
     build_webhook_sink_from_env,
     dispatch_alerts_safely,
     format_alerts,
@@ -442,6 +446,120 @@ def test_default_poster_caps_an_excessive_retry_after(monkeypatch):
     poster("https://hooks.example/x", b'{"text": "hi"}')
 
     assert slept == [alerts_module.MAX_RETRY_AFTER_SECONDS]
+
+
+def test_telegram_sink_posts_chat_id_and_rendered_text(make_record):
+    change = build_change(make_record)
+    alert = format_alerts([change])[0]
+    captured = []
+
+    def fake_poster(url, payload_bytes):
+        import json
+
+        captured.append((url, json.loads(payload_bytes)))
+
+    sink = TelegramAlertSink("123:abc", "-100999", poster=fake_poster)
+    sink.send(alert)
+
+    assert len(captured) == 1
+    url, payload = captured[0]
+    assert url == "https://api.telegram.org/bot123:abc/sendMessage"
+    assert payload == {"chat_id": "-100999", "text": alert.render()}
+
+
+def test_telegram_send_raises_when_the_poster_fails(make_record):
+    change = build_change(make_record)
+    alert = format_alerts([change])[0]
+
+    def failing_poster(url, payload_bytes):
+        raise ConnectionError("DNS resolution failed")
+
+    sink = TelegramAlertSink("123:abc", "-100999", poster=failing_poster)
+
+    with pytest.raises(ConnectionError):
+        sink.send(alert)
+
+
+def test_telegram_dispatch_safely_never_raises_when_broken(make_record):
+    change = build_change(make_record)
+    alerts = format_alerts([change])
+
+    def failing_poster(url, payload_bytes):
+        raise ConnectionError("boom")
+
+    sink = TelegramAlertSink("123:abc", "-100999", poster=failing_poster)
+
+    assert dispatch_alerts_safely(alerts, sink) == 0
+
+
+def test_a_falsey_injected_telegram_poster_is_still_used(make_record, monkeypatch):
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    def real_poster_should_not_be_called(*args, **kwargs):
+        raise AssertionError("build_default_poster() must not be used")
+
+    monkeypatch.setattr(
+        alerts_module, "build_default_poster", lambda: real_poster_should_not_be_called
+    )
+
+    class FalseyPoster:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, url, payload_bytes):
+            self.calls.append((url, payload_bytes))
+
+        def __len__(self):
+            return 0
+
+    poster = FalseyPoster()
+    change = build_change(make_record)
+    alert = format_alerts([change])[0]
+
+    sink = TelegramAlertSink("123:abc", "-100999", poster=poster)
+    sink.send(alert)
+
+    assert len(poster.calls) == 1
+
+
+def test_no_telegram_configured_returns_none():
+    assert build_telegram_sink_from_env(StaticSecretsProvider({})) is None
+
+
+def test_telegram_configured_with_only_token_returns_none():
+    secrets = StaticSecretsProvider({TELEGRAM_BOT_TOKEN_SECRET_NAME: "123:abc"})
+    assert build_telegram_sink_from_env(secrets) is None
+
+
+def test_telegram_configured_with_only_chat_id_returns_none():
+    secrets = StaticSecretsProvider({TELEGRAM_CHAT_ID_SECRET_NAME: "-100999"})
+    assert build_telegram_sink_from_env(secrets) is None
+
+
+def test_telegram_fully_configured_builds_a_sink():
+    secrets = StaticSecretsProvider(
+        {TELEGRAM_BOT_TOKEN_SECRET_NAME: "123:abc", TELEGRAM_CHAT_ID_SECRET_NAME: "-100999"}
+    )
+
+    sink = build_telegram_sink_from_env(secrets)
+
+    assert isinstance(sink, TelegramAlertSink)
+    assert sink.bot_token == "123:abc"
+    assert sink.chat_id == "-100999"
+
+
+def test_a_falsey_injected_telegram_secrets_provider_is_still_used(monkeypatch):
+    monkeypatch.setenv(TELEGRAM_BOT_TOKEN_SECRET_NAME, "123:ambient")
+    monkeypatch.setenv(TELEGRAM_CHAT_ID_SECRET_NAME, "-999")
+
+    class EmptyFalseyProvider:
+        def get_secret(self, name):
+            return None
+
+        def __len__(self):
+            return 0
+
+    assert build_telegram_sink_from_env(EmptyFalseyProvider()) is None
 
 
 def test_default_poster_sends_a_real_http_post(monkeypatch):

@@ -131,6 +131,26 @@ def populated_store(tmp_path, fixture_fetcher):
     return str(path)
 
 
+@pytest.fixture
+def outage_store(tmp_path, fixture_fetcher):
+    """A store with zero current observations (every bank failed) but a
+    real RunRecord and collector-health streaks from that failed run."""
+    from balance_pricing_engine.pricing_intelligence.orchestration import run_operational_cycle
+
+    path = tmp_path / "observations.db"
+    config = PricingIntelligenceConfig(
+        database_path=str(path),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    with PricingIntelligenceService(
+        config=config,
+        store=ObservationStore(path),
+        fetcher=fixture_fetcher(failing_banks=["ANZ", "ASB", "BNZ", "Westpac", "Kiwibank"]),
+    ) as service:
+        run_operational_cycle(service, captured_at_utc=DAY_ONE, alert_sinks={})
+    return str(path)
+
+
 def render_dashboard(monkeypatch, database_path):
     fake = FakeStreamlit()
     monkeypatch.setitem(sys.modules, "streamlit", fake)
@@ -190,6 +210,25 @@ def test_section_renders_grid_ranking_and_changes_frames(monkeypatch, populated_
     changes = next(frame for frame in fake.frames if "Move (bps)" in frame.columns)
     assert "Move (bps)" in changes.columns
     assert -20.0 in list(changes["Move (bps)"])
+
+
+def test_operational_sections_still_render_when_the_snapshot_is_empty(monkeypatch, outage_store):
+    """A total collection outage must still surface the failed RunRecord and
+    collector-health streaks -- an early return for an empty snapshot used
+    to skip the Collector health / Recent runs / Pricing scenarios sections
+    entirely, hiding exactly the diagnostic info an operator needs during a
+    bootstrap outage or prolonged collection failure, leaving only the
+    (equally empty-looking) freshness table visible."""
+    fake = render_dashboard(monkeypatch, outage_store)
+
+    subheaders = fake.texts("subheader")
+    assert "Collector health (Mortgage)" in subheaders
+    assert "Recent runs (Mortgage)" in subheaders
+    assert "Pricing scenarios (Mortgage)" in subheaders
+    # Market-only widgets must still be skipped, though -- there is no
+    # market data to show them against.
+    assert "Current mortgage market (advertised specials)" not in subheaders
+    assert not any(header.startswith("Market state:") for header in subheaders)
 
 
 def test_section_charts_rate_history(monkeypatch, populated_store):
@@ -404,3 +443,138 @@ def test_resolve_intelligence_config_falls_back_to_defaults_on_invalid_yaml(
     resolved = fake.module._resolve_intelligence_config("not: valid: engine: config: [")
 
     assert resolved == PricingIntelligenceConfig()
+
+
+def _import_dashboard_module(monkeypatch):
+    """Import the dashboard module without render_dashboard()'s
+    PricingIntelligenceConfig.__init__ patch: that patch injects a test
+    database_path default into *every* PricingIntelligenceConfig()
+    construction (via kwargs.setdefault, before pydantic even sees the
+    call), which makes database_path look explicitly "set" on any config
+    built during the test -- masking exactly the "YAML omits database_path"
+    branch these env-override tests need to exercise."""
+    fake = FakeStreamlit()
+    monkeypatch.setitem(sys.modules, "streamlit", fake)
+    sys.modules.pop("balance_pricing_engine.dashboard.app", None)
+    spec = importlib.util.find_spec("balance_pricing_engine.dashboard.app")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["balance_pricing_engine.dashboard.app"] = module
+    with pytest.raises(DashboardStop):
+        spec.loader.exec_module(module)
+    fake.module = module
+    return fake
+
+
+def test_resolve_intelligence_config_falls_back_to_the_env_override(monkeypatch, tmp_path):
+    """A sidebar YAML that doesn't set database_path itself must fall back to
+    PRICING_INTELLIGENCE_DB_PATH -- the same env override the CLI and
+    scheduled workflow honour (see resolve_database_path_from_env) -- not
+    the package's hard-coded default. Without this, a deployment relying
+    on that env var has the dashboard silently read a different database
+    than the rest of the operational tooling, reporting no market data (or
+    someone else's) despite collection working fine."""
+    fake = _import_dashboard_module(monkeypatch)
+    env_db = tmp_path / "env-configured.db"
+    monkeypatch.setenv("PRICING_INTELLIGENCE_DB_PATH", str(env_db))
+
+    resolved = fake.module._resolve_intelligence_config(
+        _minimal_engine_yaml(selected_banks=["ANZ", "ASB"])
+    )
+
+    assert resolved.database_path == str(env_db)
+    assert resolved.selected_banks == ["ANZ", "ASB"]
+
+
+def test_resolve_intelligence_config_yaml_database_path_wins_over_the_env_override(
+    monkeypatch, tmp_path
+):
+    """An explicit database_path in the sidebar YAML must still win over
+    PRICING_INTELLIGENCE_DB_PATH, matching the CLI's own precedence: an
+    operator's explicit choice always beats the environment."""
+    fake = _import_dashboard_module(monkeypatch)
+    yaml_db = tmp_path / "yaml-configured.db"
+    monkeypatch.setenv("PRICING_INTELLIGENCE_DB_PATH", str(tmp_path / "unused.db"))
+
+    resolved = fake.module._resolve_intelligence_config(
+        _minimal_engine_yaml(database_path=str(yaml_db))
+    )
+
+    assert resolved.database_path == str(yaml_db)
+
+
+# ------------------------------------------------------- operational sections
+
+
+def test_operational_sections_guide_the_user_with_no_runs_recorded(monkeypatch, populated_store):
+    """populated_store only calls service.collect() directly, not
+    run_operational_cycle(), so no RunRecord/collector_health exists yet --
+    the operational sections must guide, not error."""
+    fake = render_dashboard(monkeypatch, populated_store)
+
+    subheaders = fake.texts("subheader")
+    assert "Collector health (Mortgage)" in subheaders
+    assert "Recent runs (Mortgage)" in subheaders
+    assert "Pricing scenarios (Mortgage)" in subheaders
+    assert "Collector health (Term deposit)" in subheaders
+    assert "Recent runs (Term deposit)" in subheaders
+    assert "Pricing scenarios (Term deposit)" in subheaders
+    info_texts = fake.texts("info")
+    assert any("run `pricing_intelligence run`" in text for text in info_texts)
+
+
+@pytest.fixture
+def operationally_run_store(tmp_path, fixture_fetcher):
+    from balance_pricing_engine.pricing_intelligence.orchestration import run_operational_cycle
+
+    path = tmp_path / "observations.db"
+    config = PricingIntelligenceConfig(
+        database_path=str(path), collection=CollectionConfig(inter_request_delay_seconds=0)
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(path), fetcher=fixture_fetcher()
+    ) as service:
+        run_operational_cycle(service, captured_at_utc=DAY_ONE, alert_sinks={})
+    return str(path)
+
+
+def test_operational_sections_render_after_a_run_operational_cycle(
+    monkeypatch, operationally_run_store
+):
+    fake = render_dashboard(monkeypatch, operationally_run_store)
+
+    frames = fake.frames
+    assert len(frames) >= 2  # collector health + recent runs, at minimum
+    health_frame = next(f for f in frames if "Consecutive failures" in f.columns)
+    assert "ANZ" in health_frame.index
+    runs_frame = next(f for f in frames if "Run id" in f.columns)
+    assert list(runs_frame["Status"]) == ["SUCCESS"]
+
+
+def test_term_deposit_collector_activity_appears_in_its_own_operational_section(
+    monkeypatch, populated_store
+):
+    """The operational sections used to query only ProductType.HOME_LOAN --
+    a term-deposit collector's health is real, scheduled data (the workflow
+    script supports `--product term_deposit`) that must be visible in the
+    dashboard too, not silently dropped just because the mortgage section
+    happens to render first."""
+    from balance_pricing_engine.competitor_rates.models import ProductType
+
+    with PricingIntelligenceService(
+        config=PricingIntelligenceConfig(database_path=populated_store),
+        store=ObservationStore(populated_store),
+    ) as service:
+        service.store.update_collector_health(
+            "ANZ", ProductType.TERM_DEPOSIT, success=False, error="boom", at=DAY_TWO
+        )
+
+    fake = render_dashboard(monkeypatch, populated_store)
+
+    subheaders = fake.texts("subheader")
+    assert "Collector health (Term deposit)" in subheaders
+
+    health_frames = [f for f in fake.frames if "Consecutive failures" in f.columns]
+    assert len(health_frames) == 1
+    deposit_health = health_frames[0]
+    assert "ANZ" in deposit_health.index
+    assert deposit_health.loc["ANZ", "Consecutive failures"] == 1

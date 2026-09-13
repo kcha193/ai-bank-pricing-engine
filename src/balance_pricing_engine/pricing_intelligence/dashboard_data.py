@@ -7,14 +7,15 @@ objects or plain dicts.
 
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+from typing import Mapping, Optional, Sequence
 
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord
 from balance_pricing_engine.pricing_intelligence.changes import RateChange
 from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot, _term_label
+from balance_pricing_engine.pricing_intelligence.store import CollectorHealth, RunRecord
 
 
 def build_freshness_frame(
@@ -185,3 +186,127 @@ def build_history_series(series: Sequence[tuple]) -> pd.DataFrame:
     frame = pd.DataFrame.from_dict(dict(series), orient="index").sort_index()
     frame.index.name = "Date"
     return frame
+
+
+def build_collector_health_frame(
+    health: Sequence[CollectorHealth],
+    banks: Sequence[str],
+    *,
+    now: Optional[datetime] = None,
+    max_observation_age_hours: Optional[float] = None,
+) -> pd.DataFrame:
+    """Per-bank collector status, for the operational dashboard section.
+
+    Shaped against ``banks`` (``PricingIntelligenceConfig.selected_banks``),
+    not against ``health`` directly -- matching the ``pricing_intelligence
+    health`` CLI command's own ``health_by_bank``/``selected_banks`` loop.
+    A bank in ``banks`` with no persisted row is ``UNKNOWN`` rather than
+    silently absent (it may simply be newly added, never yet collected); a
+    persisted row for a bank no longer in ``banks`` is dropped rather than
+    lingering forever once a bank is removed from the tracked set.
+
+    ``now``/``max_observation_age_hours`` classify a bank whose scheduling
+    has simply stopped (no new attempts at all, so ``consecutive_failures``
+    stays zero forever) as ``STALE`` once its last success is older than the
+    configured freshness threshold. Without both, staleness is not
+    evaluated and a bank with zero consecutive failures is always ``FRESH``,
+    the previous behaviour -- callers should pass both wherever the
+    freshness table/market snapshot alongside this frame already apply that
+    same threshold, so the two cannot contradict each other.
+    """
+    if not banks:
+        return pd.DataFrame(
+            columns=["Consecutive failures", "Status", "Last success", "Last error"],
+            index=pd.Index([], name="Bank"),
+        )
+    health_by_bank = {entry.bank: entry for entry in health}
+    max_age = (
+        timedelta(hours=max_observation_age_hours)
+        if max_observation_age_hours is not None
+        else None
+    )
+    evaluated_at = now or datetime.now(timezone.utc)
+
+    def _status(entry: CollectorHealth) -> str:
+        if entry.consecutive_failures > 0:
+            return "FAILING"
+        if (
+            max_age is not None
+            and entry.last_success_at is not None
+            and evaluated_at - entry.last_success_at > max_age
+        ):
+            return "STALE"
+        return "FRESH"
+
+    rows = []
+    for bank in banks:
+        entry = health_by_bank.get(bank)
+        if entry is None:
+            rows.append(
+                {
+                    "Bank": bank,
+                    "Consecutive failures": 0,
+                    "Status": "UNKNOWN",
+                    "Last success": None,
+                    "Last error": "",
+                }
+            )
+            continue
+        rows.append(
+            {
+                "Bank": bank,
+                "Consecutive failures": entry.consecutive_failures,
+                "Status": _status(entry),
+                "Last success": entry.last_success_at,
+                "Last error": entry.last_error or "",
+            }
+        )
+    return pd.DataFrame(rows).set_index("Bank")
+
+
+def build_recent_runs_frame(runs: Sequence[RunRecord]) -> pd.DataFrame:
+    """Recent operational runs, newest first -- see ``store.RunRecord``."""
+    if not runs:
+        return pd.DataFrame()
+    return pd.DataFrame(
+        [
+            {
+                "Started": run.started_at,
+                "Status": run.status,
+                "Banks OK": len(run.banks_successful),
+                "Banks failed": len(run.banks_failed),
+                "Rates observed": run.rates_observed,
+                "Changes": run.rates_changed,
+                "Market state": run.market_state or "",
+                "Run id": run.run_id,
+            }
+            for run in runs
+        ]
+    )
+
+
+def build_scenario_runs_frame(scenario_runs: Sequence[dict]) -> pd.DataFrame:
+    """Recent auto-triggered pricing-scenario comparisons -- one row per
+    (term, scenario), from ``store.get_recent_scenario_runs()``."""
+    if not scenario_runs:
+        return pd.DataFrame()
+    rows = []
+    for run in scenario_runs:
+        for scenario in run["scenarios"]:
+            rows.append(
+                {
+                    "Generated": run["generated_at"],
+                    "Term": _term_label(run["term_months"]),
+                    "Scenario": scenario.get("label"),
+                    "Competitor rate (%)": (
+                        scenario["competitor_rate"] * 100
+                        if scenario.get("competitor_rate") is not None
+                        else None
+                    ),
+                    "Our rate (%)": (
+                        scenario["our_rate"] * 100 if scenario.get("our_rate") is not None else None
+                    ),
+                    "Objective": scenario.get("objective"),
+                }
+            )
+    return pd.DataFrame(rows)

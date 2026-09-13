@@ -9,6 +9,15 @@
   of one product cannot make the workflow skip the other
   (EXIT_ALREADY_RUNNING) or overwrite its summary file.
 
+  The lock-file argument below matches exactly what
+  orchestration.default_lock_file_path() itself computes for the config
+  flag's configs/base.yaml (unconfigured, so default) database path;
+  explicit here rather than relying on that default so an interactive
+  `pricing-intelligence run` with the product flag set to term_deposit
+  against the same database always shares this same lock. If you configure
+  a different pricing_intelligence.database_path, update this path to
+  match.
+
   Install (in addition to the home-loan plist):
     cp deploy/scheduling/nz.pricing-intelligence.collect-term-deposit.plist ~/Library/LaunchAgents/
     # Edit the two REPLACE_ME paths below first.
@@ -37,21 +46,27 @@
   Optional alert delivery: environment variables are scoped per plist, so
   the home-loan plist's EnvironmentVariables block does not extend to this
   agent; add the same block here too if you also want term-deposit rate
-  moves pushed to Slack, Teams, or Discord. (launchd does not inherit your
-  shell's exported variables, so `export ...` before `launchctl load` has no
-  effect on the child process; it must go in the plist itself.)
+  moves pushed to Slack, Teams, Discord, and/or Telegram. (launchd does not
+  inherit your shell's exported variables, so `export ...` before
+  `launchctl load` has no effect on the child process; it must go in the
+  plist itself.)
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL</key>
         <string>https://hooks.slack.com/services/T000/B000/xxxx</string>
+        <key>TELEGRAM_BOT_TOKEN</key>
+        <string>123456:AAAA-your-bot-token</string>
+        <key>TELEGRAM_CHAT_ID</key>
+        <string>-1001234567890</string>
     </dict>
 
-  Add it as a sibling of ProgramArguments below. The webhook URL is a secret,
-  so keep it out of the copy of this file under version control; only the
-  installed copy in ~/Library/LaunchAgents/ should carry a real URL. Leave
-  the env var unset (the default) for no delivery; nothing else about
-  collection changes either way, and a broken webhook never fails the run.
+  Add it as a sibling of ProgramArguments below. Each is independent;
+  configure any subset. These are secrets, so keep them out of the copy of
+  this file under version control; only the installed copy in
+  ~/Library/LaunchAgents/ should carry real values. Leave a variable unset
+  (the default) for no delivery on that channel; nothing else about
+  collection changes either way, and a broken channel never fails the run.
 -->
 <plist version="1.0">
 <dict>
@@ -72,7 +87,7 @@
         <string>--render-javascript</string>
         <string>--quiet</string>
         <string>--lock-file</string>
-        <string>data/processed/pricing_intelligence/collection-term-deposit.lock</string>
+        <string>data/processed/pricing_intelligence/collection-term-deposit-observations.lock</string>
         <string>--summary-file</string>
         <string>data/processed/pricing_intelligence/last_run_term_deposit.json</string>
     </array>

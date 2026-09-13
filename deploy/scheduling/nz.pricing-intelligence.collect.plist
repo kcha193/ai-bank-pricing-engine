@@ -8,6 +8,14 @@
   this one; its lock-file and summary-file paths are already distinct from
   this file's, so the two schedules cannot collide.
 
+  The lock-file argument below matches exactly what
+  orchestration.default_lock_file_path() itself computes for the config
+  flag's configs/base.yaml (unconfigured, so default) database path;
+  explicit here rather than relying on that default so an interactive
+  `pricing-intelligence run` against the same database always shares this
+  same lock. If you configure a different pricing_intelligence.database_path,
+  update this path to match.
+
   Install:
     cp deploy/scheduling/nz.pricing-intelligence.collect.plist ~/Library/LaunchAgents/
     # Edit the two REPLACE_ME paths below first.
@@ -27,6 +35,13 @@
   machine asleep at 07:30 collects on next wake rather than skipping the day
   (history cannot be backfilled).
 
+  "07:30 local" means the HOST'S system timezone: launchd's
+  StartCalendarInterval takes only Hour/Minute/etc, with no per-job timezone
+  key at all, unlike cron (see crontab.example's CRON_TZ=Pacific/Auckland line).
+  If this machine's system timezone is not already Pacific/Auckland, either
+  set it there, or prefer the cron deployment for an explicit, host-timezone-
+  independent schedule.
+
   The config flag below (configs/base.yaml) is passed explicitly: without
   it, the workflow falls back to PricingIntelligenceConfig() defaults and
   silently ignores any pricing_intelligence block (selected banks,
@@ -34,21 +49,27 @@
   there.
 
   Optional alert delivery: to push detected rate moves to Slack, Teams, or
-  Discord, add an EnvironmentVariables block. (launchd does not inherit your
-  shell's exported variables, so `export ...` before `launchctl load` has no
-  effect on the child process; it must go in the plist itself.)
+  Discord, and/or to Telegram, add an EnvironmentVariables block. (launchd
+  does not inherit your shell's exported variables, so `export ...` before
+  `launchctl load` has no effect on the child process; it must go in the
+  plist itself.)
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL</key>
         <string>https://hooks.slack.com/services/T000/B000/xxxx</string>
+        <key>TELEGRAM_BOT_TOKEN</key>
+        <string>123456:AAAA-your-bot-token</string>
+        <key>TELEGRAM_CHAT_ID</key>
+        <string>-1001234567890</string>
     </dict>
 
-  Add it as a sibling of ProgramArguments below. The webhook URL is a secret,
-  so keep it out of the copy of this file under version control; only the
-  installed copy in ~/Library/LaunchAgents/ should carry a real URL. Leave
-  the env var unset (the default) for no delivery; nothing else about
-  collection changes either way, and a broken webhook never fails the run.
+  Add it as a sibling of ProgramArguments below. Each is independent;
+  configure any subset. These are secrets, so keep them out of the copy of
+  this file under version control; only the installed copy in
+  ~/Library/LaunchAgents/ should carry real values. Leave a variable unset
+  (the default) for no delivery on that channel; nothing else about
+  collection changes either way, and a broken channel never fails the run.
 -->
 <plist version="1.0">
 <dict>
@@ -67,7 +88,7 @@
         <string>--render-javascript</string>
         <string>--quiet</string>
         <string>--lock-file</string>
-        <string>data/processed/pricing_intelligence/collection-home-loan.lock</string>
+        <string>data/processed/pricing_intelligence/collection-home-loan-observations.lock</string>
         <string>--summary-file</string>
         <string>data/processed/pricing_intelligence/last_run_home_loan.json</string>
     </array>

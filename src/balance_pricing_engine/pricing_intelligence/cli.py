@@ -3,31 +3,54 @@
 Mirrors the argparse subcommand style already used by
 ``balance_pricing_engine.competitor_rates.cli``.
 
+    python3 -m balance_pricing_engine.pricing_intelligence run
     python3 -m balance_pricing_engine.pricing_intelligence collect
     python3 -m balance_pricing_engine.pricing_intelligence snapshot
     python3 -m balance_pricing_engine.pricing_intelligence changes --days 7
     python3 -m balance_pricing_engine.pricing_intelligence history --bank ANZ --term 12
     python3 -m balance_pricing_engine.pricing_intelligence market-state
+    python3 -m balance_pricing_engine.pricing_intelligence brief --weekly
     python3 -m balance_pricing_engine.pricing_intelligence position --rate 4.95 --term 12
     python3 -m balance_pricing_engine.pricing_intelligence strategy --strategy MARKET_MEDIAN
+    python3 -m balance_pricing_engine.pricing_intelligence health
+    python3 -m balance_pricing_engine.pricing_intelligence telegram-test
+    python3 -m balance_pricing_engine.pricing_intelligence backup --destination ~/pi-backups
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+from datetime import datetime, timedelta, timezone
 import logging
 import math
+from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from balance_pricing_engine.competitor_rates.collection_config import CollectionConfig
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.alerts import (
     ConsoleAlertSink,
+    build_telegram_sink_from_env,
+    build_webhook_sink_from_env,
     dispatch_alerts,
+    dispatch_alerts_safely,
     format_alerts,
+    plain_alert,
 )
-from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
+from balance_pricing_engine.pricing_intelligence.briefing import build_daily_brief, build_weekly_brief
+from balance_pricing_engine.pricing_intelligence.config import (
+    PricingIntelligenceConfig,
+    resolve_database_path_from_env,
+)
+from balance_pricing_engine.pricing_intelligence.locking import AlreadyRunningError, SingleInstanceLock
+from balance_pricing_engine.pricing_intelligence.orchestration import (
+    EXIT_ALREADY_RUNNING,
+    default_lock_file_path,
+    run_operational_cycle,
+)
 from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 from balance_pricing_engine.pricing_intelligence.rbnz import fetch_ocr_series
@@ -36,6 +59,13 @@ from balance_pricing_engine.pricing_intelligence.strategy import (
     CompetitorRateStrategy,
     resolve_cash_rate,
 )
+
+#: Used only for the daily brief's displayed calendar date -- every other
+#: timestamp (lookback windows, run records, stored observations) stays in
+#: UTC. Under the checked-in 07:30 Pacific/Auckland schedule, UTC is still
+#: the previous day at that hour, so formatting the brief's header straight
+#: from a UTC "now" would date every morning brief a day behind.
+_NZ_TIMEZONE = ZoneInfo("Pacific/Auckland")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -47,14 +77,22 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
 
     try:
-        config = PricingIntelligenceConfig()
+        config = resolve_database_path_from_env(PricingIntelligenceConfig())
         if args.config:
             # configs/base.yaml's pricing_intelligence block would otherwise be
             # silently ignored -- this CLI previously always ran on defaults
             # regardless of what was configured there.
             engine_config = load_config(args.config)
             if engine_config.pricing_intelligence is not None:
-                config = engine_config.pricing_intelligence
+                yaml_config = engine_config.pricing_intelligence
+                if "database_path" in yaml_config.model_fields_set:
+                    config = yaml_config
+                else:
+                    # The YAML block didn't set database_path itself, so
+                    # Pydantic filled in the hard-coded default -- adopting
+                    # yaml_config wholesale here would silently discard the
+                    # PRICING_INTELLIGENCE_DB_PATH override resolved above.
+                    config = yaml_config.model_copy(update={"database_path": config.database_path})
         if args.database:
             config = config.model_copy(update={"database_path": args.database})
 
@@ -70,6 +108,25 @@ def main(argv: Optional[list[str]] = None) -> int:
             # independence.
             return _ocr(config.collection)
 
+        if args.command == "run":
+            # Takes its own single-instance lock (see locking.py) before
+            # entering the service/store context below, the same as
+            # scripts/collect_market_rates_workflow.py's scheduled entry
+            # point -- an interactive `run` and a scheduled one must not be
+            # able to interleave against the same database either.
+            return _run(config, args)
+
+        if args.command == "telegram-test":
+            # Store-independent, same rationale as "ocr" above: a delivery
+            # smoke test needs no database at all.
+            return _telegram_test()
+
+        if args.command == "backup":
+            # backup_database() opens config.database_path directly via
+            # sqlite3 -- no need to construct an ObservationStore/service
+            # first just to hand it a path.
+            return _backup(config, args)
+
         with PricingIntelligenceService(
             config=config,
             store=ObservationStore(config.database_path),
@@ -81,6 +138,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "changes": _changes,
                 "history": _history,
                 "market-state": _market_state,
+                "brief": _brief,
+                "health": _health,
                 "position": _position,
                 "strategy": _strategy,
             }
@@ -191,6 +250,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("market-state", help="Classify current market activity")
 
+    brief = subparsers.add_parser(
+        "brief", help="Generate the daily or weekly intelligence brief"
+    )
+    brief.add_argument(
+        "--weekly", action="store_true", help="Generate the weekly summary instead of daily"
+    )
+    brief.add_argument(
+        "--send",
+        action="store_true",
+        help="Deliver via configured webhook/Telegram, in addition to printing it",
+    )
+
     position = subparsers.add_parser(
         "position", help="Position a rate against the advertised market"
     )
@@ -211,12 +282,64 @@ def _build_parser() -> argparse.ArgumentParser:
         "--manual-rate", type=_nonnegative_rate, default=None, help="Decimal rate for MANUAL"
     )
 
+    run = subparsers.add_parser(
+        "run",
+        help=(
+            "Full operational cycle: collect, validate, persist, detect changes, "
+            "classify market state, update collector health, and dispatch alerts "
+            "(webhook/Telegram, whichever is configured) in one command"
+        ),
+    )
+    run.add_argument(
+        "--render-javascript",
+        action="store_true",
+        help="Render pages in a headless browser. Required for live collection.",
+    )
+    run.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Collect, validate, and classify as normal, but persist nothing and "
+            "send no real alerts -- every alert is printed to the console instead. "
+            "Safe to run against a real Telegram/webhook configuration."
+        ),
+    )
+    run.add_argument(
+        "--lock-file",
+        default=None,
+        help=(
+            "Single-instance lock path (default: derived from --product, "
+            "matching the deployed scheduled workflow's per-product lock "
+            "files -- see docs/pricing_intelligence.md)"
+        ),
+    )
+
     subparsers.add_parser(
         "ocr",
         help=(
             "Show the current RBNZ Official Cash Rate and recent trend "
             "(a separate data source from the bank collectors above)"
         ),
+    )
+
+    subparsers.add_parser(
+        "health",
+        help="Database, collector, and alert-channel status for troubleshooting",
+    )
+
+    subparsers.add_parser(
+        "telegram-test",
+        help="Send a fixed test message to the configured Telegram bot/chat",
+    )
+
+    backup = subparsers.add_parser(
+        "backup", help="Write a timestamped backup of the observation store"
+    )
+    backup.add_argument(
+        "--destination", required=True, help="Directory to write timestamped backups into"
+    )
+    backup.add_argument(
+        "--keep", type=_positive_int, default=30, help="How many recent backups to retain"
     )
 
     return parser
@@ -305,6 +428,63 @@ def _collect(service: PricingIntelligenceService, args: argparse.Namespace) -> i
     if not outcome.report.any_success or outcome.rate_count == 0 or comparable_count == 0:
         return 1
     return 0
+
+
+def _run(
+    config: PricingIntelligenceConfig, args: argparse.Namespace
+) -> int:
+    """Interactive entry point for the full operational cycle.
+
+    Shares :func:`~.orchestration.run_operational_cycle` with
+    ``scripts/collect_market_rates_workflow.py``'s scheduled entry point, so
+    a manual run and a scheduled one classify and alert identically -- see
+    that module's docstring.
+
+    Does not auto-trigger pricing scenarios -- that needs a
+    scenario_trigger_fn built from a module that imports the optimiser, which
+    this package (including this CLI) is architecturally forbidden from doing
+    (see ``tests/unit/test_pricing_intelligence_boundaries.py``). Use the
+    scheduled workflow script for scenario-triggered runs.
+    """
+    lock_file = args.lock_file or default_lock_file_path(_product(args), config.database_path)
+    # A dry run never writes an observation (see the read_only store below),
+    # so it cannot race a concurrent run into duplicate/corrupted writes --
+    # the only thing this lock exists to prevent. Acquiring it anyway would
+    # still create the lock directory and open a persistent lock file for
+    # writing (see SingleInstanceLock.__enter__()), contradicting the CLI's
+    # own "nothing persisted" dry-run message, and would make a dry run
+    # against a read-only directory or an already-locked real run fail for
+    # no reason.
+    lock = contextlib.nullcontext() if args.dry_run else SingleInstanceLock(Path(lock_file))
+    try:
+        with lock:
+            with PricingIntelligenceService(
+                config=config,
+                store=ObservationStore(config.database_path, read_only=args.dry_run),
+                render_javascript=args.render_javascript,
+            ) as service:
+                result = run_operational_cycle(
+                    service, product_type=_product(args), dry_run=args.dry_run
+                )
+    except AlreadyRunningError as exc:
+        print(f"Skipped: {exc}")
+        return EXIT_ALREADY_RUNNING
+
+    print(result.outcome.render())
+    if result.outcome.changes:
+        print("\nDetected changes:")
+        for change in result.outcome.changes:
+            flag = "  [SUSPICIOUS]" if change.suspicious else ""
+            print(f"  {change.change_type.value:<18} {change.describe()}{flag}")
+    print()
+    print(f"Status:      {result.status}")
+    print(f"Alerts sent: {result.alerts_sent}")
+    if result.run_record is not None:
+        print(f"Run id:      {result.run_record.run_id}")
+    if args.dry_run:
+        print()
+        print("Dry run: nothing persisted, no real alerts sent.")
+    return result.code
 
 
 def _snapshot(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
@@ -449,6 +629,120 @@ def _market_state(service: PricingIntelligenceService, args: argparse.Namespace)
     return 0
 
 
+def _brief(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
+    """Generate the daily or weekly intelligence brief.
+
+    Deliberately a separate command from ``run``, not folded into
+    ``orchestration.run_operational_cycle`` -- the project's own
+    intelligence/pricing/alerting split (see docs/pricing_intelligence.md)
+    treats "what needs my attention" as a distinct concern from collection
+    itself, and an operator who wants both chains them in one schedule line
+    (``pricing-intelligence run && pricing-intelligence brief --send``; see
+    the Operations section of the docs).
+    """
+    product = _product(args)
+    category = _default_category(args)
+    snapshot = service.get_market_snapshot(product_type=product, rate_category=category)
+    if not snapshot.terms:
+        print("No market data. Run 'run' or 'collect' first.")
+        return 1
+
+    assessment = service.get_market_state(product_type=product, rate_category=category)
+    now = datetime.now(timezone.utc)
+    lookback_days = service.config.market_state.lookback_days
+
+    if args.weekly:
+        week_changes = service.get_changes(
+            days=lookback_days,
+            product_type=product,
+            rate_category=category,
+            scope_to_market=True,
+        )
+        cutoff = now - timedelta(days=lookback_days)
+        run_records = [
+            record
+            for record in service.store.get_recent_run_records(product_type=product, limit=200)
+            if record.started_at >= cutoff
+        ]
+        text = build_weekly_brief(
+            as_of=now,
+            week_changes=week_changes,
+            week_assessment=assessment,
+            snapshot=snapshot,
+            run_records=run_records,
+        )
+    else:
+        # Bounded by the NZ calendar day (local midnight, converted back to
+        # UTC), not a rolling 24h window: around the Pacific/Auckland DST
+        # transition, consecutive 07:30 runs are only 23 hours apart, so a
+        # rolling window would re-include yesterday's already-reported
+        # change under today's TODAY section -- and a delayed or manual run
+        # has the same problem any day of the year.
+        nz_midnight = now.astimezone(_NZ_TIMEZONE).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        today_changes = service.get_changes(
+            since=nz_midnight.astimezone(timezone.utc),
+            product_type=product,
+            rate_category=category,
+            scope_to_market=True,
+        )
+        health = service.store.get_collector_health(product_type=product)
+        # Same NZ-midnight window as today_changes above: a scenario run
+        # persisted by the scheduled `run --config` (see
+        # orchestration.run_operational_cycle's scenario_trigger_fn) is
+        # otherwise never surfaced by this command at all -- the only
+        # production caller of build_daily_brief() -- leaving its "Pricing
+        # scenario analysis triggered for" section unreachable outside a
+        # direct unit call.
+        scenario_triggered_terms = sorted(
+            {
+                run["term_months"]
+                for run in service.store.get_recent_scenario_runs(product_type=product, limit=200)
+                if run["generated_at"] >= nz_midnight.astimezone(timezone.utc)
+            }
+        )
+        text = build_daily_brief(
+            # NZ-local, not now's UTC -- see _NZ_TIMEZONE. Collector health
+            # still resolves independently in UTC.
+            as_of=now.astimezone(_NZ_TIMEZONE),
+            today_changes=today_changes,
+            week_assessment=assessment,
+            snapshot=snapshot,
+            collector_health=health,
+            tracked_banks=service.config.selected_banks,
+            max_observation_age_hours=service.config.max_observation_age_hours,
+            scenario_triggered_terms=scenario_triggered_terms,
+        )
+
+    print(text)
+
+    if args.send:
+        title = "NZ Pricing Intelligence -- Weekly Brief" if args.weekly else "NZ Pricing Intelligence -- Daily Brief"
+        alert = plain_alert(title, text)
+        sinks = [
+            sink
+            for sink in (build_webhook_sink_from_env(), build_telegram_sink_from_env())
+            if sink is not None
+        ]
+        if not sinks:
+            # A scheduled job whose environment failed to load its
+            # webhook/Telegram secrets must not read as healthy just because
+            # this command itself ran without error -- cron/monitoring only
+            # sees this command's own exit code, not this printed message,
+            # and --send was explicitly requested.
+            print("\n(--send requested, but no webhook or Telegram channel is configured)")
+            return 1
+        sent = sum(dispatch_alerts_safely([alert], sink) for sink in sinks)
+        print(f"\nDelivered to {sent}/{len(sinks)} configured channel(s).")
+        if sent == 0:
+            # Every configured sink failed or timed out -- same reasoning as
+            # the no-sink branch above: nobody actually received the
+            # briefing, and the exit code must say so.
+            return 1
+    return 0
+
+
 def _position(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
     position = service.get_competitive_position(
         our_rate=args.rate,
@@ -524,6 +818,98 @@ def _ocr(collection_config: CollectionConfig) -> int:
         change_text = f"{change:+.0f} bps" if change is not None else "n/a"
         print(f"  change over {months} {label:<7}{change_text}")
     print(f"  source                 {series.source_url}")
+    return 0
+
+
+def _health(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
+    """Database, collector, and alert-channel status -- the first stop for troubleshooting."""
+    product = _product(args)
+    print("PRICING INTELLIGENCE HEALTH")
+    print()
+
+    report = service.store.check_integrity(thresholds=service.config.validation)
+    print(f"Database: {'OK' if report.ok else 'ISSUES DETECTED'}")
+    for issue in report.issues:
+        print(f"  - {issue}")
+    print()
+
+    latest_run = service.store.get_latest_run_record(product_type=product)
+    if latest_run is None:
+        print("Last run: none recorded yet (run 'run' to start collecting)")
+    else:
+        print(f"Last run: {latest_run.started_at:%d %b %Y %H:%M} UTC -- {latest_run.status}")
+    print()
+
+    health_by_bank = {h.bank: h for h in service.store.get_collector_health(product_type=product)}
+    now = datetime.now(timezone.utc)
+    max_age = timedelta(hours=service.config.max_observation_age_hours)
+    for bank in service.config.selected_banks:
+        health = health_by_bank.get(bank)
+        if health is None:
+            print(f"  {bank:<12}{'UNKNOWN':<16}no collection recorded yet")
+            continue
+        # A bank that stops being attempted at all (scheduling disabled, the
+        # machine off for a week) never fails again, so consecutive_failures
+        # alone would report FRESH indefinitely -- exactly the run this
+        # command exists to diagnose, and directly contradicting "Latest
+        # market snapshot: EMPTY" below, which does apply this same
+        # max_observation_age_hours staleness check.
+        if health.consecutive_failures > 0:
+            status = f"FAILING ({health.consecutive_failures}x)"
+        elif health.last_success_at is not None and now - health.last_success_at > max_age:
+            status = "STALE"
+        else:
+            status = "FRESH"
+        last_seen = (
+            health.last_success_at.strftime("%d %b %H:%M") if health.last_success_at else "never"
+        )
+        print(f"  {bank:<12}{status:<16}last seen {last_seen}")
+    print()
+
+    telegram_configured = build_telegram_sink_from_env() is not None
+    webhook_configured = build_webhook_sink_from_env() is not None
+    print(f"Telegram: {'configured' if telegram_configured else 'not configured'}")
+    print(f"Webhook:  {'configured' if webhook_configured else 'not configured'}")
+    print()
+
+    snapshot = service.get_market_snapshot(product_type=product)
+    print(f"Latest market snapshot: {'VALID' if snapshot.terms else 'EMPTY'}")
+
+    return 0 if report.ok else 1
+
+
+def _telegram_test() -> int:
+    """Send a fixed test message via the configured Telegram bot/chat.
+
+    Store-independent (see the dispatch comment in ``main()``) -- a delivery
+    smoke test should not require a database at all, and should be safe to
+    run before any collection has happened.
+    """
+    sink = build_telegram_sink_from_env()
+    if sink is None:
+        print(
+            "Telegram is not configured: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID "
+            "(see .env.example)."
+        )
+        return 1
+    try:
+        sink.send(plain_alert("NZ Pricing Intelligence Telegram test successful.", ""))
+    except Exception as exc:  # noqa: BLE001 - reported at the CLI boundary
+        print(f"Telegram test failed: {exc}")
+        return 1
+    print("Sent: ✅ NZ Pricing Intelligence Telegram test successful.")
+    return 0
+
+
+def _backup(config: PricingIntelligenceConfig, args: argparse.Namespace) -> int:
+    """Write a timestamped backup of the observation store and prune old ones."""
+    from balance_pricing_engine.pricing_intelligence.backup import backup_database
+
+    if not Path(config.database_path).exists():
+        print(f"No database at {config.database_path}; nothing to back up.")
+        return 1
+    backup_path = backup_database(config.database_path, args.destination, keep=args.keep)
+    print(f"Backup written to {backup_path}")
     return 0
 
 

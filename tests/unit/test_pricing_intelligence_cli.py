@@ -1,6 +1,8 @@
 """CLI behaviour, exercised against a temporary store and saved fixtures."""
 
 import argparse
+import json
+from pathlib import Path
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -196,6 +198,62 @@ def test_config_flag_loads_pricing_intelligence_settings_from_engine_config(
 
     assert exit_code == 0
     assert "NZ MORTGAGE MARKET" in output
+
+
+def test_db_path_env_var_is_honored_with_no_database_or_config_flag(
+    populated_database, monkeypatch, capsys
+):
+    """PRICING_INTELLIGENCE_DB_PATH (documented in .env.example) must be read
+    when neither --database nor --config points somewhere else -- previously
+    the CLI always fell back to PricingIntelligenceConfig()'s hard-coded
+    default path regardless of this env var."""
+    monkeypatch.setenv("PRICING_INTELLIGENCE_DB_PATH", populated_database)
+
+    exit_code = run(["snapshot"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "NZ MORTGAGE MARKET" in output
+
+
+def test_explicit_database_flag_overrides_the_env_var(tmp_path, populated_database, monkeypatch, capsys):
+    """An explicit --database must win over PRICING_INTELLIGENCE_DB_PATH --
+    an operator's command-line choice must not be silently overridden by
+    an ambient environment variable."""
+    monkeypatch.setenv("PRICING_INTELLIGENCE_DB_PATH", str(tmp_path / "unused.db"))
+
+    exit_code = run(["--database", populated_database, "snapshot"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "NZ MORTGAGE MARKET" in output
+    assert not (tmp_path / "unused.db").exists(), "the env-var path must not have been touched"
+
+
+def test_config_flag_preserves_env_db_path_when_yaml_omits_it(
+    tmp_path, populated_database, monkeypatch, capsys
+):
+    """A --config whose pricing_intelligence block omits database_path must
+    not silently discard PRICING_INTELLIGENCE_DB_PATH in favour of
+    PricingIntelligenceConfig()'s hard-coded default -- the env-resolved path
+    should only be replaced when the YAML explicitly sets database_path,
+    while other YAML settings (e.g. selected_banks) still take effect."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PRICING_INTELLIGENCE_DB_PATH", populated_database)
+
+    engine_config_path = tmp_path / "engine.yaml"
+    engine_config_path.write_text(yaml.dump(_minimal_engine_config(selected_banks=["ANZ"])))
+
+    exit_code = run(["--config", str(engine_config_path), "snapshot"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "NZ MORTGAGE MARKET" in output
+    assert "ANZ" in output
+    assert "BNZ" not in output, "selected_banks from the YAML block must still apply"
+    assert not Path("data/processed/pricing_intelligence/observations.db").exists(), (
+        "the hard-coded default path must not have been touched"
+    )
 
 
 def test_snapshot_renders_the_market_grid(populated_database, capsys):
@@ -894,3 +952,704 @@ def test_empty_market_state_is_unknown_instead_of_calm(tmp_path, capsys):
     output = capsys.readouterr().out
     assert 'LOW' not in output
     assert 'No fresh market data' in output
+
+
+# ---------------------------------------------------------------- run command
+
+
+def test_run_command_reports_status_and_persists_a_run_record(tmp_path, fixture_fetcher, monkeypatch, capsys):
+    monkeypatch.delenv("PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    database = tmp_path / "observations.db"
+    monkeypatch.setattr(
+        cli,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"], store=kwargs["store"], fetcher=fixture_fetcher()
+        ),
+    )
+
+    exit_code = run(
+        [
+            "--database",
+            str(database),
+            "run",
+            "--lock-file",
+            str(tmp_path / "collection.lock"),
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Status:      SUCCESS" in output
+    assert "Run id:" in output
+
+    with ObservationStore(database) as store:
+        record = store.get_latest_run_record()
+    assert record is not None
+    assert record.status == "SUCCESS"
+    assert set(record.banks_successful) == {"ANZ", "ASB", "Westpac", "BNZ", "Kiwibank"}
+
+
+def test_run_command_dry_run_persists_nothing(tmp_path, fixture_fetcher, capsys, monkeypatch):
+    database = tmp_path / "observations.db"
+    monkeypatch.setattr(
+        cli,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"], store=kwargs["store"], fetcher=fixture_fetcher()
+        ),
+    )
+
+    exit_code = run(
+        [
+            "--database",
+            str(database),
+            "run",
+            "--dry-run",
+            "--lock-file",
+            str(tmp_path / "collection.lock"),
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Dry run: nothing persisted" in output
+    assert "Run id:" not in output
+
+    with ObservationStore(database) as store:
+        assert store.get_latest_run_record() is None
+        assert store.get_current_observations() == []
+
+
+def test_run_command_dry_run_does_not_create_the_database_file(
+    tmp_path, fixture_fetcher, capsys, monkeypatch
+):
+    """``run --dry-run`` against a database path that doesn't exist yet must
+    not bring one into existence -- opening ``ObservationStore`` used to
+    create and schema-initialise the file regardless of ``--dry-run``,
+    contradicting the CLI's own 'nothing persisted' message."""
+    database = tmp_path / "observations.db"
+    monkeypatch.setattr(
+        cli,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"], store=kwargs["store"], fetcher=fixture_fetcher()
+        ),
+    )
+
+    exit_code = run(
+        [
+            "--database",
+            str(database),
+            "run",
+            "--dry-run",
+            "--lock-file",
+            str(tmp_path / "collection.lock"),
+        ]
+    )
+    capsys.readouterr()
+
+    assert exit_code == 0
+    assert not database.exists()
+
+
+def test_brief_daily_reports_no_change(populated_database, capsys):
+    exit_code = run(["--database", populated_database, "brief"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "NZ MORTGAGE PRICING INTELLIGENCE" in output
+    assert "No material mortgage pricing changes detected today." in output
+
+
+def test_brief_daily_reports_a_persisted_scenario_trigger(populated_database, capsys):
+    """A scenario comparison persisted by the scheduled `run --config` (see
+    orchestration.run_operational_cycle's scenario_trigger_fn) must be
+    surfaced by `brief` -- previously the only production call to
+    build_daily_brief() never passed scenario_triggered_terms at all,
+    leaving that section of the brief permanently unreachable regardless of
+    what was actually triggered and persisted."""
+    with ObservationStore(populated_database) as store:
+        store.write_scenario_run(
+            run_id="run-1",
+            product_type=ProductType.HOME_LOAN,
+            term_months=12,
+            scenarios=[{"scenario": "example"}],
+        )
+
+    exit_code = run(["--database", populated_database, "brief"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Pricing scenario analysis triggered for:" in output
+    assert "1 Year" in output
+
+
+def test_brief_daily_date_uses_new_zealand_time_not_utc(populated_database, capsys, monkeypatch):
+    """Under the checked-in 07:30 Pacific/Auckland schedule, UTC is still
+    the previous day at that hour -- the brief's displayed calendar date
+    must reflect NZ local time, not raw UTC, or every morning brief is
+    headed with yesterday's date.
+
+    The frozen instant is derived from the real "now" via .replace()/
+    timedelta, not a fixed datetime(YYYY, ...) literal -- this module is one
+    of test_no_wallclock_timebombs.py's guarded CLOCK_SENSITIVE_MODULES, and
+    a hard-coded calendar date there is exactly the timebomb it screens for.
+    """
+    from zoneinfo import ZoneInfo
+
+    from balance_pricing_engine.pricing_intelligence import cli as cli_module
+
+    # NZ is always UTC+12 or UTC+13, so 23:30 UTC on any date always lands
+    # on the *next* calendar day in NZ time, regardless of whether NZDT is
+    # active -- no fixed calendar anchor needed to reproduce the crossover.
+    real_now = datetime.now(timezone.utc)
+    fixed_utc = real_now.replace(hour=23, minute=30, second=0, microsecond=0)
+    expected_nz_date = fixed_utc.astimezone(ZoneInfo("Pacific/Auckland")).strftime("%d %b %Y")
+    utc_date_string = fixed_utc.strftime("%d %b %Y")
+    assert expected_nz_date != utc_date_string, "the two dates must actually differ for this test"
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_utc.astimezone(tz) if tz is not None else fixed_utc
+
+    monkeypatch.setattr(cli_module, "datetime", FrozenDatetime)
+
+    exit_code = run(["--database", populated_database, "brief"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert expected_nz_date in output
+    assert utc_date_string not in output
+
+
+def test_brief_weekly_reports_market_activity(populated_database, capsys):
+    exit_code = run(["--database", populated_database, "brief", "--weekly"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "NZ MORTGAGE PRICING -- WEEKLY" in output
+
+
+def test_brief_scopes_changes_to_the_configured_market(tmp_path, fixture_fetcher, capsys):
+    """A brief's change query must be scoped to selected_banks/tracked_terms_months
+    the same way get_market_state() already is -- otherwise a bank dropped
+    from the current configuration can still show up in the brief's TODAY
+    listing and repricing counts even though the snapshot and market-state
+    assessment it is delivered alongside no longer include it."""
+    database = tmp_path / "observations.db"
+    broad_config = PricingIntelligenceConfig(
+        database_path=str(database),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+
+    def mutate(bank, html):
+        if bank == "Kiwibank":
+            return html.replace("<td>1 year</td><td>4.89%", "<td>1 year</td><td>4.69%")
+        return html
+
+    with PricingIntelligenceService(
+        config=broad_config, store=ObservationStore(database), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=mutate)
+        service.collect(captured_at_utc=DAY_TWO, persist_snapshot=False)
+
+    engine_config_path = tmp_path / "engine.yaml"
+    engine_config_path.write_text(
+        yaml.dump(
+            _minimal_engine_config(
+                database_path=str(database),
+                # Kiwibank dropped from the current configuration.
+                selected_banks=["ANZ", "BNZ", "ASB", "Westpac"],
+            )
+        )
+    )
+
+    exit_code = run(["--config", str(engine_config_path), "brief"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Kiwibank" not in output
+
+
+def test_brief_daily_change_window_uses_nz_midnight_not_a_rolling_24h_window(
+    tmp_path, fixture_fetcher, capsys, monkeypatch
+):
+    """Around the Pacific/Auckland DST transition, consecutive 07:30 runs
+    are only 23 hours apart -- a rolling 24h UTC lookback would re-include
+    yesterday's already-reported change under today's TODAY section; a
+    delayed or manual run has the same problem any day of the year. The
+    brief's change query must instead be bounded by NZ-local midnight, the
+    same boundary its displayed date now uses.
+
+    The frozen instant and the change's timestamp are both derived from the
+    real "now" via .replace()/timedelta, not fixed datetime(YYYY, ...)
+    literals -- this module is one of test_no_wallclock_timebombs.py's
+    guarded CLOCK_SENSITIVE_MODULES."""
+    from zoneinfo import ZoneInfo
+
+    from balance_pricing_engine.pricing_intelligence import cli as cli_module
+    from balance_pricing_engine.pricing_intelligence import store as store_module
+
+    nz = ZoneInfo("Pacific/Auckland")
+    real_now = datetime.now(timezone.utc)
+    nz_midnight_today = real_now.astimezone(nz).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    frozen_now_utc = (nz_midnight_today + timedelta(minutes=30)).astimezone(timezone.utc)
+    # 20 hours before "now" -- inside any rolling 24h UTC window, but ~19.5
+    # hours before today's NZ midnight, i.e. yesterday, NZ-local.
+    change_detected_at = frozen_now_utc - timedelta(hours=20)
+
+    database = tmp_path / "observations.db"
+    config = PricingIntelligenceConfig(
+        database_path=str(database),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(database), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(
+            captured_at_utc=change_detected_at - timedelta(hours=1), persist_snapshot=False
+        )
+        service._fetcher = fixture_fetcher(
+            mutate=lambda bank, html: (
+                html.replace("<td>1 year</td><td>4.79%", "<td>1 year</td><td>4.59%")
+                if bank == "ANZ"
+                else html
+            )
+        )
+        service.collect(captured_at_utc=change_detected_at, persist_snapshot=False)
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen_now_utc.astimezone(tz) if tz is not None else frozen_now_utc
+
+    monkeypatch.setattr(cli_module, "datetime", FrozenDatetime)
+    # store.get_changes_since()'s own now=None default must resolve to the
+    # same frozen instant -- otherwise its upper bound (detected_at <= now)
+    # is anchored to the real wall clock instead, decoupling it from the
+    # since= boundary _brief computed from its own (frozen) now.
+    monkeypatch.setattr(store_module, "datetime", FrozenDatetime)
+
+    exit_code = run(["--database", str(database), "brief"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    # Scoped to the TODAY section specifically, not a blanket "ANZ"/"-20 bps"
+    # not in output check: the 7-DAY MARKET and MOST COMPETITIVE sections
+    # legitimately mention both once a quiet TODAY section stopped
+    # short-circuiting the rest of the brief.
+    today_section = output.split("TODAY\n", 1)[1].split("\n\n", 1)[0]
+    assert today_section.strip() == "No material mortgage pricing changes detected today.", (
+        "yesterday's (NZ-local) change must not appear under today's TODAY section"
+    )
+
+
+def test_brief_with_no_market_data_fails_cleanly(tmp_path, capsys):
+    exit_code = run(["--database", str(tmp_path / "empty.db"), "brief"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "No market data" in output
+
+
+def test_brief_send_reports_when_no_channel_is_configured(populated_database, capsys, monkeypatch):
+    """--send was explicitly requested but nothing is configured to deliver
+    to (e.g. a scheduled job whose environment failed to load its secrets)
+    -- the briefing was not delivered, so the exit code must say so rather
+    than reading as healthy to cron/monitoring."""
+    monkeypatch.delenv("PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+    exit_code = run(["--database", populated_database, "brief", "--send"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "no webhook or Telegram channel is configured" in output
+
+
+def test_brief_send_delivers_to_a_configured_webhook(populated_database, capsys, monkeypatch):
+    monkeypatch.setenv("PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL", "https://hooks.example/x")
+    captured = []
+
+    def fake_urlopen(request, timeout=None):
+        import json
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+        captured.append(json.loads(request.data))
+        return FakeResponse()
+
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    monkeypatch.setattr(alerts_module, "urlopen", fake_urlopen)
+
+    exit_code = run(["--database", populated_database, "brief", "--send"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert len(captured) == 1
+    assert "Delivered to 1/1 configured channel(s)." in output
+
+
+def test_brief_send_fails_when_every_configured_channel_fails_to_deliver(
+    populated_database, capsys, monkeypatch
+):
+    """A scheduled `run && brief --send` line must not read as healthy to
+    cron/monitoring (which only sees this command's own exit code) when
+    every configured sink failed or timed out and nobody actually received
+    the briefing."""
+    monkeypatch.setenv("PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL", "https://hooks.example/x")
+
+    def failing_urlopen(request, timeout=None):
+        raise OSError("simulated webhook outage")
+
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    monkeypatch.setattr(alerts_module, "urlopen", failing_urlopen)
+
+    exit_code = run(["--database", populated_database, "brief", "--send"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "Delivered to 0/1 configured channel(s)." in output
+
+
+def test_run_command_dry_run_does_not_create_the_lock_file(
+    tmp_path, fixture_fetcher, capsys, monkeypatch
+):
+    """``run --dry-run`` never writes an observation (see the read-only
+    store), so it cannot race a concurrent run into duplicate/corrupted
+    writes -- the only thing SingleInstanceLock exists to prevent.
+    Acquiring it anyway would still create the lock directory and open a
+    persistent lock file for writing, contradicting the CLI's own "nothing
+    persisted" dry-run message."""
+    monkeypatch.setattr(
+        cli,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"], store=kwargs["store"], fetcher=fixture_fetcher()
+        ),
+    )
+    lock_path = tmp_path / "collection.lock"
+
+    exit_code = run(
+        [
+            "--database",
+            str(tmp_path / "observations.db"),
+            "run",
+            "--dry-run",
+            "--lock-file",
+            str(lock_path),
+        ]
+    )
+    capsys.readouterr()
+
+    assert exit_code == 0
+    assert not lock_path.exists()
+
+
+def test_run_command_dry_run_ignores_a_held_lock(tmp_path, fixture_fetcher, capsys, monkeypatch):
+    """A dry run needs no exclusivity (it writes nothing), so it must not be
+    skipped as EXIT_ALREADY_RUNNING just because a real collection currently
+    holds the same lock file -- a preview should always be available."""
+    from balance_pricing_engine.pricing_intelligence.locking import SingleInstanceLock
+
+    monkeypatch.setattr(
+        cli,
+        "PricingIntelligenceService",
+        lambda **kwargs: PricingIntelligenceService(
+            config=kwargs["config"], store=kwargs["store"], fetcher=fixture_fetcher()
+        ),
+    )
+    lock_path = tmp_path / "collection.lock"
+
+    with SingleInstanceLock(lock_path):
+        exit_code = run(
+            [
+                "--database",
+                str(tmp_path / "observations.db"),
+                "run",
+                "--dry-run",
+                "--lock-file",
+                str(lock_path),
+            ]
+        )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Skipped" not in output
+
+
+def test_run_command_reports_already_running(tmp_path, capsys):
+    from balance_pricing_engine.pricing_intelligence.locking import SingleInstanceLock
+
+    lock_path = tmp_path / "collection.lock"
+    database = tmp_path / "observations.db"
+
+    with SingleInstanceLock(lock_path):
+        exit_code = run(
+            ["--database", str(database), "run", "--lock-file", str(lock_path)]
+        )
+
+    output = capsys.readouterr().out
+    assert exit_code == 3  # EXIT_ALREADY_RUNNING
+    assert "Skipped" in output
+
+
+def test_run_command_default_lock_file_is_derived_from_product(tmp_path, capsys, monkeypatch):
+    """Without an explicit --lock-file, `run` must derive the same default
+    lock path scripts/collect_market_rates_workflow.py derives (see
+    orchestration.default_lock_file_path) -- otherwise an interactive
+    `pricing-intelligence run` and the deployed scheduled job for the same
+    product could acquire different locks and collect concurrently against
+    the same database."""
+    from balance_pricing_engine.pricing_intelligence.locking import SingleInstanceLock
+    from balance_pricing_engine.pricing_intelligence.orchestration import (
+        default_lock_file_path,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    database = Path("observations.db")
+    lock_path = Path(default_lock_file_path("home_loan", database))
+
+    with SingleInstanceLock(lock_path):
+        exit_code = run(["--database", str(database), "run"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 3  # EXIT_ALREADY_RUNNING
+    assert "Skipped" in output
+
+
+# --------------------------------------------------------------- health command
+
+
+def test_health_reports_ok_on_an_empty_database(tmp_path, capsys):
+    exit_code = run(["--database", str(tmp_path / "empty.db"), "health"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Database: OK" in output
+    assert "Last run: none recorded yet" in output
+    assert "UNKNOWN" in output
+    assert "Telegram: not configured" in output
+    assert "Latest market snapshot: EMPTY" in output
+
+
+def test_health_reports_a_run_and_collector_status(tmp_path, fixture_fetcher, capsys):
+    from balance_pricing_engine.pricing_intelligence.orchestration import run_operational_cycle
+
+    database = tmp_path / "observations.db"
+    config = PricingIntelligenceConfig(
+        database_path=str(database), collection=CollectionConfig(inter_request_delay_seconds=0)
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        run_operational_cycle(service, alert_sinks={})
+
+    exit_code = run(["--database", str(database), "health"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Last run:" in output
+    assert "FRESH" in output
+    assert "Latest market snapshot: VALID" in output
+
+
+def test_health_marks_a_bank_stale_once_past_the_freshness_window(
+    tmp_path, fixture_fetcher, capsys
+):
+    """A bank that stops being attempted at all (scheduling disabled, the
+    machine off for a while) never fails again, so consecutive_failures
+    alone would report it FRESH indefinitely -- even once its last success
+    is older than max_observation_age_hours and the market snapshot has
+    already discarded its rates as stale. The two must not contradict each
+    other.
+
+    Collector-health timestamps come from run_operational_cycle's own
+    started_at (real wall-clock), not the simulated captured_at_utc, so a
+    stale last_success_at is set up directly via update_collector_health()
+    rather than by backdating a full operational cycle."""
+    database = tmp_path / "observations.db"
+    config = PricingIntelligenceConfig(
+        database_path=str(database),
+        collection=CollectionConfig(inter_request_delay_seconds=0),
+        max_observation_age_hours=1.0,
+    )
+    stale_capture = datetime.now(timezone.utc) - timedelta(hours=2)
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=stale_capture, persist_snapshot=False)
+        for bank in config.selected_banks:
+            service.store.update_collector_health(
+                bank, "home_loan", success=True, at=stale_capture
+            )
+
+    # --database alone only overrides database_path -- max_observation_age_hours
+    # must come from a --config YAML, or the CLI falls back to the default
+    # 168h band and this 2-hour-old observation never reads as stale.
+    engine_config_path = tmp_path / "engine.yaml"
+    engine_config_path.write_text(
+        yaml.dump(
+            _minimal_engine_config(
+                database_path=str(database),
+                max_observation_age_hours=1.0,
+            )
+        )
+    )
+
+    exit_code = run(["--config", str(engine_config_path), "health"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "STALE" in output
+    assert "Latest market snapshot: EMPTY" in output
+
+
+def test_health_reports_telegram_configured(populated_database, capsys, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "-100999")
+
+    exit_code = run(["--database", populated_database, "health"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Telegram: configured" in output
+
+
+def test_health_exits_nonzero_when_the_database_is_broken(populated_database, capsys):
+    with ObservationStore(populated_database) as store:
+        store._connection.execute("UPDATE observations SET rate_pct = 999")
+        store._connection.commit()
+
+    exit_code = run(["--database", populated_database, "health"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "ISSUES DETECTED" in output
+    assert "plausible rate bounds" in output
+
+
+def test_health_uses_configured_validation_bounds(populated_database, tmp_path, capsys):
+    """A --config-supplied validation band must be what check_integrity()
+    applies, not silently-constructed default thresholds -- otherwise the
+    health command can report 'Database: OK' for a value outside a stricter
+    configured band. populated_database's stored rates are ~4.79-4.89%,
+    comfortably inside the default max_mortgage_rate_pct (15.0); a config
+    tightening it to 4.0 must make the same data flag as implausible."""
+    engine_config_path = tmp_path / "engine.yaml"
+    engine_config_path.write_text(
+        yaml.dump(
+            _minimal_engine_config(
+                database_path=populated_database,
+                validation={"max_mortgage_rate_pct": 4.0},
+            )
+        )
+    )
+
+    exit_code = run(["--config", str(engine_config_path), "health"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "ISSUES DETECTED" in output
+    assert "plausible rate bounds" in output
+
+
+# --------------------------------------------------------- telegram-test command
+
+
+def test_telegram_test_reports_not_configured(capsys, monkeypatch):
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+    exit_code = run(["telegram-test"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "not configured" in output
+
+
+def test_telegram_test_sends_the_fixed_message(capsys, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "-100999")
+    captured = []
+
+    def fake_urlopen(request, timeout=None):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+        captured.append(json.loads(request.data))
+        return FakeResponse()
+
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    monkeypatch.setattr(alerts_module, "urlopen", fake_urlopen)
+
+    exit_code = run(["telegram-test"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert len(captured) == 1
+    assert captured[0]["chat_id"] == "-100999"
+    assert "NZ Pricing Intelligence Telegram test successful." in captured[0]["text"]
+    assert "Sent:" in output
+
+
+def test_telegram_test_reports_a_delivery_failure(capsys, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "-100999")
+
+    def broken_urlopen(request, timeout=None):
+        raise ConnectionError("telegram unreachable")
+
+    from balance_pricing_engine.pricing_intelligence import alerts as alerts_module
+
+    monkeypatch.setattr(alerts_module, "urlopen", broken_urlopen)
+
+    exit_code = run(["telegram-test"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "Telegram test failed" in output
+
+
+# ------------------------------------------------------------------ backup command
+
+
+def test_backup_writes_a_timestamped_copy(populated_database, tmp_path, capsys):
+    destination = tmp_path / "backups"
+
+    exit_code = run(["--database", populated_database, "backup", "--destination", str(destination)])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Backup written to" in output
+    assert len(list(destination.glob("*.db"))) == 1
+
+
+def test_backup_reports_when_there_is_no_database_yet(tmp_path, capsys):
+    exit_code = run(
+        ["--database", str(tmp_path / "missing.db"), "backup", "--destination", str(tmp_path / "backups")]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "nothing to back up" in output
