@@ -1358,6 +1358,96 @@ def test_a_missed_scenario_is_recovered_on_a_later_run_with_no_new_change(
     assert runs[0]["term_months"] == 12
 
 
+def test_a_scenario_triggered_this_run_is_not_recomputed_later(tmp_path, fixture_fetcher):
+    """generated_at must reflect real scenario-completion time (replay_now),
+    not the run's pre-collection started_at -- started_at is captured
+    strictly before service.collect() assigns detected_at, so persisting
+    with generated_at=started_at would make _missed_scenario_trigger_terms()
+    think the just-written scenario never covers its own triggering change,
+    redundantly recomputing it on every run within the replay window.
+
+    No explicit captured_at_utc for the triggering run: real wall-clock
+    time is what actually orders started_at before detected_at in
+    production. The module's fixed DAY_ONE/DAY_TWO are weeks in the past by
+    the time this suite runs, so a real started_at (captured at test
+    execution) would trivially satisfy generated_at >= detected_at either
+    way -- a false pass that would not catch the regression."""
+    config = _config(tmp_path)
+    calls = []
+
+    def trigger_fn(terms, snapshot):
+        calls.append(tuple(terms))
+        return {term: _fake_scenario_result(term) for term in terms}
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+        service._fetcher = fixture_fetcher(mutate=_mutate_anz_one_year)
+        run_operational_cycle(service, alert_sinks={}, scenario_trigger_fn=trigger_fn)
+        assert calls == [(12,)]
+
+        run_operational_cycle(service, alert_sinks={}, scenario_trigger_fn=trigger_fn)
+
+    assert calls == [(12,)], "the first run's scenario already covers its own triggering change"
+
+
+def test_each_triggering_change_on_the_same_term_is_covered_independently(
+    tmp_path, fixture_fetcher
+):
+    """If the same term moves twice within the replay window and the newer
+    change's own run never gets a scenario triggered for it (e.g. no
+    scenario_trigger_fn wired that run, mirroring a crash before this run's
+    own trigger step), a later run must still recover the newer change --
+    an older change's scenario, generated before the newer change was even
+    detected, must not make the whole term look already covered."""
+    config = _config(tmp_path)
+    calls = []
+
+    def trigger_fn(terms, snapshot):
+        calls.append(tuple(terms))
+        return {term: _fake_scenario_result(term) for term in terms}
+
+    def mutate_bnz_one_year(bank, html):
+        if bank == "ANZ":
+            return html.replace("<td>1 year</td><td>4.79%", "<td>1 year</td><td>4.59%")
+        if bank == "BNZ":
+            return html.replace("<td>1 year</td><td>4.85%", "<td>1 year</td><td>4.65%")
+        return html
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+        # ANZ moves first -- this run's own trigger_fn covers it.
+        service._fetcher = fixture_fetcher(mutate=_mutate_anz_one_year)
+        run_operational_cycle(
+            service, captured_at_utc=DAY_TWO, alert_sinks={}, scenario_trigger_fn=trigger_fn
+        )
+        assert calls == [(12,)]
+
+        # BNZ moves the same term the next day -- no scenario_trigger_fn
+        # wired this run, as if the process died before reaching it.
+        day_three = DAY_TWO + timedelta(days=1)
+        service._fetcher = fixture_fetcher(mutate=mutate_bnz_one_year)
+        missed = run_operational_cycle(service, captured_at_utc=day_three, alert_sinks={})
+        assert len(missed.outcome.changes) == 1
+
+        # A later, otherwise-quiet cycle must still recover BNZ's change --
+        # ANZ's earlier scenario must not make the term look covered.
+        day_four = day_three + timedelta(days=1)
+        result = run_operational_cycle(
+            service, captured_at_utc=day_four, alert_sinks={}, scenario_trigger_fn=trigger_fn
+        )
+
+    assert calls == [(12,), (12,)]
+    with ObservationStore(config.database_path) as store:
+        runs = store.get_scenario_runs(result.run_record.run_id)
+    assert len(runs) == 1
+    assert runs[0]["term_months"] == 12
+
+
 def test_triggered_scenario_enriches_the_rate_move_alert(tmp_path, fixture_fetcher):
     config = _config(tmp_path)
     sink = CollectingAlertSink()

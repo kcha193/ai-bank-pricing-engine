@@ -754,14 +754,26 @@ def _missed_scenario_trigger_terms(
     ]
     if not candidates:
         return []
+    # Collapsed to the latest change per term, not every candidate: if the
+    # same term moved twice in the replay window and only the older change
+    # has a scenario generated after it, a per-candidate union would still
+    # mark the term covered even though the newer, later-detected change
+    # triggered no analysis of its own.
+    latest_by_term: dict[int, RateChange] = {}
+    for change in candidates:
+        current = latest_by_term.get(change.term_months)
+        if current is None or change.detected_at > current.detected_at:
+            latest_by_term[change.term_months] = change
     recent_scenarios = store.get_recent_scenario_runs(product_type=product_type, limit=200)
     covered_terms = {
-        change.term_months
-        for change in candidates
-        for row in recent_scenarios
-        if row["term_months"] == change.term_months and row["generated_at"] >= change.detected_at
+        term_months
+        for term_months, change in latest_by_term.items()
+        if any(
+            row["term_months"] == term_months and row["generated_at"] >= change.detected_at
+            for row in recent_scenarios
+        )
     }
-    missing = {change.term_months for change in candidates} - covered_terms
+    missing = set(latest_by_term) - covered_terms
     return sorted(missing)
 
 
@@ -1004,6 +1016,14 @@ def run_operational_cycle(
     """
     product_type = ProductType(product_type)
     started_at = datetime.now(timezone.utc)
+    # Resolved here, not left for service.collect() to default internally:
+    # that would call its own later datetime.now(), always strictly after
+    # started_at, so replay_now/generated_at below (captured_at_utc or
+    # started_at) would keep pairing with an earlier timestamp than the
+    # detected_at collect() actually stamped -- reintroducing the
+    # generated_at-before-detected_at bug for every real-time caller that
+    # (like a live scheduled run) does not pass an explicit captured_at_utc.
+    captured_at_utc = captured_at_utc or started_at
     operational_run_id = run_id or uuid.uuid4().hex
 
     outcome = service.collect(
@@ -1090,13 +1110,25 @@ def run_operational_cycle(
             )
             scenarios_by_term = {}
         if not dry_run:
+            # Anchored on replay_now (== captured_at_utc when the caller
+            # provides one, exactly matching service.collect()'s own
+            # detected_at=captured_at_utc), not started_at: started_at is
+            # captured before service.collect() runs, so generated_at=
+            # started_at would always sort before a triggering change's
+            # detected_at and _missed_scenario_trigger_terms() would treat
+            # this just-written scenario as not yet covering the change that
+            # triggered it -- redundantly rerunning scenario_trigger_fn for
+            # the same term on every run within the replay window. A fresh
+            # datetime.now(timezone.utc) would only mask this by coincidence
+            # for real-time callers and reintroduce it for anyone backfilling
+            # a past captured_at_utc.
             for term, comparison in scenarios_by_term.items():
                 service.store.write_scenario_run(
                     operational_run_id,
                     product_type,
                     term,
                     comparison.data,
-                    generated_at=started_at,
+                    generated_at=replay_now,
                 )
 
     alerts_sent = 0
