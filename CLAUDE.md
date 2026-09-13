@@ -166,36 +166,15 @@ The boundary fields distinguish "needed expansion" from "still hitting boundary 
 - Step-by-step business+technical walkthrough: [docs/usage_guide.md](docs/usage_guide.md) (includes restricted-network setup).
 - Run ledger usage guide: [docs/run_ledger_guide.md](docs/run_ledger_guide.md) (how to produce, read, and sign off ledger artifacts).
 
-## Context Navigation (Graphify + Codebase Memory)
+## Context Navigation
 
-### 4-Layer Query Rule
-1. **First:** query `graphify-out/graph.json` or `graphify-out/wiki/index.md`
-   to understand code structure and connections
-2. **Second:** query the Obsidian vault for decisions, progress, and project context
-3. **Third:** for live/ad-hoc structural questions the static graphify graph
-   doesn't answer (call chains, impact of uncommitted changes, dead code,
-   symbol search), use codebase-memory-mcp's MCP tools directly. Call
-   `detect_changes` first — it does not auto-watch or auto-reindex; if it
-   reports drift, re-run `index_repository` before trusting graph results
-4. **Fourth:** only read raw code files when editing
-   or when the first three layers don't have the answer
-
-### When to rebuild the graph
-- After structural changes (new modules, major refactors)
-- Headless: `graphify update .` (only processes modified files)
-- Skill: `/graphify . --update` (same behavior, runs through the skill — also accepts `--obsidian` to refresh the vault)
-- The graph is persistent — NO need to rebuild every session
-
-### Do NOT
-- Don't manually modify files inside `graphify-out/`
-- Don't re-read the entire codebase if the graph already has the information
-
-### Codebase Memory (codebase-memory-mcp)
-- codebase-memory-mcp is a structural code index only; it has no LLM inside it.
-- It does not replace graphify or `AI_Context`.
-- If this project is not already indexed in the current agent session, ask the
-  agent to "index this project" once.
-- Its cache lives outside the repo at `~/.cache/codebase-memory-mcp/`.
+<!-- context-navigation:start v1 -->
+Follow the global context-navigation rule (`~/.claude/CLAUDE.md` for Claude,
+`~/.codex/AGENTS.md` for Codex): vault first; Claude uses native search;
+Codex uses codebase-memory-mcp (`detect_changes` first); Graphify only on request.
+- `graphify-out/` is a dated snapshot, not auto-refreshed — check its age before trusting it; don't hand-edit it.
+- codebase-memory-mcp is registered for Codex by this repo's `.codex/config.toml`, which Codex loads only for trusted projects.
+<!-- context-navigation:end -->
 
 ## Session wrap-up
 
