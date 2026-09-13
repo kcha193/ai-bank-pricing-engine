@@ -1107,15 +1107,35 @@ def run_operational_cycle(
             )
         )
     if triggered_terms:
-        # now=replay_now, not the default real wall clock: a caller
-        # backfilling/replaying a captured_at_utc more than
-        # max_observation_age_hours behind actual "now" would otherwise have
-        # every just-collected observation filtered as stale, handing
-        # scenario_trigger_fn an empty snapshot that cannot resolve the
-        # triggering term -- silently dropping the scenario comparison for a
-        # run whose change and replay window were both evaluated on the
-        # historical clock.
-        scenario_snapshot = service.get_market_snapshot(product_type=product_type, now=replay_now)
+        if outcome.already_recorded:
+            # Reconstructed as of this specific run's own committed
+            # position, not a staleness clock: outcome.already_recorded
+            # means operational_run_id was already persisted by an earlier
+            # attempt, so its collection_runs row already exists -- but a
+            # plain now=replay_now snapshot still reads
+            # get_current_observations()'s *latest* rows regardless of
+            # "now", which can belong to genuinely newer runs committed
+            # since this one. A missed scenario recovered for this old,
+            # retried run must be computed from the market as it stood at
+            # that run, not from rates a later collection has since moved.
+            scenario_snapshot = service.get_market_snapshot(
+                product_type=product_type, as_of_run_id=operational_run_id
+            )
+        else:
+            # now=replay_now, not the default real wall clock: a caller
+            # backfilling/replaying a captured_at_utc more than
+            # max_observation_age_hours behind actual "now" would otherwise
+            # have every just-collected observation filtered as stale,
+            # handing scenario_trigger_fn an empty snapshot that cannot
+            # resolve the triggering term -- silently dropping the scenario
+            # comparison for a run whose change and replay window were both
+            # evaluated on the historical clock. Not used for an
+            # already-recorded retry (see above): as_of_run_id there
+            # reconstructs an exact position rather than applying a cutoff,
+            # and this run's own collection_runs row may not exist at all
+            # for a fresh run that failed outright, which as_of_run_id
+            # would otherwise misread as "no observations".
+            scenario_snapshot = service.get_market_snapshot(product_type=product_type, now=replay_now)
         try:
             scenarios_by_term = dict(scenario_trigger_fn(triggered_terms, scenario_snapshot))
         except Exception:  # noqa: BLE001 - decision-support only, must not abort the cycle

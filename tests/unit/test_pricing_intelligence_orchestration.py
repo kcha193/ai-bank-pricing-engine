@@ -1392,6 +1392,62 @@ def test_scenario_snapshot_uses_the_replay_clock_not_real_time(tmp_path, fixture
     assert 12 in snapshots[0].terms
 
 
+def test_a_retried_run_reconstructs_its_scenario_snapshot_as_of_itself(tmp_path, fixture_fetcher):
+    """A retry of an already-recorded run_id must compute a recovered
+    scenario off the market as it stood at that run, not off collections
+    committed since. now=replay_now alone is not enough:
+    get_market_snapshot()'s get_current_observations() path always returns
+    each key's *latest* row regardless of "now" -- "now" only bounds
+    staleness, so a newer run's data still leaks into a retry's snapshot.
+    as_of_run_id=operational_run_id reconstructs the exact position
+    instead, which the returned snapshot's own as_of makes observable."""
+    config = _config(tmp_path)
+    snapshots = []
+
+    def trigger_fn(terms, snapshot):
+        snapshots.append(snapshot)
+        return {term: _fake_scenario_result(term) for term in terms}
+
+    def mutate_westpac_two_year(bank, html):
+        if bank == "Westpac":
+            return html.replace("<td>2 years</td><td>5.09%", "<td>2 years</td><td>4.89%")
+        return html
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+        # ANZ moves term 12 -- no scenario_trigger_fn wired, so this change
+        # is detected but never gets its own scenario (a missed trigger).
+        service._fetcher = fixture_fetcher(mutate=_mutate_anz_one_year)
+        run_operational_cycle(service, captured_at_utc=DAY_TWO, run_id="run-a", alert_sinks={})
+
+        # A later, unrelated collection: Westpac moves a *different* term,
+        # advancing the store's "current" state without disturbing term
+        # 12's own latest triggering change (still ANZ's, from run-a).
+        day_three = DAY_TWO + timedelta(days=1)
+        service._fetcher = fixture_fetcher(mutate=mutate_westpac_two_year)
+        run_operational_cycle(service, captured_at_utc=day_three, alert_sinks={})
+
+        # Retry run-a (same run_id, same captured_at_utc) -- now with
+        # scenario_trigger_fn wired, missed-trigger recovery fires for
+        # ANZ's still-uncovered term-12 change.
+        run_operational_cycle(
+            service,
+            captured_at_utc=DAY_TWO,
+            run_id="run-a",
+            alert_sinks={},
+            scenario_trigger_fn=trigger_fn,
+        )
+
+    assert len(snapshots) == 1
+    assert snapshots[0].as_of == DAY_TWO, (
+        "a retry's recovered scenario must be computed as of the retried run's own "
+        "position, not a later collection's"
+    )
+
+
 def test_a_scenario_triggered_this_run_is_not_recomputed_later(tmp_path, fixture_fetcher):
     """generated_at must reflect real scenario-completion time (replay_now),
     not the run's pre-collection started_at -- started_at is captured
