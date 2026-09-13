@@ -121,6 +121,22 @@ def test_a_later_successful_backup_still_prunes_correctly_after_a_failure(
     assert backups[0].name == "obs-20260102T000000Z.db"
 
 
+def test_backup_refuses_a_missing_source_database(tmp_path):
+    """sqlite3.connect() silently creates a new, empty database file for a
+    nonexistent path instead of failing -- without this guard,
+    backup_database() would "successfully" publish that empty database as a
+    backup and prune older, still-good copies via its mere presence. Must
+    raise before ever touching the destination directory or sqlite3."""
+    db = tmp_path / "does-not-exist.db"
+    dest = tmp_path / "backups"
+
+    with pytest.raises(FileNotFoundError):
+        backup_database(db, dest)
+
+    assert not dest.exists(), "must fail before creating the destination directory"
+    assert not db.exists(), "must not have created an empty database at the missing source path"
+
+
 def test_backup_destination_is_created_if_missing(tmp_path):
     db = tmp_path / "obs.db"
     _make_db(db)

@@ -27,9 +27,22 @@ def backup_database(
     taken while the database is open elsewhere is still transactionally
     consistent, rather than risking a torn read mid-write.
 
+    Raises ``FileNotFoundError`` if ``database_path`` does not exist --
+    checked here, not left to the caller: ``sqlite3.connect()`` silently
+    *creates* a new, empty database file for a nonexistent path instead of
+    failing, which would otherwise let this function "successfully" back up
+    nothing and prune older, still-good backups via that empty copy's
+    presence. The CLI's own existence check (see ``cli._backup``) narrows
+    the window but cannot close it -- the source can still disappear
+    between that check and this call, and this function is also called
+    directly (e.g. in tests, or a future scheduled workflow) without going
+    through the CLI at all.
+
     Returns the path of the backup just written.
     """
     database_path = Path(database_path)
+    if not database_path.is_file():
+        raise FileNotFoundError(f"cannot back up a missing database: {database_path}")
     destination_dir = Path(destination_dir)
     destination_dir.mkdir(parents=True, exist_ok=True)
 
