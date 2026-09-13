@@ -2134,6 +2134,46 @@ class ObservationStore:
             for row in rows
         ]
 
+    def run_ordered_at_or_after(
+        self,
+        later_run_id: Optional[str],
+        later_timestamp: datetime,
+        earlier_run_id: Optional[str],
+        earlier_timestamp: datetime,
+    ) -> bool:
+        """True when the run named by ``later_run_id`` happened at the same
+        moment as or strictly after ``earlier_run_id``.
+
+        Compares each side's ``collection_runs`` row by ``(started_at,
+        rowid)`` -- the same ordering :meth:`latest_run_id` and the
+        module-level ``_run_ordered_after`` SQL fragment use -- so two runs
+        sharing a ``captured_at_utc`` tie (an explicit backfill/replay
+        timestamp reused across calls is a supported case; see
+        :meth:`record_observations`) are still ordered correctly by which
+        run was actually persisted first, rather than comparing the tied
+        timestamps directly and treating them as simultaneous. Falls back to
+        comparing ``later_timestamp``/``earlier_timestamp`` directly when
+        either run_id does not correlate to a stored ``collection_runs`` row
+        (or is ``None``) -- there is nothing to compare against.
+        """
+        if later_run_id is not None and later_run_id == earlier_run_id:
+            return True
+        order_keys: dict[str, tuple[str, int]] = {}
+        run_ids = [run_id for run_id in (later_run_id, earlier_run_id) if run_id is not None]
+        if run_ids:
+            placeholders = ", ".join("?" for _ in run_ids)
+            rows = self._connection.execute(
+                f"SELECT run_id, started_at, rowid FROM collection_runs "
+                f"WHERE run_id IN ({placeholders})",
+                run_ids,
+            ).fetchall()
+            order_keys = {row["run_id"]: (row["started_at"], row["rowid"]) for row in rows}
+        later_key = order_keys.get(later_run_id) if later_run_id is not None else None
+        earlier_key = order_keys.get(earlier_run_id) if earlier_run_id is not None else None
+        if later_key is not None and earlier_key is not None:
+            return later_key >= earlier_key
+        return later_timestamp >= earlier_timestamp
+
     def record_collector_health_alert(
         self, bank: str, product_type: ProductType | str, at: Optional[datetime] = None
     ) -> None:

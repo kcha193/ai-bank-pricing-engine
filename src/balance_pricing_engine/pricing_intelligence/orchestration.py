@@ -769,7 +769,17 @@ def _missed_scenario_trigger_terms(
         term_months
         for term_months, change in latest_by_term.items()
         if any(
-            row["term_months"] == term_months and row["generated_at"] >= change.detected_at
+            row["term_months"] == term_months
+            # run-order aware, not a bare generated_at >= detected_at
+            # timestamp compare: two different runs can share the exact
+            # same captured_at_utc (an explicit backfill/replay timestamp
+            # reused across calls is supported -- see
+            # ObservationStore.record_observations), which would otherwise
+            # let an older run's scenario satisfy the >= check for a
+            # different, later-persisted run's change on the same term.
+            and store.run_ordered_at_or_after(
+                row["run_id"], row["generated_at"], change.run_id, change.detected_at
+            )
             for row in recent_scenarios
         )
     }

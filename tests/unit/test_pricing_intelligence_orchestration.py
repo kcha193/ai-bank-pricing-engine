@@ -1448,6 +1448,65 @@ def test_each_triggering_change_on_the_same_term_is_covered_independently(
     assert runs[0]["term_months"] == 12
 
 
+def test_scenario_coverage_uses_run_order_not_a_tied_timestamp(tmp_path, fixture_fetcher):
+    """Two different operational runs can share the exact same
+    captured_at_utc -- an explicit, supported backfill/replay timestamp
+    reused across calls (see ObservationStore.record_observations), not an
+    error -- so a bare generated_at >= detected_at timestamp compare cannot
+    tell which run a tied scenario actually belongs to. If the same term
+    moves in both tied runs and the later one (by actual persistence order)
+    never gets its own scenario triggered, the earlier tied run's scenario
+    must not be allowed to mask it -- run order (collection_runs'
+    (started_at, rowid)), not the tied timestamp, must decide coverage."""
+    config = _config(tmp_path)
+    calls = []
+
+    def trigger_fn(terms, snapshot):
+        calls.append(tuple(terms))
+        return {term: _fake_scenario_result(term) for term in terms}
+
+    def mutate_bnz_one_year(bank, html):
+        if bank == "ANZ":
+            return html.replace("<td>1 year</td><td>4.79%", "<td>1 year</td><td>4.59%")
+        if bank == "BNZ":
+            return html.replace("<td>1 year</td><td>4.85%", "<td>1 year</td><td>4.65%")
+        return html
+
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path), fetcher=fixture_fetcher()
+    ) as service:
+        service.collect(captured_at_utc=DAY_ONE, persist_snapshot=False)
+
+        # ANZ moves first -- this run's own trigger_fn covers it, persisting
+        # its scenario with generated_at == DAY_TWO.
+        service._fetcher = fixture_fetcher(mutate=_mutate_anz_one_year)
+        run_operational_cycle(
+            service, captured_at_utc=DAY_TWO, alert_sinks={}, scenario_trigger_fn=trigger_fn
+        )
+        assert calls == [(12,)]
+
+        # BNZ moves the same term in a second, later-persisted run that
+        # happens to share the exact same captured_at_utc as the run above
+        # -- no scenario_trigger_fn wired this run, as if the process died
+        # before reaching it.
+        service._fetcher = fixture_fetcher(mutate=mutate_bnz_one_year)
+        missed = run_operational_cycle(service, captured_at_utc=DAY_TWO, alert_sinks={})
+        assert len(missed.outcome.changes) == 1
+
+        # A later, otherwise-quiet cycle must still recover BNZ's change --
+        # ANZ's tied-timestamp scenario must not make the term look covered.
+        day_three = DAY_TWO + timedelta(days=1)
+        result = run_operational_cycle(
+            service, captured_at_utc=day_three, alert_sinks={}, scenario_trigger_fn=trigger_fn
+        )
+
+    assert calls == [(12,), (12,)]
+    with ObservationStore(config.database_path) as store:
+        runs = store.get_scenario_runs(result.run_record.run_id)
+    assert len(runs) == 1
+    assert runs[0]["term_months"] == 12
+
+
 def test_triggered_scenario_enriches_the_rate_move_alert(tmp_path, fixture_fetcher):
     config = _config(tmp_path)
     sink = CollectingAlertSink()
