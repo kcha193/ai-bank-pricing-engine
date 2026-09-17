@@ -213,9 +213,18 @@ def build_browser_fetcher(config: CollectionConfig) -> Fetcher:
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch(headless=True)
                 page = browser.new_page(user_agent=config.user_agent)
+                # Not "networkidle": these marketing pages carry persistent
+                # background chatter (chat widgets, analytics beacons) that
+                # can keep the network from ever going idle, so "networkidle"
+                # either times out (FetchError) or -- worse -- returns
+                # inconsistently, sometimes before the rate table has
+                # rendered (ParserError). Confirmed live against ASB and
+                # Westpac 2026-09-17: both render their rate table
+                # synchronously with the initial page load, well within a
+                # couple of seconds, with no additional async wait needed.
                 page.goto(
                     url,
-                    wait_until="networkidle",
+                    wait_until="load",
                     timeout=int(config.request_timeout_seconds * 1000),
                 )
                 html = page.content()

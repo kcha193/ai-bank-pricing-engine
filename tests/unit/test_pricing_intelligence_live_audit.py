@@ -32,7 +32,23 @@ def test_kiwibank_standard_column_keeps_its_low_equity_condition():
     assert (standard.max_lvr, standard.min_equity) == (None, None)
 
 
-def test_bnz_current_standard_header_and_distinct_floating_products_are_preserved():
+def test_bnz_sole_standard_header_folds_to_special_and_keeps_floating_distinct():
+    """BNZ renamed its headline fixed column from "Classic" to "Standard" and
+    moved its separate discretionary discount behind login, so this is now
+    the *only* fixed tier on the page -- confirmed live 2026-09-17 via the
+    column's own "More information" tooltip, which still requires at least
+    20% equity, unchanged from what "Classic" used to require. An earlier
+    version of this test asserted the opposite (rate_category "standard",
+    min_equity None) on the mistaken assumption that the rename also meant
+    the equity condition no longer applied; it did not verify against the
+    tooltip actually attached to the "Standard" header and caused every
+    scheduled BNZ collection to be excluded from the market comparison
+    (zero rows in the "special" category -- see
+    orchestration._zero_comparable_rate_failures). See BNZCollector's
+    class docstring for how parse_mortgage_html() detects "no dedicated
+    second tier on this page" and folds the row back to the same
+    default_fixed_category path an unmarked row would take.
+    """
     html = """<table><tr><th>Term</th><th>Standard Fixed or floating</th>
     <th>TotalMoney Offset</th><th>Rapid Repay Revolving</th><th>Mortgage One Revolving</th></tr>
     <tr><td>Floating</td><td>6.09%</td><td>6.19%</td><td>6.19%</td><td>6.19%</td></tr>
@@ -42,8 +58,9 @@ def test_bnz_current_standard_header_and_distinct_floating_products_are_preserve
     )
     fixed = [r for r in result.records if r.term_months_normalised == 12]
     floating = [r for r in result.records if r.term_months_normalised is None]
-    assert fixed[0].rate_category == "standard"
-    assert fixed[0].min_equity is None
+    assert fixed[0].rate_category == "special"
+    assert (fixed[0].max_lvr, fixed[0].min_equity) == (0.80, 0.20)
+    assert fixed[0].lvr_condition == "min_20_percent_equity"
     assert len(floating) == 4
     assert len({r.observation_key() for r in floating}) == 4
     assert len(validate_observations(result.records).accepted) == 5
