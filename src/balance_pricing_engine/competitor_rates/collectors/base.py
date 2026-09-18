@@ -201,6 +201,7 @@ def build_browser_fetcher(config: CollectionConfig) -> Fetcher:
 
     def fetch(url: str) -> bytes:
         try:
+            from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
             from playwright.sync_api import sync_playwright
         except ImportError as exc:  # pragma: no cover - depends on optional extra
             raise FetchError(
@@ -218,15 +219,38 @@ def build_browser_fetcher(config: CollectionConfig) -> Fetcher:
                 # can keep the network from ever going idle, so "networkidle"
                 # either times out (FetchError) or -- worse -- returns
                 # inconsistently, sometimes before the rate table has
-                # rendered (ParserError). Confirmed live against ASB and
-                # Westpac 2026-09-17: both render their rate table
-                # synchronously with the initial page load, well within a
-                # couple of seconds, with no additional async wait needed.
+                # rendered (ParserError).
                 page.goto(
                     url,
                     wait_until="load",
                     timeout=int(config.request_timeout_seconds * 1000),
                 )
+                # "load" alone is not sufficient for every bank: BNZ's rate
+                # table is populated by a client-side XHR
+                # (api.bnz.co.nz/v1/ratesfeed/home/xml) fired after the
+                # "load" event, not present in the initial document -- a
+                # 2026-09-17 change dropped "networkidle" without accounting
+                # for this and broke BNZ's live collection (confirmed via the
+                # collector canary and a live re-check 2026-09-18). Waiting
+                # for an actual advertised-rate percentage to appear in the
+                # rendered text is a universal readiness signal across every
+                # bank's markup, unlike a bank-specific CSS selector: it
+                # resolves near-instantly for a bank whose table is already
+                # in the initial document (ASB confirmed 2026-09-17; Westpac
+                # too, though it can still fail downstream for unrelated
+                # reasons -- see ParserError), and gives an async-rendering
+                # bank like BNZ the time its XHR actually needs. A timeout
+                # here is not re-raised: the page still loaded, so this falls
+                # through to the ordinary "no rates confidently extracted"
+                # ParserError downstream rather than masking that outcome as
+                # a FetchError.
+                try:
+                    page.wait_for_function(
+                        "() => /\\d+(?:\\.\\d+)?\\s*%/.test(document.body.innerText)",
+                        timeout=int(config.request_timeout_seconds * 1000),
+                    )
+                except PlaywrightTimeoutError:
+                    pass
                 html = page.content()
                 browser.close()
             return html.encode("utf-8")
