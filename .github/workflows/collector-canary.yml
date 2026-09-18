@@ -9,6 +9,14 @@ name: Collector canary
 # history accrues locally via deploy/scheduling/ (see docs/pricing_intelligence.md).
 # This job collects into a throwaway database and reports only whether each
 # collector still parses its page.
+#
+# Before assuming a red run means a parser regression, read "Known
+# Limitations" in docs/competitor_rate_ingestion.md: ASB, Westpac, Kiwibank,
+# and intermittently BNZ show failure signatures consistent with bot
+# mitigation (Akamai) reacting to this runner's shared IP range, not parser
+# bugs -- confirmed 2026-09-18 by reproducing (or failing to reproduce) the
+# same fetch from other networks. Re-running this workflow repeatedly to
+# chase that down is likely to make it worse, not better.
 
 on:
   schedule:

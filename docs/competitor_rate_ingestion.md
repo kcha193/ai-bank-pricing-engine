@@ -142,3 +142,20 @@ warnings and continues with available validated rates.
   models them.
 - This project uses synthetic data and is not financial advice. Rates must be verified before
   business use.
+- **GitHub-hosted collector-canary failures are not necessarily parser bugs** (investigated
+  2026-09-18). ASB has failed with `net::ERR_HTTP2_PROTOCOL_ERROR` on literally every canary run
+  since 2026-09-08, but the same URL, same Playwright `headless=True` launch, and the same
+  collector user agent fetch successfully from every other network tested, including a live
+  re-check the same day. Westpac, Kiwibank, and (intermittently) BNZ show a second, non-deterministic
+  pattern: the page loads (200) but the parser finds no rate content, and which bank fails changes
+  from run to run a few minutes apart with no code change in between. Kiwibank's rates page loads an
+  Akamai bot-manager pixel (`/akam/13/pixel_*`); the pattern across all four is consistent with
+  Akamai-style bot mitigation reacting to GitHub Actions' shared/datacenter IP ranges, not with a
+  parsing defect in this repo. Re-running the canary repeatedly to "confirm" a fix risks making this
+  worse, not better -- repeated bursts from the same runner IP are exactly the signal these systems
+  escalate on. A code change cannot fix this; it needs an infrastructure decision (e.g. a
+  self-hosted runner on a non-datacenter IP) if a live-green canary is required. Until then, canary
+  red from these four banks should be triaged against this note before assuming a parser regression.
+  BNZ's own async-rendered-table timing bug (`wait_until="load"` racing its
+  `api.bnz.co.nz/v1/ratesfeed/home/xml` XHR) was a genuine, separate, and now-fixed parser bug --
+  see `collectors/base.py`'s `build_browser_fetcher`.
