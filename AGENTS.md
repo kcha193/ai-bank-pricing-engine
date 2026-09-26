@@ -1,31 +1,36 @@
 # AI Bank Pricing Engine — Agent Instructions
 
-> This file is read by Codex and other agent runtimes. For Claude-session-specific architectural
-> detail see [CLAUDE.md](CLAUDE.md), which is the source of truth for module-level invariants.
+> Canonical instructions for Claude Code and Codex. `CLAUDE.md` imports this
+> file with `@AGENTS.md` — edit rules here, not there.
 
-## Context Navigation
+## What this project is
 
-<!-- context-navigation:start v1 -->
-Follow the global context-navigation rule (`~/.claude/CLAUDE.md` for Claude,
-`~/.codex/AGENTS.md` for Codex): vault first; Claude uses native search;
-Codex uses codebase-memory-mcp (`detect_changes` first); Graphify only on request.
-- `graphify-out/` is a dated snapshot, not auto-refreshed — check its age before trusting it; don't hand-edit it.
-- codebase-memory-mcp is registered for Codex by this repo's `.codex/config.toml`, which Codex loads only for trusted projects.
-<!-- context-navigation:end -->
+Python retail bank balance-sheet pricing engine. **Synthetic-data only.** **Portfolio-level** (one home-loan rate, one term-deposit rate) — not personalised. NZ context (default competitor banks: ANZ, ASB, Westpac, BNZ, Kiwibank).
 
-## Project context
+The engine maximises expected risk-adjusted profit subject to a funding-shortfall penalty, via exhaustive joint grid search with adaptive boundary expansion. A separate diagnostic ML layer trains response models on simulated outcomes and checks they recover sensible rate-response behaviour.
 
-Python retail bank balance-sheet pricing engine. **Synthetic data only. Portfolio-level only**
-(one home-loan rate, one term-deposit rate) — not personalised. NZ context.
+## Module map
 
-The engine maximises expected risk-adjusted profit subject to a funding-shortfall penalty via
-exhaustive joint grid search with adaptive boundary expansion.
+The per-module reference — responsibilities, seams, and the invariants each module carries — is in [docs/architecture.md → Module map](docs/architecture.md#module-map-agent-reference). Read the entry for every module you touch before editing it; **When making changes** below applies regardless.
 
-## Important commands
+Full flow diagram: [docs/architecture.md](docs/architecture.md) (includes the target-architecture Mermaid diagram). Modelling assumptions: [docs/modelling_assumptions.md](docs/modelling_assumptions.md). Governance: [docs/model_governance.md](docs/model_governance.md). Response model card: [docs/response_model_card.md](docs/response_model_card.md). Competitor ingestion: [docs/competitor_rate_ingestion.md](docs/competitor_rate_ingestion.md). Pricing intelligence: [docs/pricing_intelligence.md](docs/pricing_intelligence.md). Deployment: [docs/deployment.md](docs/deployment.md). Architecture decisions: [docs/adr/](docs/adr/).
+
+## Response model — dual elasticity
+
+Both loan acceptance and deposit uptake use **two elasticities** (see [configs/base.yaml](configs/base.yaml) `response:` block):
+
+- `loan_rate_elasticity` — own-rate sensitivity (negative for loans).
+- `loan_competitor_gap_elasticity` — sensitivity to gap vs competitor loan rate.
+- `deposit_rate_elasticity` — own-rate sensitivity (positive for deposits).
+- `deposit_competitor_gap_elasticity` — sensitivity to gap vs competitor deposit rate.
+
+Refactors that collapse these into a single elasticity term are **not equivalent** and will silently change recommendations.
+
+## Commands
 
 ```bash
 python3 -m pip install -e ".[dev]"
-python3 -m pytest -q                           # see live_rates warning below
+python3 -m pytest -q
 python3 -m ruff check .
 python3 examples/run_baseline.py
 python3 examples/run_governed_scenario.py
@@ -36,10 +41,22 @@ python3 examples/train_response_models.py
 
 # Optional FastAPI serving layer (requires the `api` extra):
 python3 -m pip install -e ".[api]"
-uvicorn balance_pricing_engine.api.app:app --reload   # /run-scenario, /v1/pricing/scenarios, /health, /ready
+uvicorn balance_pricing_engine.api.app:app --reload   # POST /run-scenario, /v1/pricing/scenarios, /health, /ready
 
 # Docker (see docs/deployment.md):
 docker build -t ai-bank-pricing-engine .
+docker run --rm -p 8000:8000 ai-bank-pricing-engine
+
+# NZ pricing-intelligence CLI:
+python3 -m balance_pricing_engine.pricing_intelligence collect --render-javascript
+python3 -m balance_pricing_engine.pricing_intelligence snapshot --term 12
+python3 -m balance_pricing_engine.pricing_intelligence changes --days 7
+python3 -m balance_pricing_engine.pricing_intelligence market-state
+python3 -m balance_pricing_engine.pricing_intelligence ocr
+python3 examples/run_market_intelligence_scenarios.py
+
+# Unattended/scheduled collection (see deploy/scheduling/):
+python3 scripts/collect_market_rates_workflow.py --render-javascript --summary-file data/processed/pricing_intelligence/last_run.json
 
 # Competitor-rate CLI (separate subcommand surface):
 python3 -m balance_pricing_engine.competitor_rates.cli fetch    --output-dir data/processed/competitor_rates
@@ -48,92 +65,86 @@ python3 -m balance_pricing_engine.competitor_rates.cli apply    --config configs
 python3 -m balance_pricing_engine.competitor_rates.cli report   --source-file <path>
 ```
 
-**`live_rates` pytest marker fetches real bank websites — never run in CI and never run without
-explicit intent.** Exclude it with: `python3 -m pytest -q -m 'not live_rates'`
+`live_rates` pytest marker is opt-in — fetches **real** bank pages. Do not run in CI or without intent. To exclude it explicitly: `python3 -m pytest -q -m 'not live_rates'`.
 
 ## Configuration
 
-[configs/base.yaml](configs/base.yaml) is the canonical config. Key rules:
+[configs/base.yaml](configs/base.yaml) is the canonical config. Key shapes:
 
-- Choose **exactly one**: `pricing_strategy.{home_loan,term_deposit}_spread_bps` (market-relative)
-  **or** `products.{loan,deposit}_rate_grid` (absolute). Both together is a validation error.
-- `competitor_rates.enabled: false` by default. When enabled, reads from
-  `data/processed/competitor_rates/latest.json` with staleness + strict-mode checks.
-- `balance_sheet.required_deposit_funding_ratio` and `funding_shortfall_penalty_rate` drive
-  the funding penalty.
+- `random_seed: 42`, `simulation.n_loan_customers: 5000`, `simulation.n_deposit_customers: 5000`.
+- `market.*` includes `cash_rate`, `wholesale_funding_spread`, competitor rates, and reference rates required when using `pricing_strategy`.
+- `response.coefficients.loan.*` and `response.coefficients.deposit.*` — intercepts, rate anchors, and feature coefficients wired into `synthetic/response.py` (see `ResponseCoefficientsConfig`).
+- Choose **one**: `pricing_strategy.{home_loan,term_deposit}_spread_bps` (market-relative, default) **or** `products.{loan,deposit}_rate_grid` (absolute).
+- `competitor_rates.enabled: false` by default — when true, reads from `data/processed/competitor_rates/latest.json` with staleness + strict-mode checks.
+- `balance_sheet.required_deposit_funding_ratio` and `funding_shortfall_penalty_rate` drive the funding penalty.
 
-## Conventions
+## Conventions (observed)
 
-- Python ≥ 3.9, ruff `line-length=100`, `target-version="py39"`.
-- Pydantic **v2**. NumPy pinned `<2.0`. pandas ≥ 2.1. scikit-learn ≥ 1.4. joblib ≥ 1.4.
-- Import as `balance_pricing_engine.*` — **not** `src.balance_pricing_engine.*`
-  (`pythonpath = ["src"]` in pyproject.toml).
-- Tests: `tests/unit/` (one module per source file). Fixtures: `tests/fixtures/`.
-- Long-running workflow scripts → `scripts/`. Short demos → `examples/`.
-- Data: `data/raw/` (untouched inputs), `data/processed/` (cleaned), `data/outputs/` (run artifacts).
+- Python ≥3.9, ruff `line-length=100`, `target-version="py39"`.
+- Pydantic **v2**. NumPy pinned `<2.0`. pandas ≥2.1. scikit-learn ≥1.4. joblib ≥1.4.
+- `pythonpath = ["src"]` (set in [pyproject.toml](pyproject.toml)) — import as `balance_pricing_engine.*`, **not** `src.balance_pricing_engine.*`.
+- Tests live under [tests/unit/](tests/unit/) (one module per source file). Fixtures under [tests/fixtures/](tests/fixtures/).
+- Workflow scripts (long-running) → [scripts/](scripts/). Short demos → [examples/](examples/).
+- Data folders: [data/raw/](data/raw/) (untouched inputs), [data/processed/](data/processed/) (cleaned), [data/outputs/](data/outputs/) (run artifacts).
+- Notebook walkthrough: [notebooks/bank_pricing_engine_walkthrough.ipynb](notebooks/bank_pricing_engine_walkthrough.ipynb).
 
-## Safety invariants — do not violate
+## Regression contract — do not break
 
-1. **Synthetic data only.** Do not add real customer or counterparty data paths.
-2. **Portfolio-level only.** Do not introduce per-customer rate personalisation unless the user
-   explicitly requests it.
-3. **Strict-mode competitor failures must error, not warn.**
-4. **LLM layer is decision-support only.** `llm/narrative.py` and `llm/anomaly.py` are tagged
-   `[DECISION-SUPPORT: requires human review]` — never wire their output into automated decisions.
-5. **`live_rates` marker must never run in CI.**
-6. **Governed ML pricing path must fail loud.** An ML champion can drive the optimiser only via
-   `run_baseline_diagnostics(registry=...)` (→ `ModelScoringAgent.resolve_response_fn` →
-   `MLResponseFnAdapter`, in `optimization/response_fn.py`). No champion or an unapproved champion
-   ⇒ synthetic fallback, price unchanged. An *approved* champion with a missing/unloadable artifact
-   ⇒ raise `GovernanceError`; never silently reprice on the synthetic fallback. This propagates
-   unchanged through `application.PricingService.run_scenario()` — only a delivery layer (e.g. the
-   `/v1/pricing/scenarios` FastAPI handler) may translate it into an error response.
-7. **Event publishing must never affect pricing.** `events.publisher.publish_safely()` catches and
-   logs publisher exceptions; a broken/misconfigured event publisher must never fail or alter a
-   pricing decision.
-8. **Pricing intelligence never prices.** `pricing_intelligence/` answers "what is the market
-   doing?"; the optimiser answers "what should we price?". The only seam is
-   `pricing_intelligence.strategy` — nothing in `optimization/`, `pricing/`, or `scenarios/` may
-   import the rest of the package. Under `CompetitorRateStrategy.MANUAL`,
-   `apply_market_strategy_to_config()` returns the config object **unchanged**, preserving every
-   pre-existing scenario's behaviour.
-9. **A collection failure is not a market event.** `detect_changes(banks_collected=...)` scopes
-   withdrawal events to banks that were actually collected; an unreachable bank is unknown, not
-   withdrawn. Suspicious movements are excluded from market-activity/market-state by default so a
-   parser fault cannot fake a repricing round. Basis points come from `pricing_intelligence.bps`
-   (Decimal), never float subtraction.
+`ScenarioDiagnostics.write_artifacts()` produces a stable artifact set consumed by regression checks:
 
-New orchestration/governance packages: `application/` (`PricingService`), `governance/` (gates,
-lineage, decision record, shadow evaluation), `features/` (versioned local feature-store
-boundary), `events/` (in-process domain events), `observability/` (structured logging).
+- `grid_results.csv` — every final evaluated rate pair (columns enumerated in `GRID_RESULT_COLUMNS`).
+- `top_results.csv` — top-N by `total_objective`.
+- `sensitivity.csv` — when sensitivity provided (includes `delta_loan_rate_bps`, `delta_deposit_rate_bps`, `delta_objective_pct`, `parameter_family`).
+- `counterfactuals.csv` — when `counterfactual_decompositions()` is called.
+- `cohort_attribution.csv` — when `cohort_attribution()` is called.
+- `summary.json` — keys include `best_loan_rate`, `best_deposit_rate`, `objective_value`, `expected_loan_volume`, `expected_deposit_volume`, `funding_shortfall`, `excess_deposit_income`, **`boundary_warning_flag`**, **`initial_boundary_warning_flag`**, **`expansion_rounds`**, `expansion_capped`, `policy_band_breached`.
 
-Market intelligence: `pricing_intelligence/` (SQLite observation store, change detection, market
-snapshot/ranking, deterministic market state, alerts, CLI) built on top of
-`competitor_rates/collectors/` (per-bank adapters for ANZ, ASB, BNZ, Westpac, Kiwibank). See
-[docs/pricing_intelligence.md](docs/pricing_intelligence.md).
+The boundary fields distinguish "needed expansion" from "still hitting boundary after expansion" — preserve their semantics when refactoring. `excess_deposit_income` credits surplus deposits at `cash_rate` when deposit volume exceeds loan volume.
 
-See [CLAUDE.md](CLAUDE.md), [docs/architecture.md](docs/architecture.md),
-[docs/deployment.md](docs/deployment.md), and [docs/adr/](docs/adr/) for detail.
+`decision_record.json` (written by `application.PricingService` when `persist_ledger=True`) is an **additive** artifact on top of this contract — never rename/restructure the files above to make room for it, and never let a decision-record change alter `summary.json`/`metadata.json` semantics.
 
-## Do not break — regression contract
+## When making changes
 
-`ScenarioDiagnostics.write_artifacts()` produces a stable artifact schema. Do not rename or
-remove these artifact keys:
+- Honour the synthetic-data-only invariant. Do not add real customer or counterparty data paths.
+- Keep portfolio-level scope unless the user explicitly opens up personalised pricing.
+- The LLM layer (`llm/`) is decision-support only: every response is tagged `[DECISION-SUPPORT: requires human review]`; never wire its output into automated pricing decisions.
+- `OptimizationResult` is a frozen dataclass; backward-compat aliases (`objective_value`, `deposit_cost`, `funding_penalty`, `loan_income_after_losses`) exist deliberately — don't remove without checking call sites.
+- Modelling layer is **diagnostic by default, but no longer hard-walled off from the optimiser.** `run_baseline_diagnostics(registry=...)` resolves an **approved registry champion** via `ModelScoringAgent.resolve_response_fn(...)` and wires it into the grid search through `MLResponseFnAdapter` (see [optimization/response_fn.py](src/balance_pricing_engine/optimization/response_fn.py)). Governance invariants — **preserve these**: with no champion, or an *unapproved* champion, the path falls back to the synthetic response and the price is unchanged; an *approved* champion whose artifact is missing or unloadable raises `GovernanceError` (**fail loud — never silently reprice on the synthetic fallback**). Don't conflate ML response models with the synthetic response functions used inside the grid search. The single `train()` entry point in `agentic.py` replaced the former dual `train` / `train_and_recommend` API; `evaluate_binary_classifier` is a backward-compat alias for `evaluate_model` that emits a `DeprecationWarning`; use `evaluate_probabilities` / `evaluate_model` from `evaluation.py` for new code.
+- Competitor-rate ingestion is gated behind `competitor_rates.enabled` and `strict` flags. Strict-mode failures should error, not warn.
+- `pricing_intelligence` must stay one-directional: it may read `competitor_rates` and `config`, but nothing in `optimization/`, `pricing/`, or `scenarios/` may import it except through `pricing_intelligence.strategy`. Keep "what is the market doing?" separate from "what should we price?".
+- `strategy.apply_market_strategy_to_config()` under `CompetitorRateStrategy.MANUAL` **returns the config object unchanged** (not a copy). Every pre-existing scenario depends on that; don't "tidy" it into an unconditional `model_copy`.
+- `strategy.apply_cash_rate_strategy_to_config()` holds the same invariant for `market.cash_rate` under `CashRateStrategy.MANUAL` — unchanged config object, not a copy. It is a separate seam from the competitor-rate one above (a different data source, RBNZ vs the bank collectors), not a parameter bolted onto `apply_market_strategy_to_config`.
+- `pricing_intelligence.rbnz` parsing anchors on the "Official Cash Rate" heading text, never on the first table matching the expected `Date | series | series` column shape — the RBNZ page renders several charts (OCR, FX rates, TWI) with identical accessible-table shapes, and a numeric plausibility check alone cannot tell them apart (NZD/USD values already sit in a range a naive OCR bound would accept). Same category of defect as the PIE-effective-rate rows in term-deposit collection.
+- Change detection must never turn a collection failure into a market event: withdrawal events are scoped to banks that were successfully collected (`detect_changes(banks_collected=...)`). An unreachable bank is unknown, not withdrawn.
+- Suspicious movements are excluded from `compute_market_activity` (and therefore the market-state classifier) by default. A parser fault must not be able to fake a repricing round.
+- Basis points come from `pricing_intelligence.bps` (Decimal). Don't compute them with float subtraction anywhere they reach an event, snapshot, or alert.
+- Rate-tier categorisation is **per-bank**: live pages carry the tier word in the table heading, not the row, so each collector declares `default_fixed_category` for what an unmarked fixed row means (`special` for ASB/BNZ, `standard` for Westpac, `None` where the bank labels both tiers in-row). Don't try to infer this generically — getting it wrong silently drops banks from the market comparison.
+- `excluded_deposit_product_markers` does the same on the deposit side for managed-fund/KiwiSaver returns and PIE "effective rate of return" columns — deposits rank highest-is-best, so an inflated row wins market-leader. Non-comparable records are exempt from the conflicting-observation guard: they collide by construction and never reach a statistic.
+- `excluded_product_markers` fences subsidised/green/top-up lending, bridging finance, and closed products into the `non_comparable` category. They stay recorded for audit but must never reach a market statistic — a subsidised 1.00% rate would wreck any median it entered.
+- Live collection requires `--render-javascript` (the `[browser]` extra). Every tracked bank builds its rate table client-side; the static-HTML path returns `ParserError` for all five.
+- Scheduled collection goes through `scripts/collect_market_rates_workflow.py`, which holds a single-instance lock and returns distinct exit codes (0 ok, 1 total failure, 2 **partial** failure, 3 already running). Don't collapse 2 into 0 — an incomplete market view computes a median over fewer banks than it reports.
+- `.github/workflows/collector-canary.yml` reaches live bank sites and must stay out of `ci.yml`; it is a breakage canary, not a history store. Durable observation history is local and git-ignored by design.
+- Prefer `application.PricingService` over calling `run_baseline_diagnostics()` directly from new callers (API endpoints, CLI commands). It wraps, not replaces, the domain math — do not duplicate governance/lineage/event logic at a new call site instead of going through it.
+- `GovernanceError` must keep propagating out of `PricingService.run_scenario()` unchanged — never catch it there and turn it into a `BLOCKED` `PricingDecision`. Only a delivery layer (e.g. the `/v1/pricing/scenarios` FastAPI handler) may translate it into a transport-appropriate error response.
+- `governance.gates.evaluate_gates()` policy is intentionally conservative but not maximal (any `BLOCK` → `BLOCKED`; otherwise any `WARN` → `REVIEW_REQUIRED`; else `RECOMMENDED`) — don't add a new gate that blocks on a mere warning-level condition without updating this documented policy.
+- `events.publisher.publish_safely()` must keep swallowing publisher exceptions (logged, not raised) and enforcing its `deadline_seconds` wait cap — a broken *or slow/hung* event publisher must never fail, block, or alter a pricing decision.
+- `pricing_intelligence.alerts.dispatch_alerts_safely()` follows the same rule for webhook alert delivery: a broken or unreachable webhook is logged and must never change a scheduled collection run's exit code. Only rate moves are pushed to the webhook — a new/withdrawn product is a change but not a reprice — matching the CLI's own `--alerts` scope. `PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL` unset is the default state; nothing else about collection changes when it's absent.
+- Update [docs/architecture.md](docs/architecture.md) and [docs/modelling_assumptions.md](docs/modelling_assumptions.md) when changing structural behaviour.
 
-- `grid_results.csv` columns (`GRID_RESULT_COLUMNS`)
-- `top_results.csv`, `sensitivity.csv`, `counterfactuals.csv`, `cohort_attribution.csv`
-- `summary.json` keys: `best_loan_rate`, `best_deposit_rate`, `objective_value`,
-  `expected_loan_volume`, `expected_deposit_volume`, `funding_shortfall`,
-  `excess_deposit_income`, `boundary_warning_flag`, `initial_boundary_warning_flag`,
-  `expansion_rounds`, `expansion_capped`, `policy_band_breached`
+## Roadmap & recent reviews
 
-`OptimizationResult` is a frozen dataclass. Backward-compat aliases —
-`objective_value`, `deposit_cost`, `funding_penalty`, `loan_income_after_losses` — exist
-deliberately. Do not remove without auditing all call sites.
+- Roadmap: [docs/agentic_modelling_roadmap.md](docs/agentic_modelling_roadmap.md).
+- Latest codebase review: [docs/codebase_review_2026-05-18.md](docs/codebase_review_2026-05-18.md).
+- Diagnostic review: [docs/diagnostic_review_2026-04-26.md](docs/diagnostic_review_2026-04-26.md).
+- Step-by-step business+technical walkthrough: [docs/usage_guide.md](docs/usage_guide.md) (includes restricted-network setup).
+- Run ledger usage guide: [docs/run_ledger_guide.md](docs/run_ledger_guide.md) (how to produce, read, and sign off ledger artifacts).
 
-The response model uses **two elasticities per product** (own-rate + competitor-gap).
-Collapsing them into one is not equivalent and will silently change recommendations.
+## Context Navigation
 
-## Session wrap-up
-
-If this session changed the project's status, milestone, or current focus, update the "AI bank pricing engine" entry in `~/vault/AI_Context/Memory/Durable_Facts/Kevin/current-projects.md` (status, current focus, last-updated date) before ending the session. Skip this if nothing status-relevant changed.
+<!-- context-navigation:start v1 -->
+Follow the global context-navigation rule (`~/.claude/CLAUDE.md` for Claude,
+`~/.codex/AGENTS.md` for Codex): vault first; Claude uses native search;
+Codex uses codebase-memory-mcp (`detect_changes` first); Graphify only on request.
+- `graphify-out/` is a dated snapshot, not auto-refreshed — check its age before trusting it; don't hand-edit it.
+- codebase-memory-mcp is registered for Codex by this repo's `.codex/config.toml`, which Codex loads only for trusted projects.
+<!-- context-navigation:end -->
