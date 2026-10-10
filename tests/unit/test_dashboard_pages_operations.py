@@ -8,13 +8,21 @@ import pytest
 from dashboard_harness import run_page
 from streamlit.proto.TextInput_pb2 import TextInput as TextInputProto
 
-from balance_pricing_engine.dashboard import actions
+from balance_pricing_engine.dashboard import actions, guard
 
 DONE = datetime(2026, 10, 11, tzinfo=timezone.utc)
 
 
 def ok(name, status="SUCCESS", message="done"):
     return actions.ActionResult(name, status, message, DONE)
+
+
+@pytest.fixture(autouse=True)
+def fresh_unlock_limiter(monkeypatch):
+    """The unlock limiter is process-wide; give every test its own."""
+    limiter = guard.AttemptLimiter()
+    monkeypatch.setattr(guard, "_UNLOCK_ATTEMPTS", limiter)
+    return limiter
 
 
 @pytest.fixture(autouse=True)
@@ -255,3 +263,33 @@ operations._run_quick("create_backup", settings)
     assert not app.exception
     assert live.call_count == 0 and backup.call_count == 0
     assert not clean_runner.state().running and clean_runner.state().result is None
+
+
+def test_the_attempt_cap_holds_across_sessions_not_just_within_one(market_factory):
+    """Opening a new tab/session must not hand an attacker a fresh set of guesses."""
+    market = market_factory()
+    attacker = run_page("operations", market.database, market.now, env=TOKEN_ENV)
+    for _ in range(5):
+        attacker.text_input(key="ops_token_input").set_value("wrong").run()
+        attacker.button(key="ops_unlock").click().run()
+
+    new_session = run_page("operations", market.database, market.now, env=TOKEN_ENV)
+    new_session.text_input(key="ops_token_input").set_value("s3cret-token").run()
+    new_session.button(key="ops_unlock").click().run()  # even the right token is refused for now
+    assert any("Too many incorrect attempts" in e.value for e in new_session.error)
+    with pytest.raises(KeyError):
+        new_session.button(key="run_live")
+
+
+def test_the_lockout_ends_and_the_right_token_then_works(market_factory, fresh_unlock_limiter):
+    clock = [100.0]
+    limiter = guard.AttemptLimiter(max_failures=1, lockout_seconds=60, monotonic=lambda: clock[0])
+    guard._UNLOCK_ATTEMPTS = limiter
+    market = market_factory()
+    app = run_page("operations", market.database, market.now, env=TOKEN_ENV)
+    app.text_input(key="ops_token_input").set_value("wrong").run()
+    app.button(key="ops_unlock").click().run()
+    clock[0] += 61
+    app.text_input(key="ops_token_input").set_value("s3cret-token").run()
+    app.button(key="ops_unlock").click().run()
+    assert app.button(key="run_live") is not None

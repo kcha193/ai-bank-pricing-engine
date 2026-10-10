@@ -42,6 +42,7 @@ BACKUP_MIN_INTERVAL = timedelta(minutes=10)
 RUN_COOLDOWN_SECONDS = 60.0
 TELEGRAM_COOLDOWN_SECONDS = 30.0
 BACKUP_TIMESTAMP_FORMAT = "%Y%m%dT%H%M%SZ"  # as written by pricing_intelligence.backup
+_BACKUP_LOCK = threading.Lock()  # serialises the "recent backup?" check with the write
 
 # Exit codes of the scheduled workflow (orchestration.EXIT_*): 0 ok, 1 total failure,
 # 2 partial failure, 3 already running. Anything else is a failure.
@@ -266,22 +267,25 @@ def create_backup(
     if not database.exists():
         return ActionResult("backup", "FAILED", "No database to back up yet.", clock())
     now = clock()
-    latest = _latest_backup(settings.backup_dir, database.stem)
-    if latest is not None and now - latest[1] < BACKUP_MIN_INTERVAL:
-        minutes = max(0.0, (now - latest[1]).total_seconds() / 60)
-        return ActionResult(
-            "backup",
-            "RATE_LIMITED",
-            f"A backup was created {minutes:.0f} minutes ago; not creating another so older "
-            "backups are not rotated out.",
-            now,
-            summary={"path": str(latest[0])},
-        )
-    try:
-        path = backup_database(database, settings.backup_dir, now=now)
-    except Exception:  # noqa: BLE001 - one operational sentence; detail goes to the log
-        logger.exception("backup failed")
-        return ActionResult("backup", "FAILED", "Backup failed; see the log.", clock())
+    # One lock around check *and* write: two simultaneous requests must not both pass the
+    # "was there a recent backup?" check before either has written one.
+    with _BACKUP_LOCK:
+        latest = _latest_backup(settings.backup_dir, database.stem)
+        if latest is not None and now - latest[1] < BACKUP_MIN_INTERVAL:
+            minutes = max(0.0, (now - latest[1]).total_seconds() / 60)
+            return ActionResult(
+                "backup",
+                "RATE_LIMITED",
+                f"A backup was created {minutes:.0f} minutes ago; not creating another so older "
+                "backups are not rotated out.",
+                now,
+                summary={"path": str(latest[0])},
+            )
+        try:
+            path = backup_database(database, settings.backup_dir, now=now)
+        except Exception:  # noqa: BLE001 - one operational sentence; detail goes to the log
+            logger.exception("backup failed")
+            return ActionResult("backup", "FAILED", "Backup failed; see the log.", clock())
     return ActionResult(
         "backup", "SUCCESS", "Backup created.", clock(), summary={"path": str(path)}
     )

@@ -278,3 +278,45 @@ def test_telegram_test_has_a_cooldown_so_it_cannot_spam_the_chat():
     second = actions.send_test_notification(sink_factory=Ok, clock=clock, cooldown=limiter)
     assert first.status == "SUCCESS" and second.status == "RATE_LIMITED"
     assert len(sent) == 1
+
+
+def test_simultaneous_backup_requests_cannot_both_pass_the_rate_limit(tmp_path):
+    """Check-then-write must be atomic: two requests racing the check yield one backup."""
+    import balance_pricing_engine.dashboard.actions as actions_module
+    from balance_pricing_engine.pricing_intelligence.backup import backup_database
+    from balance_pricing_engine.pricing_intelligence.store import ObservationStore
+
+    database = tmp_path / "m.db"
+    ObservationStore(database).close()
+    settings = dataclasses.replace(
+        load_settings({}, database_path=str(database)), backup_dir=tmp_path / "backups"
+    )
+    inside_first_write, release = threading.Event(), threading.Event()
+
+    def slow_backup(*args, **kwargs):
+        inside_first_write.set()
+        release.wait(5)  # the first request is mid-write while the second one arrives
+        return backup_database(*args, **kwargs)
+
+    results = []
+
+    def request():
+        results.append(actions.create_backup(settings, clock=clock).status)
+
+    original = actions_module.backup_database
+    actions_module.backup_database = slow_backup
+    try:
+        first = threading.Thread(target=request)
+        first.start()
+        assert inside_first_write.wait(5)
+        second = threading.Thread(target=request)
+        second.start()
+        second.join(0.3)  # without a lock the second request runs now and also passes the check
+        release.set()
+        first.join(5)
+        second.join(5)
+    finally:
+        actions_module.backup_database = original
+
+    assert sorted(results) == ["RATE_LIMITED", "SUCCESS"]
+    assert len(list((tmp_path / "backups").glob("*.db"))) == 1

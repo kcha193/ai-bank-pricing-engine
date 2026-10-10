@@ -18,7 +18,7 @@ import hmac
 
 import streamlit as st
 
-from balance_pricing_engine.dashboard import actions
+from balance_pricing_engine.dashboard import actions, guard
 from balance_pricing_engine.dashboard.formatting import fmt_nz_datetime
 from balance_pricing_engine.dashboard.services import DashboardServices
 from balance_pricing_engine.dashboard.settings import OPS_TOKEN_ENV_VAR, DashboardSettings
@@ -27,9 +27,7 @@ NOTICE_KEY = "ops_notice"
 QUICK_RESULT_KEY = "ops_quick_result"
 CACHE_CLEARED_KEY = "ops_cache_cleared_for"
 UNLOCKED_KEY = "ops_unlocked"
-FAILED_ATTEMPTS_KEY = "ops_failed_attempts"
 TOKEN_INPUT_KEY = "ops_token_input"
-MAX_FAILED_ATTEMPTS = 5
 
 STATUS_KIND = {
     "SUCCESS": st.success,
@@ -45,19 +43,23 @@ def _authorised(settings: DashboardSettings) -> bool:
 
 
 def _try_unlock(settings: DashboardSettings) -> None:
-    """Button callback: compare the entered token in constant time, with an attempt cap."""
+    """Button callback: constant-time token compare behind a process-wide attempt limiter."""
     if settings.ops_token is None:
-        return
-    if st.session_state.get(FAILED_ATTEMPTS_KEY, 0) >= MAX_FAILED_ATTEMPTS:
-        st.session_state[NOTICE_KEY] = "Too many incorrect attempts; reload the page to try again."
         return
     supplied = str(st.session_state.get(TOKEN_INPUT_KEY, ""))
     st.session_state[TOKEN_INPUT_KEY] = ""  # never keep the entered secret around
+    limiter = guard.unlock_attempts()
+    wait = limiter.locked_for()
+    if wait > 0:
+        st.session_state[NOTICE_KEY] = (
+            f"Too many incorrect attempts; unlocking is disabled for {wait:.0f} more seconds."
+        )
+        return
     if hmac.compare_digest(supplied.encode(), settings.ops_token.encode()):
+        limiter.record_success()
         st.session_state[UNLOCKED_KEY] = True
-        st.session_state[FAILED_ATTEMPTS_KEY] = 0
     else:
-        st.session_state[FAILED_ATTEMPTS_KEY] = st.session_state.get(FAILED_ATTEMPTS_KEY, 0) + 1
+        limiter.record_failure()
         st.session_state[NOTICE_KEY] = "Incorrect token."
 
 

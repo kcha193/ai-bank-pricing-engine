@@ -24,6 +24,7 @@ STREAMLIT_FREE = [
     "settings",
     "scenario_text",
     "run_worker",
+    "guard",
 ]
 
 #: Backend computations a page must not re-implement or call directly (it reads them from
