@@ -53,3 +53,9 @@ def test_ops_token_is_off_by_default_and_blank_means_off(tmp_path):
     assert load_settings({}, database_path=str(tmp_path / "t.db")).ops_token is None
     blank = load_settings({"PRICING_WATCH_OPS_TOKEN": ""}, database_path=str(tmp_path / "t.db"))
     assert blank.ops_token is None
+
+
+def test_the_minimum_token_length_is_exposed_for_the_gate():
+    from balance_pricing_engine.dashboard.settings import MIN_OPS_TOKEN_LENGTH
+
+    assert MIN_OPS_TOKEN_LENGTH == 16

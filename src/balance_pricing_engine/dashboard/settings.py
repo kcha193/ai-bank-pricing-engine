@@ -18,6 +18,8 @@ from balance_pricing_engine.pricing_intelligence.config import (
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CONFIG_ENV_VAR = "PRICING_WATCH_CONFIG"
 OPS_TOKEN_ENV_VAR = "PRICING_WATCH_OPS_TOKEN"
+#: Shorter tokens are refused (fail closed): the attempt cap only makes a strong token unguessable.
+MIN_OPS_TOKEN_LENGTH = 16
 
 
 @dataclass(frozen=True)

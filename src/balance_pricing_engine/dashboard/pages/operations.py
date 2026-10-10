@@ -21,7 +21,11 @@ import streamlit as st
 from balance_pricing_engine.dashboard import actions, guard
 from balance_pricing_engine.dashboard.formatting import fmt_nz_datetime
 from balance_pricing_engine.dashboard.services import DashboardServices
-from balance_pricing_engine.dashboard.settings import OPS_TOKEN_ENV_VAR, DashboardSettings
+from balance_pricing_engine.dashboard.settings import (
+    MIN_OPS_TOKEN_LENGTH,
+    OPS_TOKEN_ENV_VAR,
+    DashboardSettings,
+)
 
 NOTICE_KEY = "ops_notice"
 QUICK_RESULT_KEY = "ops_quick_result"
@@ -38,18 +42,24 @@ STATUS_KIND = {
 }
 
 
+def _token_too_short(settings: DashboardSettings) -> bool:
+    return settings.ops_token is not None and len(settings.ops_token) < MIN_OPS_TOKEN_LENGTH
+
+
 def _authorised(settings: DashboardSettings) -> bool:
+    if _token_too_short(settings):
+        return False  # fail closed: a guessable token is no gate at all
     return settings.ops_token is None or st.session_state.get(UNLOCKED_KEY) is True
 
 
 def _try_unlock(settings: DashboardSettings) -> None:
-    """Button callback: constant-time token compare behind a process-wide attempt limiter."""
-    if settings.ops_token is None:
+    """Button callback: charge the process-wide limiter first, then compare in constant time."""
+    if settings.ops_token is None or _token_too_short(settings):
         return
     supplied = str(st.session_state.get(TOKEN_INPUT_KEY, ""))
     st.session_state[TOKEN_INPUT_KEY] = ""  # never keep the entered secret around
     limiter = guard.unlock_attempts()
-    wait = limiter.locked_for()
+    wait = limiter.try_acquire()  # atomic: charged before comparing, so bursts cannot race it
     if wait > 0:
         st.session_state[NOTICE_KEY] = (
             f"Too many incorrect attempts; unlocking is disabled for {wait:.0f} more seconds."
@@ -59,7 +69,6 @@ def _try_unlock(settings: DashboardSettings) -> None:
         limiter.record_success()
         st.session_state[UNLOCKED_KEY] = True
     else:
-        limiter.record_failure()
         st.session_state[NOTICE_KEY] = "Incorrect token."
 
 
@@ -119,6 +128,12 @@ def _gate(settings: DashboardSettings) -> bool:
             f"`{OPS_TOKEN_ENV_VAR}` to require a token."
         )
         return True
+    if _token_too_short(settings):
+        st.error(
+            f"`{OPS_TOKEN_ENV_VAR}` must be at least {MIN_OPS_TOKEN_LENGTH} characters. "
+            "Operations stay disabled until it is fixed."
+        )
+        return False
     if _authorised(settings):
         return True
     st.subheader("Operations are locked")

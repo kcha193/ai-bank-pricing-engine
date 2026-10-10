@@ -17,7 +17,12 @@ LOCKOUT_SECONDS = 300.0
 
 
 class AttemptLimiter:
-    """Locks for ``lockout_seconds`` after ``max_failures`` consecutive failures."""
+    """Allows ``max_failures`` guesses, then locks for ``lockout_seconds``.
+
+    ``try_acquire`` *charges* the attempt before the caller compares anything, atomically, so a
+    burst of parallel guesses cannot all slip past a check-then-record gap. A successful guess
+    calls ``record_success`` to clear the count.
+    """
 
     def __init__(
         self,
@@ -29,14 +34,9 @@ class AttemptLimiter:
         self._max_failures = max_failures
         self._lockout_seconds = lockout_seconds
         self._monotonic = monotonic
-        self._failures = 0
+        self._attempts = 0
         self._locked_until: Optional[float] = None
         self._lock = threading.Lock()
-
-    def locked_for(self) -> float:
-        """Seconds of lockout remaining (0 when attempts are allowed)."""
-        with self._lock:
-            return self._locked_for_locked()
 
     def _locked_for_locked(self) -> float:
         if self._locked_until is None:
@@ -44,21 +44,29 @@ class AttemptLimiter:
         remaining = self._locked_until - self._monotonic()
         if remaining <= 0:  # lockout over: start again with a full allowance
             self._locked_until = None
-            self._failures = 0
+            self._attempts = 0
             return 0.0
         return remaining
 
-    def record_failure(self) -> None:
+    def locked_for(self) -> float:
+        """Seconds of lockout remaining (0 when attempts are allowed)."""
         with self._lock:
-            if self._locked_for_locked() > 0:
-                return  # already locked: further failures do not extend it
-            self._failures += 1
-            if self._failures >= self._max_failures:
+            return self._locked_for_locked()
+
+    def try_acquire(self) -> float:
+        """Charge one attempt. Returns 0 if it may proceed, else the lockout seconds remaining."""
+        with self._lock:
+            remaining = self._locked_for_locked()
+            if remaining > 0:
+                return remaining
+            self._attempts += 1
+            if self._attempts >= self._max_failures:
                 self._locked_until = self._monotonic() + self._lockout_seconds
+            return 0.0
 
     def record_success(self) -> None:
         with self._lock:
-            self._failures = 0
+            self._attempts = 0
             self._locked_until = None
 
 

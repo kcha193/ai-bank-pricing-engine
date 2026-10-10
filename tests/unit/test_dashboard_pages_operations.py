@@ -189,7 +189,7 @@ def test_rate_limited_actions_are_warnings(market_factory):
     assert any("RATE_LIMITED" in w.value for w in app.warning)
 
 
-TOKEN_ENV = {"PRICING_WATCH_OPS_TOKEN": "s3cret-token"}
+TOKEN_ENV = {"PRICING_WATCH_OPS_TOKEN": "s3cret-token-0123456789"}
 
 
 def test_with_a_token_configured_operations_are_locked_until_it_is_entered(market_factory):
@@ -201,7 +201,10 @@ def test_with_a_token_configured_operations_are_locked_until_it_is_entered(marke
             app.button(key=key)
     assert app.button(key="refresh_dashboard") is not None  # reading stays available
     assert app.text_input(key="ops_token_input").proto.type == TextInputProto.PASSWORD
-    assert all("s3cret-token" not in str(e.value) for e in (*app.markdown, *app.info, *app.error))
+    assert all(
+        "s3cret-token-0123456789" not in str(e.value)
+        for e in (*app.markdown, *app.info, *app.error)
+    )
 
 
 def test_the_right_token_unlocks_and_a_wrong_one_does_not(market_factory):
@@ -213,7 +216,7 @@ def test_the_right_token_unlocks_and_a_wrong_one_does_not(market_factory):
         assert any("Incorrect token" in e.value for e in app.error)
         with pytest.raises(KeyError):
             app.button(key="run_live")
-        app.text_input(key="ops_token_input").set_value("s3cret-token").run()
+        app.text_input(key="ops_token_input").set_value("s3cret-token-0123456789").run()
         app.button(key="ops_unlock").click().run()
         assert not app.exception
         assert app.button(key="run_live").disabled  # present now; still needs confirmation
@@ -226,7 +229,7 @@ def test_repeated_wrong_tokens_lock_the_session_out(market_factory):
     for _ in range(5):
         app.text_input(key="ops_token_input").set_value("wrong").run()
         app.button(key="ops_unlock").click().run()
-    app.text_input(key="ops_token_input").set_value("s3cret-token").run()
+    app.text_input(key="ops_token_input").set_value("s3cret-token-0123456789").run()
     app.button(key="ops_unlock").click().run()
     assert any("Too many incorrect attempts" in e.value for e in app.error)
     with pytest.raises(KeyError):
@@ -274,7 +277,7 @@ def test_the_attempt_cap_holds_across_sessions_not_just_within_one(market_factor
         attacker.button(key="ops_unlock").click().run()
 
     new_session = run_page("operations", market.database, market.now, env=TOKEN_ENV)
-    new_session.text_input(key="ops_token_input").set_value("s3cret-token").run()
+    new_session.text_input(key="ops_token_input").set_value("s3cret-token-0123456789").run()
     new_session.button(key="ops_unlock").click().run()  # even the right token is refused for now
     assert any("Too many incorrect attempts" in e.value for e in new_session.error)
     with pytest.raises(KeyError):
@@ -290,6 +293,19 @@ def test_the_lockout_ends_and_the_right_token_then_works(market_factory, fresh_u
     app.text_input(key="ops_token_input").set_value("wrong").run()
     app.button(key="ops_unlock").click().run()
     clock[0] += 61
-    app.text_input(key="ops_token_input").set_value("s3cret-token").run()
+    app.text_input(key="ops_token_input").set_value("s3cret-token-0123456789").run()
     app.button(key="ops_unlock").click().run()
     assert app.button(key="run_live") is not None
+
+
+def test_a_short_token_fails_closed_instead_of_offering_a_guessable_gate(market_factory):
+    market = market_factory()
+    app = run_page(
+        "operations", market.database, market.now, env={"PRICING_WATCH_OPS_TOKEN": "short"}
+    )
+    assert not app.exception
+    assert any("at least 16 characters" in e.value for e in app.error)
+    for key in ("run_live", "run_dry", "create_backup", "telegram_test", "ops_unlock"):
+        with pytest.raises(KeyError):
+            app.button(key=key)  # nothing can be unlocked or run until the token is fixed
+    assert all("short" not in e.value for e in app.error)  # the value itself is never echoed
