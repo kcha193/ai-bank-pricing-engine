@@ -28,3 +28,41 @@ def test_dot_plot_marks_unselected_non_leaders_as_other():
     )
     roles = {p["bank"]: p["role"] for p in _points(chart) if "bank" in p}
     assert roles == {"ANZ": "Leader", "BNZ": "Other"}
+
+
+def test_history_lines_is_one_chart_with_a_bank_colour_channel():
+    from datetime import date
+
+    from balance_pricing_engine.dashboard.charts import history_lines
+    from balance_pricing_engine.dashboard.models import HistoryPoint
+
+    spec = history_lines(
+        [HistoryPoint(date(2026, 10, 1), "ANZ", 4.9), HistoryPoint(date(2026, 10, 1), "BNZ", 4.85)]
+    ).to_dict()
+    assert spec["encoding"]["color"]["field"] == "bank"
+    assert len(next(iter(spec["datasets"].values()))) == 2
+
+
+def test_market_trend_selects_the_requested_series():
+    from datetime import date
+
+    from balance_pricing_engine.dashboard.charts import market_trend
+    from balance_pricing_engine.dashboard.models import MarketPoint
+
+    market = [MarketPoint(date(2026, 10, 1), 4.85, 4.79, 10.0, ("ANZ",))]
+    for series, expected in (("median", 4.85), ("leader", 4.79), ("spread", 10.0)):
+        rows = next(iter(market_trend(market, series).to_dict()["datasets"].values()))
+        assert rows[0]["value"] == expected
+
+
+def test_repricing_timeline_plots_one_dot_per_event():
+    from datetime import datetime, timezone
+
+    from balance_pricing_engine.dashboard.charts import repricing_timeline
+    from balance_pricing_engine.dashboard.models import TimelineEvent
+
+    when = datetime(2026, 10, 10, tzinfo=timezone.utc)
+    spec = repricing_timeline(
+        [TimelineEvent(when, "ANZ", -10.0, 0.0), TimelineEvent(when, "BNZ", -10.0, 2.0)]
+    ).to_dict()
+    assert {r["bank"] for r in next(iter(spec["datasets"].values()))} == {"ANZ", "BNZ"}

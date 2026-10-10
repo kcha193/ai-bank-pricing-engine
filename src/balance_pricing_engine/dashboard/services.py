@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterator, Optional, TypeVar
 
@@ -22,6 +22,10 @@ from balance_pricing_engine.dashboard.models import (
     ChangeRow,
     ChangeWindow,
     EventDetail,
+    HistoryData,
+    HistoryPoint,
+    MarketPoint,
+    TimelineEvent,
     HeaderInfo,
     MarketMatrix,
     MatrixCell,
@@ -38,7 +42,11 @@ from balance_pricing_engine.pricing_intelligence.health import (
 )
 from balance_pricing_engine.pricing_intelligence.changes import RateChange
 from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
-from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot, TermMarket
+from balance_pricing_engine.pricing_intelligence.snapshot import (
+    MarketSnapshot,
+    TermMarket,
+    term_market_from_rates,
+)
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 
 logger = logging.getLogger(__name__)
@@ -247,6 +255,70 @@ class DashboardServices:
                     for e in market.ranking()
                 )
             )
+
+        return self._guard(build)
+
+    # ------------------------------------------------------------- history
+
+    def history(
+        self, term_months: int, banks: tuple[str, ...], days: Optional[int]
+    ) -> Result[HistoryData]:
+        """Per-bank rate history, market median/leader/spread per date, repricing timeline.
+
+        ``banks`` filters the lines only; market statistics always use every bank
+        observed on that date (via ``term_market_from_rates``, the snapshot's own maths).
+        """
+
+        def build(service: PricingIntelligenceService) -> Result[HistoryData]:
+            now = self._clock()
+            series = service.get_rate_history_series(term_months=term_months)
+            if days is not None:
+                cutoff = (now - timedelta(days=days)).date()
+                series = [(day, rates) for day, rates in series if day >= cutoff]
+            if not series:
+                return Result.empty("No rate history for this term and range yet.")
+            points = tuple(
+                HistoryPoint(day, bank, rates[bank])
+                for day, rates in series
+                for bank in banks
+                if bank in rates
+            )
+            market = []
+            for day, rates in series:
+                if not rates:
+                    continue
+                term_market = term_market_from_rates(term_months, rates)
+                market.append(
+                    MarketPoint(
+                        day,
+                        term_market.median_rate,
+                        term_market.best_rate,
+                        term_market.spread_bps,
+                        term_market.market_leaders,
+                    )
+                )
+            moves = sorted(
+                (
+                    c
+                    for c in service.get_changes(
+                        days=days, term_months=term_months, now=now, scope_to_market=True
+                    )
+                    if c.is_rate_move and not c.suspicious
+                ),
+                key=lambda c: c.detected_at,
+            )
+            first = moves[0].detected_at if moves else None
+            timeline = tuple(
+                TimelineEvent(
+                    c.detected_at,
+                    c.bank,
+                    c.change_bps,
+                    round((c.detected_at - first).total_seconds() / 86400, 1),
+                )
+                for c in moves
+                if first is not None and c.change_bps is not None
+            )
+            return Result.ok(HistoryData(points, tuple(market), timeline))
 
         return self._guard(build)
 

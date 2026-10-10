@@ -121,3 +121,34 @@ class EventDetail:
     parser_version: Optional[str]
     market_median_pct: Optional[float]
     market_state: Optional[str]
+
+
+@dataclass(frozen=True)
+class HistoryPoint:
+    day: date
+    bank: str
+    rate_pct: float
+
+
+@dataclass(frozen=True)
+class MarketPoint:
+    day: date
+    median_pct: float
+    leader_pct: float
+    spread_bps: float
+    leaders: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TimelineEvent:
+    detected_at: datetime
+    bank: str
+    change_bps: float
+    offset_days: float  # days after the first recorded move in the window
+
+
+@dataclass(frozen=True)
+class HistoryData:
+    points: tuple[HistoryPoint, ...]
+    market: tuple[MarketPoint, ...]
+    timeline: tuple[TimelineEvent, ...]
