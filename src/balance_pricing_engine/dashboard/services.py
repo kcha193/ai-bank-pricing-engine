@@ -12,11 +12,16 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterator, TypeVar
+from typing import Callable, Iterator, Optional, TypeVar
 
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.dashboard.formatting import NZ_TZ
 from balance_pricing_engine.dashboard.models import (
     BankPosition,
+    ChangeFilters,
+    ChangeRow,
+    ChangeWindow,
+    EventDetail,
     HeaderInfo,
     MarketMatrix,
     MatrixCell,
@@ -31,7 +36,9 @@ from balance_pricing_engine.pricing_intelligence.health import (
     FreshnessState,
     assess_system_health,
 )
+from balance_pricing_engine.pricing_intelligence.changes import RateChange
 from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
+from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot, TermMarket
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 
 logger = logging.getLogger(__name__)
@@ -242,3 +249,157 @@ class DashboardServices:
             )
 
         return self._guard(build)
+
+    # -------------------------------------------------------------- changes
+
+    @staticmethod
+    def _window_args(window: ChangeWindow, now: datetime) -> dict:
+        if window.kind == "today":
+            midnight = now.astimezone(NZ_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+            return {"days": None, "since": midnight.astimezone(timezone.utc)}
+        if window.kind == "30d":
+            return {"days": 30}
+        if window.kind == "custom" and window.start is not None:
+            start = datetime.combine(window.start, datetime.min.time(), tzinfo=NZ_TZ)
+            return {"days": None, "since": start.astimezone(timezone.utc)}
+        return {"days": 7}
+
+    def changes(
+        self, window: ChangeWindow, filters: Optional[ChangeFilters] = None
+    ) -> Result[tuple[ChangeRow, ...]]:
+        filters = filters or ChangeFilters()
+
+        def build(service: PricingIntelligenceService) -> Result[tuple[ChangeRow, ...]]:
+            now = self._clock()
+            changes = service.get_changes(
+                now=now,
+                scope_to_market=True,
+                bank=filters.bank,
+                term_months=filters.term_months,
+                **self._window_args(window, now),
+            )
+            if window.kind == "custom" and window.end is not None:
+                end = datetime.combine(window.end, datetime.max.time(), tzinfo=NZ_TZ)
+                changes = [c for c in changes if c.detected_at <= end]
+            changes = [c for c in changes if not c.suspicious]  # shown in System Health instead
+            if filters.direction:
+                changes = [c for c in changes if c.direction == filters.direction]
+            if filters.change_type:
+                changes = [c for c in changes if c.change_type.value == filters.change_type]
+            if not changes:
+                return Result.empty("No rate changes in this window.")
+            ranks = _RankCache(service)
+            return Result.ok(tuple(self._row(c, ranks) for c in changes))
+
+        return self._guard(build)
+
+    @staticmethod
+    def _row(change: RateChange, ranks: "_RankCache") -> ChangeRow:
+        previous_rank, new_rank = ranks.for_change(change)
+        return ChangeRow(
+            key=_event_key(change),
+            detected_at=change.detected_at,
+            bank=change.bank,
+            term_months=change.term_months,
+            previous_pct=change.previous_rate_pct,
+            current_pct=change.current_rate_pct,
+            change_bps=change.change_bps,
+            direction=change.direction,
+            change_type=change.change_type.value,
+            previous_rank=previous_rank,
+            new_rank=new_rank,
+        )
+
+    def event_detail(self, key: str) -> Result[EventDetail]:
+        def build(service: PricingIntelligenceService) -> Result[EventDetail]:
+            now = self._clock()
+            change = next(
+                (
+                    c
+                    for c in service.get_changes(days=None, now=now, scope_to_market=True)
+                    if _event_key(c) == key
+                ),
+                None,
+            )
+            if change is None:
+                return Result.empty("That event is no longer in the stored history.")
+            ranks = _RankCache(service)
+            history = service.get_rate_history(
+                bank=change.bank,
+                term_months=change.term_months,
+                rate_category=change.rate_category,
+                days=None,
+                now=change.detected_at,
+            )
+            record = next(
+                (
+                    r
+                    for r in reversed(history)
+                    if r.product_name == change.product_name
+                    and r.captured_at_utc <= change.detected_at
+                ),
+                None,
+            )
+            market = ranks.new_market(change)
+            state = service.get_market_state(now=change.detected_at)
+            return Result.ok(
+                EventDetail(
+                    row=self._row(change, ranks),
+                    product_name=change.product_name,
+                    rate_category=change.rate_category,
+                    source_url=change.source_url or (record.source_url if record else None),
+                    observed_at=record.captured_at_utc if record else None,
+                    effective_date_text=record.effective_date_text if record else None,
+                    parser_version=record.parser_version if record else None,
+                    market_median_pct=market.median_rate if market else None,
+                    market_state=state.state.value,
+                )
+            )
+
+        return self._guard(build)
+
+
+def _event_key(change: RateChange) -> str:
+    return (
+        f"{change.observation_key}|{change.change_type.value}|"
+        f"{change.detected_at.isoformat()}|{change.run_id}"
+    )
+
+
+class _RankCache:
+    """Resolve market rank before/after an event, one snapshot per distinct run."""
+
+    def __init__(self, service: PricingIntelligenceService) -> None:
+        self._service = service
+        self._snapshots: dict[Optional[str], Optional[MarketSnapshot]] = {}
+
+    def _snapshot(self, run_id: Optional[str]) -> Optional[MarketSnapshot]:
+        if run_id is None:
+            return None
+        if run_id not in self._snapshots:
+            self._snapshots[run_id] = self._service.get_market_snapshot(as_of_run_id=run_id)
+        return self._snapshots[run_id]
+
+    def _previous_run_id(self, run_id: str) -> Optional[str]:
+        previous = self._service.store.get_previous_run(
+            before_run_id=run_id, product_type=ProductType.HOME_LOAN
+        )
+        return previous.run_id if previous else None
+
+    def new_market(self, change: RateChange) -> Optional[TermMarket]:
+        snapshot = self._snapshot(change.run_id)
+        if snapshot is None or change.term_months is None:
+            return None
+        return snapshot.term(change.term_months)
+
+    def for_change(self, change: RateChange) -> tuple[Optional[int], Optional[int]]:
+        if not change.is_rate_move or change.run_id is None or change.term_months is None:
+            return (None, None)
+        new_market = self.new_market(change)
+        previous_run = self._previous_run_id(change.run_id)
+        previous_snapshot = self._snapshot(previous_run)
+        previous_market = previous_snapshot.term(change.term_months) if previous_snapshot else None
+        return (
+            previous_market.rank_for(change.bank) if previous_market else None,
+            new_market.rank_for(change.bank) if new_market else None,
+        )

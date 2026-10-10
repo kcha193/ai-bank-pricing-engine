@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Mapping, Optional
+from datetime import date, datetime
+from typing import Literal, Mapping, Optional
 
 from balance_pricing_engine.pricing_intelligence.health import FreshnessState, MarketExclusion
 
@@ -76,3 +76,48 @@ class Overview:
     matrix: MarketMatrix
     default_term: Optional[int]
     exclusions: tuple[MarketExclusion, ...]
+
+
+@dataclass(frozen=True)
+class ChangeWindow:
+    """Look-back window for the Rate Changes page (frozen so it can key a cache)."""
+
+    kind: Literal["today", "7d", "30d", "custom"]
+    start: Optional[date] = None
+    end: Optional[date] = None
+
+
+@dataclass(frozen=True)
+class ChangeFilters:
+    bank: Optional[str] = None
+    term_months: Optional[int] = None
+    direction: Optional[str] = None  # "UP" | "DOWN"
+    change_type: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ChangeRow:
+    key: str
+    detected_at: datetime
+    bank: str
+    term_months: Optional[int]
+    previous_pct: Optional[float]
+    current_pct: Optional[float]
+    change_bps: Optional[float]
+    direction: str
+    change_type: str
+    previous_rank: Optional[int]
+    new_rank: Optional[int]
+
+
+@dataclass(frozen=True)
+class EventDetail:
+    row: ChangeRow
+    product_name: str
+    rate_category: str
+    source_url: Optional[str]
+    observed_at: Optional[datetime]
+    effective_date_text: Optional[str]
+    parser_version: Optional[str]
+    market_median_pct: Optional[float]
+    market_state: Optional[str]
