@@ -11,8 +11,7 @@ from balance_pricing_engine.dashboard.formatting import (
     fmt_nz_datetime,
     fmt_rate_pct,
     fmt_term,
-    md_escape,
-    safe_md_link,
+    http_url_or_none,
 )
 from balance_pricing_engine.dashboard.models import ChangeFilters, ChangeWindow, EventDetail
 from balance_pricing_engine.dashboard.pages._common import cached, unwrap
@@ -27,20 +26,23 @@ def _rank(value) -> str:
     return EM_DASH if value is None else f"#{value}"
 
 
-def detail_markdown(detail: EventDetail) -> str:
-    """Event provenance as Markdown. Every scraped string is escaped: bank pages are untrusted."""
-    lines = [
-        f"- **Bank / product:** {md_escape(detail.row.bank)} — {md_escape(detail.product_name)}",
-        f"- **Source:** {safe_md_link('official page', detail.source_url)}",
-        f"- **Observed:** {fmt_nz_datetime(detail.observed_at)}",
-        f"- **Effective date:** {md_escape(detail.effective_date_text or 'not published')}",
-        f"- **Rate type:** {md_escape(detail.rate_category)}",
-        f"- **Rank:** {_rank(detail.row.previous_rank)} → {_rank(detail.row.new_rank)}",
-        f"- **Market median at event:** {fmt_rate_pct(detail.market_median_pct)}",
-        f"- **Market state at event:** {md_escape(detail.market_state or EM_DASH)}",
-        f"- **Parser version:** {md_escape(detail.parser_version or EM_DASH)}",
+def detail_rows(detail: EventDetail) -> list[tuple[str, str]]:
+    """Event provenance as (field, value) text pairs.
+
+    Rendered in a dataframe, where every cell is literal text: bank pages are untrusted, and
+    scraped strings must never be interpreted as Markdown (links, images, directives).
+    """
+    return [
+        ("Product", f"{detail.row.bank} — {detail.product_name}"),
+        ("Observed", fmt_nz_datetime(detail.observed_at)),
+        ("Effective date", detail.effective_date_text or "not published"),
+        ("Rate type", detail.rate_category),
+        ("Rank", f"{_rank(detail.row.previous_rank)} → {_rank(detail.row.new_rank)}"),
+        ("Market median at event", fmt_rate_pct(detail.market_median_pct)),
+        ("Market state at event", detail.market_state or EM_DASH),
+        ("Parser version", detail.parser_version or EM_DASH),
+        ("Source", detail.source_url or EM_DASH),
     ]
-    return "\n".join(lines)
 
 
 def render(services: DashboardServices) -> None:
@@ -103,4 +105,11 @@ def render(services: DashboardServices) -> None:
     detail = unwrap(cached(services, "event_detail", rows[index].key))
     if detail is None:
         return
-    st.markdown(detail_markdown(detail))
+    st.dataframe(
+        pd.DataFrame(detail_rows(detail), columns=["Field", "Value"]),
+        hide_index=True,
+        width="stretch",
+    )
+    link = http_url_or_none(detail.source_url)
+    if link:
+        st.link_button("Open official source page", link)
