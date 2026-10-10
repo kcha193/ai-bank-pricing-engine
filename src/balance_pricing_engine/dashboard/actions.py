@@ -17,7 +17,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
@@ -27,13 +27,21 @@ from balance_pricing_engine.pricing_intelligence.alerts import (
     build_telegram_sink_from_env,
     plain_alert,
 )
-from balance_pricing_engine.pricing_intelligence.backup import backup_database
+from balance_pricing_engine.pricing_intelligence.backup import backup_database, list_backups
 
 logger = logging.getLogger(__name__)
 
 WORKFLOW_SCRIPT = Path("scripts") / "collect_market_rates_workflow.py"
 WORKER_MODULE = "balance_pricing_engine.dashboard.run_worker"
 DEFAULT_TIMEOUT_SECONDS = 1800
+
+# Limits that stop a repeated click (or a visitor) from abusing an operation. Backups are pruned
+# to the newest 30, so unlimited "Create Backup" clicks would rotate real history out; collections
+# contact bank websites; Telegram tests message a real chat.
+BACKUP_MIN_INTERVAL = timedelta(minutes=10)
+RUN_COOLDOWN_SECONDS = 60.0
+TELEGRAM_COOLDOWN_SECONDS = 30.0
+BACKUP_TIMESTAMP_FORMAT = "%Y%m%dT%H%M%SZ"  # as written by pricing_intelligence.backup
 
 # Exit codes of the scheduled workflow (orchestration.EXIT_*): 0 ok, 1 total failure,
 # 2 partial failure, 3 already running. Anything else is a failure.
@@ -53,6 +61,38 @@ _DRY_RUN_NOTE = (
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class Cooldown:
+    """A minimum gap between uses, measured on a monotonic clock (immune to wall-clock changes)."""
+
+    def __init__(self, seconds: float, *, monotonic: Callable[[], float] = time.monotonic) -> None:
+        self._seconds = seconds
+        self._monotonic = monotonic
+        self._marked_at: Optional[float] = None
+        self._lock = threading.Lock()
+
+    def remaining(self) -> float:
+        with self._lock:
+            return self._remaining_locked()
+
+    def _remaining_locked(self) -> float:
+        if self._marked_at is None:
+            return 0.0
+        return max(0.0, self._seconds - (self._monotonic() - self._marked_at))
+
+    def mark(self) -> None:
+        with self._lock:
+            self._marked_at = self._monotonic()
+
+    def acquire(self) -> float:
+        """Mark a use and return 0, or return the seconds still to wait (and mark nothing)."""
+        with self._lock:
+            remaining = self._remaining_locked()
+            if remaining <= 0:
+                self._marked_at = self._monotonic()
+                return 0.0
+            return remaining
 
 
 @dataclass(frozen=True)
@@ -208,14 +248,37 @@ def run_dry(
         )  # fmt: skip
 
 
+def _latest_backup(backup_dir: Path, stem: str) -> Optional[tuple[Path, datetime]]:
+    """The newest existing backup and the time encoded in its file name."""
+    for path in reversed(list_backups(backup_dir, stem)):
+        try:
+            stamp = datetime.strptime(path.stem.rsplit("-", 1)[-1], BACKUP_TIMESTAMP_FORMAT)
+        except ValueError:
+            continue
+        return path, stamp.replace(tzinfo=timezone.utc)
+    return None
+
+
 def create_backup(
     settings: DashboardSettings, *, clock: Callable[[], datetime] = _utcnow
 ) -> ActionResult:
     database = Path(settings.intelligence.database_path)
     if not database.exists():
         return ActionResult("backup", "FAILED", "No database to back up yet.", clock())
+    now = clock()
+    latest = _latest_backup(settings.backup_dir, database.stem)
+    if latest is not None and now - latest[1] < BACKUP_MIN_INTERVAL:
+        minutes = max(0.0, (now - latest[1]).total_seconds() / 60)
+        return ActionResult(
+            "backup",
+            "RATE_LIMITED",
+            f"A backup was created {minutes:.0f} minutes ago; not creating another so older "
+            "backups are not rotated out.",
+            now,
+            summary={"path": str(latest[0])},
+        )
     try:
-        path = backup_database(database, settings.backup_dir, now=clock())
+        path = backup_database(database, settings.backup_dir, now=now)
     except Exception:  # noqa: BLE001 - one operational sentence; detail goes to the log
         logger.exception("backup failed")
         return ActionResult("backup", "FAILED", "Backup failed; see the log.", clock())
@@ -224,10 +287,14 @@ def create_backup(
     )
 
 
+_TELEGRAM_COOLDOWN = Cooldown(TELEGRAM_COOLDOWN_SECONDS)
+
+
 def send_test_notification(
     *,
     sink_factory: Callable[[], Optional[AlertSink]] = build_telegram_sink_from_env,
     clock: Callable[[], datetime] = _utcnow,
+    cooldown: Optional[Cooldown] = None,
 ) -> ActionResult:
     sink = sink_factory()
     if sink is None:
@@ -235,6 +302,14 @@ def send_test_notification(
             "telegram_test",
             "NOT_CONFIGURED",
             "Telegram is not configured for this environment.",
+            clock(),
+        )
+    wait = (cooldown or _TELEGRAM_COOLDOWN).acquire()
+    if wait > 0:
+        return ActionResult(
+            "telegram_test",
+            "RATE_LIMITED",
+            f"A test message was sent moments ago; wait {wait:.0f} s before sending another.",
             clock(),
         )
     try:
@@ -260,23 +335,36 @@ class JobState:
 
 
 class JobRunner:
-    """Single-flight background runner: at most one long job per server process."""
+    """Single-flight background runner: at most one long job per server process.
 
-    def __init__(self) -> None:
+    After a job finishes, ``cooldown_seconds`` must pass before another may start, whichever
+    action it is, so repeated clicks cannot hammer bank websites.
+    """
+
+    def __init__(
+        self,
+        cooldown_seconds: float = RUN_COOLDOWN_SECONDS,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._name: Optional[str] = None
         self._result: Optional[ActionResult] = None
+        self._cooldown = Cooldown(cooldown_seconds, monotonic=monotonic)
 
-    def submit(self, name: str, fn: Callable[[], ActionResult]) -> bool:
-        """Start ``fn`` in the background; ``False`` (and nothing started) if one is running."""
+    def submit(self, name: str, fn: Callable[[], ActionResult]) -> Optional[str]:
+        """Start ``fn`` in the background. ``None`` if started, else why it was refused."""
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
-                return False
+                return "A run is already in progress; nothing was started."
+            wait = self._cooldown.remaining()
+            if wait > 0:
+                return f"Please wait {wait:.0f} s before starting another run; nothing was started."
             self._name, self._result = name, None
             self._thread = threading.Thread(target=self._run, args=(name, fn), daemon=True)
             self._thread.start()
-            return True
+            return None
 
     def _run(self, name: str, fn: Callable[[], ActionResult]) -> None:
         try:
@@ -286,6 +374,7 @@ class JobRunner:
             result = ActionResult(name, "FAILED", "The job crashed; see the log.", _utcnow())
         with self._lock:
             self._result = result
+        self._cooldown.mark()
 
     def state(self) -> JobState:
         with self._lock:

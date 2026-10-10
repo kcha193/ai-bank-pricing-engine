@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from balance_pricing_engine.dashboard.services import DashboardServices
 from balance_pricing_engine.dashboard.settings import load_settings
@@ -15,7 +16,9 @@ def make_services(market) -> DashboardServices:
     return DashboardServices(settings, clock=lambda: market.now)
 
 
-def run_page(page: str, database: Path, now: datetime, *, setup: str = ""):
+def run_page(
+    page: str, database: Path, now: datetime, *, setup: str = "", env: Optional[dict] = None
+):
     """Run one dashboard page against a fixture database with ``AppTest``.
 
     ``setup`` is extra Python executed before the page renders -- used to patch the
@@ -34,7 +37,7 @@ from balance_pricing_engine.dashboard.services import DashboardServices
 from balance_pricing_engine.dashboard.settings import load_settings
 from balance_pricing_engine.dashboard.pages import {page} as page
 
-settings = load_settings({{}}, database_path={str(database)!r})
+settings = load_settings({dict(env or {})!r}, database_path={str(database)!r})
 services = DashboardServices(settings, clock=lambda: datetime.fromisoformat({now.isoformat()!r}))
 page.render(services)
 """

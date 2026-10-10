@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import subprocess
 import threading
@@ -151,7 +152,9 @@ def test_telegram_failure_never_leaks_the_bot_token(caplog):
         def send(self, alert):
             raise RuntimeError("POST https://api.telegram.org/bot123456:SECRET/sendMessage failed")
 
-    result = actions.send_test_notification(sink_factory=Leaky, clock=clock)
+    result = actions.send_test_notification(
+        sink_factory=Leaky, clock=clock, cooldown=actions.Cooldown(0)
+    )
     assert result.status == "FAILED"
     assert "SECRET" not in result.message
     assert caplog.records, "the failure should be logged (class name only)"
@@ -166,7 +169,12 @@ def test_telegram_success_sends_exactly_one_message():
         def send(self, alert):
             sent.append(alert)
 
-    assert actions.send_test_notification(sink_factory=Ok, clock=clock).status == "SUCCESS"
+    assert (
+        actions.send_test_notification(
+            sink_factory=Ok, clock=clock, cooldown=actions.Cooldown(0)
+        ).status
+        == "SUCCESS"
+    )
     assert len(sent) == 1
 
 
@@ -178,14 +186,15 @@ def test_job_runner_is_single_flight():
         gate.wait(2)
         return actions.ActionResult("live", "SUCCESS", "ok", NOW)
 
-    runner = actions.JobRunner()
-    assert runner.submit("live", slow) is True
-    assert runner.submit("live", slow) is False  # double click / a second browser tab
+    runner = actions.JobRunner(cooldown_seconds=0)
+    assert runner.submit("live", slow) is None
+    refusal = runner.submit("live", slow)  # double click / a second browser tab
+    assert refusal is not None and "already in progress" in refusal
     assert runner.state().running
     gate.set()
     runner.wait()
     assert runs == [1] and runner.state().result.status == "SUCCESS"
-    assert runner.submit("live", slow) is True  # free again once finished
+    assert runner.submit("live", slow) is None  # free again once finished
     runner.wait()
 
 
@@ -193,11 +202,79 @@ def test_a_crashing_job_becomes_a_failed_result_not_a_dead_runner():
     def crash():
         raise RuntimeError("secret internals")
 
-    runner = actions.JobRunner()
+    runner = actions.JobRunner(cooldown_seconds=0)
     runner.submit("live", crash)
     runner.wait()
     state = runner.state()
     assert not state.running and state.result.status == "FAILED"
     assert "secret internals" not in state.result.message
-    assert runner.submit("live", crash) is True
+    assert runner.submit("live", crash) is None
     runner.wait()
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_job_runner_enforces_a_cooldown_between_runs():
+    clock = FakeClock()
+    runner = actions.JobRunner(cooldown_seconds=60, monotonic=clock)
+    ok = lambda: actions.ActionResult("live", "SUCCESS", "ok", NOW)  # noqa: E731
+    assert runner.submit("live", ok) is None
+    runner.wait()
+    clock.now += 20
+    refusal = runner.submit("live", ok)
+    assert refusal is not None and "wait" in refusal and "40" in refusal
+    clock.now += 41
+    assert runner.submit("live", ok) is None
+    runner.wait()
+
+
+def test_cooldown_applies_across_live_and_dry_runs():
+    clock = FakeClock()
+    runner = actions.JobRunner(cooldown_seconds=60, monotonic=clock)
+    ok = lambda: actions.ActionResult("x", "SUCCESS", "ok", NOW)  # noqa: E731
+    runner.submit("live", ok)
+    runner.wait()
+    assert runner.submit("dry_run", ok) is not None
+
+
+def test_repeated_backup_clicks_cannot_rotate_out_older_backups(tmp_path):
+    from datetime import timedelta
+
+    from balance_pricing_engine.pricing_intelligence.store import ObservationStore
+
+    database = tmp_path / "m.db"
+    ObservationStore(database).close()
+    settings = load_settings({}, database_path=str(database))
+    settings = dataclasses.replace(settings, backup_dir=tmp_path / "backups")
+
+    first = actions.create_backup(settings, clock=clock)
+    assert first.status == "SUCCESS"
+    for seconds in range(1, 60):  # fifty-nine more clicks in the following minute
+        again = actions.create_backup(settings, clock=lambda s=seconds: NOW + timedelta(seconds=s))
+        assert again.status == "RATE_LIMITED"
+    assert len(list((tmp_path / "backups").glob("*.db"))) == 1
+    assert "minutes ago" in again.message and "older backups" in again.message
+
+    later = actions.create_backup(settings, clock=lambda: NOW + timedelta(minutes=11))
+    assert later.status == "SUCCESS"
+    assert len(list((tmp_path / "backups").glob("*.db"))) == 2
+
+
+def test_telegram_test_has_a_cooldown_so_it_cannot_spam_the_chat():
+    sent = []
+
+    class Ok:
+        def send(self, alert):
+            sent.append(alert)
+
+    limiter = actions.Cooldown(30, monotonic=FakeClock())
+    first = actions.send_test_notification(sink_factory=Ok, clock=clock, cooldown=limiter)
+    second = actions.send_test_notification(sink_factory=Ok, clock=clock, cooldown=limiter)
+    assert first.status == "SUCCESS" and second.status == "RATE_LIMITED"
+    assert len(sent) == 1

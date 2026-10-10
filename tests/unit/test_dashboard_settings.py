@@ -39,3 +39,17 @@ def test_load_settings_defaults_to_base_yaml_and_overrides_database(tmp_path):
     assert settings.engine_config_path == ROOT / "configs" / "base.yaml"
     assert settings.intelligence.database_path == str(tmp_path / "t.db")
     assert settings.backup_dir == ROOT / "data" / "processed" / "pricing_intelligence" / "backups"
+
+
+def test_ops_token_is_read_from_the_environment_and_never_shown(tmp_path):
+    settings = load_settings(
+        {"PRICING_WATCH_OPS_TOKEN": "s3cret-token"}, database_path=str(tmp_path / "t.db")
+    )
+    assert settings.ops_token == "s3cret-token"
+    assert "s3cret-token" not in repr(settings) and "s3cret-token" not in str(settings)
+
+
+def test_ops_token_is_off_by_default_and_blank_means_off(tmp_path):
+    assert load_settings({}, database_path=str(tmp_path / "t.db")).ops_token is None
+    blank = load_settings({"PRICING_WATCH_OPS_TOKEN": ""}, database_path=str(tmp_path / "t.db"))
+    assert blank.ops_token is None

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 from dashboard_harness import run_page
+from streamlit.proto.TextInput_pb2 import TextInput as TextInputProto
 
 from balance_pricing_engine.dashboard import actions
 
@@ -17,13 +18,12 @@ def ok(name, status="SUCCESS", message="done"):
 
 
 @pytest.fixture(autouse=True)
-def clean_runner():
-    runner = actions.default_runner()
-    runner.wait()
-    runner.clear_result()
+def clean_runner(monkeypatch):
+    """A fresh process-wide runner per test, with no cooldown unless a test asks for one."""
+    runner = actions.JobRunner(cooldown_seconds=0)
+    monkeypatch.setattr(actions, "_DEFAULT_RUNNER", runner)
     yield runner
     runner.wait()
-    runner.clear_result()
 
 
 def test_rendering_and_refresh_never_collect(market_factory):
@@ -155,3 +155,103 @@ def test_backup_button_reports_the_written_location(market_factory, tmp_path):
 def test_operations_page_works_without_a_database(tmp_path):
     app = run_page("operations", tmp_path / "none.db", datetime(2026, 10, 11, tzinfo=timezone.utc))
     assert not app.exception
+
+
+def test_a_cooldown_between_runs_is_explained_not_silently_ignored(market_factory, monkeypatch):
+    runner = actions.JobRunner(cooldown_seconds=60)
+    monkeypatch.setattr(actions, "_DEFAULT_RUNNER", runner)
+    market = market_factory()
+    with patch.object(actions, "run_dry", side_effect=lambda *a, **k: ok("dry_run")) as dry:
+        app = run_page("operations", market.database, market.now)
+        app.button(key="run_dry").click().run()
+        runner.wait()
+        app.run()
+        app.button(key="run_dry").click().run()
+        runner.wait()
+    assert dry.call_count == 1
+    assert any("Please wait" in w.value and "nothing was started" in w.value for w in app.warning)
+
+
+def test_rate_limited_actions_are_warnings(market_factory):
+    market = market_factory()
+    limited = ok("backup", "RATE_LIMITED", "A backup was created 3 minutes ago")
+    with patch.object(actions, "create_backup", return_value=limited):
+        app = run_page("operations", market.database, market.now)
+        app.button(key="create_backup").click().run()
+    assert any("RATE_LIMITED" in w.value for w in app.warning)
+
+
+TOKEN_ENV = {"PRICING_WATCH_OPS_TOKEN": "s3cret-token"}
+
+
+def test_with_a_token_configured_operations_are_locked_until_it_is_entered(market_factory):
+    market = market_factory()
+    app = run_page("operations", market.database, market.now, env=TOKEN_ENV)
+    assert not app.exception
+    for key in ("run_live", "run_dry", "create_backup", "telegram_test"):
+        with pytest.raises(KeyError):
+            app.button(key=key)
+    assert app.button(key="refresh_dashboard") is not None  # reading stays available
+    assert app.text_input(key="ops_token_input").proto.type == TextInputProto.PASSWORD
+    assert all("s3cret-token" not in str(e.value) for e in (*app.markdown, *app.info, *app.error))
+
+
+def test_the_right_token_unlocks_and_a_wrong_one_does_not(market_factory):
+    market = market_factory()
+    with patch.object(actions, "run_live") as live:
+        app = run_page("operations", market.database, market.now, env=TOKEN_ENV)
+        app.text_input(key="ops_token_input").set_value("wrong").run()
+        app.button(key="ops_unlock").click().run()
+        assert any("Incorrect token" in e.value for e in app.error)
+        with pytest.raises(KeyError):
+            app.button(key="run_live")
+        app.text_input(key="ops_token_input").set_value("s3cret-token").run()
+        app.button(key="ops_unlock").click().run()
+        assert not app.exception
+        assert app.button(key="run_live").disabled  # present now; still needs confirmation
+    assert live.call_count == 0
+
+
+def test_repeated_wrong_tokens_lock_the_session_out(market_factory):
+    market = market_factory()
+    app = run_page("operations", market.database, market.now, env=TOKEN_ENV)
+    for _ in range(5):
+        app.text_input(key="ops_token_input").set_value("wrong").run()
+        app.button(key="ops_unlock").click().run()
+    app.text_input(key="ops_token_input").set_value("s3cret-token").run()
+    app.button(key="ops_unlock").click().run()
+    assert any("Too many incorrect attempts" in e.value for e in app.error)
+    with pytest.raises(KeyError):
+        app.button(key="run_live")
+
+
+def test_without_a_token_the_page_says_operations_are_unprotected(market_factory):
+    market = market_factory()
+    app = run_page("operations", market.database, market.now)
+    text = " ".join(i.value for i in app.info)
+    assert "not access-protected" in text and "PRICING_WATCH_OPS_TOKEN" in text
+    assert "localhost" in text
+
+
+def test_a_locked_session_cannot_start_a_job_even_by_calling_the_callback(
+    market_factory, clean_runner
+):
+    """Defence in depth: the callbacks re-check authorisation, not just the page layout."""
+    from streamlit.testing.v1 import AppTest
+
+    market = market_factory()
+    script = f"""
+from balance_pricing_engine.dashboard.pages import operations
+from balance_pricing_engine.dashboard.settings import load_settings
+settings = load_settings({TOKEN_ENV!r}, database_path={str(market.database)!r})
+operations._start_job("live", "run_live", settings)
+operations._run_quick("create_backup", settings)
+"""
+    with (
+        patch.object(actions, "run_live") as live,
+        patch.object(actions, "create_backup") as backup,
+    ):
+        app = AppTest.from_string(script).run()
+    assert not app.exception
+    assert live.call_count == 0 and backup.call_count == 0
+    assert not clean_runner.state().running and clean_runner.state().result is None

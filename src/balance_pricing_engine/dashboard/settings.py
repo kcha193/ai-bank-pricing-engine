@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional
 
@@ -17,6 +17,7 @@ from balance_pricing_engine.pricing_intelligence.config import (
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CONFIG_ENV_VAR = "PRICING_WATCH_CONFIG"
+OPS_TOKEN_ENV_VAR = "PRICING_WATCH_OPS_TOKEN"
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,8 @@ class DashboardSettings:
     engine_config_text: str
     backup_dir: Path
     repo_root: Path
+    #: Optional shared secret gating the Operations page. ``repr=False``: never printed or logged.
+    ops_token: Optional[str] = field(default=None, repr=False)
 
 
 def resolve_intelligence_config(config_yaml: str) -> PricingIntelligenceConfig:
@@ -63,4 +66,5 @@ def load_settings(
         engine_config_text=text,
         backup_dir=REPO_ROOT / "data" / "processed" / "pricing_intelligence" / "backups",
         repo_root=REPO_ROOT,
+        ops_token=env.get(OPS_TOKEN_ENV_VAR) or None,
     )
