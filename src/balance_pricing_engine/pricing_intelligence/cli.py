@@ -45,6 +45,7 @@ from balance_pricing_engine.pricing_intelligence.config import (
     PricingIntelligenceConfig,
     resolve_database_path_from_env,
 )
+from balance_pricing_engine.pricing_intelligence.health import CollectorStatus, collector_status
 from balance_pricing_engine.pricing_intelligence.locking import AlreadyRunningError, SingleInstanceLock
 from balance_pricing_engine.pricing_intelligence.orchestration import (
     EXIT_ALREADY_RUNNING,
@@ -842,7 +843,6 @@ def _health(service: PricingIntelligenceService, args: argparse.Namespace) -> in
 
     health_by_bank = {h.bank: h for h in service.store.get_collector_health(product_type=product)}
     now = datetime.now(timezone.utc)
-    max_age = timedelta(hours=service.config.max_observation_age_hours)
     for bank in service.config.selected_banks:
         health = health_by_bank.get(bank)
         if health is None:
@@ -854,12 +854,12 @@ def _health(service: PricingIntelligenceService, args: argparse.Namespace) -> in
         # command exists to diagnose, and directly contradicting "Latest
         # market snapshot: EMPTY" below, which does apply this same
         # max_observation_age_hours staleness check.
-        if health.consecutive_failures > 0:
-            status = f"FAILING ({health.consecutive_failures}x)"
-        elif health.last_success_at is not None and now - health.last_success_at > max_age:
-            status = "STALE"
-        else:
-            status = "FRESH"
+        state = collector_status(health, now, service.config.max_observation_age_hours)
+        status = (
+            f"FAILING ({health.consecutive_failures}x)"
+            if state is CollectorStatus.FAILING
+            else state.value
+        )
         last_seen = (
             health.last_success_at.strftime("%d %b %H:%M") if health.last_success_at else "never"
         )

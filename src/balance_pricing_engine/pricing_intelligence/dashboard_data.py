@@ -10,10 +10,14 @@ from __future__ import annotations
 from typing import Mapping, Optional, Sequence
 
 import pandas as pd
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord
 from balance_pricing_engine.pricing_intelligence.changes import RateChange
+from balance_pricing_engine.pricing_intelligence.health import (
+    assess_observation_freshness,
+    collector_status,
+)
 from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot, _term_label
 from balance_pricing_engine.pricing_intelligence.store import CollectorHealth, RunRecord
 
@@ -42,22 +46,22 @@ def build_freshness_frame(
         )
     rows = []
     for bank in banks:
-        bank_records = [r for r in records if r.bank == bank]
-        confirmed = [r for r in bank_records if r.validation_status != "warning"]
-        oldest = min((r.captured_at_utc for r in confirmed), default=None)
-        age = (now - oldest).total_seconds() / 3600 if oldest is not None else None
-        status = "Missing" if age is None else "Stale" if age > max_age_hours else "Fresh"
-        bank_run_ids = (run_ids_by_bank or {}).get(bank, [])
-        if any(r.validation_status == "warning" for r in bank_records):
-            status = "Quarantined readings"
-        elif (
-            oldest is not None
-            and latest_run_id is not None
-            and any(run_id != latest_run_id for run_id in bank_run_ids)
-        ):
-            status += "; not fully confirmed in latest stored run"
-        rows.append({"Bank": bank, "Oldest confirmation (UTC)": oldest,
-                     "Age (hours)": age, "Status": status})
+        freshness = assess_observation_freshness(
+            records,
+            bank,
+            now=now,
+            max_age_hours=max_age_hours,
+            run_ids=(run_ids_by_bank or {}).get(bank, []),
+            latest_run_id=latest_run_id,
+        )
+        rows.append(
+            {
+                "Bank": bank,
+                "Oldest confirmation (UTC)": freshness.oldest_confirmation,
+                "Age (hours)": freshness.age_hours,
+                "Status": freshness.label,
+            }
+        )
     return pd.DataFrame(rows).set_index("Bank")
 
 
@@ -220,23 +224,10 @@ def build_collector_health_frame(
             index=pd.Index([], name="Bank"),
         )
     health_by_bank = {entry.bank: entry for entry in health}
-    max_age = (
-        timedelta(hours=max_observation_age_hours)
-        if max_observation_age_hours is not None
-        else None
-    )
     evaluated_at = now or datetime.now(timezone.utc)
 
     def _status(entry: CollectorHealth) -> str:
-        if entry.consecutive_failures > 0:
-            return "FAILING"
-        if (
-            max_age is not None
-            and entry.last_success_at is not None
-            and evaluated_at - entry.last_success_at > max_age
-        ):
-            return "STALE"
-        return "FRESH"
+        return collector_status(entry, evaluated_at, max_observation_age_hours).value
 
     rows = []
     for bank in banks:

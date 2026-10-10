@@ -34,6 +34,7 @@ from balance_pricing_engine.pricing_intelligence.changes import (
     resolve_pairing,
 )
 from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
+from balance_pricing_engine.pricing_intelligence.health import MarketExclusion, is_stale
 from balance_pricing_engine.pricing_intelligence.market_state import (
     MarketStateAssessment,
     classify_market_state,
@@ -341,8 +342,7 @@ def _exclude_stale(
     a months-stale rate could otherwise silently drive MARKET_LEADER or
     MARKET_MEDIAN.
     """
-    cutoff = now - timedelta(hours=max_age_hours)
-    return [record for record in records if record.captured_at_utc >= cutoff]
+    return [r for r in records if not is_stale(r.captured_at_utc, now, max_age_hours)]
 
 
 def _resolve_rate_category(
@@ -1262,6 +1262,41 @@ class PricingIntelligenceService:
         return classify_market_state(
             changes, thresholds=self.config.market_state, now=now
         )
+
+    def get_market_exclusions(
+        self,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        now: Optional[datetime] = None,
+    ) -> list[MarketExclusion]:
+        """Comparable records ``get_market_snapshot`` drops for staleness.
+
+        Same record set and the same predicate as the snapshot, so the
+        explanation cannot diverge from the exclusion.
+        """
+        now = now or datetime.now(timezone.utc)
+        rate_category = _resolve_rate_category(product_type, None)
+        records = self.store.get_current_observations(product_type=product_type)
+        records = _resolve_suspicious_if_present(
+            records,
+            lambda: self.store.get_last_confirmed_observations(product_type=product_type),
+        )
+        threshold = self.config.max_observation_age_hours
+        return [
+            MarketExclusion(
+                bank=r.bank,
+                term_months=r.term_months_normalised,
+                product_name=r.product_name,
+                rate_pct=r.advertised_rate_pct,
+                observed_at=r.captured_at_utc,
+                age_hours=(now - r.captured_at_utc).total_seconds() / 3600,
+                threshold_hours=threshold,
+            )
+            for r in records
+            if is_stale(r.captured_at_utc, now, threshold)
+            and r.rate_category == rate_category
+            and r.bank in self.config.selected_banks
+            and r.term_months_normalised in self.config.tracked_terms_months
+        ]
 
     def get_competitive_position(
         self,
