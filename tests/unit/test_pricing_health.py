@@ -112,3 +112,60 @@ def test_market_exclusions_explain_why_a_bank_dropped_out(market_factory):
     assert exclusions[0].term_months == 12 and exclusions[0].threshold_hours == 168.0
     assert exclusions[0].age_hours == pytest.approx(240.0)
     assert "Westpac" not in snapshot.banks
+
+
+# Ported from the retired whole-script dashboard tests: these two guard real defects in
+# how "not fully confirmed" is decided, so they now run against the shared health model.
+DAY_ONE = datetime.now(timezone.utc) - timedelta(days=2)
+DAY_TWO = datetime.now(timezone.utc) - timedelta(days=1)
+
+
+def _service(tmp_path):
+    from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
+
+    path = tmp_path / "observations.db"
+    config = PricingIntelligenceConfig(database_path=str(path))
+    return PricingIntelligenceService(config=config, store=ObservationStore(path)), config
+
+
+def test_freshness_is_not_skewed_by_a_newer_term_deposit_run(tmp_path, make_record):
+    """A newer term-deposit run must not make mortgage rows look unconfirmed: an
+    unscoped latest_run_id() would resolve to the deposit run."""
+    service, config = _service(tmp_path)
+    with service:
+        service.store.record_observations(
+            [make_record(bank=b, rate_pct=4.79) for b in config.selected_banks],
+            observed_at=DAY_ONE,
+        )
+        service.store.record_observations(
+            [
+                make_record(
+                    bank="ANZ",
+                    product_type="term_deposit",
+                    product_name="12 Month Term Deposit",
+                    rate_category="standard",
+                    rate_pct=4.5,
+                )
+            ],
+            observed_at=DAY_TWO,
+        )
+        health = assess_system_health(service)
+    assert [b.bank for b in health.banks if b.freshness.not_fully_confirmed] == []
+
+
+def test_freshness_flags_a_bank_untouched_by_a_same_timestamp_later_run(tmp_path, make_record):
+    """Two runs can share a started_at; "not fully confirmed" must use run identity."""
+    service, config = _service(tmp_path)
+    with service:
+        service.store.record_observations(
+            [make_record(bank=b, rate_pct=4.79) for b in config.selected_banks],
+            observed_at=DAY_ONE,
+            run_id="run-1",
+        )
+        service.store.record_observations(
+            [make_record(bank=b, rate_pct=4.79) for b in config.selected_banks if b != "Kiwibank"],
+            observed_at=DAY_ONE,
+            run_id="run-2",
+        )
+        health = assess_system_health(service)
+    assert [b.bank for b in health.banks if b.freshness.not_fully_confirmed] == ["Kiwibank"]
