@@ -211,3 +211,38 @@ class ScenarioView:
     position: Optional[PositionView]
     model_optimum_rate: Optional[float]
     excluded_banks: tuple[MarketExclusion, ...]
+
+
+@dataclass(frozen=True)
+class RunRow:
+    run_id: str
+    started_at: datetime
+    status: str
+    banks_ok: int
+    banks_failed: int
+    observations: int
+    changes: int
+    duration_seconds: float
+
+
+@dataclass(frozen=True)
+class RunDetail:
+    row: RunRow
+    banks_successful: tuple[str, ...]
+    banks_failed: tuple[str, ...]
+    validation_failures: int
+    suspicious: int
+    market_state: Optional[str]
+    error_summary: Optional[str]
+
+
+@dataclass(frozen=True)
+class SuspiciousRow:
+    """A reading flagged as implausible. Quarantined: never part of a trusted benchmark."""
+
+    bank: str
+    term_months: Optional[int]
+    previous_pct: Optional[float]
+    observed_pct: Optional[float]
+    change_bps: Optional[float]
+    detected_at: datetime

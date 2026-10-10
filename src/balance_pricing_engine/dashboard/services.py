@@ -40,6 +40,9 @@ from balance_pricing_engine.dashboard.models import (
     MatrixCell,
     Overview,
     RankedBank,
+    RunDetail,
+    RunRow,
+    SuspiciousRow,
     TermSummary,
 )
 from balance_pricing_engine.dashboard.results import Result
@@ -47,6 +50,8 @@ from balance_pricing_engine.dashboard.settings import DashboardSettings
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
 from balance_pricing_engine.pricing_intelligence.health import (
     FreshnessState,
+    MarketExclusion,
+    SystemHealth,
     assess_system_health,
 )
 from balance_pricing_engine.pricing_intelligence.changes import RateChange
@@ -56,7 +61,7 @@ from balance_pricing_engine.pricing_intelligence.snapshot import (
     TermMarket,
     term_market_from_rates,
 )
-from balance_pricing_engine.pricing_intelligence.store import ObservationStore
+from balance_pricing_engine.pricing_intelligence.store import ObservationStore, RunRecord
 from balance_pricing_engine.pricing_intelligence.strategy import (
     CompetitorRateStrategy,
     MarketStrategyError,
@@ -339,6 +344,84 @@ class DashboardServices:
 
         return self._guard(build)
 
+    # -------------------------------------------------------------- health
+
+    def health(self, product_type: ProductType = ProductType.HOME_LOAN) -> Result[SystemHealth]:
+        """The backend's own health model, evaluated now. Never cache this."""
+
+        def build(service: PricingIntelligenceService) -> Result[SystemHealth]:
+            return Result.ok(
+                assess_system_health(service, product_type=product_type, now=self._clock())
+            )
+
+        return self._guard(build)
+
+    def exclusions(
+        self, product_type: ProductType = ProductType.HOME_LOAN
+    ) -> Result[tuple[MarketExclusion, ...]]:
+        """Records the market snapshot dropped for staleness, and why. Never cache this."""
+
+        def build(service: PricingIntelligenceService) -> Result[tuple[MarketExclusion, ...]]:
+            found = service.get_market_exclusions(product_type=product_type, now=self._clock())
+            return Result.ok(tuple(found))
+
+        return self._guard(build)
+
+    def runs(
+        self, product_type: ProductType = ProductType.HOME_LOAN, limit: int = 20
+    ) -> Result[tuple[RunRow, ...]]:
+        def build(service: PricingIntelligenceService) -> Result[tuple[RunRow, ...]]:
+            records = service.store.get_recent_run_records(product_type=product_type, limit=limit)
+            if not records:
+                return Result.empty(
+                    "No operational runs recorded yet. Run Pricing Watch from Operations."
+                )
+            return Result.ok(tuple(_run_row(r) for r in records))
+
+        return self._guard(build)
+
+    def run_detail(self, run_id: str) -> Result[RunDetail]:
+        def build(service: PricingIntelligenceService) -> Result[RunDetail]:
+            record = service.store.get_run_record(run_id)
+            if record is None:
+                return Result.empty("That run is no longer in the stored history.")
+            return Result.ok(
+                RunDetail(
+                    row=_run_row(record),
+                    banks_successful=tuple(record.banks_successful),
+                    banks_failed=tuple(record.banks_failed),
+                    validation_failures=record.validation_failures,
+                    suspicious=record.suspicious_observations,
+                    market_state=record.market_state,
+                    error_summary=record.error_summary,
+                )
+            )
+
+        return self._guard(build)
+
+    def suspicious(self) -> Result[tuple[SuspiciousRow, ...]]:
+        """Implausible rate moves, kept apart from trusted data (and from Rate Changes)."""
+
+        def build(service: PricingIntelligenceService) -> Result[tuple[SuspiciousRow, ...]]:
+            changes = service.get_changes(days=None, now=self._clock(), scope_to_market=True)
+            rows = tuple(
+                SuspiciousRow(
+                    c.bank,
+                    c.term_months,
+                    c.previous_rate_pct,
+                    c.current_rate_pct,
+                    c.change_bps,
+                    c.detected_at,
+                )
+                for c in changes
+                if c.suspicious and c.is_rate_move
+            )
+            if not rows:
+                return Result.empty("No suspicious observations recorded.")
+            return Result.ok(rows)
+
+        return self._guard(build)
+
     # ----------------------------------------------------------- scenarios
 
     def scenarios(self, request: ScenarioRequest) -> Result[ScenarioView]:
@@ -551,6 +634,19 @@ class DashboardServices:
             )
 
         return self._guard(build)
+
+
+def _run_row(record: RunRecord) -> RunRow:
+    return RunRow(
+        run_id=record.run_id,
+        started_at=record.started_at,
+        status=record.status,
+        banks_ok=len(record.banks_successful),
+        banks_failed=len(record.banks_failed),
+        observations=record.rates_observed,
+        changes=record.rates_changed,
+        duration_seconds=(record.completed_at - record.started_at).total_seconds(),
+    )
 
 
 def _rationale(strategy: CompetitorRateStrategy, request: ScenarioRequest) -> str:

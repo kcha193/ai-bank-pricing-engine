@@ -24,9 +24,17 @@ def market_factory(tmp_path, make_record):
     Run 2 (NOW-1d) moves ANZ 4.89 -> ``anz_new_rate``. Banks in ``stale_banks`` are
     only observed in the first run and then record failed collections, so their last
     observation is 10 days old (older than the 168 h default freshness window).
+    ``anz_new_status="warning"`` stores ANZ's new reading as quarantined (suspicious), as the
+    real validation step would for an implausible jump.
     """
 
-    def build(*, anz_new_rate: float = 4.79, stale_banks=(), name: str = "market.db"):
+    def build(
+        *,
+        anz_new_rate: float = 4.79,
+        anz_new_status: str = "unvalidated",
+        stale_banks=(),
+        name: str = "market.db",
+    ):
         database = tmp_path / name
         config = PricingIntelligenceConfig(database_path=str(database))
         store = ObservationStore(database)
@@ -38,7 +46,19 @@ def market_factory(tmp_path, make_record):
         previous = None
         for index, (run_id, when, rates) in enumerate(runs):
             live = {b: r for b, r in rates.items() if index == 0 or b not in stale_banks}
-            records = [make_record(bank=b, rate_pct=r, observed_at=when) for b, r in live.items()]
+            records = [
+                make_record(
+                    bank=b,
+                    rate_pct=r,
+                    observed_at=when,
+                    **(
+                        {"validation_status": anz_new_status}
+                        if (b == "ANZ" and run_id == "run-2")
+                        else {}
+                    ),
+                )
+                for b, r in live.items()
+            ]
             store.record_observations(
                 records, run_id=run_id, observed_at=when, product_type=ProductType.HOME_LOAN
             )
