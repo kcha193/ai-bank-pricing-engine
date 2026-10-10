@@ -11,8 +11,10 @@ from balance_pricing_engine.dashboard.formatting import (
     fmt_nz_datetime,
     fmt_rate_pct,
     fmt_term,
+    md_escape,
+    safe_md_link,
 )
-from balance_pricing_engine.dashboard.models import ChangeFilters, ChangeWindow
+from balance_pricing_engine.dashboard.models import ChangeFilters, ChangeWindow, EventDetail
 from balance_pricing_engine.dashboard.pages._common import cached, unwrap
 from balance_pricing_engine.dashboard.services import DashboardServices
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType
@@ -23,6 +25,22 @@ WINDOWS = {"Today": "today", "7 days": "7d", "30 days": "30d", "Custom": "custom
 
 def _rank(value) -> str:
     return EM_DASH if value is None else f"#{value}"
+
+
+def detail_markdown(detail: EventDetail) -> str:
+    """Event provenance as Markdown. Every scraped string is escaped: bank pages are untrusted."""
+    lines = [
+        f"- **Bank / product:** {md_escape(detail.row.bank)} — {md_escape(detail.product_name)}",
+        f"- **Source:** {safe_md_link('official page', detail.source_url)}",
+        f"- **Observed:** {fmt_nz_datetime(detail.observed_at)}",
+        f"- **Effective date:** {md_escape(detail.effective_date_text or 'not published')}",
+        f"- **Rate type:** {md_escape(detail.rate_category)}",
+        f"- **Rank:** {_rank(detail.row.previous_rank)} → {_rank(detail.row.new_rank)}",
+        f"- **Market median at event:** {fmt_rate_pct(detail.market_median_pct)}",
+        f"- **Market state at event:** {md_escape(detail.market_state or EM_DASH)}",
+        f"- **Parser version:** {md_escape(detail.parser_version or EM_DASH)}",
+    ]
+    return "\n".join(lines)
 
 
 def render(services: DashboardServices) -> None:
@@ -85,23 +103,4 @@ def render(services: DashboardServices) -> None:
     detail = unwrap(cached(services, "event_detail", rows[index].key))
     if detail is None:
         return
-    source = (
-        f"[official page]({detail.source_url})"
-        if detail.source_url and detail.source_url.startswith(("http://", "https://"))
-        else (detail.source_url or EM_DASH)
-    )
-    st.markdown(
-        "\n".join(
-            [
-                f"- **Bank / product:** {detail.row.bank} — {detail.product_name}",
-                f"- **Source:** {source}",
-                f"- **Observed:** {fmt_nz_datetime(detail.observed_at)}",
-                f"- **Effective date:** {detail.effective_date_text or 'not published'}",
-                f"- **Rate type:** {detail.rate_category}",
-                f"- **Rank:** {_rank(detail.row.previous_rank)} → {_rank(detail.row.new_rank)}",
-                f"- **Market median at event:** {fmt_rate_pct(detail.market_median_pct)}",
-                f"- **Market state at event:** {detail.market_state or EM_DASH}",
-                f"- **Parser version:** {detail.parser_version or EM_DASH}",
-            ]
-        )
-    )
+    st.markdown(detail_markdown(detail))

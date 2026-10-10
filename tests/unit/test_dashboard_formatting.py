@@ -42,6 +42,26 @@ def test_nz_datetime_treats_naive_values_as_utc_and_handles_none():
     assert fmt_nz_datetime(None) == "—"
 
 
+def test_md_escape_neutralises_links_images_and_directives():
+    from balance_pricing_engine.dashboard.formatting import md_escape
+
+    text = md_escape("![x](http://evil.example/p.png) :red[boom] $x$ <b>hi</b> `code`")
+    assert "![" not in text and "](" not in text
+    assert ":red[" not in text and "<b>" not in text and "`code`" not in text
+    assert md_escape("plain text 4.89") == "plain text 4.89"  # ordinary prose is untouched
+
+
+def test_safe_md_link_only_links_http_urls_and_cannot_break_out():
+    from balance_pricing_engine.dashboard.formatting import safe_md_link
+
+    ok = safe_md_link("official page", "https://bank.example/rates?a=1&b=2")
+    assert ok == "[official page](https://bank.example/rates?a=1&b=2)"
+    hostile = safe_md_link("official page", "https://e.example/a b)(![x](http://evil/p.png)")
+    assert " " not in hostile.split("](", 1)[1] and hostile.count("](") == 1
+    for url in ("javascript:alert(1)", "data:text/html,<script>", "", None):
+        assert "](" not in safe_md_link("official page", url)
+
+
 def test_age_terms_and_freshness_labels():
     assert fmt_age_hours(41.2) == "41 h" and fmt_age_hours(None) == "—"
     assert [fmt_term(m) for m in (6, 12, 18, 24, 60)] == ["6M", "1Y", "18M", "2Y", "5Y"]
