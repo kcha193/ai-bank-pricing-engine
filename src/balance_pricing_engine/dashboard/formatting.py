@@ -43,6 +43,21 @@ def fmt_rate_fraction(value: Optional[float], places: int = 2) -> str:
     return EM_DASH if value is None else f"{value * 100:.{places}f}%"
 
 
+def fmt_money_m(value: Optional[float], *, signed: bool = False) -> str:
+    """Dollars at a readable scale (``-4_508_279`` -> ``-$4.5m``); small values stay in dollars."""
+    if value is None:
+        return EM_DASH
+    sign = "-" if value < 0 else ("+" if signed and value > 0 else "")
+    magnitude = abs(value)
+    if magnitude >= 1e9:
+        body = f"${magnitude / 1e9:.1f}bn"
+    elif magnitude >= 100_000:
+        body = f"${magnitude / 1e6:.1f}m"
+    else:
+        body = f"${magnitude:,.0f}"
+    return f"{sign}{body}"
+
+
 def fmt_bps(value: Optional[float]) -> str:
     if value is None:
         return EM_DASH

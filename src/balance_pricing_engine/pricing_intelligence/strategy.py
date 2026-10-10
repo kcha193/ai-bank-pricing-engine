@@ -300,6 +300,27 @@ def apply_market_strategy_to_config(
     return revalidate_config(updated_config, context="market-intelligence overlay")
 
 
+def apply_manual_competitor_rate_to_config(
+    config, rate_fraction: float, set_reference_rate: bool = True
+):
+    """Return ``config`` with an operator-entered competitor loan rate (decimal, ``0.0509``).
+
+    The explicit-override counterpart of :func:`apply_market_strategy_to_config`. That
+    function must keep returning the *same* config object under ``MANUAL`` (existing
+    scenarios depend on it), so a caller that wants to impose its own manual rate uses
+    this one instead and always receives a new, re-validated config.
+    """
+    if not math.isfinite(rate_fraction) or rate_fraction < 0:
+        raise MarketStrategyError("manual_rate must be finite and non-negative")
+    updates: dict = {"competitor_loan_rate": rate_fraction}
+    if set_reference_rate and config.market.home_loan_reference_rate is not None:
+        updates["home_loan_reference_rate"] = rate_fraction
+    updated_config = config.model_copy(
+        update={"market": config.market.model_copy(update=updates)}
+    )
+    return revalidate_config(updated_config, context="manual competitor-rate override")
+
+
 class CashRateStrategy(str, Enum):
     """How the optimiser's wholesale funding-cost anchor is sourced.
 

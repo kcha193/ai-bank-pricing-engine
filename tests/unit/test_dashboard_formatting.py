@@ -83,3 +83,22 @@ def test_age_terms_and_freshness_labels():
     assert [fmt_term(m) for m in (6, 12, 18, 24, 60)] == ["6M", "1Y", "18M", "2Y", "5Y"]
     assert fmt_freshness(FreshnessState.STALE) == "⚠ STALE"
     assert fmt_freshness(FreshnessState.FRESH) == "FRESH"
+
+
+@pytest.mark.parametrize(
+    "value,signed,text",
+    [
+        (-4_508_279.0, False, "-$4.5m"),
+        (400_000.0, True, "+$0.4m"),
+        (400_000.0, False, "$0.4m"),
+        (-1_700_000.0, True, "-$1.7m"),
+        (50_000.0, True, "+$50,000"),
+        (0.0, True, "$0"),
+        (2_400_000_000.0, False, "$2.4bn"),
+        (None, False, "—"),
+    ],
+)
+def test_money_in_millions(value, signed, text):
+    from balance_pricing_engine.dashboard.formatting import fmt_money_m
+
+    assert fmt_money_m(value, signed=signed) == text

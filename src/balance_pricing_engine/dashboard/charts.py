@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 import altair as alt
 import pandas as pd
 
 from balance_pricing_engine.dashboard.models import (
     BankPosition,
+    CurvePoint,
     HistoryPoint,
     MarketPoint,
     TimelineEvent,
@@ -106,3 +107,37 @@ def repricing_timeline(events: Sequence[TimelineEvent]) -> alt.Chart:
             tooltip=["bank", "when:T", "bps"],
         )
     )
+
+
+def objective_curve(
+    curve: Sequence[CurvePoint], markers: Mapping[str, float]
+) -> alt.LayerChart | alt.FacetChart:
+    """Modelled objective across our candidate rates, with reference rates marked.
+
+    ``curve`` rates are fractions (as the optimiser reports) and are plotted in percent;
+    ``markers`` are already percent (current rate, market median/leader, model optimum).
+    """
+    frame = pd.DataFrame([{"rate": p.rate * 100, "objective": p.objective} for p in curve])
+    line = (
+        alt.Chart(frame)
+        .mark_line(point=True)
+        .encode(
+            x=alt.X("rate:Q", title="Our home-loan rate (%)", scale=alt.Scale(zero=False)),
+            y=alt.Y("objective:Q", title="Modelled objective ($)"),
+        )
+    )
+    layers = [line]
+    if markers:
+        rules = (
+            alt.Chart(
+                pd.DataFrame([{"marker": name, "rate": rate} for name, rate in markers.items()])
+            )
+            .mark_rule(strokeDash=[4, 4])
+            .encode(
+                x="rate:Q",
+                color=alt.Color("marker:N", legend=alt.Legend(title=None)),
+                tooltip=["marker", alt.Tooltip("rate:Q", format=".2f")],
+            )
+        )
+        layers.append(rules)
+    return alt.layer(*layers)

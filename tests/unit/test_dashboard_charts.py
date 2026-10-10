@@ -66,3 +66,30 @@ def test_repricing_timeline_plots_one_dot_per_event():
         [TimelineEvent(when, "ANZ", -10.0, 0.0), TimelineEvent(when, "BNZ", -10.0, 2.0)]
     ).to_dict()
     assert {r["bank"] for r in next(iter(spec["datasets"].values()))} == {"ANZ", "BNZ"}
+
+
+def test_objective_curve_plots_the_curve_in_percent_and_annotates_each_marker_once():
+    from balance_pricing_engine.dashboard.charts import objective_curve
+    from balance_pricing_engine.dashboard.models import CurvePoint
+
+    spec = objective_curve(
+        [CurvePoint(0.047, -3.0), CurvePoint(0.048, -2.0)],
+        {"Current": 4.89, "Market median": 4.85, "Model optimum": 4.84},
+    ).to_dict()
+    rows = [row for dataset in spec["datasets"].values() for row in dataset]
+    curve = [r for r in rows if "objective" in r]
+    assert [r["rate"] for r in curve] == [4.7, 4.8]  # fractions plotted as percent
+    assert {r["marker"] for r in rows if "marker" in r} == {
+        "Current",
+        "Market median",
+        "Model optimum",
+    }
+
+
+def test_objective_curve_without_markers_is_just_the_curve():
+    from balance_pricing_engine.dashboard.charts import objective_curve
+    from balance_pricing_engine.dashboard.models import CurvePoint
+
+    spec = objective_curve([CurvePoint(0.047, -3.0)], {}).to_dict()
+    rows = [row for dataset in spec["datasets"].values() for row in dataset]
+    assert all("marker" not in r for r in rows)

@@ -226,3 +226,39 @@ def test_an_overlaid_config_still_drives_the_optimiser(config, snapshot):
     assert len(loan_grid) > 0
     assert len(deposit_grid) > 0
     assert min(loan_grid) > 0
+
+
+def test_apply_manual_competitor_rate_returns_a_new_config_and_moves_reference():
+    from balance_pricing_engine.pricing_intelligence.strategy import (
+        apply_manual_competitor_rate_to_config,
+    )
+
+    base = load_config("configs/base.yaml")
+    updated = apply_manual_competitor_rate_to_config(base, 0.0509)
+
+    assert updated is not base
+    assert updated.market.competitor_loan_rate == 0.0509
+    assert updated.market.home_loan_reference_rate == 0.0509
+    assert base.market.competitor_loan_rate == 0.0499  # the original is untouched
+
+
+def test_apply_manual_competitor_rate_can_leave_the_reference_rate_alone():
+    from balance_pricing_engine.pricing_intelligence.strategy import (
+        apply_manual_competitor_rate_to_config,
+    )
+
+    base = load_config("configs/base.yaml")
+    updated = apply_manual_competitor_rate_to_config(base, 0.0509, set_reference_rate=False)
+
+    assert updated.market.competitor_loan_rate == 0.0509
+    assert updated.market.home_loan_reference_rate == base.market.home_loan_reference_rate
+
+
+@pytest.mark.parametrize("bad", [-0.01, float("nan"), float("inf")])
+def test_apply_manual_competitor_rate_rejects_unusable_rates(bad):
+    from balance_pricing_engine.pricing_intelligence.strategy import (
+        apply_manual_competitor_rate_to_config,
+    )
+
+    with pytest.raises(MarketStrategyError):
+        apply_manual_competitor_rate_to_config(load_config("configs/base.yaml"), bad)

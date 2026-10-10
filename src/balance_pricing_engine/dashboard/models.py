@@ -152,3 +152,62 @@ class HistoryData:
     points: tuple[HistoryPoint, ...]
     market: tuple[MarketPoint, ...]
     timeline: tuple[TimelineEvent, ...]
+
+
+@dataclass(frozen=True)
+class ScenarioRequest:
+    """Operator inputs. Rates here are percent (``4.89``); the optimiser works in fractions."""
+
+    term_months: int
+    strategy: str  # a CompetitorRateStrategy value
+    manual_rate_pct: Optional[float]
+    offset_bps: float
+    current_rate_pct: Optional[float]  # operator's own advertised rate; positioning only
+
+
+@dataclass(frozen=True)
+class ScenarioRowView:
+    """One comparison row. Rates are fractions (``0.0489``), as the optimiser reports them."""
+
+    label: str
+    strategy: str
+    competitor_rate: float
+    our_rate: float
+    objective: float
+
+
+@dataclass(frozen=True)
+class CurvePoint:
+    rate: float  # fraction
+    objective: float
+
+
+@dataclass(frozen=True)
+class SelectedScenario:
+    our_rate: float
+    objective: float
+    expected_loan_volume: float
+    funding_shortfall: float
+    competitor_rate: float
+    rationale: str
+
+
+@dataclass(frozen=True)
+class PositionView:
+    rank: int
+    bps_vs_best: float
+    bps_vs_median: float
+    market_best_pct: float
+    market_median_pct: float
+    bank_count: int
+
+
+@dataclass(frozen=True)
+class ScenarioView:
+    request: ScenarioRequest
+    rows: tuple[ScenarioRowView, ...]
+    selected: SelectedScenario
+    curve: tuple[CurvePoint, ...]
+    position: Optional[PositionView]
+    model_optimum_rate: Optional[float]
+    excluded_banks: tuple[MarketExclusion, ...]

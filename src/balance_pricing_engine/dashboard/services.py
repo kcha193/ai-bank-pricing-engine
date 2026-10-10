@@ -14,18 +14,27 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterator, Optional, TypeVar
 
+import yaml
+
 from balance_pricing_engine.competitor_rates.models import ProductType
+from balance_pricing_engine.config import EngineConfig
 from balance_pricing_engine.dashboard.formatting import NZ_TZ
 from balance_pricing_engine.dashboard.models import (
     BankPosition,
     ChangeFilters,
     ChangeRow,
     ChangeWindow,
+    CurvePoint,
     EventDetail,
     HistoryData,
     HistoryPoint,
     MarketPoint,
     TimelineEvent,
+    PositionView,
+    ScenarioRequest,
+    ScenarioRowView,
+    ScenarioView,
+    SelectedScenario,
     HeaderInfo,
     MarketMatrix,
     MatrixCell,
@@ -48,6 +57,14 @@ from balance_pricing_engine.pricing_intelligence.snapshot import (
     term_market_from_rates,
 )
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
+from balance_pricing_engine.pricing_intelligence.strategy import (
+    CompetitorRateStrategy,
+    MarketStrategyError,
+    apply_manual_competitor_rate_to_config,
+    apply_market_strategy_to_config,
+)
+from balance_pricing_engine.pricing_scenario_trigger import run_triggered_scenarios
+from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -322,6 +339,111 @@ class DashboardServices:
 
         return self._guard(build)
 
+    # ----------------------------------------------------------- scenarios
+
+    def scenarios(self, request: ScenarioRequest) -> Result[ScenarioView]:
+        """Run the optimiser's scenario set plus the operator's selected assumption.
+
+        Decision support only: nothing here prices anything. The comparison rows are
+        ``run_triggered_scenarios``'s own; the selected scenario is one optimiser run under
+        the chosen competitor assumption.
+        """
+
+        def build(service: PricingIntelligenceService) -> Result[ScenarioView]:
+            now = self._clock()
+            try:
+                base = EngineConfig(**yaml.safe_load(self.settings.engine_config_text))
+            except Exception:  # noqa: BLE001 - any unreadable config is one operational message
+                logger.exception("engine config unreadable")
+                return Result.error(
+                    "The engine config could not be read; check PRICING_WATCH_CONFIG."
+                )
+            snapshot = service.get_market_snapshot(now=now)
+            if request.term_months not in snapshot.term_months:
+                return Result.empty(f"No comparable market data at {request.term_months} months.")
+            strategy = CompetitorRateStrategy(request.strategy)
+            try:
+                comparison = run_triggered_scenarios(
+                    base, term_months=request.term_months, snapshot=snapshot
+                )
+                if strategy is CompetitorRateStrategy.MANUAL:
+                    if request.manual_rate_pct is None:
+                        raise MarketStrategyError("MANUAL needs a manual competitor rate.")
+                    selected_config = apply_manual_competitor_rate_to_config(
+                        base, request.manual_rate_pct / 100
+                    )
+                else:
+                    selected_config = apply_market_strategy_to_config(
+                        base,
+                        strategy=strategy,
+                        snapshot=snapshot,
+                        term_months=request.term_months,
+                        offset_bps=request.offset_bps,
+                    )
+                diagnostics = run_baseline_diagnostics(selected_config)
+            except MarketStrategyError as exc:
+                return Result.error(f"Scenario could not be built: {exc}")
+            except NotImplementedError as exc:
+                return Result.error(f"Scenario option error: {exc}")
+            except Exception:  # noqa: BLE001
+                logger.exception("scenario run failed")
+                return Result.error("The pricing scenario failed to run; see the log.")
+
+            best = diagnostics.best_result
+            # A view of the backend grid (best objective at each loan rate across deposit
+            # rates) for charting; no economics are computed here.
+            curve = tuple(
+                CurvePoint(float(rate), float(objective))
+                for rate, objective in diagnostics.grid_results.groupby("loan_rate")[
+                    "total_objective"
+                ]
+                .max()
+                .items()
+            )
+            position = None
+            if request.current_rate_pct is not None:
+                try:
+                    pos = service.get_competitive_position(
+                        request.current_rate_pct, term_months=request.term_months, now=now
+                    )
+                except ValueError:
+                    pos = None
+                if pos is not None:
+                    position = PositionView(
+                        pos.market_rank,
+                        pos.our_rate_minus_best_bps,
+                        pos.our_rate_minus_median_bps,
+                        pos.market_best,
+                        pos.market_median,
+                        pos.bank_count,
+                    )
+            optimum = comparison.model_optimum
+            return Result.ok(
+                ScenarioView(
+                    request=request,
+                    rows=tuple(
+                        ScenarioRowView(
+                            r.label, r.strategy, r.competitor_rate, r.our_rate, r.objective
+                        )
+                        for r in comparison.rows
+                    ),
+                    selected=SelectedScenario(
+                        our_rate=best.loan_rate,
+                        objective=best.total_objective,
+                        expected_loan_volume=best.expected_loan_volume,
+                        funding_shortfall=best.funding_shortfall,
+                        competitor_rate=selected_config.market.competitor_loan_rate,
+                        rationale=_rationale(strategy, request),
+                    ),
+                    curve=curve,
+                    position=position,
+                    model_optimum_rate=optimum.our_rate if optimum else None,
+                    excluded_banks=tuple(service.get_market_exclusions(now=now)),
+                )
+            )
+
+        return self._guard(build)
+
     # -------------------------------------------------------------- changes
 
     @staticmethod
@@ -429,6 +551,13 @@ class DashboardServices:
             )
 
         return self._guard(build)
+
+
+def _rationale(strategy: CompetitorRateStrategy, request: ScenarioRequest) -> str:
+    if strategy is CompetitorRateStrategy.MANUAL:
+        return f"manual competitor rate {request.manual_rate_pct:.2f}%"
+    offset = f", offset {request.offset_bps:+.0f} bps" if request.offset_bps else ""
+    return f"{strategy.value} at {request.term_months} months{offset}"
 
 
 def _event_key(change: RateChange) -> str:
