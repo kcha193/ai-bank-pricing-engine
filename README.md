@@ -114,8 +114,8 @@ dependencies. See [docs/run_ledger_guide.md](docs/run_ledger_guide.md).
 
 A minimal, secure local Docker deployment path exists (see
 [docs/deployment.md](docs/deployment.md)). The Pricing Watch Streamlit console is an optional
-`dashboard` extra, launched with `streamlit run src/balance_pricing_engine/dashboard/app.py
---server.address localhost` (setup, pages and Operations safety:
+`dashboard` extra, launched by double-clicking `Pricing Watch.command` (macOS) or with
+`streamlit run src/balance_pricing_engine/dashboard/app.py --server.address localhost` (setup, pages and Operations safety:
 [docs/pricing_intelligence.md → Dashboard](docs/pricing_intelligence.md#dashboard)); it is decision
 support only and has no built-in authentication beyond an optional Operations token. Full
 production deployment (authentication, TLS, durable event/feature/model stores, autoscaling,

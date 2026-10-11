@@ -421,6 +421,18 @@ python3 -m pip install -e ".[dashboard]"
 streamlit run src/balance_pricing_engine/dashboard/app.py --server.address localhost
 ```
 
+- **Double-click launcher (macOS):** open `Pricing Watch.command` in the repository root.
+  It starts the dashboard from the repository it lives in (symlinks are followed, so an
+  alias-style link on the Desktop works), serves on `127.0.0.1` only, and opens your
+  browser once the server answers. Press Ctrl-C or close its Terminal window to stop. It
+  uses `.venv/bin/python` if present, else `python3`; if Streamlit isn't installed it
+  tells you the one-time setup commands. A second double-click while it is running just
+  opens the existing instance. It loads `./.env` if you keep one (the engine has no dotenv
+  loader, so this is the same as `set -a; source .env; set +a`; `.env` is git-ignored and
+  its values are never printed). Settings: `PRICING_WATCH_PORT` (default 8765, the next
+  free port is used if busy), `PRICING_WATCH_PYTHON`, `PRICING_WATCH_NO_BROWSER=1`. If
+  macOS refuses a downloaded copy, right-click → Open once; if you see "permission
+  denied", run `chmod +x "Pricing Watch.command"`.
 - Streamlit binds all network interfaces by default and has no built-in
   authentication. Pass `--server.address localhost` unless you have put the app
   behind something that authenticates, and set `PRICING_WATCH_OPS_TOKEN` (below)

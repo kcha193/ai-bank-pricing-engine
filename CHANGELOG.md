@@ -17,6 +17,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   system health, plus `PricingIntelligenceService.get_market_exclusions()` (why a record was
   left out of the market snapshot), `snapshot.term_market_from_rates` and
   `strategy.apply_manual_competitor_rate_to_config`.
+- **`Pricing Watch.command`**: a macOS double-click launcher in the repo root. Runs the
+  dashboard from the repository it lives in, on `127.0.0.1` only, loads `./.env`, reuses a
+  running instance, and opens the browser when the server is ready. `.env` and `.env.*`
+  (except `.env.example`) are now git-ignored, as `.env.example` already claimed.
 - Operations safeguards: optional `PRICING_WATCH_OPS_TOKEN` gate, single-flight runner with a
   cooldown, backup and Telegram rate limits, process-wide unlock attempt limiter.
 - Environment variables `PRICING_WATCH_CONFIG` and `PRICING_WATCH_OPS_TOKEN` (see `.env.example`).
