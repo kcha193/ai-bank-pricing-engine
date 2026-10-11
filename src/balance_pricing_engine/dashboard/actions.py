@@ -184,6 +184,10 @@ def _run_process(
     summary = (payload.get(summary_key) if payload and summary_key else payload) or {}
     if dry and payload and payload.get("status") in _MESSAGES:
         status = str(payload["status"])
+    if status == "PARTIAL_SUCCESS" and not summary:
+        # A genuine partial run always writes a summary. Python itself exits 2 for "can't open
+        # file" and argparse usage errors, so exit 2 alone is not evidence that anything ran.
+        status = "FAILED"
     message = _MESSAGES[status]
     if not summary and status != "ALREADY_RUNNING":
         message += " (Run summary could not be read.)"
@@ -202,9 +206,18 @@ def run_live(
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> ActionResult:
     """Collect live rates by running the scheduled workflow script (one process, one lock)."""
+    script = settings.repo_root / WORKFLOW_SCRIPT
+    if not script.is_file():  # e.g. a non-editable install that does not ship scripts/
+        return ActionResult(
+            "live",
+            "FAILED",
+            "The collection script was not found; run the dashboard from a source checkout "
+            "(pip install -e .).",
+            clock(),
+        )
     with tempfile.TemporaryDirectory() as tmp:
         result_path = Path(tmp) / "summary.json"
-        command = [sys.executable, str(settings.repo_root / WORKFLOW_SCRIPT)]
+        command = [sys.executable, str(script)]
         if settings.engine_config_path.exists():
             command += ["--config", str(settings.engine_config_path)]
         command += [

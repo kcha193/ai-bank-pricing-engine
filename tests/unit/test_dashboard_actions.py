@@ -84,6 +84,34 @@ def test_exit_codes_map_to_statuses(settings, code, status):
     )
 
 
+def test_exit_2_without_a_summary_is_a_failure_not_a_partial_success(settings):
+    """Python itself exits 2 for 'can't open file' and argparse errors; a real partial run
+    always leaves a summary, so exit 2 alone must not be read as 'some banks failed'."""
+    result = actions.run_live(settings, runner=fake_runner(2, None), clock=clock)
+    assert result.status == "FAILED"
+    assert "some banks failed" not in result.message
+
+
+def test_exit_2_with_a_summary_is_still_a_partial_success(settings):
+    result = actions.run_live(settings, runner=fake_runner(2, SUMMARY), clock=clock)
+    assert result.status == "PARTIAL_SUCCESS"
+
+
+def test_a_missing_workflow_script_is_reported_before_anything_is_launched(settings, tmp_path):
+    no_scripts = dataclasses.replace(settings, repo_root=tmp_path)
+    calls = []
+    result = actions.run_live(no_scripts, runner=fake_runner(0, SUMMARY, calls), clock=clock)
+    assert calls == []
+    assert result.status == "FAILED" and "collection script" in result.message.lower()
+
+
+def test_dry_run_exit_2_without_a_result_is_a_failure(settings):
+    result = actions.run_dry(
+        settings, runner=fake_runner(2, None, flag="--result-file"), clock=clock
+    )
+    assert result.status == "FAILED"
+
+
 def test_already_running_says_nothing_was_started(settings):
     result = actions.run_live(settings, runner=fake_runner(3, None), clock=clock)
     assert "nothing was started" in result.message.lower()
