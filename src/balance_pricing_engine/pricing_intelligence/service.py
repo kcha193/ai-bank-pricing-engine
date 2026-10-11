@@ -13,7 +13,7 @@ remains the optimiser's job.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 import logging
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -1148,9 +1148,13 @@ class PricingIntelligenceService:
         term_months: int,
         rate_category: Optional[str] = None,
         product_type: ProductType | str = ProductType.HOME_LOAN,
+        tz: tzinfo = timezone.utc,
     ) -> list[tuple[date, dict[str, float]]]:
         """Each bank's representative advertised rate at ``term_months``, one
         entry per date something changed, oldest first.
+
+        Dates are calendar days in ``tz`` (default UTC). Pass the market's local zone to bucket
+        a repricing at 09:00 NZST on the 12th under the 12th, not the 11th (UTC).
 
         Reconstructed via :meth:`~.store.ObservationStore.get_observations_as_of`
         (already handles withdrawal and eligibility-supersession exclusion) run
@@ -1169,7 +1173,7 @@ class PricingIntelligenceService:
         history = self.store.get_rate_history(
             term_months=term_months, product_type=product_type, rate_category=rate_category
         )
-        change_dates = {record.captured_at_utc.date() for record in history}
+        change_dates = {record.captured_at_utc.astimezone(tz).date() for record in history}
         for change in self.get_changes(
             days=None,
             term_months=term_months,
@@ -1179,11 +1183,11 @@ class PricingIntelligenceService:
             if change.change_type is ChangeType.REMOVED_PRODUCT and (
                 change.rate_category == rate_category
             ):
-                change_dates.add(change.detected_at.date())
+                change_dates.add(change.detected_at.astimezone(tz).date())
 
         series: list[tuple[date, dict[str, float]]] = []
         for day in sorted(change_dates):
-            as_of = datetime.combine(day, datetime.max.time(), tzinfo=timezone.utc)
+            as_of = datetime.combine(day, datetime.max.time(), tzinfo=tz).astimezone(timezone.utc)
             records = self.store.get_observations_as_of(as_of=as_of, product_type=product_type)
             # Matches get_market_snapshot()'s as_of_run_id branch: a
             # warning-tagged (suspicious) state must fall back to its last

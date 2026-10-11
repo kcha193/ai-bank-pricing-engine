@@ -76,7 +76,9 @@ def test_flow_b_a_rate_change_flows_through_every_view(market_factory):
     assert summary.leaders == ("ANZ",) and summary.lowest_pct == 4.79
 
     history = [p for p in services.history(12, ("ANZ",), None).value.points if p.bank == "ANZ"]
-    assert [p.rate_pct for p in history] == [4.89, 4.79]
+    # the recorded states are 4.89 then 4.79; the line then holds 4.79 up to today
+    assert list(dict.fromkeys(p.rate_pct for p in history)) == [4.89, 4.79]
+    assert history[-1].rate_pct == 4.79
 
     app = run_page("rate_changes", market.database, market.now)
     row = app.dataframe[0].value.iloc[0]

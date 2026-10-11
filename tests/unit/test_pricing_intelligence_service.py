@@ -2077,3 +2077,27 @@ def test_market_activity_since_excludes_suspicious_moves(market_factory):
         since = market.now - timedelta(days=2)
         activity = service.get_market_activity(since=since, now=market.now)
     assert activity.changes == 0
+
+
+def test_rate_history_series_can_bucket_by_a_local_calendar_day(tmp_path, make_record):
+    """NZ banks reprice in NZ business hours, which is the previous UTC day: 09:00 NZDT on
+    12 Oct is 20:00 UTC on 11 Oct. The default stays UTC; callers can ask for local days."""
+    from datetime import date, datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
+
+    when = datetime(2026, 10, 11, 20, 0, tzinfo=timezone.utc)
+    config = PricingIntelligenceConfig(database_path=str(tmp_path / "m.db"))
+    store = ObservationStore(config.database_path)
+    store.record_observations([make_record(bank="ANZ", rate_pct=4.79, observed_at=when)], observed_at=when)
+    with PricingIntelligenceService(config=config, store=store) as service:
+        utc_days = [day for day, _ in service.get_rate_history_series(term_months=12)]
+        nz_days = [
+            day
+            for day, _ in service.get_rate_history_series(
+                term_months=12, tz=ZoneInfo("Pacific/Auckland")
+            )
+        ]
+    assert utc_days == [date(2026, 10, 11)]
+    assert nz_days == [date(2026, 10, 12)]

@@ -309,10 +309,18 @@ class DashboardServices:
 
         def build(service: PricingIntelligenceService) -> Result[HistoryData]:
             now = self._clock()
-            series = service.get_rate_history_series(term_months=term_months)
+            local_now = now.astimezone(NZ_TZ)
+            series = service.get_rate_history_series(term_months=term_months, tz=NZ_TZ)
             if days is not None:
-                cutoff = (now - timedelta(days=days)).date()
-                series = [(day, rates) for day, rates in series if day >= cutoff]
+                cutoff = (local_now - timedelta(days=days)).date()
+                before = [entry for entry in series if entry[0] < cutoff]
+                series = [entry for entry in series if entry[0] >= cutoff]
+                if before and (not series or series[0][0] > cutoff):
+                    # The rates in force when the window opens: a quiet market has no change
+                    # inside the window, but it still has a steady rate to show.
+                    series.insert(0, (cutoff, before[-1][1]))
+            if series and series[-1][0] < local_now.date():
+                series.append((local_now.date(), series[-1][1]))  # rates hold until they change
             if not series:
                 return Result.empty("No rate history for this term and range yet.")
             points = tuple(
