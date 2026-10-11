@@ -1,3 +1,5 @@
+import pytest
+
 from dashboard_harness import make_services
 
 from balance_pricing_engine.dashboard.models import ChangeFilters, ChangeWindow
@@ -50,3 +52,30 @@ def test_event_detail_exposes_provenance_and_market_context(market_factory):
 def test_unknown_event_key_is_an_empty_result(market_factory):
     result = make_services(market_factory()).event_detail("does-not-exist")
     assert result.status == "EMPTY"
+
+
+@pytest.mark.parametrize("category", ["special", "standard", "non_comparable", "term_deposit"])
+def test_event_ranks_and_detail_context_apply_only_to_the_comparable_tier(
+    market_with_tier_event, category
+):
+    market = market_with_tier_event(category)
+    services = make_services(market)
+    rows = services.changes(ChangeWindow("7d")).value
+    event = next(r for r in rows if r.current_pct == 5.39)
+    detail = services.event_detail(event.key).value
+    expected = (1, 1) if category == "special" else (None, None)
+    assert (event.previous_rank, event.new_rank) == expected
+    assert detail.row == event
+    assert detail.rate_category == category and detail.product_name == "Audit fixed product"
+    assert detail.market_median_pct == (4.85 if category == "special" else None)
+    if category != "special":
+        assert detail.market_state is None
+    # The genuine special move still has its historical before/after ranks.
+    comparable = next(r for r in rows if r.current_pct == 4.79)
+    assert (comparable.previous_rank, comparable.new_rank) == (3, 1)
+    position = next(r for r in services.bank_positions(12).value if r.bank == "ANZ")
+    from datetime import timedelta
+
+    assert position.last_change_at == market.now - timedelta(
+        hours=12 if category == "special" else 24
+    )

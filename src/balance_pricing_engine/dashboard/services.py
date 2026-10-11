@@ -53,6 +53,7 @@ from balance_pricing_engine.pricing_intelligence.health import (
     MarketExclusion,
     SystemHealth,
     assess_system_health,
+    is_stale,
 )
 from balance_pricing_engine.pricing_intelligence.changes import RateChange
 from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
@@ -264,14 +265,18 @@ class DashboardServices:
     def bank_positions(self, term_months: int) -> Result[tuple[BankPosition, ...]]:
         def build(service: PricingIntelligenceService) -> Result[tuple[BankPosition, ...]]:
             now = self._clock()
-            market = service.get_market_snapshot(now=now).term(term_months)
+            snapshot = service.get_market_snapshot(now=now)
+            market = snapshot.term(term_months)
             if market is None:
                 return Result.empty(f"No comparable market data at {term_months} months.")
-            health = {b.bank: b for b in assess_system_health(service, now=now).banks}
             quarantined = service.get_market_quarantined()
             last_change: dict[str, datetime] = {}
             for change in service.get_changes(
-                days=None, term_months=term_months, now=now, scope_to_market=True
+                days=None,
+                term_months=term_months,
+                now=now,
+                scope_to_market=True,
+                rate_category=snapshot.rate_category,
             ):
                 if change.is_rate_move and not change.suspicious:
                     last_change.setdefault(change.bank, change.detected_at)  # newest first
@@ -285,9 +290,11 @@ class DashboardServices:
                         vs_median_bps=rate_change_bps(market.median_rate, e.rate_pct),
                         last_change_at=last_change.get(e.bank),
                         freshness=(
-                            health[e.bank].freshness.state
-                            if e.bank in health
-                            else FreshnessState.UNKNOWN
+                            FreshnessState.STALE
+                            if is_stale(
+                                e.observed_at, now, service.config.max_observation_age_hours
+                            )
+                            else FreshnessState.FRESH
                         ),
                         quarantined=(e.bank, term_months) in quarantined,
                     )
@@ -614,6 +621,7 @@ class DashboardServices:
             change_type=change.change_type.value,
             previous_rank=previous_rank,
             new_rank=new_rank,
+            rate_category=change.rate_category,
         )
 
     def event_detail(self, key: str) -> Result[EventDetail]:
@@ -647,7 +655,7 @@ class DashboardServices:
                 None,
             )
             market = ranks.new_market(change)
-            state = service.get_market_state(now=change.detected_at)
+            state = service.get_market_state(now=change.detected_at) if market else None
             return Result.ok(
                 EventDetail(
                     row=self._row(change, ranks),
@@ -658,7 +666,7 @@ class DashboardServices:
                     effective_date_text=record.effective_date_text if record else None,
                     parser_version=record.parser_version if record else None,
                     market_median_pct=market.median_rate if market else None,
-                    market_state=state.state.value,
+                    market_state=state.state.value if state else None,
                 )
             )
 
@@ -693,38 +701,48 @@ def _event_key(change: RateChange) -> str:
 
 
 class _RankCache:
-    """Resolve market rank before/after an event, one snapshot per distinct run."""
+    """Resolve comparable-market context before/after an event, cached per product/run."""
 
     def __init__(self, service: PricingIntelligenceService) -> None:
         self._service = service
-        self._snapshots: dict[Optional[str], Optional[MarketSnapshot]] = {}
+        self._snapshots: dict[tuple[ProductType, str], MarketSnapshot] = {}
 
-    def _snapshot(self, run_id: Optional[str]) -> Optional[MarketSnapshot]:
+    def _snapshot(self, run_id: Optional[str], product: ProductType) -> Optional[MarketSnapshot]:
         if run_id is None:
             return None
-        if run_id not in self._snapshots:
-            self._snapshots[run_id] = self._service.get_market_snapshot(as_of_run_id=run_id)
-        return self._snapshots[run_id]
+        key = (product, run_id)
+        if key not in self._snapshots:
+            self._snapshots[key] = self._service.get_market_snapshot(
+                product_type=product, as_of_run_id=run_id
+            )
+        return self._snapshots[key]
 
-    def _previous_run_id(self, run_id: str) -> Optional[str]:
-        previous = self._service.store.get_previous_run(
-            before_run_id=run_id, product_type=ProductType.HOME_LOAN
-        )
+    def _previous_run_id(self, run_id: str, product: ProductType) -> Optional[str]:
+        previous = self._service.store.get_previous_run(before_run_id=run_id, product_type=product)
         return previous.run_id if previous else None
 
-    def new_market(self, change: RateChange) -> Optional[TermMarket]:
-        snapshot = self._snapshot(change.run_id)
-        if snapshot is None or change.term_months is None:
+    def _market(self, change: RateChange, run_id: Optional[str]) -> Optional[TermMarket]:
+        snapshot = self._snapshot(run_id, change.product_type)
+        # Audit events remain visible, but cannot borrow context from another rate tier.
+        if (
+            snapshot is None
+            or change.term_months is None
+            or change.suspicious
+            or change.rate_category == "non_comparable"
+            or change.rate_category != snapshot.rate_category
+        ):
             return None
         return snapshot.term(change.term_months)
+
+    def new_market(self, change: RateChange) -> Optional[TermMarket]:
+        return self._market(change, change.run_id)
 
     def for_change(self, change: RateChange) -> tuple[Optional[int], Optional[int]]:
         if not change.is_rate_move or change.run_id is None or change.term_months is None:
             return (None, None)
         new_market = self.new_market(change)
-        previous_run = self._previous_run_id(change.run_id)
-        previous_snapshot = self._snapshot(previous_run)
-        previous_market = previous_snapshot.term(change.term_months) if previous_snapshot else None
+        previous_run = self._previous_run_id(change.run_id, change.product_type)
+        previous_market = self._market(change, previous_run)
         return (
             previous_market.rank_for(change.bank) if previous_market else None,
             new_market.rank_for(change.bank) if new_market else None,

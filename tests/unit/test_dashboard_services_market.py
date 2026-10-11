@@ -244,3 +244,64 @@ def test_term_fresh_bank_count_uses_only_eligible_selected_term_observations(
     assert result.value.fresh_banks == expected
     assert result.value.fresh_banks <= result.value.banks_observed
     assert result.value.banks_observed == len({r.bank for r in result.value.ranking}) == expected
+
+
+@pytest.mark.parametrize(
+    "case,asb_present,quarantined",
+    [
+        ("stale_other_term", True, False),
+        ("stale_selected_term", False, False),
+        ("mixed_terms", True, False),
+        ("missing", False, False),
+        ("fresh_fallback", True, True),
+        ("stale_fallback", False, True),
+        ("quarantine_only", False, True),
+        ("boundary", True, False),
+        ("past_boundary", False, False),
+    ],
+)
+def test_bank_positions_freshness_matches_the_selected_trusted_snapshot(
+    tmp_path, make_record, case, asb_present, quarantined
+):
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime(2026, 10, 11, tzinfo=timezone.utc)
+    database = tmp_path / "positions.db"
+    store = ObservationStore(database)
+    records = [make_record(bank="ANZ", observed_at=now)]
+    if case != "missing" and case != "quarantine_only":
+        age = {
+            "stale_selected_term": 169,
+            "stale_fallback": 169,
+            "boundary": 168,
+            "past_boundary": 168.01,
+        }.get(case, 48)
+        records.append(make_record(bank="ASB", observed_at=now - timedelta(hours=age)))
+    other_age = 240 if case in {"stale_other_term", "mixed_terms", "fresh_fallback"} else 0
+    records.append(
+        make_record(bank="ASB", term_months=36, observed_at=now - timedelta(hours=other_age))
+    )
+    if case == "mixed_terms":
+        records.append(make_record(bank="BNZ", observed_at=now))
+        records.append(
+            make_record(bank="BNZ", term_months=24, observed_at=now - timedelta(hours=240))
+        )
+    for index, record in enumerate(sorted(records, key=lambda r: r.captured_at_utc)):
+        store.record_observations(
+            [record], run_id=f"position-{index}", observed_at=record.captured_at_utc
+        )
+    if quarantined:
+        store.record_observations(
+            [make_record(bank="ASB", rate_pct=8.49, validation_status="warning", observed_at=now)],
+            run_id="warning",
+            observed_at=now,
+        )
+    store.close()
+    services = DashboardServices(load_settings({}, database_path=str(database)), clock=lambda: now)
+    positions = {r.bank: r for r in services.bank_positions(12).value}
+    assert ("ASB" in positions) is asb_present
+    assert all(r.freshness is FreshnessState.FRESH for r in positions.values())
+    assert set(positions) == {r.bank for r in services.term_summary(12).value.ranking}
+    if asb_present:
+        assert positions["ASB"].quarantined is quarantined
+        assert positions["ASB"].rate_pct == 4.79

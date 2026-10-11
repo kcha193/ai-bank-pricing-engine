@@ -160,3 +160,43 @@ def quarantine_market_factory(market_factory, make_record):
         return market
 
     return build
+
+
+@pytest.fixture
+def market_with_tier_event(market_factory, make_record):
+    def build(category):
+        market = market_factory()
+        old_time, new_time = market.now - timedelta(hours=18), market.now - timedelta(hours=12)
+        previous = [
+            make_record(
+                bank="ANZ",
+                product_name="Audit fixed product",
+                rate_category=category,
+                rate_pct=5.49,
+                observed_at=old_time,
+            )
+        ]
+        current = [
+            previous[0].model_copy(
+                update={"advertised_rate_pct": 5.39, "captured_at_utc": new_time}
+            )
+        ]
+        store = ObservationStore(market.database)
+        for run_id, records in (("tier-before", previous), ("tier-after", current)):
+            store.record_observations(
+                records, run_id=run_id, observed_at=records[0].captured_at_utc
+            )
+        store.record_changes(
+            detect_changes(
+                previous,
+                current,
+                detected_at=new_time,
+                thresholds=market.config.validation,
+                run_id="tier-after",
+                banks_collected=["ANZ"],
+            )
+        )
+        store.close()
+        return market
+
+    return build

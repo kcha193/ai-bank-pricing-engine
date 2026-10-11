@@ -111,6 +111,7 @@ class ChangeRow:
     change_type: str
     previous_rank: Optional[int]
     new_rank: Optional[int]
+    rate_category: str = ""  # additive: retain compatibility with positional callers
 
 
 @dataclass(frozen=True)

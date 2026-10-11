@@ -287,7 +287,10 @@ date, BNZ advertised a Standard column, so the default 12-month special benchmar
 contained ANZ, ASB, Kiwibank and Westpac: median 4.99%, minimum 4.95%, mean 4.98%.
 Full promotional eligibility cannot be inferred from the normalised fields alone.
 Repeated suspicious values are not corroboration, and stale trusted fallback
-rates retain their original age. Market-state thresholds are transparent
+rates retain their original age. Dashboard freshness describes the selected trusted rate,
+not a bank's oldest observation at another term. Standard and non-comparable mortgage
+events remain audit history, with no ranks or medians borrowed from special-rate snapshots.
+Market-state thresholds are transparent
 heuristics, not empirically validated signals or optimisation objectives.
 
 Using exactly the same current manual config, the pre-intelligence source at

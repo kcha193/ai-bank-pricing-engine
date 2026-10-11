@@ -42,3 +42,25 @@ def test_market_watch_with_no_data_degrades_to_guidance(tmp_path):
     )
     assert not app.exception
     assert any("No market data" in i.value for i in app.info)
+
+
+def test_market_watch_does_not_label_a_fresh_term_stale_due_to_another_term(tmp_path, make_record):
+    from datetime import datetime, timedelta, timezone
+    from balance_pricing_engine.pricing_intelligence.store import ObservationStore
+
+    now = datetime(2026, 10, 11, tzinfo=timezone.utc)
+    database = tmp_path / "mixed.db"
+    store = ObservationStore(database)
+    old = now - timedelta(days=10)
+    store.record_observations(
+        [make_record(bank="ASB", term_months=36, observed_at=old)],
+        run_id="old-other-term",
+        observed_at=old,
+    )
+    store.record_observations(
+        [make_record(bank="ASB", observed_at=now)], run_id="selected-term", observed_at=now
+    )
+    store.close()
+    app = run_page("market_watch", database, now)
+    assert not app.exception
+    assert app.dataframe[0].value.set_index("Bank").loc["ASB", "Freshness"] == "FRESH"

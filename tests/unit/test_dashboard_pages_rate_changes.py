@@ -77,3 +77,21 @@ def test_a_custom_window_ending_before_it_starts_says_so(market_factory):
     app.date_input(key="rate_changes_to").set_value(date(2026, 10, 10)).run()
     assert not app.exception
     assert any("end date is before the start date" in w.value.lower() for w in app.warning)
+
+
+def test_out_of_tier_event_remains_visible_with_category_and_unavailable_market_context(
+    market_with_tier_event,
+):
+    from balance_pricing_engine.dashboard.formatting import EM_DASH
+
+    market = market_with_tier_event("non_comparable")
+    app = run_page("rate_changes", market.database, market.now)
+    assert not app.exception
+    rows = app.dataframe[0].value
+    event = rows.loc[rows["New"] == "5.39%"].iloc[0]
+    assert event["Rate type"] == "non_comparable"
+    assert event["Prev rank"] == event["New rank"] == EM_DASH
+    detail = app.dataframe[1].value.set_index("Field")["Value"]
+    assert detail["Rate type"] == "non_comparable"
+    assert detail["Rank"] == f"{EM_DASH} → {EM_DASH}"
+    assert detail["Market median at event"] == EM_DASH

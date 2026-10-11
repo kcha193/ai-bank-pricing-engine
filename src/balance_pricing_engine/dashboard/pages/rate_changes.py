@@ -85,6 +85,7 @@ def render(services: DashboardServices) -> None:
                     "Time": fmt_nz_datetime(r.detected_at),
                     "Bank": r.bank,
                     "Term": fmt_term(r.term_months),
+                    "Rate type": r.rate_category,
                     "Old": fmt_rate_pct(r.previous_pct),
                     "New": fmt_rate_pct(r.current_pct),
                     "Movement": fmt_bps(r.change_bps),
