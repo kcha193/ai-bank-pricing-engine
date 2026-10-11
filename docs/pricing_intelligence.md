@@ -476,16 +476,18 @@ subprocess that exceeds 30 minutes is stopped and reported as `TIMED_OUT`.
 **Overview** answers "what is the market doing right now?". The header (on every
 page) shows when data was last stored ("Last successful update": the newest run that
 stored data, `SUCCESS` or `PARTIAL_SUCCESS`; a `FAILED` run collected nothing and is
-not counted), the market-activity state and `fresh / configured` collectors. The page shows changes today and over 7 days, banks
+not counted), the market-activity state and how many banks have fresh data (`N / M`). The page shows changes today and over 7 days, banks
 repricing, dominant direction, the most active term and the market-state
 rationale; the bank-by-term matrix of advertised specials (`◆` marks the term
-leader, `⚠ ... (stale)` a stale record); a warning for each excluded stale
-record; and, for the chosen term, leader, lowest, median, highest, spread, banks
+leader, `⚠ ... (stale)` a stale record, `⚠ ... (quarantined: last confirmed)` a rate that
+is the last confirmed one because the bank's latest reading was rejected); a warning
+for each excluded stale bank/term; and, for the chosen term, leader, lowest, median, highest, spread, banks
 observed and the full ranking.
 
 **Market Watch** answers "where does each bank sit competitively?". Pick a term and
 a bank to highlight. It lists every bank's rank, rate, bps versus the leader and
-the median, last change and freshness, with a dot plot against the market median.
+the median, last change and freshness (`QUARANTINED` when the shown rate is a
+fallback), with a dot plot against the market median.
 Comparable tier: advertised specials; stale observations are excluded.
 
 **Rate Changes** answers "what changed, and what did it do to the ranking?". Filter
@@ -502,7 +504,9 @@ the banks to plot and a range (30 days, 90 days, 1 year, all). It charts each
 bank's advertised rate, the market median, leader or spread over time (a radio
 selects the series), and a repricing timeline with days since the first move.
 The bank filter changes the lines only; market statistics always use every bank
-observed on that date. The timeline records sequence, not causation.
+observed on that date. Dates are Pacific/Auckland calendar days; each line holds its last rate up to today
+(a rate stands until it changes), and a window with no change inside it starts from the
+rate in force when it opened. The timeline records sequence, not causation.
 
 **Pricing Scenarios** answers "what does the optimiser say under different
 competitor assumptions?". It has two tabs.
@@ -511,7 +515,8 @@ competitor assumptions?". It has two tabs.
   `MARKET_LEADER`, `MARKET_SECOND_LOWEST`, `MARKET_MEAN` with an offset in bps, or
   `MANUAL` with a rate) and optionally your current rate, then click **Run
   scenario**. The optimiser runs only on that click; the result is kept for the
-  session and flagged when the inputs change. It shows a comparison table
+  session, stamped with when it was computed, and flagged when the inputs or the
+  stored market data change. It shows a comparison table
   (scenario, competitor rate, our rate, objective), an objective-by-our-rate curve,
   the selected assumption's competitor rate, optimal rate, objective, expected loan
   volume and funding shortfall, any banks excluded as stale, and a deterministic decision-support
@@ -566,7 +571,11 @@ observations, a fresh collector and no quarantined readings.
 
 A stale record is shown in the Overview matrix as `⚠ 4.85% (stale)` but is
 **excluded** from rankings, medians, spreads and scenarios. The UI states each
-exclusion and the configured limit. System Health reports the age per bank (its
+exclusion and the configured limit. Exclusions and bank health are computed on the
+same record set the market snapshot uses (comparable tier, tracked terms, no
+name-excluded or non-comparable product): an exclusion is reported once per bank and
+term, and only when the bank has no fresh comparable rate there, so a stale niche or
+sibling product beside a fresh ranked one never makes the bank look excluded. System Health reports the age per bank (its
 oldest confirmed record); the market snapshot applies the same limit per record.
 The two measures can disagree: a collector can be `FAILING` while its last
 observation is still within the limit, in which case that observation is still
@@ -589,7 +598,8 @@ used.
 - **Single flight**: one collection job at a time per server process, across browser
   tabs, with a 60 s cooldown after a run finishes before another can start.
 - **Create Backup** copies the database to `data/processed/pricing_intelligence/backups`
-  (git-ignored). It refuses if the previous backup is under 10 minutes old, because
+  (git-ignored; the page shows the location relative to the repo, never the server's
+  absolute path). It refuses if the previous backup is under 10 minutes old, because
   backups are pruned to the newest 30 and rapid clicks would rotate real history out.
 - **Send Test Notification** has a 30 s cooldown. It never shows credentials; on
   failure only the exception class name is logged.
@@ -631,6 +641,14 @@ validated as plain `http(s)`. These rules are enforced by
 - **Mortgage-only market view.** Overview, Market Watch, Rate Changes, Trends and
   Scenarios use mortgages; System Health also has a Term deposit tab for collector
   and run tables.
+- **Dry Run is not covered by the workflow's cross-process lock** (it persists nothing, so
+  it needs none), so it can run alongside a scheduled live collection and doubles bank
+  traffic for that window.
+- **A timed-out run stops only the direct child process**, not any grandchild a browser
+  driver may have started.
+- **Each read opens the store through the normal constructor**, which re-checks the schema
+  and runs idempotent migrations (the same cost the former dashboard paid). A direct
+  read-only connection would remove both the cost and the write path.
 - `ruff format` is not enforced repo-wide (it would change 110 pre-existing files);
   the new dashboard files are formatted and type-checked.
 

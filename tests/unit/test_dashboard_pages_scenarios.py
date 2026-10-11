@@ -98,3 +98,27 @@ def test_no_data_degrades_to_guidance(tmp_path):
     app = run_page("scenarios", tmp_path / "none.db", datetime(2026, 10, 11, tzinfo=timezone.utc))
     assert not app.exception
     assert any("No market data" in i.value for i in app.info)
+
+
+def test_a_result_says_when_it_was_computed(market_factory):
+    market = market_factory()
+    app = run_page("scenarios", market.database, market.now)
+    app.button(key="scenario_run").click().run()
+    assert any(
+        c.value.startswith("Computed ") and "(Pacific/Auckland)" in c.value for c in app.caption
+    )
+
+
+def test_a_result_is_flagged_when_the_market_data_changes_underneath_it(market_factory):
+    """Review finding: after a new collection the old result kept rendering, and the 'inputs
+    changed' notice did not fire because the inputs were unchanged."""
+    import os
+
+    market = market_factory()
+    app = run_page("scenarios", market.database, market.now)
+    app.button(key="scenario_run").click().run()
+    assert not any("Market data has changed" in c.value for c in app.caption)
+    stat = market.database.stat()
+    os.utime(market.database, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
+    app.run()
+    assert any("Market data has changed since this result" in c.value for c in app.caption)

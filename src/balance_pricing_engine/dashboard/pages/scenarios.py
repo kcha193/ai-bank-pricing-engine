@@ -6,6 +6,8 @@ rerender -- and its result is kept in session state until the inputs change.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pandas as pd
 import streamlit as st
 
@@ -13,6 +15,7 @@ from balance_pricing_engine.dashboard.charts import objective_curve
 from balance_pricing_engine.dashboard.formatting import (
     fmt_bps,
     fmt_money_m,
+    fmt_nz_datetime,
     fmt_rate_fraction,
     fmt_term,
 )
@@ -140,15 +143,25 @@ def _scenarios_tab(services: DashboardServices) -> None:
     )
 
     if st.button("Run scenario", type="primary", key="scenario_run"):
-        st.session_state[STATE_KEY] = (request, services.scenarios(request))
+        st.session_state[STATE_KEY] = (
+            request,
+            services.scenarios(request),
+            services.db_stamp(),
+            datetime.now(timezone.utc),
+        )
 
     stored = st.session_state.get(STATE_KEY)
     if stored is None:
         st.caption("Choose assumptions and click **Run scenario**.")
         return
-    stored_request, result = stored
+    stored_request, result, stored_stamp, computed_at = stored
+    st.caption(f"Computed {fmt_nz_datetime(computed_at)} (Pacific/Auckland).")
     if stored_request != request:
         st.caption("Inputs changed since this result; click Run scenario to refresh.")
+    if stored_stamp != services.db_stamp():
+        st.caption(
+            "Market data has changed since this result was computed; click Run scenario to refresh."
+        )
     view = unwrap(result)
     if view is not None:
         _render_result(view)

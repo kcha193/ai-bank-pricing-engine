@@ -27,7 +27,12 @@ def _cached(_services: DashboardServices, method: str, db_stamp: tuple, args: tu
 
 
 def cached(services: DashboardServices, method: str, *args) -> Result:
-    """Cached *stored-state* read. Never use for health/freshness (they depend on 'now')."""
+    """Cached read of stored state, for up to 60 s (and until the database file changes).
+
+    Some of these views depend on the current time (e.g. "changes today"), so they can lag by up
+    to a minute. Health and freshness are never routed through here: they are evaluated on every
+    render. "Refresh Dashboard" clears this cache.
+    """
     return _cached(services, method, services.db_stamp(), args)
 
 
@@ -78,4 +83,4 @@ def render_header(services: DashboardServices) -> None:
         f"Last successful update: {fmt_nz_datetime(header.last_update)} (Pacific/Auckland)"
     )
     cols[1].caption(f"Market activity: {header.market_state or EM_DASH}")
-    cols[2].caption(f"Collector health: {header.fresh_banks} / {header.configured_banks} fresh")
+    cols[2].caption(f"Banks with fresh data: {header.fresh_banks} / {header.configured_banks}")

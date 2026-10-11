@@ -15,6 +15,7 @@ widget callback were invoked out of band.
 from __future__ import annotations
 
 import hmac
+from pathlib import Path
 
 import streamlit as st
 
@@ -89,7 +90,16 @@ def _run_quick(action: str, settings: DashboardSettings, *args) -> None:
     st.session_state[QUICK_RESULT_KEY] = getattr(actions, action)(*args)
 
 
-def _show(result: actions.ActionResult) -> None:
+def _display_path(path: str, repo_root: Path) -> str:
+    """Repo-relative when inside the checkout, else just the file name: never reveal the
+    server's absolute filesystem layout to whoever is looking at the page."""
+    try:
+        return Path(path).resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return Path(path).name
+
+
+def _show(result: actions.ActionResult, settings: DashboardSettings) -> None:
     STATUS_KIND.get(result.status, st.error)(f"{result.status}: {result.message}")
     st.caption(f"Completed {fmt_nz_datetime(result.completed_at)} · {result.elapsed_seconds:.0f} s")
     if result.banks:
@@ -109,7 +119,7 @@ def _show(result: actions.ActionResult) -> None:
             f"Suspicious: {summary.get('suspicious_changes', '—')}"
         )
     if "path" in summary:
-        st.write(f"Backup written to `{summary['path']}`")
+        st.write(f"Backup written to `{_display_path(str(summary['path']), settings.repo_root)}`")
 
 
 @st.fragment(run_every="3s")
@@ -194,7 +204,7 @@ def render(services: DashboardServices) -> None:
         st.info(f"Running: {state.name}… this page updates when it finishes.")
         _watch_for_completion(runner)
     elif state.result is not None:
-        _show(state.result)
+        _show(state.result, settings)
         if state.name == "live" and st.session_state.get(CACHE_CLEARED_KEY) is not state.result:
             st.cache_data.clear()  # new data is stored; reads must not serve the old cache
             st.session_state[CACHE_CLEARED_KEY] = state.result
@@ -216,4 +226,4 @@ def render(services: DashboardServices) -> None:
     )
     quick = st.session_state.get(QUICK_RESULT_KEY)
     if quick is not None:
-        _show(quick)
+        _show(quick, settings)

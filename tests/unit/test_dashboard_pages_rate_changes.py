@@ -65,3 +65,15 @@ def test_direction_filter_hides_non_matching_rows(market_factory):
     app.selectbox(key="rate_changes_direction").select("UP").run()
     assert not app.exception
     assert any("No rate changes" in i.value for i in app.info)
+
+
+def test_a_custom_window_ending_before_it_starts_says_so(market_factory):
+    from datetime import date
+
+    market = market_factory()
+    app = run_page("rate_changes", market.database, market.now)
+    app.radio(key="rate_changes_window").set_value("Custom").run()
+    app.date_input(key="rate_changes_from").set_value(date(2026, 10, 20)).run()
+    app.date_input(key="rate_changes_to").set_value(date(2026, 10, 10)).run()
+    assert not app.exception
+    assert any("end date is before the start date" in w.value.lower() for w in app.warning)

@@ -56,6 +56,9 @@ def render(services: DashboardServices) -> None:
         start = top[1].date_input("From", key="rate_changes_from")
         end = top[2].date_input("To", key="rate_changes_to")
     window = ChangeWindow(WINDOWS[label], start, end)  # type: ignore[arg-type]
+    if start is not None and end is not None and end < start:
+        st.warning("The end date is before the start date; choose a window that runs forwards.")
+        return
 
     flt = st.columns(4)
     bank = flt[0].selectbox("Bank", [ALL, *config.selected_banks], key="rate_changes_bank")

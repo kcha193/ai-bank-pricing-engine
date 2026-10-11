@@ -149,15 +149,28 @@ def test_telegram_not_configured_is_a_warning_and_shows_no_secret_names(
     assert not any("TELEGRAM_BOT_TOKEN" in w.value for w in app.warning)
 
 
-def test_backup_button_reports_the_written_location(market_factory, tmp_path):
+def test_backup_location_is_shown_relative_to_the_repo_never_as_an_absolute_server_path(
+    market_factory,
+):
+    from pathlib import Path
+
+    from balance_pricing_engine.dashboard.settings import REPO_ROOT
+
     market = market_factory()
-    backup = actions.ActionResult(
-        "backup", "SUCCESS", "Backup created.", DONE, summary={"path": "/safe/backups/x.sqlite3"}
-    )
-    with patch.object(actions, "create_backup", return_value=backup):
-        app = run_page("operations", market.database, market.now)
-        app.button(key="create_backup").click().run()
-    assert any("/safe/backups/x.sqlite3" in m.value for m in app.markdown)
+    inside = REPO_ROOT / "data" / "processed" / "pricing_intelligence" / "backups" / "x.db"
+    for path, expected in (
+        (inside, "data/processed/pricing_intelligence/backups/x.db"),
+        (Path("/var/private/elsewhere/y.db"), "y.db"),
+    ):
+        backup = actions.ActionResult(
+            "backup", "SUCCESS", "Backup created.", DONE, summary={"path": str(path)}
+        )
+        with patch.object(actions, "create_backup", return_value=backup):
+            app = run_page("operations", market.database, market.now)
+            app.button(key="create_backup").click().run()
+        text = " ".join(m.value for m in app.markdown)
+        assert f"`{expected}`" in text
+        assert str(REPO_ROOT) not in text and "/var/private" not in text
 
 
 def test_operations_page_works_without_a_database(tmp_path):
