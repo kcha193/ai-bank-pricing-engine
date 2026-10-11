@@ -1212,8 +1212,13 @@ class PricingIntelligenceService:
         now: Optional[datetime] = None,
         product_type: ProductType | str = ProductType.HOME_LOAN,
         rate_category: Optional[str] = None,
+        since: Optional[datetime] = None,
     ) -> MarketActivity:
         """Summarise repricing activity over a lookback window.
+
+        ``since`` replaces the rolling ``days`` window with an explicit calendar boundary
+        (e.g. local midnight, converted to UTC, for "today"), with the same scoping and the
+        same exclusion of suspicious and non-comparable moves.
 
         Scoped to ``selected_banks``/``tracked_terms_months``, matching every
         snapshot, the dashboard, and :meth:`get_market_state`: a database
@@ -1221,14 +1226,21 @@ class PricingIntelligenceService:
         not alter this public market summary via an excluded bank or term.
         """
         rate_category = _resolve_rate_category(product_type, rate_category)
-        days = days or self.config.market_state.lookback_days
+        if since is not None:
+            reference = now or datetime.now(timezone.utc)
+            # Wide enough that every change at or after ``since`` is inside the lookback.
+            days = max(1, (reference - since).days + 1)
+            window: dict = {"days": None, "since": since}
+        else:
+            days = days or self.config.market_state.lookback_days
+            window = {"days": days}
         return compute_market_activity(
             self.get_changes(
-                days=days,
                 now=now,
                 scope_to_market=True,
                 product_type=product_type,
                 rate_category=rate_category,
+                **window,
             ),
             lookback_days=days,
             now=now,

@@ -2050,3 +2050,30 @@ def test_a_run_where_every_bank_fails_is_reported_as_such(fixture_fetcher):
     assert not outcome.report.any_success
     assert outcome.rate_count == 0
     assert outcome.write_result is None
+
+
+def test_market_activity_since_an_explicit_boundary_matches_the_rolling_window(market_factory):
+    """``since`` is for "since the start of today": same exclusions, explicit calendar edge."""
+    from datetime import timedelta
+
+    market = market_factory()  # one ANZ move, 1 day before NOW
+    with PricingIntelligenceService(
+        config=market.config, store=ObservationStore(market.database)
+    ) as service:
+        before_move = market.now - timedelta(days=2)
+        after_move = market.now - timedelta(hours=1)
+        assert service.get_market_activity(since=before_move, now=market.now).changes == 1
+        assert service.get_market_activity(since=after_move, now=market.now).changes == 0
+        assert service.get_market_activity(days=7, now=market.now).changes == 1
+
+
+def test_market_activity_since_excludes_suspicious_moves(market_factory):
+    from datetime import timedelta
+
+    market = market_factory(anz_new_rate=8.89, anz_new_status="warning")
+    with PricingIntelligenceService(
+        config=market.config, store=ObservationStore(market.database)
+    ) as service:
+        since = market.now - timedelta(days=2)
+        activity = service.get_market_activity(since=since, now=market.now)
+    assert activity.changes == 0

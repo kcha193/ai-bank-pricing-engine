@@ -177,15 +177,17 @@ class DashboardServices:
             local_midnight = now.astimezone(NZ_TZ).replace(
                 hour=0, minute=0, second=0, microsecond=0
             )
-            today = service.get_changes(
-                days=None,
-                since=local_midnight.astimezone(timezone.utc),
-                now=now,
-                scope_to_market=True,
+            # Every figure in the activity strip comes from the backend's own activity
+            # computation, which excludes suspicious and non-comparable moves, so the counts
+            # always agree with the market-state rationale shown beneath them.
+            today_activity = service.get_market_activity(
+                since=local_midnight.astimezone(timezone.utc), now=now
             )
-            week = service.get_changes(days=7, now=now, scope_to_market=True)
+            week_activity = service.get_market_activity(days=7, now=now)
             moves_by_term: dict[int, int] = {}
-            for change in week:
+            for change in service.get_changes(
+                days=7, now=now, scope_to_market=True, rate_category=snapshot.rate_category
+            ):
                 if change.is_rate_move and not change.suspicious and change.term_months:
                     moves_by_term[change.term_months] = moves_by_term.get(change.term_months, 0) + 1
             terms = tuple(sorted(set(snapshot.term_months) | {e.term_months for e in exclusions}))
@@ -210,10 +212,10 @@ class DashboardServices:
                         fresh_banks=health.fresh_bank_count,
                         configured_banks=len(health.banks),
                     ),
-                    changes_today=len(today),
-                    changes_7d=len(week),
-                    banks_repricing_7d=state.activity.banks_changed,
-                    dominant_direction=state.dominant_direction,
+                    changes_today=today_activity.changes,
+                    changes_7d=week_activity.changes,
+                    banks_repricing_7d=week_activity.banks_changed,
+                    dominant_direction=week_activity.dominant_direction,
                     most_active_term=(
                         max(moves_by_term, key=lambda t: (moves_by_term[t], -t))
                         if moves_by_term

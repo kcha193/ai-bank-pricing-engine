@@ -174,3 +174,28 @@ def test_last_update_is_unknown_when_every_run_failed(tmp_path):
     ObservationStore(database).close()
     _record_failed_run(market)
     assert make_services(market).header().value.last_update is None
+
+
+def test_overview_change_counts_exclude_suspicious_moves_like_the_market_state_does(
+    market_factory,
+):
+    """Review finding: a quarantined jump was counted as a change while the rationale printed
+    right under it said there were none."""
+    market = market_factory(anz_new_rate=8.89, anz_new_status="warning")
+    overview = make_services(market).overview().value
+    assert (overview.changes_today, overview.changes_7d) == (0, 0)
+    assert overview.banks_repricing_7d == 0
+    assert "no rate changes" in overview.market_state_rationale
+
+
+def test_overview_change_counts_agree_with_the_backend_activity(market_factory):
+    market = market_factory()
+    overview = make_services(market).overview().value
+    with backend_service(market) as service:
+        activity = service.get_market_activity(days=7, now=market.now)
+    assert overview.changes_7d == activity.changes == 1
+    assert overview.changes_today == 0  # the move was yesterday (NZ time)
+
+
+def backend_service(market):
+    return PricingIntelligenceService(config=market.config, store=ObservationStore(market.database))
