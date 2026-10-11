@@ -243,6 +243,21 @@ config returned unchanged), `MARKET_MEDIAN`, `MARKET_LEADER`,
 Full detail: [pricing_intelligence.md](pricing_intelligence.md).
 
 
+### Pricing Watch dashboard
+
+The Streamlit console in [dashboard/](../src/balance_pricing_engine/dashboard/) is a thin
+operating layer over the services above; the only dependency direction is
+`dashboard → pricing_intelligence / scenario seams`, never the reverse (asserted by
+`tests/unit/test_dashboard_boundaries.py`). Pages render view models returned by
+`DashboardServices`, which wraps `PricingIntelligenceService`, `strategy` and
+`pricing_scenario_trigger`; freshness, ranking, bps, market state and scenario economics
+are never recomputed in the UI. Freshness and health have one implementation,
+`pricing_intelligence/health.py`, shared by the CLI `health` command, the market
+snapshot and the dashboard. Reads never reach `dashboard/actions.py`: only the
+Operations page does, and live collection runs as a subprocess of the scheduled workflow
+script behind a single-flight runner. See
+[pricing_intelligence.md → Dashboard](pricing_intelligence.md#dashboard).
+
 ### Pricing-intelligence audit boundary (2026-09-06)
 
 The strategy seam excludes configured `our_bank` before computing a benchmark;
@@ -288,6 +303,8 @@ Last verified against `src/balance_pricing_engine/` on 2026-09-26. Moved here fr
   - `workflows.py` — orchestration helpers. `reports.py` — `train_response_model_report`, `build_champion_challenger_report`, `build_lift_stability_report` (bootstrap-resamples scored predictions to assess decile lift stability under sampling noise — not model-refit stability across training splits).
 - [competitor_rates/](../src/balance_pricing_engine/competitor_rates/) — ingestion pipeline with its own CLI ([cli.py](../src/balance_pricing_engine/competitor_rates/cli.py)) and subcommands `fetch | fetch-interest-co-nz | validate | apply | report` (`fetch-interest-co-nz` pulls fallback rates from interest.co.nz aggregator tables). Backed by `sources.py` (official bank pages), `extractors.py`, `normalise.py`, `validate.py`, `store.py`, `apply.py`. [collectors/](../src/balance_pricing_engine/competitor_rates/collectors/) adds per-bank adapters (`anz.py`, `asb.py`, `bnz.py`, `westpac.py`, `kiwibank.py`) over a shared `base.py` that owns fetching, retry/backoff, snapshotting, enrichment and per-bank failure isolation — a bank changing its website should require editing only that bank's collector.
 - [pricing_intelligence/](../src/balance_pricing_engine/pricing_intelligence/) — NZ public-market intelligence layer built **on top of** `competitor_rates`, not replacing it. `bps.py` (exact Decimal basis points), `config.py` (all thresholds/timeouts), `store.py` (SQLite historical observation store, one row per distinct advertised state), `validation.py`, `changes.py` (`RateChange` events), `snapshot.py` (per-term dispersion + standard competition ranking), `positioning.py`, `market_state.py` (deterministic LOW/NORMAL/ELEVATED/HIGH), `alerts.py` (`WebhookAlertSink` — Slack/Teams/Discord-compatible JSON POST, gated on `PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL`; `dispatch_alerts_safely()` mirrors `events.publisher.publish_safely()` — a broken webhook is logged, never fails the run), `service.py` (`PricingIntelligenceService` facade), `rbnz.py` (RBNZ Official Cash Rate: `fetch_ocr_series`/`OcrSeries`, a single fetch already carries the full published monthly history, so unlike bank rates there is no local store or scheduled collection for it — parsing anchors on the "Official Cash Rate" heading text, never on column shape alone, since the page renders several charts with an identical `Date | series | series` accessible-table shape), `strategy.py` (`CompetitorRateStrategy`/`apply_market_strategy_to_config` for bank rates, `CashRateStrategy`/`apply_cash_rate_strategy_to_config` for the OCR — two independent seams, both `MANUAL`-default), `dashboard_data.py`, `cli.py` (`ocr` subcommand). **Answers "what is the market doing?" only — it never prices anything.**
+- [pricing_intelligence/health.py](../src/balance_pricing_engine/pricing_intelligence/health.py) — single source of freshness/health semantics: `FreshnessState`, `CollectorStatus`, `HealthLevel`, `is_stale`, `collector_status`, `assess_observation_freshness`, `assess_system_health`, `MarketExclusion` (what `PricingIntelligenceService.get_market_exclusions()` reports for records the snapshot dropped as stale). Imports no optimiser. Related additive seams: `snapshot.term_market_from_rates` (per-date market statistics from resolved rates) and `strategy.apply_manual_competitor_rate_to_config` (an explicit manual override that always returns a new, re-validated config; `apply_market_strategy_to_config` under `MANUAL` still returns the same object).
+- [dashboard/](../src/balance_pricing_engine/dashboard/) — Pricing Watch Streamlit console. `app.py` (router) and `pages/` (render only: Overview, Market Watch, Rate Changes, Historical Trends, Pricing Scenarios + Scenario Lab, Operations, System Health); `services.py` (`DashboardServices` → frozen `models.py` view models inside a `Result`); `formatting.py`, `charts.py`, `scenario_text.py` (pure); `actions.py` (live/dry runs as subprocesses, backup, Telegram test, `JobRunner`, cooldowns) and `run_worker.py` (dry-run subprocess); `guard.py` (process-wide unlock attempt limiter); `settings.py`. Only `pages/operations.py` imports `actions.py`; only `services.py` talks to the backend.
 - [grid_utils.py](../src/balance_pricing_engine/grid_utils.py) — `build_inclusive_numeric_grid`: shared helper for inclusive numeric grids used by the optimiser.
 - [reporting.py](../src/balance_pricing_engine/reporting.py), [plotting.py](../src/balance_pricing_engine/plotting.py) — output formatting.
 - [utils/random.py](../src/balance_pricing_engine/utils/random.py) — `make_rng` for reproducible RNGs.
