@@ -303,3 +303,9 @@ Using exactly the same current manual config, the pre-intelligence source at
 separate from the intelligence seam. The model remains synthetic and does not
 estimate strategic competitor reaction or validate advertised-rate eligibility.
 See the [audit](audits/2026-09-06-pricing-intelligence-audit.md) for scenario outputs.
+
+Pricing Watch quarantine badges describe only the representative observation selected by the
+trusted snapshot. A suspicious sibling remains in audit history without labelling a healthy
+representative as a fallback. Snapshot selection, freshness limits and pricing benchmarks are
+unchanged. Historical event details require the event's observation key and a state beginning
+no later than the event; unavailable historical parser evidence stays explicitly unavailable.

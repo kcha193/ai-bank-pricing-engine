@@ -47,14 +47,16 @@ def render(services: DashboardServices) -> None:
 
     try:
         EngineConfig(**yaml.safe_load(config_yaml))
-    except (TypeError, ValidationError, yaml.YAMLError) as exc:
-        st.error(f"Config error: {exc}")
+    except (TypeError, ValidationError, yaml.YAMLError):
+        st.error("Config error: enter valid YAML matching the EngineConfig schema.")
         return
 
     try:
         result = _run(config_yaml, include_sensitivity)
-    except NotImplementedError as exc:
-        st.error(f"Scenario option error: {exc}")
+    except NotImplementedError:
+        st.error(
+            "Scenario option error: this configuration does not support the requested analysis."
+        )
         return
     diagnostics = result["diagnostics"]
     sensitivity = result["sensitivity"]

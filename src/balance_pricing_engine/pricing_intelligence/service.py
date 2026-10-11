@@ -90,6 +90,7 @@ def _exclude_suspicious(
 def _resolve_suspicious(
     records: Sequence[CompetitorRateRecord],
     confirmed: Sequence[CompetitorRateRecord],
+    quarantined_keys: Optional[set[str]] = None,
 ) -> list[CompetitorRateRecord]:
     """Replace a suspicious-tagged record with its last confirmed state.
 
@@ -125,6 +126,7 @@ def _resolve_suspicious(
     own row, once again as the flagged record's substitute.
     """
     suspicious = [record for record in records if record.validation_status == "warning"]
+    healthy_keys = {r.observation_key() for r in records if r.validation_status != "warning"}
     fallback_by_key = resolve_pairing(confirmed, suspicious) if suspicious else {}
     claimed_confirmed_keys = {c.observation_key() for c in fallback_by_key.values()}
     unclaimed_confirmed = [c for c in confirmed if c.observation_key() not in claimed_confirmed_keys]
@@ -141,10 +143,24 @@ def _resolve_suspicious(
                 resolved.append(record)
             continue
         fallback = fallback_by_key.get(record.observation_key())
+        category_fallback = False
         if fallback is None:
             candidates = category_agnostic_candidates.get(record.category_agnostic_group_key(), [])
             if len(candidates) == 1:
                 fallback = candidates[0]
+                category_fallback = True
+        if (
+            fallback is not None
+            and quarantined_keys is not None
+            and (
+                fallback.observation_key() not in healthy_keys
+                or (category_fallback and fallback.rate_category != record.rate_category)
+            )
+        ):
+            # Eligibility pairing can point at an independently healthy sibling that
+            # is already in the current view; it is not a substituted fallback.
+            # A category-flip predecessor remains current by design (see above).
+            quarantined_keys.add(fallback.observation_key())
         if fallback is not None and fallback.observation_key() not in seen_keys:
             seen_keys.add(fallback.observation_key())
             resolved.append(fallback)
@@ -154,13 +170,14 @@ def _resolve_suspicious(
 def _resolve_suspicious_if_present(
     records: Sequence[CompetitorRateRecord],
     confirmed_source: Callable[[], Sequence[CompetitorRateRecord]],
+    quarantined_keys: Optional[set[str]] = None,
 ) -> list[CompetitorRateRecord]:
     """Apply :func:`_resolve_suspicious`, deferring the confirmed-fallback
     lookup (a separate store query) until a suspicious record is actually
     present. Shared by the live and historical (as-of) snapshot paths.
     """
     if any(record.validation_status == "warning" for record in records):
-        return _resolve_suspicious(records, confirmed_source())
+        return _resolve_suspicious(records, confirmed_source(), quarantined_keys)
     return list(records)
 
 
@@ -941,16 +958,21 @@ class PricingIntelligenceService:
     # ------------------------------------------------------------ market view
 
     def get_resolved_current_observations(
-        self, *, product_type: ProductType | str = ProductType.HOME_LOAN
+        self,
+        *,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        quarantined_keys: Optional[set[str]] = None,
     ) -> list[CompetitorRateRecord]:
         """Current trusted states, substituting confirmed fallbacks before age filtering.
 
         Shared by live snapshots, exclusions and health. Quarantine flags belong to the
         raw current observations; substituted records retain their own confirmation time.
+        When supplied, ``quarantined_keys`` collects the identities of trusted substitutes.
         """
         return _resolve_suspicious_if_present(
             self.store.get_current_observations(product_type=product_type),
             lambda: self.store.get_last_confirmed_observations(product_type=product_type),
+            quarantined_keys,
         )
 
     def get_market_snapshot(
@@ -992,6 +1014,7 @@ class PricingIntelligenceService:
         if rate_category is _RATE_CATEGORY_OMITTED:
             rate_category = _resolve_rate_category(product_type, None)
         as_of: Optional[datetime] = None
+        quarantined_keys: set[str] = set()
         if as_of_run_id is not None:
             as_of = self.store.get_run_started_at(as_of_run_id)
             if as_of is None:
@@ -1012,9 +1035,12 @@ class PricingIntelligenceService:
                     lambda: self.store.get_confirmed_observations_as_of(
                         as_of=as_of, product_type=product_type, before_run_id=as_of_run_id
                     ),
+                    quarantined_keys,
                 )
         else:
-            records = self.get_resolved_current_observations(product_type=product_type)
+            records = self.get_resolved_current_observations(
+                product_type=product_type, quarantined_keys=quarantined_keys
+            )
             records = _exclude_stale(
                 records,
                 now=now or datetime.now(timezone.utc),
@@ -1028,6 +1054,7 @@ class PricingIntelligenceService:
             banks=self.config.selected_banks,
             as_of=as_of,
             excluded_product_names=self.config.excluded_product_names,
+            quarantined_keys=quarantined_keys,
         )
 
     def get_previous_market_snapshot(
@@ -1342,21 +1369,25 @@ class PricingIntelligenceService:
         ]
 
     def get_market_quarantined(
-        self, product_type: ProductType | str = ProductType.HOME_LOAN
+        self,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        *,
+        snapshot: Optional[MarketSnapshot] = None,
+        now: Optional[datetime] = None,
     ) -> set[tuple[str, int]]:
-        """(bank, term) pairs whose latest comparable reading is quarantined as suspicious.
+        """Bank/term representatives actually selected from trusted quarantine fallbacks.
 
-        The market view falls back to the last confirmed rate for these (or drops the bank if
-        none exists), so a caller showing that rate should say it is a fallback.
+        Pass the displayed snapshot to keep badges tied to that exact selection and clock.
+        Missing or stale fallbacks have no representative; raw warnings remain in audit history.
         """
-        records = comparable_records(
-            self.store.get_current_observations(product_type=product_type),
-            rate_category=_resolve_rate_category(product_type, None),
-            banks=set(self.config.selected_banks),
-            terms=set(self.config.tracked_terms_months),
-            excluded_product_names=self.config.excluded_product_names,
-        )
-        return {(r.bank, r.term_months_normalised) for r in records if r.validation_status == "warning"}
+        if snapshot is None:
+            snapshot = self.get_market_snapshot(product_type=product_type, now=now)
+        return {
+            (entry.bank, term)
+            for term, market in snapshot.terms.items()
+            for entry in market.entries
+            if entry.quarantined
+        }
 
     def get_competitive_position(
         self,

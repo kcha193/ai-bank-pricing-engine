@@ -305,3 +305,151 @@ def test_bank_positions_freshness_matches_the_selected_trusted_snapshot(
     if asb_present:
         assert positions["ASB"].quarantined is quarantined
         assert positions["ASB"].rate_pct == 4.79
+
+
+@pytest.mark.parametrize("product", ["home_loan", "term_deposit"])
+@pytest.mark.parametrize(
+    "case,expected",
+    [
+        ("healthy_wins", False),
+        ("fallback_wins", True),
+        ("identical_rates", False),
+        ("all_suspicious", True),
+        ("no_confirmed", None),
+        ("stale_fallback", None),
+        ("category_flip", True),
+    ],
+)
+def test_quarantine_marker_belongs_to_the_selected_observation(
+    tmp_path, make_record, product, case, expected
+):
+    from datetime import datetime, timedelta, timezone
+    from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
+
+    now = datetime(2026, 10, 11, tzinfo=timezone.utc)
+    old = now - timedelta(hours=169 if case == "stale_fallback" else 2)
+    database = tmp_path / "siblings.db"
+    category = "special" if product == "home_loan" else "term_deposit"
+    # Same name, same term, and sometimes the same rate; LVR/deposit conditions carry identity.
+    healthy_rate = 4.0 if product == "home_loan" else 5.0
+    fallback_rate = (
+        healthy_rate
+        if case == "identical_rates"
+        else (healthy_rate + (0.5 if product == "home_loan" else -0.5))
+    )
+    if case in {"fallback_wins", "all_suspicious", "category_flip"}:
+        fallback_rate = healthy_rate + (-0.5 if product == "home_loan" else 0.5)
+    healthy = make_record(
+        bank="ASB",
+        product_type=product,
+        rate_category=category,
+        rate_pct=healthy_rate,
+        observed_at=now,
+        max_lvr=0.8,
+        min_balance_or_deposit=10000,
+    )
+    confirmed = make_record(
+        bank="ASB",
+        product_type=product,
+        rate_category=category,
+        rate_pct=fallback_rate,
+        observed_at=old,
+        max_lvr=0.6,
+        min_balance_or_deposit=20000,
+    )
+    suspicious = confirmed.model_copy(
+        update={
+            "advertised_rate_pct": 9.0,
+            "validation_status": "warning",
+            "captured_at_utc": now,
+            "rate_category": "standard" if case == "category_flip" else category,
+        }
+    )
+    with ObservationStore(database) as store:
+        if case != "no_confirmed":
+            store.record_observations([confirmed], run_id="confirmed", observed_at=old)
+        records = [healthy, suspicious]
+        if case in {"no_confirmed", "stale_fallback"}:
+            records = [suspicious]
+        if case == "all_suspicious":
+            records[0] = healthy.model_copy(update={"validation_status": "warning"})
+        store.record_observations(records, run_id="current", observed_at=now)
+    config = PricingIntelligenceConfig(database_path=str(database))
+    with PricingIntelligenceService(config=config, store=ObservationStore(database)) as backend:
+        snapshot = backend.get_market_snapshot(product_type=product, now=now)
+        marked = backend.get_market_quarantined(product_type=product, snapshot=snapshot)
+        market = snapshot.term(12)
+        if expected is None:
+            assert market is None and marked == set()
+        else:
+            entry = market.entries[0]
+            assert entry.quarantined is expected
+            assert marked == ({("ASB", 12)} if expected else set())
+            assert entry.max_lvr == (0.6 if expected else 0.8)
+        # Quarantines remain available for audit regardless of representative selection.
+        assert any(
+            r.validation_status == "warning"
+            for r in backend.store.get_current_observations(product_type=product)
+        )
+    if product == "home_loan" and expected is not None:
+        services = DashboardServices(
+            load_settings({}, database_path=str(database)), clock=lambda: now
+        )
+        assert services.overview().value.matrix.cells[("ASB", 12)].quarantined is expected
+        assert services.bank_positions(12).value[0].quarantined is expected
+
+
+@pytest.mark.parametrize("prior_rate", [4.0, 4.5])
+def test_three_lvr_offers_with_identical_names_keep_selected_provenance(
+    tmp_path, make_record, prior_rate
+):
+    from datetime import datetime, timedelta, timezone
+    from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
+
+    now = datetime(2026, 10, 11, tzinfo=timezone.utc)
+    old = now - timedelta(hours=2)
+    database = tmp_path / "lvr.db"
+    baseline = [
+        make_record(bank="ASB", max_lvr=lvr, rate_pct=rate, observed_at=old)
+        for lvr, rate in [
+            (0.6, prior_rate),
+            (0.8, 4.0),
+            (0.9, 4.8),
+        ]
+    ]
+    current = [r.model_copy(update={"captured_at_utc": now}) for r in baseline]
+    current[0] = current[0].model_copy(
+        update={"advertised_rate_pct": 9.0, "validation_status": "warning"}
+    )
+    current[1] = current[1].model_copy(update={"advertised_rate_pct": 4.0})
+    with ObservationStore(database) as store:
+        store.record_observations(baseline, run_id="baseline", observed_at=old)
+        store.record_observations(current, run_id="current", observed_at=now)
+    config = PricingIntelligenceConfig(database_path=str(database))
+    with PricingIntelligenceService(config=config, store=ObservationStore(database)) as backend:
+        snapshot = backend.get_market_snapshot(now=now)
+        entry = snapshot.term(12).entries[0]
+        assert entry.rate_pct == 4.0
+        assert entry.max_lvr == 0.8
+        assert not entry.quarantined
+        assert backend.get_market_quarantined(now=now) == set()
+
+
+def test_unconfirmed_suspicious_product_cannot_label_a_healthy_representative(
+    market_factory, make_record
+):
+    from balance_pricing_engine.pricing_intelligence.store import ObservationStore
+
+    market = market_factory()
+    with ObservationStore(market.database) as store:
+        warning = make_record(
+            bank="ANZ",
+            product_name="New sibling",
+            rate_pct=9.0,
+            observed_at=market.now,
+            validation_status="warning",
+        )
+        store.record_observations([warning], run_id="new-sibling", observed_at=market.now)
+    services = make_services(market)
+    assert not services.overview().value.matrix.cells[("ANZ", 12)].quarantined
+    assert not next(r for r in services.bank_positions(12).value if r.bank == "ANZ").quarantined

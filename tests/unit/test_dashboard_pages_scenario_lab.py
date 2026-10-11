@@ -7,6 +7,8 @@ summary/surface/sensitivity rendering, unsupported-sensitivity errors).
 from datetime import datetime, timezone
 from unittest.mock import patch
 
+import pytest
+import yaml
 from dashboard_harness import run_page
 
 from balance_pricing_engine.dashboard.pages import scenario_lab
@@ -58,4 +60,50 @@ def test_lab_reports_unsupported_sensitivity_options(tmp_path):
         app.checkbox(key="lab_sens").check().run()
         app.button(key="lab_run").click().run()
     assert not app.exception
-    assert any("Scenario option error" in e.value and "segmented" in e.value for e in app.error)
+    assert [e.value for e in app.error] == [
+        "Scenario option error: this configuration does not support the requested analysis."
+    ]
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["![secret](https://attacker.invalid/leak)", "[secret](https://attacker.invalid)", "SECRET"],
+)
+def test_lab_validation_never_displays_yaml_values_or_runs_the_optimiser(tmp_path, value):
+    app = run_page("scenario_lab", tmp_path / "none.db", NOW)
+    config = yaml.safe_load(app.text_area(key="lab_config_yaml").value)
+    config["random_seed"] = value
+    app.text_area(key="lab_config_yaml").set_value(yaml.safe_dump(config)).run()
+    with patch.object(scenario_lab, "run_baseline_diagnostics") as optimiser:
+        app.button(key="lab_run").click().run()
+    assert not app.exception
+    assert [e.value for e in app.error] == [
+        "Config error: enter valid YAML matching the EngineConfig schema."
+    ]
+    assert not optimiser.called
+    assert not app.metric and not app.dataframe
+
+
+@pytest.mark.parametrize("config", ["secret: [SECRET", "SECRET", "null", "- SECRET"])
+def test_lab_malformed_yaml_is_static_and_stops_execution(tmp_path, config):
+    app = run_page("scenario_lab", tmp_path / "none.db", NOW)
+    app.text_area(key="lab_config_yaml").set_value(config).run()
+    with patch.object(scenario_lab, "run_baseline_diagnostics") as optimiser:
+        app.button(key="lab_run").click().run()
+    assert not app.exception
+    assert [e.value for e in app.error] == [
+        "Config error: enter valid YAML matching the EngineConfig schema."
+    ]
+    assert not optimiser.called
+
+
+def test_lab_unsupported_option_error_does_not_echo_exception(tmp_path):
+    with patch.object(
+        scenario_lab, "_run", side_effect=NotImplementedError("![SECRET](https://evil.invalid)")
+    ):
+        app = run_page("scenario_lab", tmp_path / "none.db", NOW)
+        app.button(key="lab_run").click().run()
+    assert not app.exception
+    assert [e.value for e in app.error] == [
+        "Scenario option error: this configuration does not support the requested analysis."
+    ]

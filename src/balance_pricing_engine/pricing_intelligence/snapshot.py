@@ -46,6 +46,7 @@ class BankTermRate:
     observed_at: datetime
     max_lvr: Optional[float] = None
     cashback_text: Optional[str] = None
+    quarantined: bool = False
 
     @property
     def is_leader(self) -> bool:
@@ -211,6 +212,7 @@ def build_market_snapshot(
     as_of: Optional[datetime] = None,
     banks: Optional[Iterable[str]] = None,
     excluded_product_names: Optional[Iterable[str]] = None,
+    quarantined_keys: Optional[set[str]] = None,
 ) -> MarketSnapshot:
     """Build a market snapshot from a set of current observations.
 
@@ -292,8 +294,11 @@ def build_market_snapshot(
                 observed_at=record.captured_at_utc,
                 max_lvr=record.max_lvr,
                 cashback_text=record.cashback_text,
+                quarantined=record.observation_key() in (quarantined_keys or set()),
             )
-            for record, rank in zip(ordered, _competition_ranks([r.advertised_rate_pct for r in ordered]))
+            for record, rank in zip(
+                ordered, _competition_ranks([r.advertised_rate_pct for r in ordered])
+            )
         )
         terms[term] = TermMarket(term_months=term, product_type=product, entries=entries)
 

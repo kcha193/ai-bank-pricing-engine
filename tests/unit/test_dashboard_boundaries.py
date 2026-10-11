@@ -25,6 +25,7 @@ STREAMLIT_FREE = [
     "scenario_text",
     "run_worker",
     "guard",
+    "launcher_identity",
 ]
 
 #: Backend computations a page must not re-implement or call directly (it reads them from
@@ -122,6 +123,9 @@ def _attribute_names(node: ast.AST) -> set[str]:
 def test_untrusted_text_never_reaches_a_markdown_surface(page):
     """``st.dataframe`` cells and ``st.link_button`` URLs are literal; Markdown is not."""
     tree = ast.parse(page.read_text(encoding="utf-8"))
+    exception_names = {
+        n.name for n in ast.walk(tree) if isinstance(n, ast.ExceptHandler) and n.name
+    }
     offenders = []
     for call in (n for n in ast.walk(tree) if isinstance(n, ast.Call)):
         func = call.func
@@ -131,6 +135,12 @@ def test_untrusted_text_never_reaches_a_markdown_surface(page):
         for arg in (*call.args, *(kw.value for kw in call.keywords)):
             used |= _attribute_names(arg)
         bad = used & UNTRUSTED_ATTRIBUTES
+        bad |= {
+            n.id
+            for arg in (*call.args, *(kw.value for kw in call.keywords))
+            for n in ast.walk(arg)
+            if isinstance(n, ast.Name) and n.id in exception_names
+        }
         if bad:
             offenders.append((call.lineno, func.attr, sorted(bad)))
     assert offenders == [], f"{page.name}: untrusted fields rendered via Markdown: {offenders}"
@@ -177,3 +187,13 @@ def test_dashboard_dependency_floor_supports_all_used_streamlit_apis():
     # Navigation/fragment predate the limiting API: altair_chart(width="stretch") in 1.51.
     assert "1.50.0" not in dependency.specifier
     assert "1.51.0" in dependency.specifier
+
+
+@pytest.mark.parametrize("surface", ["error", "warning", "info", "markdown"])
+def test_the_boundary_check_rejects_exception_interpolation(tmp_path, surface):
+    page = tmp_path / "bad_page.py"
+    page.write_text(
+        f"try:\n    pass\nexcept ValueError as failure:\n    st.{surface}(str(failure))\n"
+    )
+    with pytest.raises(AssertionError, match="failure"):
+        test_untrusted_text_never_reaches_a_markdown_surface(page)

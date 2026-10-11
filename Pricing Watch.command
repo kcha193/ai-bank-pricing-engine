@@ -101,8 +101,9 @@ if [ "$PORT_REQUEST" -lt 1024 ] || [ "$PORT_REQUEST" -gt 65535 ]; then
   fail "PRICING_WATCH_PORT must be a whole number from 1024 to 65535 (got '$PORT_REQUEST')."
 fi
 
-healthy() {
-  curl -fsS --max-time 2 "http://127.0.0.1:$1/_stcore/health" 2>/dev/null | grep -q '^ok'
+verified_dashboard() {
+  "$PY" "$REPO/src/balance_pricing_engine/dashboard/launcher_identity.py" \
+    "$1" "$APP" "$PY" "${2:-}" "${3:-}" 2>/dev/null
 }
 
 pick_port() {
@@ -125,7 +126,8 @@ PYEOF
 }
 
 ALREADY_RUNNING=0
-if healthy "$PORT_REQUEST"; then
+IDENTITY=""
+if IDENTITY="$(verified_dashboard "$PORT_REQUEST")"; then
   ALREADY_RUNNING=1
   PORT="$PORT_REQUEST"
 else
@@ -169,6 +171,9 @@ open_url() {
 }
 
 if [ "$ALREADY_RUNNING" = "1" ]; then
+  # Recheck the same PID/start time immediately before opening a previously occupied port.
+  verified_dashboard "$PORT" "" "$IDENTITY" >/dev/null || fail \
+    "The verified dashboard exited or changed. Run the launcher again."
   say "Pricing Watch is already running at $URL -- opening it."
   [ "${PRICING_WATCH_NO_BROWSER:-}" = "1" ] || open_url "$URL"
   exit 0
@@ -193,7 +198,7 @@ if [ "${PRICING_WATCH_NO_BROWSER:-}" != "1" ]; then
     # Wait (up to a minute) for the server to answer, then open the browser once.
     attempts=0
     while [ "$attempts" -lt 120 ]; do
-      if healthy "$PORT"; then
+      if verified_dashboard "$PORT" "$$" >/dev/null; then
         open_url "$URL"
         exit 0
       fi

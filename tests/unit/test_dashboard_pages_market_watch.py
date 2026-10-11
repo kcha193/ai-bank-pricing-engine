@@ -1,3 +1,5 @@
+import pytest
+
 from dashboard_harness import run_page
 
 
@@ -64,3 +66,35 @@ def test_market_watch_does_not_label_a_fresh_term_stale_due_to_another_term(tmp_
     app = run_page("market_watch", database, now)
     assert not app.exception
     assert app.dataframe[0].value.set_index("Bank").loc["ASB", "Freshness"] == "FRESH"
+
+
+@pytest.mark.parametrize(
+    "healthy_pct,quarantined,name",
+    [
+        (4.0, False, "Healthy sibling"),
+        (5.0, True, "Healthy sibling"),
+        (5.0, False, "Fixed Special"),
+    ],
+)
+def test_both_pages_badge_the_selected_offer_not_a_sibling(
+    market_factory, make_record, healthy_pct, quarantined, name
+):
+    from datetime import timedelta
+    from balance_pricing_engine.pricing_intelligence.store import ObservationStore
+
+    market = market_factory(anz_new_rate=8.49, anz_new_status="warning")
+    when = market.now - timedelta(hours=12)
+    with ObservationStore(market.database) as store:
+        warning = next(r for r in store.get_current_observations() if r.bank == "ANZ")
+        sibling = make_record(
+            bank="ANZ", product_name=name, rate_pct=healthy_pct, max_lvr=0.8, observed_at=when
+        )
+        store.record_observations([sibling, warning], run_id="sibling", observed_at=when)
+    watch = run_page("market_watch", market.database, market.now)
+    assert not watch.exception
+    label = watch.dataframe[0].value.set_index("Bank").loc["ANZ", "Freshness"]
+    assert ("QUARANTINED" in label) is quarantined
+    overview = run_page("overview", market.database, market.now)
+    assert not overview.exception
+    label = overview.dataframe[0].value.loc["ANZ", "1Y"]
+    assert ("quarantined: last confirmed" in label) is quarantined

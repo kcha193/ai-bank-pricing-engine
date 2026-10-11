@@ -197,7 +197,7 @@ class DashboardServices:
                 if change.is_rate_move and not change.suspicious and change.term_months:
                     moves_by_term[change.term_months] = moves_by_term.get(change.term_months, 0) + 1
             terms = tuple(sorted(set(snapshot.term_months) | {e.term_months for e in exclusions}))
-            quarantined = service.get_market_quarantined()
+            quarantined = service.get_market_quarantined(snapshot=snapshot)
             cells: dict[tuple[str, int], MatrixCell] = {}
             for term in snapshot.term_months:
                 for entry in snapshot[term].entries:
@@ -274,7 +274,7 @@ class DashboardServices:
             market = snapshot.term(term_months)
             if market is None:
                 return Result.empty(f"No comparable market data at {term_months} months.")
-            quarantined = service.get_market_quarantined()
+            quarantined = service.get_market_quarantined(snapshot=snapshot)
             last_change: dict[str, datetime] = {}
             for change in service.get_changes(
                 days=None,
@@ -665,7 +665,7 @@ class DashboardServices:
                 (
                     r
                     for r in reversed(history)
-                    if r.product_name == change.product_name
+                    if r.observation_key() == change.observation_key
                     and r.captured_at_utc <= change.detected_at
                 ),
                 None,

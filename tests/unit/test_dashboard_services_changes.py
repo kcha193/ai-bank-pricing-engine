@@ -79,3 +79,76 @@ def test_event_ranks_and_detail_context_apply_only_to_the_comparable_tier(
     assert position.last_change_at == market.now - timedelta(
         hours=12 if category == "special" else 24
     )
+
+
+@pytest.mark.parametrize("condition", ["lvr", "eligibility"])
+def test_event_detail_matches_identity_across_runs(market_factory, make_record, condition):
+    from datetime import timedelta
+    from balance_pricing_engine.pricing_intelligence.changes import detect_changes
+    from balance_pricing_engine.pricing_intelligence.store import ObservationStore
+
+    market = market_factory()
+    previous = []
+    expected = {}
+    with ObservationStore(market.database) as store:
+        for i in range(3):
+            when = market.now - timedelta(hours=6 - i)
+            records = [
+                make_record(
+                    bank="ASB",
+                    product_name="Same name",
+                    observed_at=when,
+                    rate_pct=4.0 + i * 0.1 + j * 0.01,
+                    max_lvr=(0.6 + j * 0.2) if condition == "lvr" else None,
+                    min_equity=(0.2 + j * 0.1) if condition == "eligibility" else None,
+                    source_url=f"https://example.invalid/source/{i}/{j}",
+                    parser_version=f"parser-{i}-{j}",
+                    effective_date_text=f"effective-{i}-{j}",
+                )
+                for j in range(2)
+            ]
+            run_id = f"siblings-{i}"
+            store.record_observations(records, run_id=run_id, observed_at=when)
+            events = detect_changes(previous, records, detected_at=when, run_id=run_id)
+            store.record_changes(events)
+            expected.update({(when, r.advertised_rate_pct): r for r in records})
+            previous = records
+    services = make_services(market)
+    rows = [r for r in services.changes(ChangeWindow("7d")).value if r.bank == "ASB"]
+    assert len(rows) >= 4
+    for row in rows:
+        detail = services.event_detail(row.key).value
+        record = expected[(row.detected_at, row.current_pct)]
+        # Historical rows intentionally suppress parser evidence refreshed by later runs.
+        assert detail.parser_version == "unavailable"
+        assert detail.effective_date_text == record.effective_date_text
+        assert detail.observed_at == record.captured_at_utc
+        assert detail.source_url == record.source_url
+
+
+@pytest.mark.parametrize("case", ["missing", "sibling", "future"])
+def test_event_detail_never_substitutes_unmatched_or_future_metadata(
+    market_factory, make_record, case
+):
+    from datetime import timedelta
+    from unittest.mock import patch
+    from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
+
+    market = market_factory()
+    services = make_services(market)
+    row = next(r for r in services.changes(ChangeWindow("7d")).value if r.bank == "ANZ")
+    record = make_record(
+        bank="ANZ",
+        observed_at=row.detected_at + timedelta(seconds=1),
+        parser_version="wrong-parser",
+        effective_date_text="wrong-date",
+    )
+    history = [] if case == "missing" else [record]
+    if case == "sibling":
+        history = [record.model_copy(update={"max_lvr": 0.8, "captured_at_utc": row.detected_at})]
+    with patch.object(PricingIntelligenceService, "get_rate_history", return_value=history):
+        detail = services.event_detail(row.key).value
+    assert detail.observed_at is None
+    assert detail.effective_date_text is None and detail.parser_version is None
+    assert detail.source_url.endswith("/anz/rates")  # the event's own source remains usable
+    assert detail.row == row

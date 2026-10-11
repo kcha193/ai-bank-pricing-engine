@@ -4,13 +4,11 @@ Everything runs in dry-run mode (it resolves and checks, then prints what it wou
 server starts and no browser opens. The launcher is plain bash, so these tests need only bash.
 """
 
-import http.server
 import os
 import shutil
 import socket
 import subprocess
 import sys
-import threading
 from pathlib import Path
 
 import pytest
@@ -31,9 +29,13 @@ def repo(tmp_path):
     The stub answers the launcher's ``import streamlit`` check itself (so tests do not depend on
     Streamlit being installed) and defers everything else to the real interpreter.
     """
-    root = tmp_path / "checkout"
+    root = tmp_path / "checkout with spaces"
     (root / "src/balance_pricing_engine/dashboard").mkdir(parents=True)
     (root / "src/balance_pricing_engine/dashboard/app.py").write_text("# app\n")
+    shutil.copy(
+        ROOT / "src/balance_pricing_engine/dashboard/launcher_identity.py",
+        root / "src/balance_pricing_engine/dashboard/launcher_identity.py",
+    )
     shutil.copy(LAUNCHER, root / LAUNCHER.name)
     (root / LAUNCHER.name).chmod(0o755)
     python = root / ".venv/bin/python"
@@ -218,27 +220,60 @@ def test_a_nonsense_port_is_rejected_with_a_message(repo, bad):
     assert "PRICING_WATCH_PORT" in result.stdout + result.stderr
 
 
-def test_a_running_dashboard_is_reused_not_started_twice(repo):
-    class Healthy(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802 - http.server API
-            body = b"ok" if self.path == "/_stcore/health" else b"<html></html>"
-            self.send_response(200)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, *args):
-            pass
-
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Healthy)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        port = server.server_address[1]
+@pytest.mark.parametrize(
+    "command", ["python -m streamlit run /other/app.py", "python -m http.server"]
+)
+def test_an_unrelated_healthy_listener_is_not_reused(repo, command):
+    # Stub OS inspection and health; an occupied socket only ensures free-port selection.
+    with socket.socket() as blocker:
+        blocker.bind(("127.0.0.1", 0))
+        blocker.listen()
+        port = blocker.getsockname()[1]
+        _stub_probes(repo, port, command)
         found = facts(launch(repo / LAUNCHER.name, env={"PRICING_WATCH_PORT": str(port)}))
-    finally:
-        server.shutdown()
-    assert found["already_running"] == "1"
-    assert found["port"] == str(port)
+    assert found["already_running"] == "0" and int(found["port"]) > port
+
+
+def _stub_probes(repo, port, command):
+    tools = repo / "probe-tools"
+    tools.mkdir(exist_ok=True)
+    lsof = tools / "lsof"
+    lsof.write_text("#!/bin/sh\nprintf 'p42\\n'\n")
+    ps = tools / "ps"
+    # Quotes/spaces in the checkout's path are intentional and match the OS command display.
+    import shlex
+
+    ps.write_text(
+        '#!/bin/sh\ncase "$5" in\n'
+        f"uid=) printf '%s' '{os.getuid()}' ;;\n"
+        f"command=) printf '%s' {shlex.quote(command)} ;;\n"
+        f"comm=) printf '%s' {shlex.quote(str(repo / '.venv/bin/python'))} ;;\n"
+        "lstart=) printf '%s' 'Sun Oct 11 00:00:00 2026' ;;\n"
+        "*) exit 1 ;;\nesac\n"
+    )
+    lsof.chmod(0o755)
+    ps.chmod(0o755)
+    # The interpreter shim replaces only the network probe, never the ownership logic.
+    python = repo / ".venv/bin/python"
+    python.write_text(
+        '#!/bin/sh\nif [ "$1" = "-c" ]; then exit 0; fi\n'
+        'if [ "${1##*/}" = "launcher_identity.py" ]; then\n'
+        f'  exec "{sys.executable}" -c '
+        "'import runpy,sys; sys.argv=sys.argv[1:]; "
+        'g=runpy.run_path(sys.argv[0]); g["verified_listener"].__globals__["_healthy"]=lambda port: True; '
+        'sys.exit(g["main"]())\' "$1" "$2" "$3" "$4" "${5:-}" "${6:-}"\n'
+        f'fi\nexec "{sys.executable}" "$@"\n'
+    )
+    (repo / ".env").write_text(f"PATH={shlex.quote(str(tools))}:$PATH\n")
+
+
+def test_a_verified_dashboard_from_this_checkout_is_reused(repo):
+    port = free_port()
+    app = repo / "src/balance_pricing_engine/dashboard/app.py"
+    command = f"{repo}/.venv/bin/python -m streamlit run {app} --server.address 127.0.0.1 --server.port {port} --server.headless true --browser.gatherUsageStats false"
+    _stub_probes(repo, port, command)
+    found = facts(launch(repo / LAUNCHER.name, env={"PRICING_WATCH_PORT": str(port)}))
+    assert found["already_running"] == "1" and found["port"] == str(port)
 
 
 # --- configuration from .env, without ever echoing a secret --------------------------------------
@@ -266,3 +301,34 @@ def test_without_a_dot_env_the_launcher_still_runs_and_says_so(repo):
 def test_the_ops_token_can_also_come_from_the_environment(repo):
     found = facts(launch(repo / LAUNCHER.name, env={"PRICING_WATCH_OPS_TOKEN": "x" * 24}))
     assert found["ops_token"] == "set"
+
+
+def test_failed_startup_never_opens_an_unrelated_app(repo):
+    # Fail the server command before it binds; opening is recorded by a stub executable.
+    python = repo / ".venv/bin/python"
+    script = python.read_text()
+    script = script.replace(
+        f'exec "{sys.executable}" "$@"',
+        'if [ "$1" = "-m" ]; then exit 1; fi\n' + f'exec "{sys.executable}" "$@"',
+    )
+    python.write_text(script)
+    tools = repo / "no-browser-tools"
+    tools.mkdir()
+    opened = repo / "opened"
+    import shlex
+
+    browser = tools / "open"
+    browser.write_text(f"#!/bin/sh\nprintf 'opened' > {shlex.quote(str(opened))}\n")
+    browser.chmod(0o755)
+    result = launch(
+        repo / LAUNCHER.name,
+        env={
+            "PRICING_WATCH_LAUNCHER_DRY_RUN": "",
+            "PRICING_WATCH_NO_BROWSER": "",
+            "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+            "PRICING_WATCH_PORT": str(free_port()),
+        },
+    )
+    assert result.returncode == 1
+    assert "stopped unexpectedly" in result.stdout
+    assert not opened.exists()
