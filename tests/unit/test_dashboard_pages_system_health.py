@@ -170,3 +170,38 @@ def test_quarantines_display_inside_the_corresponding_product_tab(
         if expected:
             assert list(frames[0]["Bank"]) == [bank]
             assert list(frames[0]["Observed"]) == [rate]
+
+
+@pytest.mark.parametrize(
+    "age_hours,expected",
+    [
+        (1, "Its last validated observation is still current."),
+        (169, "Its last validated observation remains available but is marked STALE."),
+        (None, "No confirmed validated observation is available; freshness is UNKNOWN."),
+    ],
+)
+def test_failed_collection_messages_preserve_observation_freshness(
+    tmp_path, make_record, age_hours, expected
+):
+    database = tmp_path / "failed-bank.db"
+    store = ObservationStore(database)
+    if age_hours is not None:
+        captured = NOW - timedelta(hours=age_hours)
+        store.record_observations(
+            [make_record(bank="ASB", observed_at=captured)],
+            run_id="last-success",
+            observed_at=captured,
+        )
+    # With no observations this is the bank's first-ever failed attempt.
+    store.update_collector_health(
+        "ASB", ProductType.HOME_LOAN, success=False, error="Timeout", at=NOW, run_id="first-failure"
+    )
+    store.close()
+    app = run_page("system_health", database, NOW)
+    assert not app.exception
+    messages = [w.value for w in app.warning if w.value.startswith("ASB collection failed.")]
+    assert len(messages) == 1 and expected in messages[0]
+    if age_hours is None:
+        assert "still current" not in messages[0] and "marked STALE" not in messages[0]
+        bank = frame_with(app, "Failures").set_index("Bank").loc["ASB"]
+        assert bank["Freshness"] == "UNKNOWN" and bank["Current records"] == 0

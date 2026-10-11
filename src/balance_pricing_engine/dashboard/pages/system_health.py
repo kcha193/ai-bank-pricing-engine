@@ -82,14 +82,18 @@ def _collectors(health: SystemHealth) -> pd.DataFrame:
 def _explain(health: SystemHealth, exclusions) -> None:
     for bank in health.banks:
         if bank.collector is CollectorStatus.FAILING:
-            stale = bank.freshness.state is FreshnessState.STALE
+            observation_message = {
+                FreshnessState.FRESH: "Its last validated observation is still current.",
+                FreshnessState.STALE: (
+                    "Its last validated observation remains available but is marked STALE."
+                ),
+                FreshnessState.UNKNOWN: (
+                    "No confirmed validated observation is available; freshness is UNKNOWN."
+                ),
+            }[bank.freshness.state]
             st.warning(
                 f"{bank.bank} collection failed. "
-                + (
-                    "Its last validated observation remains available but is marked STALE."
-                    if stale
-                    else "Its last validated observation is still current."
-                )
+                + observation_message
                 + " See the collector table below."
             )
         elif bank.health is HealthLevel.DEGRADED:

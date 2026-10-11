@@ -73,23 +73,44 @@ def test_dry_run_calls_dry_run_only(market_factory, clean_runner):
 
 
 def test_a_second_click_while_running_does_not_launch_twice(market_factory, clean_runner):
+    from streamlit.testing.v1 import AppTest
+
     market = market_factory()
     gate = threading.Event()
 
     def slow(*args, **kwargs):
-        gate.wait(5)
+        gate.wait()
         return ok("live")
 
-    with patch.object(actions, "run_live", side_effect=slow) as live:
-        app = run_page("operations", market.database, market.now)
-        app.checkbox(key="confirm_live").check().run()
-        app.button(key="run_live").click().run()
-        assert app.button(key="run_live").disabled  # buttons lock while a job runs
-        assert any("Running" in i.value for i in app.info)
-        app.button(key="run_dry").click().run()  # a different action is refused too
-        gate.set()
-        clean_runner.wait()
-    assert live.call_count == 1
+    with (
+        patch.object(actions, "run_live", side_effect=slow) as live,
+        patch.object(actions, "run_dry") as dry,
+    ):
+        try:
+            app = run_page("operations", market.database, market.now)
+            app.checkbox(key="confirm_live").check().run()
+            app.button(key="run_live").click().run()
+            assert app.button(key="run_live").disabled
+            assert app.button(key="run_dry").disabled
+            assert any("Running" in i.value for i in app.info)
+            # Newer AppTest rejects disabled-widget clicks. Exercise the actual callback
+            # directly to prove single-flight protection also holds beyond the UI lock.
+            script = f"""
+import streamlit as st
+from balance_pricing_engine.dashboard.pages import operations
+from balance_pricing_engine.dashboard.settings import load_settings
+settings = load_settings({{}}, database_path={str(market.database)!r})
+operations._start_job("dry_run", "run_dry", settings)
+st.warning(st.session_state.get(operations.NOTICE_KEY, ""))
+"""
+            refused = AppTest.from_string(script).run()
+            assert not refused.exception
+            assert any("already in progress" in w.value.lower() for w in refused.warning)
+            assert clean_runner.state().running
+        finally:
+            gate.set()
+            clean_runner.wait()
+    assert live.call_count == 1 and dry.call_count == 0
 
 
 def test_a_run_started_in_another_tab_blocks_this_one(market_factory, clean_runner):

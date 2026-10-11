@@ -1,9 +1,12 @@
+import pytest
+
 from datetime import date, datetime, timedelta, timezone
 
 from dashboard_harness import make_services
 
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.dashboard.formatting import NZ_TZ
+from balance_pricing_engine.dashboard.models import ChangeWindow
 from balance_pricing_engine.dashboard.services import DashboardServices
 from balance_pricing_engine.dashboard.settings import load_settings
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange
@@ -134,3 +137,47 @@ def test_history_dates_are_new_zealand_days_not_utc_days(tmp_path, make_record):
     )
     points = services.history(12, ("ANZ",), None).value.points
     assert [p.day for p in points][0] == date(2026, 10, 12)
+
+
+@pytest.mark.parametrize("valid_moves", [True, False])
+def test_timeline_filters_tiers_before_ordering_and_offsets(market_factory, valid_moves):
+    market = market_factory(anz_new_rate=4.79 if valid_moves else 4.89)
+    services = make_services(market)
+    baseline = services.history(12, ("ANZ", "BNZ"), days=None).value
+    events = []
+    specs = [
+        ("standard", "ASB", 96, False),
+        ("non_comparable", "Kiwibank", 72, False),
+        ("special", "Westpac", 48, True),
+    ]
+    if valid_moves:
+        specs.append(("special", "BNZ", 12, False))
+    for category, bank, age_hours, suspicious in specs:
+        events.append(
+            RateChange(
+                observation_key=f"{bank}-{category}",
+                bank=bank,
+                product_type=ProductType.HOME_LOAN,
+                product_name=f"Fixed {category}",
+                rate_category=category,
+                term_months=12,
+                change_type=ChangeType.RATE_DECREASE,
+                detected_at=market.now - timedelta(hours=age_hours),
+                previous_rate_pct=4.89,
+                current_rate_pct=4.79,
+                change_bps=-10.0,
+                suspicious=suspicious,
+                run_id=f"timeline-{bank}-{category}",
+            )
+        )
+    store = ObservationStore(market.database)
+    store.record_changes(events)
+    store.close()
+    data = services.history(12, ("ANZ", "BNZ"), days=None).value
+    assert data.points == baseline.points and data.market == baseline.market
+    expected = [("ANZ", 0.0), ("BNZ", 0.5)] if valid_moves else []
+    assert [(e.bank, e.offset_days) for e in data.timeline] == expected
+    assert [e.detected_at for e in data.timeline] == sorted(e.detected_at for e in data.timeline)
+    # Audit-only events remain in Rate Changes, but never move the trusted timeline origin.
+    audit = services.changes(ChangeWindow("7d")).value
+    assert {r.rate_category for r in audit} >= {"standard", "non_comparable"}

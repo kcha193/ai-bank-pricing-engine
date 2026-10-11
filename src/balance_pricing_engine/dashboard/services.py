@@ -318,7 +318,10 @@ class DashboardServices:
         def build(service: PricingIntelligenceService) -> Result[HistoryData]:
             now = self._clock()
             local_now = now.astimezone(NZ_TZ)
-            series = service.get_rate_history_series(term_months=term_months, tz=NZ_TZ)
+            rate_category = service.get_market_snapshot(now=now).rate_category
+            series = service.get_rate_history_series(
+                term_months=term_months, rate_category=rate_category, tz=NZ_TZ
+            )
             if days is not None:
                 cutoff = (local_now - timedelta(days=days)).date()
                 before = [entry for entry in series if entry[0] < cutoff]
@@ -355,7 +358,11 @@ class DashboardServices:
                 (
                     c
                     for c in service.get_changes(
-                        days=days, term_months=term_months, now=now, scope_to_market=True
+                        days=days,
+                        term_months=term_months,
+                        now=now,
+                        scope_to_market=True,
+                        rate_category=rate_category,
                     )
                     if c.is_rate_move and not c.suspicious
                 ),
