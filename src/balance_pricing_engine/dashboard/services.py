@@ -7,6 +7,7 @@ in this module -- see tests/unit/test_dashboard_boundaries.py.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import sqlite3
 from contextlib import contextmanager
@@ -121,6 +122,10 @@ class DashboardServices:
             return (str(path), path.stat().st_mtime_ns)
         except OSError:
             return (str(path), 0)
+
+    def config_fingerprint(self) -> str:
+        """Content provenance for the exact loaded YAML used by ``scenarios``."""
+        return hashlib.sha256(self.settings.engine_config_text.encode("utf-8")).hexdigest()
 
     @contextmanager
     def _service(self) -> Iterator[PricingIntelligenceService]:
@@ -564,7 +569,11 @@ class DashboardServices:
                     curve=curve,
                     position=position,
                     model_optimum_rate=optimum.our_rate if optimum else None,
-                    excluded_banks=tuple(service.get_market_exclusions(now=now)),
+                    excluded_banks=tuple(
+                        e
+                        for e in service.get_market_exclusions(now=now)
+                        if e.term_months == request.term_months
+                    ),
                 )
             )
 

@@ -155,3 +155,63 @@ def test_a_missing_database_is_empty(tmp_path):
     assert (
         services.scenarios(ScenarioRequest(12, "MARKET_MEDIAN", None, 0.0, None)).status == "EMPTY"
     )
+
+
+@pytest.mark.parametrize("selected_stale", [False, True])
+def test_scenario_exclusions_match_selected_term(market_factory, make_record, selected_stale):
+    from datetime import timedelta
+
+    market = market_factory(stale_banks=("Westpac",) if selected_stale else ())
+    when = market.now - timedelta(hours=24 if selected_stale else 240)
+    market.database = market.database.with_name("terms.db")
+    market.config = market.config.model_copy(update={"database_path": str(market.database)})
+    rows = [
+        make_record(
+            bank=b,
+            observed_at=market.now
+            - timedelta(hours=240 if selected_stale and b == "Westpac" else 24),
+        )
+        for b in market.banks
+    ]
+    rows.append(make_record(bank="Westpac", term_months=36, observed_at=when))
+    with ObservationStore(market.database) as store:
+        for age in (240, 24):
+            captured = market.now - timedelta(hours=age)
+            store.record_observations(
+                [r for r in rows if r.captured_at_utc == captured],
+                run_id=f"age-{age}",
+                observed_at=captured,
+            )
+    services = make_services(market)
+    view = services.scenarios(ScenarioRequest(12, "MARKET_MEDIAN", None, 0.0, None)).value
+    assert [(e.bank, e.term_months) for e in view.excluded_banks] == (
+        [("Westpac", 12)] if selected_stale else []
+    )
+    snapshot = backend_snapshot(market).term(12)
+    assert ("Westpac" in [e.bank for e in snapshot.entries]) is not selected_stale
+    assert view.selected.competitor_rate == snapshot.median_rate / 100
+
+
+def test_scenario_fresh_quarantine_fallback_is_not_excluded(market_factory):
+    market = market_factory(anz_new_rate=8.49, anz_new_status="warning")
+    view = (
+        make_services(market).scenarios(ScenarioRequest(12, "MARKET_MEDIAN", None, 0.0, None)).value
+    )
+    assert view.excluded_banks == ()
+    assert view.selected.competitor_rate == backend_snapshot(market).term(12).median_rate / 100
+
+
+def test_fingerprint_tracks_loaded_config_not_a_subsequent_file_edit(market_factory, tmp_path):
+    from balance_pricing_engine.dashboard.services import DashboardServices
+    from balance_pricing_engine.dashboard.settings import load_settings
+
+    market = market_factory()
+    path = tmp_path / "engine.yaml"
+    path.write_text(load_settings({}).engine_config_text)
+    env = {"PRICING_WATCH_CONFIG": str(path)}
+    services = DashboardServices(load_settings(env, database_path=str(market.database)))
+    fingerprint = services.config_fingerprint()
+    path.write_text("invalid: [")
+    assert services.config_fingerprint() == fingerprint  # this instance still uses loaded content
+    refreshed = DashboardServices(load_settings(env, database_path=str(market.database)))
+    assert refreshed.config_fingerprint() != fingerprint

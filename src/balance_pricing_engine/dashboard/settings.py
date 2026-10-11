@@ -58,7 +58,11 @@ def load_settings(
 ) -> DashboardSettings:
     env = os.environ if env is None else env
     path = Path(env.get(CONFIG_ENV_VAR) or REPO_ROOT / "configs" / "base.yaml")
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        # An unavailable config must invalidate stored results and fail scenario validation.
+        text = ""
     intelligence = resolve_intelligence_config(text)
     if database_path is not None:
         intelligence = intelligence.model_copy(update={"database_path": database_path})

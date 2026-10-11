@@ -8,7 +8,7 @@ market snapshot -- goes through here so they cannot disagree.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Collection, Optional, Sequence
@@ -193,7 +193,11 @@ class MarketExclusion:
 
 
 def _bank_health_level(freshness: ObservationFreshness, collector: CollectorStatus) -> HealthLevel:
-    if freshness.state is FreshnessState.UNKNOWN and collector is CollectorStatus.UNKNOWN:
+    if (
+        freshness.state is FreshnessState.UNKNOWN
+        and collector is CollectorStatus.UNKNOWN
+        and not freshness.quarantined
+    ):
         return HealthLevel.UNKNOWN
     if (
         freshness.state is FreshnessState.FRESH
@@ -220,12 +224,19 @@ def assess_system_health(
     records = store.get_current_observations(product_type=product)
     # Freshness describes what the market view uses, not every row ever stored for the bank.
     comparable = comparable_records(
-        records,
+        service.get_resolved_current_observations(product_type=product),
         rate_category=snapshot.rate_category,
         banks=set(config.selected_banks),
         terms=set(config.tracked_terms_months),
         excluded_product_names=config.excluded_product_names,
     )
+    # Raw warning rows remain visible even when a category flip resolves to another tier.
+    quarantined_banks = {
+        r.bank
+        for r in records
+        if r.validation_status == "warning"
+        and r.term_months_normalised in config.tracked_terms_months
+    }
     run_ids_by_bank = store.get_current_observation_run_ids(product_type=product)
     latest_run_id = store.latest_run_id(product_type=product)
     collectors = {c.bank: c for c in store.get_collector_health(product_type=product)}
@@ -240,6 +251,8 @@ def assess_system_health(
             run_ids=run_ids_by_bank.get(bank, []),
             latest_run_id=latest_run_id,
         )
+        if bank in quarantined_banks:
+            freshness = replace(freshness, quarantined=True, not_fully_confirmed=False)
         entry = collectors.get(bank)
         status = collector_status(entry, now, config.max_observation_age_hours)
         banks.append(

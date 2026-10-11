@@ -940,6 +940,19 @@ class PricingIntelligenceService:
 
     # ------------------------------------------------------------ market view
 
+    def get_resolved_current_observations(
+        self, *, product_type: ProductType | str = ProductType.HOME_LOAN
+    ) -> list[CompetitorRateRecord]:
+        """Current trusted states, substituting confirmed fallbacks before age filtering.
+
+        Shared by live snapshots, exclusions and health. Quarantine flags belong to the
+        raw current observations; substituted records retain their own confirmation time.
+        """
+        return _resolve_suspicious_if_present(
+            self.store.get_current_observations(product_type=product_type),
+            lambda: self.store.get_last_confirmed_observations(product_type=product_type),
+        )
+
     def get_market_snapshot(
         self,
         product_type: ProductType | str = ProductType.HOME_LOAN,
@@ -1001,11 +1014,7 @@ class PricingIntelligenceService:
                     ),
                 )
         else:
-            records = self.store.get_current_observations(product_type=product_type)
-            records = _resolve_suspicious_if_present(
-                records,
-                lambda: self.store.get_last_confirmed_observations(product_type=product_type),
-            )
+            records = self.get_resolved_current_observations(product_type=product_type)
             records = _exclude_stale(
                 records,
                 now=now or datetime.now(timezone.utc),
@@ -1298,11 +1307,7 @@ class PricingIntelligenceService:
         the newest stale record, i.e. the last known rate.
         """
         now = now or datetime.now(timezone.utc)
-        records = self.store.get_current_observations(product_type=product_type)
-        records = _resolve_suspicious_if_present(
-            records,
-            lambda: self.store.get_last_confirmed_observations(product_type=product_type),
-        )
+        records = self.get_resolved_current_observations(product_type=product_type)
         candidates = comparable_records(
             _exclude_suspicious(records),
             rate_category=_resolve_rate_category(product_type, None),

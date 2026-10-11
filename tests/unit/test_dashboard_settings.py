@@ -59,3 +59,15 @@ def test_the_minimum_token_length_is_exposed_for_the_gate():
     from balance_pricing_engine.dashboard.settings import MIN_OPS_TOKEN_LENGTH
 
     assert MIN_OPS_TOKEN_LENGTH == 16
+
+
+def test_unreadable_config_cannot_supply_old_optimiser_assumptions(tmp_path, monkeypatch):
+    path = tmp_path / "engine.yaml"
+    path.write_text("secret configuration content")
+
+    def unreadable(*args, **kwargs):
+        raise PermissionError("private path detail")
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    settings = load_settings({"PRICING_WATCH_CONFIG": str(path)})
+    assert settings.engine_config_text == ""

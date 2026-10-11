@@ -148,13 +148,16 @@ def _scenarios_tab(services: DashboardServices) -> None:
             services.scenarios(request),
             services.db_stamp(),
             datetime.now(timezone.utc),
+            services.config_fingerprint(),
         )
 
     stored = st.session_state.get(STATE_KEY)
     if stored is None:
         st.caption("Choose assumptions and click **Run scenario**.")
         return
-    stored_request, result, stored_stamp, computed_at = stored
+    # Sessions created before configuration provenance was added must be rerun as well.
+    stored_request, result, stored_stamp, computed_at = stored[:4]
+    stored_config = stored[4] if len(stored) > 4 else None
     st.caption(f"Computed {fmt_nz_datetime(computed_at)} (Pacific/Auckland).")
     if stored_request != request:
         st.caption("Inputs changed since this result; click Run scenario to refresh.")
@@ -162,6 +165,12 @@ def _scenarios_tab(services: DashboardServices) -> None:
         st.caption(
             "Market data has changed since this result was computed; click Run scenario to refresh."
         )
+    if stored_config != services.config_fingerprint():
+        st.warning(
+            "Engine configuration has changed since this result was computed. "
+            "The previous recommendation is hidden; click Run scenario to refresh."
+        )
+        return
     view = unwrap(result)
     if view is not None:
         _render_result(view)

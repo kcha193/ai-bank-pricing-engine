@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+import pytest
+
 from dashboard_harness import make_services, run_page
 
 import balance_pricing_engine.dashboard.services as services_module
@@ -123,3 +125,102 @@ def test_a_result_is_flagged_when_the_market_data_changes_underneath_it(market_f
     os.utime(market.database, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
     app.run()
     assert any("Market data has changed since this result" in c.value for c in app.caption)
+
+
+@pytest.mark.parametrize("changed", ["assumption", "invalid", "missing"])
+def test_config_changes_suppress_result_without_recomputing(market_factory, tmp_path, changed):
+    import yaml
+    from balance_pricing_engine.dashboard.settings import load_settings
+
+    market = market_factory()
+    original = load_settings({}).engine_config_text
+    path = tmp_path / "engine.yaml"
+    path.write_text(original)
+    with patch.object(
+        services_module, "run_triggered_scenarios", wraps=run_triggered_scenarios
+    ) as optimiser:
+        app = run_page(
+            "scenarios", market.database, market.now, env={"PRICING_WATCH_CONFIG": str(path)}
+        )
+        app.button(key="scenario_run").click().run()
+        assert optimiser.call_count == 1
+        assert app.dataframe
+        app.run()
+        assert app.dataframe and optimiser.call_count == 1
+        if changed == "assumption":
+            data = yaml.safe_load(original)
+            data["response"]["loan_rate_elasticity"] *= 2
+            updated = yaml.safe_dump(data)
+            path.write_text(updated)
+        elif changed == "invalid":
+            path.write_text("invalid: [")
+        else:
+            path.unlink()
+        app.run()
+        assert not app.exception
+        assert any("Engine configuration has changed" in w.value for w in app.warning)
+        assert not app.dataframe and not app.metric
+        assert optimiser.call_count == 1
+        if changed == "assumption":
+            app.button(key="scenario_run").click().run()
+            assert optimiser.call_count == 2
+            assert app.dataframe
+            assert not any("Engine configuration has changed" in w.value for w in app.warning)
+            assert (
+                optimiser.call_args.args[0].response.loan_rate_elasticity
+                == data["response"]["loan_rate_elasticity"]
+            )
+        path.write_text(original)
+        app.run()
+        assert optimiser.call_count == (2 if changed == "assumption" else 1)
+        assert any("Engine configuration has changed" in w.value for w in app.warning) is (
+            changed == "assumption"
+        )
+
+        if changed != "assumption":
+            path.write_text("invalid: [")
+            app.button(key="scenario_run").click().run()
+            assert any("engine config could not be read" in e.value for e in app.error)
+            assert optimiser.call_count == 1
+
+
+def test_unreadable_config_hides_stored_recommendation(market_factory, tmp_path):
+    from pathlib import Path
+    from balance_pricing_engine.dashboard.settings import load_settings
+
+    market = market_factory()
+    path = tmp_path / "engine.yaml"
+    path.write_text(load_settings({}).engine_config_text)
+    read_text = Path.read_text
+
+    def read(candidate, *args, **kwargs):
+        if candidate == path:
+            raise PermissionError("private config location")
+        return read_text(candidate, *args, **kwargs)
+
+    with patch.object(
+        services_module, "run_triggered_scenarios", wraps=run_triggered_scenarios
+    ) as optimiser:
+        app = run_page(
+            "scenarios", market.database, market.now, env={"PRICING_WATCH_CONFIG": str(path)}
+        )
+        app.button(key="scenario_run").click().run()
+        with patch.object(Path, "read_text", read):
+            app.run()
+            assert not app.exception
+            assert any("Engine configuration has changed" in w.value for w in app.warning)
+            assert not app.dataframe and not app.metric
+            app.button(key="scenario_run").click().run()
+            assert any("engine config could not be read" in e.value for e in app.error)
+        assert optimiser.call_count == 1
+        assert not any("private config location" in e.value for e in app.error)
+
+
+def test_legacy_result_without_config_provenance_requires_explicit_run(market_factory):
+    market = market_factory()
+    app = run_page("scenarios", market.database, market.now)
+    app.button(key="scenario_run").click().run()
+    app.session_state["scenario_result"] = app.session_state["scenario_result"][:4]
+    app.run()
+    assert not app.dataframe
+    assert any("Engine configuration has changed" in w.value for w in app.warning)

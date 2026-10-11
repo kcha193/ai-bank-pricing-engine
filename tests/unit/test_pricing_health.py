@@ -248,3 +248,105 @@ def test_a_healthy_market_has_nothing_quarantined(market_factory):
         config=market.config, store=ObservationStore(market.database)
     ) as service:
         assert service.get_market_quarantined() == set()
+
+
+@pytest.mark.parametrize(
+    "product,category", [("home_loan", "special"), ("term_deposit", "term_deposit")]
+)
+@pytest.mark.parametrize(
+    "age,expected",
+    [(24, FreshnessState.FRESH), (240, FreshnessState.STALE), (None, FreshnessState.UNKNOWN)],
+)
+def test_quarantine_health_uses_trusted_fallback(
+    tmp_path, make_record, product, category, age, expected
+):
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "fallback.db"), selected_banks=["ANZ"]
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path)
+    ) as service:
+        if age is not None:
+            when = NOW - timedelta(hours=age)
+            service.store.record_observations(
+                [
+                    make_record(
+                        bank="ANZ",
+                        product_type=product,
+                        rate_category=category,
+                        observed_at=when,
+                        rate_pct=4.5,
+                    )
+                ],
+                run_id="trusted",
+                observed_at=when,
+                product_type=product,
+            )
+        # Repeated suspicious readings cannot refresh the fallback's confirmation time.
+        for index in (2, 1):
+            when = NOW - timedelta(hours=index)
+            service.store.record_observations(
+                [
+                    make_record(
+                        bank="ANZ",
+                        product_type=product,
+                        rate_category=category,
+                        observed_at=when,
+                        rate_pct=8.0 + index / 10,
+                        validation_status="warning",
+                    )
+                ],
+                run_id=f"warning-{index}",
+                observed_at=when,
+                product_type=product,
+            )
+        health = assess_system_health(service, product_type=product, now=NOW)
+        bank = health.banks[0]
+        assert bank.freshness.state is expected
+        assert bank.freshness.quarantined
+        assert bank.health is HealthLevel.DEGRADED
+        assert bank.freshness.age_hours == age
+        snapshot = service.get_market_snapshot(product_type=product, now=NOW)
+        assert health.fresh_bank_count == len(snapshot.banks) == (1 if age == 24 else 0)
+        if age == 24:
+            assert snapshot.term(12).median_rate == 4.5
+
+
+def test_health_resolves_category_flip_and_retains_mixed_term_age(tmp_path, make_record):
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "mixed.db"), selected_banks=["ANZ"]
+    )
+    with PricingIntelligenceService(
+        config=config, store=ObservationStore(config.database_path)
+    ) as service:
+        for term, age in ((36, 240), (12, 24)):
+            when = NOW - timedelta(hours=age)
+            service.store.record_observations(
+                [make_record(bank="ANZ", term_months=term, observed_at=when, rate_pct=4.5)],
+                run_id=f"trusted-{term}",
+                observed_at=when,
+            )
+        for index in (2, 1):
+            when = NOW - timedelta(hours=index)
+            service.store.record_observations(
+                [
+                    make_record(
+                        bank="ANZ",
+                        term_months=12,
+                        rate_category="standard",
+                        observed_at=when,
+                        rate_pct=8.0 + index / 10,
+                        validation_status="warning",
+                    )
+                ],
+                run_id=f"flip-{index}",
+                observed_at=when,
+            )
+        health = assess_system_health(service, now=NOW)
+        assert health.banks[0].freshness.quarantined
+        # Bank-wide health still uses the oldest trusted tracked-term confirmation.
+        assert health.banks[0].freshness.state is FreshnessState.STALE
+        assert health.banks[0].freshness.age_hours == 240
+        snapshot = service.get_market_snapshot(now=NOW)
+        assert snapshot.term(12).median_rate == 4.5
+        assert 36 not in snapshot.term_months

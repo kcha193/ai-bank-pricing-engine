@@ -255,6 +255,11 @@ are never recomputed in the UI. Freshness and health have one implementation,
 `pricing_intelligence/health.py`, shared by the CLI `health` command, the market
 snapshot and the dashboard. Market Watch assesses the selected trusted snapshot entry's
 confirmation time with `health.is_stale`, rather than using bank-wide freshness across terms.
+System Health resolves the same trusted fallbacks as live snapshots before assessing age;
+raw quarantine flags remain separate, and bank-wide age is the oldest trusted confirmation
+across tracked terms. Scenario exclusions are scoped to the requested term. Stored scenario
+results include a SHA-256 fingerprint of the loaded engine YAML; a changed or unavailable
+configuration hides the recommendation until an explicit Run scenario action.
 Rate Changes retains audit events with their rate category, but historical ranks and market
 context are unavailable for events outside the snapshot's comparable tier.
 Reads never reach `dashboard/actions.py`: only the
