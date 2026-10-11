@@ -107,3 +107,56 @@ def market_factory(tmp_path, make_record):
         return SimpleNamespace(config=config, database=database, now=NOW, banks=BANKS)
 
     return build
+
+
+@pytest.fixture
+def quarantine_market_factory(market_factory, make_record):
+    """Independent mortgage/deposit quarantines with a trusted deposit baseline."""
+
+    def build(mortgage, deposit):
+        market = market_factory(
+            anz_new_rate=8.49 if mortgage else 4.79,
+            anz_new_status="warning" if mortgage else "unvalidated",
+        )
+        if deposit:
+            store = ObservationStore(market.database)
+            previous = [
+                make_record(
+                    bank="ASB",
+                    product_type=ProductType.TERM_DEPOSIT,
+                    product_name="Term Deposit",
+                    rate_category="term_deposit",
+                    rate_pct=4.0,
+                    observed_at=NOW - timedelta(days=2),
+                )
+            ]
+            current = [
+                previous[0].model_copy(
+                    update={
+                        "advertised_rate_pct": 8.0,
+                        "validation_status": "warning",
+                        "captured_at_utc": NOW - timedelta(days=1),
+                    }
+                )
+            ]
+            for run_id, records in (("td-0", previous), ("td-1", current)):
+                store.record_observations(
+                    records,
+                    run_id=run_id,
+                    observed_at=records[0].captured_at_utc,
+                    product_type=ProductType.TERM_DEPOSIT,
+                )
+            store.record_changes(
+                detect_changes(
+                    previous,
+                    current,
+                    detected_at=NOW - timedelta(days=1),
+                    thresholds=market.config.validation,
+                    run_id="td-1",
+                    banks_collected=["ASB"],
+                )
+            )
+            store.close()
+        return market
+
+    return build

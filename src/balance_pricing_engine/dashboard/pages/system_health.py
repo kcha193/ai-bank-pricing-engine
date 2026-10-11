@@ -158,10 +158,11 @@ def _product_tab(services: DashboardServices, product: ProductType) -> None:
     st.subheader("Collector health")
     st.dataframe(_collectors(health), hide_index=True, width="stretch")
     _runs(services, product)
+    _suspicious(services, product)
 
 
-def _suspicious(services: DashboardServices) -> None:
-    result = services.suspicious()
+def _suspicious(services: DashboardServices, product: ProductType) -> None:
+    result = services.suspicious(product)
     if result.status != "OK" or not result.value:
         return
     st.subheader("Suspicious observations — Excluded from trusted benchmark")
@@ -199,4 +200,3 @@ def render(services: DashboardServices) -> None:
     for tab, (_, product) in zip(tabs, PRODUCT_TABS):
         with tab:
             _product_tab(services, product)
-    _suspicious(services)

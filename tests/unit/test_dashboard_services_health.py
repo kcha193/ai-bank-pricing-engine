@@ -1,3 +1,5 @@
+import pytest
+
 from dashboard_harness import make_services
 
 from balance_pricing_engine.competitor_rates.models import ProductType
@@ -72,3 +74,33 @@ def test_suspicious_observations_are_listed_apart_from_trusted_rates(market_fact
 
 def test_no_suspicious_observations_is_an_empty_result(market_factory):
     assert make_services(market_factory()).suspicious().status == "EMPTY"
+
+
+@pytest.mark.parametrize(
+    "mortgage,deposit", [(True, False), (False, True), (True, True), (False, False)]
+)
+def test_quarantines_are_product_scoped(quarantine_market_factory, mortgage, deposit):
+    market = quarantine_market_factory(mortgage, deposit)
+    services = make_services(market)
+    for product, expected, bank in (
+        (ProductType.HOME_LOAN, mortgage, "ANZ"),
+        (ProductType.TERM_DEPOSIT, deposit, "ASB"),
+    ):
+        result = services.suspicious(product)
+        assert result.status == ("OK" if expected else "EMPTY")
+        assert [r.bank for r in result.value or ()] == ([bank] if expected else [])
+    if deposit:
+        from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
+        from balance_pricing_engine.pricing_intelligence.store import ObservationStore
+
+        with PricingIntelligenceService(
+            config=market.config, store=ObservationStore(market.database)
+        ) as backend:
+            term = backend.get_market_snapshot(ProductType.TERM_DEPOSIT, now=market.now).term(12)
+            assert term.rate_for("ASB") == 4.0
+            assert (
+                backend.get_market_activity(
+                    product_type=ProductType.TERM_DEPOSIT, now=market.now
+                ).changes
+                == 0
+            )

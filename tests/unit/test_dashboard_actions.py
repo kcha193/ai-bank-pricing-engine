@@ -54,6 +54,9 @@ def test_live_run_launches_the_scheduled_workflow_once_with_render_javascript(se
     assert command[command.index("--config") + 1] == str(settings.engine_config_path)
     assert str(settings.repo_root / "src") in kwargs["env"]["PYTHONPATH"]
     assert result.status == "PARTIAL_SUCCESS"
+    assert "last-known observations are retained" in result.message
+    assert "max_observation_age_hours" in result.message
+    assert "marked stale" not in result.message
     assert {b.bank: b.ok for b in result.banks} == {"ASB": True, "ANZ": True, "Westpac": False}
     assert result.summary["changes_detected"] == 2
 

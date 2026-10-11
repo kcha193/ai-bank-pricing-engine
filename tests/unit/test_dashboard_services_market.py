@@ -199,3 +199,48 @@ def test_overview_change_counts_agree_with_the_backend_activity(market_factory):
 
 def backend_service(market):
     return PricingIntelligenceService(config=market.config, store=ObservationStore(market.database))
+
+
+@pytest.mark.parametrize(
+    "case,expected",
+    [
+        ("other_term_only", 1),
+        ("stale_selected_term", 1),
+        ("mixed_terms", 2),
+        ("duplicate_bank", 2),
+        ("quarantined_only", 1),
+        ("stale_trusted_fallback", 1),
+    ],
+)
+def test_term_fresh_bank_count_uses_only_eligible_selected_term_observations(
+    tmp_path, make_record, case, expected
+):
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime(2026, 10, 11, tzinfo=timezone.utc)
+    database = tmp_path / "terms.db"
+    store = ObservationStore(database)
+    records = [make_record(bank="ANZ", observed_at=now)]
+    if case in {"other_term_only", "stale_selected_term", "mixed_terms"}:
+        records.append(make_record(bank="ASB", term_months=24, observed_at=now))
+    if case in {"mixed_terms", "duplicate_bank"}:
+        records.append(make_record(bank="ASB", observed_at=now))
+    if case == "duplicate_bank":
+        records.append(
+            make_record(bank="ASB", product_name="Another Fixed Special", observed_at=now)
+        )
+    if case in {"stale_selected_term", "stale_trusted_fallback"}:
+        stale = make_record(bank="ASB", observed_at=now - timedelta(hours=169))
+        store.record_observations([stale], run_id="old", observed_at=stale.captured_at_utc)
+    if case in {"quarantined_only", "stale_trusted_fallback"}:
+        records.append(
+            make_record(bank="ASB", rate_pct=8.49, validation_status="warning", observed_at=now)
+        )
+    store.record_observations(records, run_id="current", observed_at=now)
+    store.close()
+    services = DashboardServices(load_settings({}, database_path=str(database)), clock=lambda: now)
+    result = services.term_summary(12)
+    assert result.is_ok
+    assert result.value.fresh_banks == expected
+    assert result.value.fresh_banks <= result.value.banks_observed
+    assert result.value.banks_observed == len({r.bank for r in result.value.ranking}) == expected

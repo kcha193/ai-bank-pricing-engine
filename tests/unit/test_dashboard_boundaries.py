@@ -165,3 +165,15 @@ def test_the_router_registers_all_seven_pages_and_no_stubs_remain():
     ):
         assert f'"{title}"' in router
     assert not [p.name for p in PAGES if "Coming in a later task" in p.read_text(encoding="utf-8")]
+
+
+def test_dashboard_dependency_floor_supports_all_used_streamlit_apis():
+    import re
+    from packaging.requirements import Requirement
+
+    match = re.search(r'dashboard = \["(streamlit[^" ]+)"', Path("pyproject.toml").read_text())
+    assert match is not None
+    dependency = Requirement(match.group(1))
+    # Navigation/fragment predate the limiting API: altair_chart(width="stretch") in 1.51.
+    assert "1.50.0" not in dependency.specifier
+    assert "1.51.0" in dependency.specifier

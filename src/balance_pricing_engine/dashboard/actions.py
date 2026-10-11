@@ -50,7 +50,8 @@ _STATUS_BY_EXIT = {0: "SUCCESS", 1: "FAILED", 2: "PARTIAL_SUCCESS", 3: "ALREADY_
 _MESSAGES = {
     "SUCCESS": "Pricing Watch run completed.",
     "PARTIAL_SUCCESS": (
-        "Run finished but some banks failed; their last rates are marked stale. See System Health."
+        "Run finished but some banks failed; their last-known observations are retained. "
+        "Freshness depends on max_observation_age_hours. See System Health."
     ),
     "FAILED": "Run failed; stored data is unchanged. See System Health and the application log.",
     "ALREADY_RUNNING": "Another Pricing Watch run is already in progress; nothing was started.",

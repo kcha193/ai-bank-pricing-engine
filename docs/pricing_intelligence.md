@@ -416,6 +416,11 @@ writes a rate to any pricing system.
 
 #### Launch
 
+The dashboard requires Python 3.10+ and Streamlit 1.51.0+ (the `dashboard` extra
+sets this minimum). Navigation and fragments are available in earlier releases,
+but the console's Altair charts require `width="stretch"`, added in 1.51.0.
+See the [Streamlit release notes](https://docs.streamlit.io/develop/quick-reference/release-notes/2025#version-1510).
+
 ```bash
 python3 -m pip install -e ".[dashboard]"
 streamlit run src/balance_pricing_engine/dashboard/app.py --server.address localhost

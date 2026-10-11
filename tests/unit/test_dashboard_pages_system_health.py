@@ -1,3 +1,5 @@
+import pytest
+
 from datetime import datetime, timedelta, timezone
 
 from dashboard_harness import run_page
@@ -149,3 +151,22 @@ def test_no_data_and_corrupt_database_degrade_gracefully(tmp_path):
     bad.write_text("not a SQLite database")
     app = run_page("system_health", bad, NOW)
     assert not app.exception and any("unavailable" in e.value.lower() for e in app.error)
+
+
+@pytest.mark.parametrize(
+    "mortgage,deposit", [(True, False), (False, True), (True, True), (False, False)]
+)
+def test_quarantines_display_inside_the_corresponding_product_tab(
+    quarantine_market_factory, mortgage, deposit
+):
+    market = quarantine_market_factory(mortgage, deposit)
+    app = run_page("system_health", market.database, market.now)
+    assert not app.exception
+    for tab, expected, bank, rate in zip(
+        app.tabs, (mortgage, deposit), ("ANZ", "ASB"), ("8.49%", "8.00%")
+    ):
+        frames = [e.value for e in tab.dataframe if "Observed" in e.value.columns]
+        assert len(frames) == int(expected)
+        if expected:
+            assert list(frames[0]["Bank"]) == [bank]
+            assert list(frames[0]["Observed"]) == [rate]

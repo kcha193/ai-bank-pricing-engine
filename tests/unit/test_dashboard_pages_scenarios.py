@@ -51,7 +51,8 @@ def test_displayed_numbers_equal_the_backend_result(market_factory):
     assert metrics["Optimal rate"] == fmt_rate_fraction(truth.selected.our_rate)
     text = " ".join(m.value for m in app.markdown)
     assert "10 bps above the market leader" in text and "Decision support only" in text
-    assert len(app.get("vega_lite_chart")) == 1
+    # Streamlit 1.51 uses the older Arrow element name for the same chart.
+    assert sum(len(app.get(kind)) for kind in ("vega_lite_chart", "arrow_vega_lite_chart")) == 1
 
 
 def test_manual_strategy_needs_and_uses_a_manual_rate(market_factory):

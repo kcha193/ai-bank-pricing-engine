@@ -240,7 +240,6 @@ class DashboardServices:
             market = service.get_market_snapshot(now=now).term(term_months)
             if market is None:
                 return Result.empty(f"No comparable market data at {term_months} months.")
-            health = assess_system_health(service, now=now)
             return Result.ok(
                 TermSummary(
                     term_months=term_months,
@@ -250,7 +249,9 @@ class DashboardServices:
                     highest_pct=market.highest_rate,
                     spread_bps=market.spread_bps,
                     banks_observed=market.bank_count,
-                    fresh_banks=health.fresh_bank_count,
+                    # Live snapshots already apply shared freshness rules and deduplicate
+                    # eligible banks for this term, including trusted quarantine fallbacks.
+                    fresh_banks=market.bank_count,
                     ranking=tuple(
                         RankedBank(e.rank, e.bank, e.rate_pct, e.product_name)
                         for e in market.ranking()
@@ -423,11 +424,15 @@ class DashboardServices:
 
         return self._guard(build)
 
-    def suspicious(self) -> Result[tuple[SuspiciousRow, ...]]:
+    def suspicious(
+        self, product_type: ProductType = ProductType.HOME_LOAN
+    ) -> Result[tuple[SuspiciousRow, ...]]:
         """Implausible rate moves, kept apart from trusted data (and from Rate Changes)."""
 
         def build(service: PricingIntelligenceService) -> Result[tuple[SuspiciousRow, ...]]:
-            changes = service.get_changes(days=None, now=self._clock(), scope_to_market=True)
+            changes = service.get_changes(
+                days=None, now=self._clock(), scope_to_market=True, product_type=product_type
+            )
             rows = tuple(
                 SuspiciousRow(
                     c.bank,
