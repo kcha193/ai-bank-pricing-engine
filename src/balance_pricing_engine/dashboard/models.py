@@ -77,6 +77,7 @@ class Overview:
     most_active_term: Optional[int]
     market_state_rationale: str
     matrix: MarketMatrix
+    selectable_terms: tuple[int, ...]  # live snapshot terms; matrix also retains stale terms
     default_term: Optional[int]
     exclusions: tuple[MarketExclusion, ...]
 

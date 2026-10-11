@@ -197,6 +197,7 @@ class DashboardServices:
                 if change.is_rate_move and not change.suspicious and change.term_months:
                     moves_by_term[change.term_months] = moves_by_term.get(change.term_months, 0) + 1
             terms = tuple(sorted(set(snapshot.term_months) | {e.term_months for e in exclusions}))
+            selectable_terms = snapshot.term_months
             quarantined = service.get_market_quarantined(snapshot=snapshot)
             cells: dict[tuple[str, int], MatrixCell] = {}
             for term in snapshot.term_months:
@@ -233,7 +234,12 @@ class DashboardServices:
                     matrix=MarketMatrix(
                         banks=tuple(service.config.selected_banks), terms=terms, cells=cells
                     ),
-                    default_term=12 if 12 in terms else (terms[0] if terms else None),
+                    selectable_terms=selectable_terms,
+                    default_term=(
+                        12
+                        if 12 in selectable_terms
+                        else (selectable_terms[0] if selectable_terms else None)
+                    ),
                     exclusions=exclusions,
                 )
             )

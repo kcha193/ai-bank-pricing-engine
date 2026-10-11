@@ -290,8 +290,11 @@ Repeated suspicious values are not corroboration, and stale trusted fallback
 rates retain their original age. Dashboard freshness describes the selected trusted rate,
 not a bank's oldest observation at another term. System Health remains bank-wide: its age
 uses the oldest resolved trusted confirmation across tracked terms, while quarantine stays
-a separate flag. Scenario exclusion warnings describe only the selected term. A stored
-scenario recommendation is hidden after loaded engine YAML changes, until an explicit rerun;
+a separate flag. Scenario exclusion warnings describe only the selected term. Stale-only terms
+remain visible in the Overview audit matrix, but live selectors and their default use only
+snapshot terms. With no live terms, market pages show guidance; stored scenarios for unavailable
+terms are hidden. A stored scenario recommendation is hidden after loaded engine YAML changes,
+until an explicit rerun;
 its fingerprint covers the exact content supplied to the optimiser. Standard and non-comparable
 mortgage events remain audit history, with no ranks or medians borrowed from special-rate snapshots.
 Market-state thresholds are transparent

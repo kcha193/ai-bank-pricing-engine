@@ -17,11 +17,10 @@ from balance_pricing_engine.dashboard.formatting import (
     fmt_money_m,
     fmt_nz_datetime,
     fmt_rate_fraction,
-    fmt_term,
 )
 from balance_pricing_engine.dashboard.models import ScenarioRequest, ScenarioView
 from balance_pricing_engine.dashboard.pages import scenario_lab
-from balance_pricing_engine.dashboard.pages._common import cached, unwrap
+from balance_pricing_engine.dashboard.pages._common import cached, live_term_selector, unwrap
 from balance_pricing_engine.dashboard.scenario_text import DISCLAIMER, build_decision_text
 from balance_pricing_engine.dashboard.services import DashboardServices
 
@@ -98,17 +97,12 @@ def _render_result(view: ScenarioView) -> None:
 
 def _scenarios_tab(services: DashboardServices) -> None:
     overview = unwrap(cached(services, "overview"))
-    if overview is None or not overview.matrix.terms:
+    if overview is None:
         return
-    terms = list(overview.matrix.terms)
-    labels = [fmt_term(t) for t in terms]
     left = st.columns(3)
-    term_label = left[0].selectbox(
-        "Mortgage term",
-        labels,
-        index=terms.index(overview.default_term) if overview.default_term in terms else 0,
-        key="scenario_term",
-    )
+    term = live_term_selector(overview, "scenario_term", label="Mortgage term", container=left[0])
+    if term is None:
+        return
     strategy = left[1].selectbox("Competitor benchmark", STRATEGIES, key="scenario_strategy")
     current = left[2].number_input(
         "Your current rate (%)",
@@ -135,7 +129,7 @@ def _scenarios_tab(services: DashboardServices) -> None:
             "Offset to benchmark (bps)", value=0.0, step=1.0, key="scenario_offset"
         )
     request = ScenarioRequest(
-        term_months=terms[labels.index(term_label)],
+        term_months=term,
         strategy=strategy,
         manual_rate_pct=manual,
         offset_bps=offset or 0.0,
@@ -168,6 +162,12 @@ def _scenarios_tab(services: DashboardServices) -> None:
     if stored_config != services.config_fingerprint():
         st.warning(
             "Engine configuration has changed since this result was computed. "
+            "The previous recommendation is hidden; click Run scenario to refresh."
+        )
+        return
+    if stored_request.term_months not in overview.selectable_terms:
+        st.warning(
+            "The result's market term is no longer available. "
             "The previous recommendation is hidden; click Run scenario to refresh."
         )
         return

@@ -6,7 +6,12 @@ import pandas as pd
 import streamlit as st
 
 from balance_pricing_engine.dashboard.formatting import EM_DASH, fmt_rate_pct, fmt_term
-from balance_pricing_engine.dashboard.pages._common import cached, matrix_frame, unwrap
+from balance_pricing_engine.dashboard.pages._common import (
+    cached,
+    live_term_selector,
+    matrix_frame,
+    unwrap,
+)
 from balance_pricing_engine.dashboard.services import DashboardServices
 
 
@@ -36,13 +41,9 @@ def render(services: DashboardServices) -> None:
             f"(limit {exclusion.threshold_hours:.0f} h)."
         )
 
-    terms = list(overview.matrix.terms)
-    if not terms:
+    term = live_term_selector(overview, "overview_term")
+    if term is None:
         return
-    labels = [fmt_term(t) for t in terms]
-    default = terms.index(overview.default_term) if overview.default_term in terms else 0
-    chosen = st.selectbox("Term", labels, index=default, key="overview_term")
-    term = terms[labels.index(chosen)]
     summary = unwrap(cached(services, "term_summary", term))
     if summary is None:
         return

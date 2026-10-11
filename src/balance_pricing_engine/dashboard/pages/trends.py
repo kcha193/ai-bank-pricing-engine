@@ -6,8 +6,8 @@ import pandas as pd
 import streamlit as st
 
 from balance_pricing_engine.dashboard.charts import history_lines, market_trend, repricing_timeline
-from balance_pricing_engine.dashboard.formatting import fmt_bps, fmt_nz_datetime, fmt_term
-from balance_pricing_engine.dashboard.pages._common import cached, unwrap
+from balance_pricing_engine.dashboard.formatting import fmt_bps, fmt_nz_datetime
+from balance_pricing_engine.dashboard.pages._common import cached, live_term_selector, unwrap
 from balance_pricing_engine.dashboard.services import DashboardServices
 
 RANGES = {"30 days": 30, "90 days": 90, "1 year": 365, "All": None}
@@ -16,19 +16,13 @@ MARKET_SERIES = {"Median": "median", "Leader": "leader", "Spread": "spread"}
 
 def render(services: DashboardServices) -> None:
     overview = unwrap(cached(services, "overview"))
-    if overview is None or not overview.matrix.terms:
+    if overview is None:
         return
     config = services.settings.intelligence
-    terms = list(overview.matrix.terms)
-    labels = [fmt_term(t) for t in terms]
     cols = st.columns(3)
-    chosen = cols[0].selectbox(
-        "Term",
-        labels,
-        index=terms.index(overview.default_term) if overview.default_term in terms else 0,
-        key="trends_term",
-    )
-    term = terms[labels.index(chosen)]
+    term = live_term_selector(overview, "trends_term", container=cols[0])
+    if term is None:
+        return
     banks = cols[1].multiselect(
         "Banks", config.selected_banks, default=config.selected_banks, key="trends_banks"
     )

@@ -262,6 +262,10 @@ results include a SHA-256 fingerprint of the loaded engine YAML; a changed or un
 configuration hides the recommendation until an explicit Run scenario action.
 Snapshot entries carry quarantine provenance from the selected observation identity, so a
 healthy sibling is never labelled as a fallback. Overview and Market Watch use that same snapshot.
+Overview retains stale-only terms in its audit matrix. Its frozen `selectable_terms` comes
+from the live snapshot; all four market pages use it, preferring 12 months only when available.
+Selectors retain valid choices and reset unavailable ones to the live default. All-stale
+markets show guidance, and scenario results for unavailable terms are hidden until an explicit rerun.
 Scenario Lab renders static validation/option errors without exposing YAML values.
 The macOS launcher verifies local listener ownership and the exact checkout command with
 `lsof`/`ps`, checking PID/start time around health probes and before reusing a port. Startup

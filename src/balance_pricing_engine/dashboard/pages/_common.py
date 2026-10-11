@@ -13,7 +13,7 @@ from balance_pricing_engine.dashboard.formatting import (
     fmt_rate_pct,
     fmt_term,
 )
-from balance_pricing_engine.dashboard.models import MarketMatrix
+from balance_pricing_engine.dashboard.models import MarketMatrix, Overview
 from balance_pricing_engine.dashboard.results import Result
 from balance_pricing_engine.dashboard.services import DashboardServices
 
@@ -45,6 +45,28 @@ def unwrap(result: Result[T]) -> Optional[T]:
         st.info(result.message)
         return None
     return result.value
+
+
+def live_term_selector(
+    overview: Overview, key: str, *, label: str = "Term", container=None
+) -> Optional[int]:
+    """Render live terms, retaining a valid choice or resetting to the service default."""
+    terms = overview.selectable_terms
+    if not terms:
+        st.session_state.pop(key, None)
+        st.info(
+            "No fresh comparable market terms are available. "
+            "Review stale observations in Overview and collect rates through Operations."
+        )
+        return None
+    labels = [fmt_term(term) for term in terms]
+    default = fmt_term(overview.default_term)
+    previous = st.session_state.get(key)
+    if previous not in labels:
+        st.session_state.pop(key, None)
+        previous = default
+    chosen = (container or st).selectbox(label, labels, index=labels.index(previous), key=key)
+    return terms[labels.index(chosen)]
 
 
 def matrix_frame(matrix: MarketMatrix) -> pd.DataFrame:

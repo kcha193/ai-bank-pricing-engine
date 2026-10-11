@@ -11,26 +11,19 @@ from balance_pricing_engine.dashboard.formatting import (
     fmt_freshness,
     fmt_nz_datetime,
     fmt_rate_pct,
-    fmt_term,
 )
-from balance_pricing_engine.dashboard.pages._common import cached, unwrap
+from balance_pricing_engine.dashboard.pages._common import cached, live_term_selector, unwrap
 from balance_pricing_engine.dashboard.services import DashboardServices
 
 
 def render(services: DashboardServices) -> None:
     overview = unwrap(cached(services, "overview"))
-    if overview is None or not overview.matrix.terms:
+    if overview is None:
         return
-    terms = list(overview.matrix.terms)
-    labels = [fmt_term(t) for t in terms]
     left, right = st.columns(2)
-    chosen = left.selectbox(
-        "Term",
-        labels,
-        index=terms.index(overview.default_term) if overview.default_term in terms else 0,
-        key="market_watch_term",
-    )
-    term = terms[labels.index(chosen)]
+    term = live_term_selector(overview, "market_watch_term", container=left)
+    if term is None:
+        return
     positions = unwrap(cached(services, "bank_positions", term))
     summary = unwrap(cached(services, "term_summary", term))
     if positions is None or summary is None:
