@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
 from balance_pricing_engine.pricing_intelligence.health import (
     CollectorStatus,
     FreshnessState,
@@ -169,3 +170,81 @@ def test_freshness_flags_a_bank_untouched_by_a_same_timestamp_later_run(tmp_path
         )
         health = assess_system_health(service)
     assert [b.bank for b in health.banks if b.freshness.not_fully_confirmed] == ["Kiwibank"]
+
+
+# --- exclusions and health must use the snapshot's exact record set (review finding) ---------
+
+
+def _market_with(tmp_path, make_record, old=(), new=()):
+    """A store holding ``old`` records seen 10 days ago and ``new`` records seen yesterday."""
+    config = PricingIntelligenceConfig(database_path=str(tmp_path / "m.db"))
+    store = ObservationStore(config.database_path)
+    for run_id, age, rows in (("r-old", 10, old), ("r-new", 1, new)):
+        when = NOW - timedelta(days=age)
+        store.record_observations(
+            [make_record(observed_at=when, **row) for row in rows],
+            run_id=run_id,
+            observed_at=when,
+            product_type="home_loan",
+        )
+    return PricingIntelligenceService(config=config, store=store)
+
+
+FRESH_OTHERS = [
+    {"bank": b, "rate_pct": 4.89, "product_name": "Fixed Special"}
+    for b in ("ANZ", "BNZ", "Westpac", "Kiwibank")
+]
+
+
+def test_a_name_excluded_product_is_not_reported_as_a_stale_exclusion(tmp_path, make_record):
+    """ASB's niche 'Back My Build' is dropped from the market by name, never for staleness; its
+    age must not make ASB look excluded or stale while ASB's ranked product is fresh."""
+    asb_fresh = {"bank": "ASB", "rate_pct": 4.85, "product_name": "Fixed Special"}
+    niche_old = {"bank": "ASB", "rate_pct": 4.20, "product_name": "Back My Build"}
+    with _market_with(tmp_path, make_record, old=[niche_old], new=[asb_fresh, *FRESH_OTHERS]) as s:
+        assert s.get_market_exclusions(now=NOW) == []
+        assert "ASB" in s.get_market_snapshot(now=NOW).banks
+        asb = next(b for b in assess_system_health(s, now=NOW).banks if b.bank == "ASB")
+    assert asb.freshness.state is FreshnessState.FRESH
+
+
+def test_a_name_excluded_product_alone_is_not_an_exclusion_either(tmp_path, make_record):
+    niche_old = {"bank": "ASB", "rate_pct": 4.20, "product_name": "Back My Build"}
+    with _market_with(tmp_path, make_record, old=[niche_old], new=FRESH_OTHERS) as s:
+        assert s.get_market_exclusions(now=NOW) == []
+
+
+def test_a_stale_sibling_is_not_an_exclusion_when_the_bank_has_a_fresh_rate(tmp_path, make_record):
+    old_sibling = {"bank": "ASB", "rate_pct": 4.70, "product_name": "Fixed Special 80% LVR"}
+    asb_fresh = {"bank": "ASB", "rate_pct": 4.85, "product_name": "Fixed Special"}
+    with _market_with(
+        tmp_path, make_record, old=[old_sibling], new=[asb_fresh, *FRESH_OTHERS]
+    ) as s:
+        assert s.get_market_exclusions(now=NOW) == []
+
+
+def test_a_bank_with_only_stale_comparable_records_is_reported_once(tmp_path, make_record):
+    old = [
+        {"bank": "ASB", "rate_pct": 4.70, "product_name": "Fixed Special"},
+        {"bank": "ASB", "rate_pct": 4.80, "product_name": "Fixed Special 80% LVR"},
+    ]
+    with _market_with(tmp_path, make_record, old=old, new=FRESH_OTHERS) as s:
+        exclusions = s.get_market_exclusions(now=NOW)
+    assert [(e.bank, e.term_months) for e in exclusions] == [("ASB", 12)]  # one per bank/term
+
+
+def test_quarantined_observations_are_listed_by_bank_and_term(market_factory):
+    market = market_factory(anz_new_rate=8.49, anz_new_status="warning")
+    with PricingIntelligenceService(
+        config=market.config, store=ObservationStore(market.database)
+    ) as service:
+        assert service.get_market_quarantined() == {("ANZ", 12)}
+        assert "ANZ" in service.get_market_snapshot(now=market.now).banks  # fallback rate used
+
+
+def test_a_healthy_market_has_nothing_quarantined(market_factory):
+    market = market_factory()
+    with PricingIntelligenceService(
+        config=market.config, store=ObservationStore(market.database)
+    ) as service:
+        assert service.get_market_quarantined() == set()

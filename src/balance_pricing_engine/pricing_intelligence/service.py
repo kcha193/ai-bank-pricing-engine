@@ -34,7 +34,11 @@ from balance_pricing_engine.pricing_intelligence.changes import (
     resolve_pairing,
 )
 from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
-from balance_pricing_engine.pricing_intelligence.health import MarketExclusion, is_stale
+from balance_pricing_engine.pricing_intelligence.health import (
+    MarketExclusion,
+    comparable_records,
+    is_stale,
+)
 from balance_pricing_engine.pricing_intelligence.market_state import (
     MarketStateAssessment,
     classify_market_state,
@@ -1280,19 +1284,41 @@ class PricingIntelligenceService:
         product_type: ProductType | str = ProductType.HOME_LOAN,
         now: Optional[datetime] = None,
     ) -> list[MarketExclusion]:
-        """Comparable records ``get_market_snapshot`` drops for staleness.
+        """Banks/terms the market snapshot is missing because every comparable rate is stale.
 
-        Same record set and the same predicate as the snapshot, so the
-        explanation cannot diverge from the exclusion.
+        Built on the same record set as :meth:`get_market_snapshot` (comparable tier, tracked
+        bank and term, no name-excluded or non-comparable product, suspicious readings resolved
+        to their last confirmed state), so the explanation cannot diverge from the exclusion.
+        One entry per bank/term, only when that bank has *no* fresh comparable rate there: a
+        stale sibling product beside a fresh ranked one is not an exclusion. The entry carries
+        the newest stale record, i.e. the last known rate.
         """
         now = now or datetime.now(timezone.utc)
-        rate_category = _resolve_rate_category(product_type, None)
         records = self.store.get_current_observations(product_type=product_type)
         records = _resolve_suspicious_if_present(
             records,
             lambda: self.store.get_last_confirmed_observations(product_type=product_type),
         )
+        candidates = comparable_records(
+            _exclude_suspicious(records),
+            rate_category=_resolve_rate_category(product_type, None),
+            banks=set(self.config.selected_banks),
+            terms=set(self.config.tracked_terms_months),
+            excluded_product_names=self.config.excluded_product_names,
+        )
         threshold = self.config.max_observation_age_hours
+        has_fresh = {
+            (r.bank, r.term_months_normalised)
+            for r in candidates
+            if not is_stale(r.captured_at_utc, now, threshold)
+        }
+        newest_stale: dict[tuple[str, int], CompetitorRateRecord] = {}
+        for r in candidates:
+            key = (r.bank, r.term_months_normalised)
+            if key in has_fresh or not is_stale(r.captured_at_utc, now, threshold):
+                continue
+            if key not in newest_stale or r.captured_at_utc > newest_stale[key].captured_at_utc:
+                newest_stale[key] = r
         return [
             MarketExclusion(
                 bank=r.bank,
@@ -1303,12 +1329,25 @@ class PricingIntelligenceService:
                 age_hours=(now - r.captured_at_utc).total_seconds() / 3600,
                 threshold_hours=threshold,
             )
-            for r in records
-            if is_stale(r.captured_at_utc, now, threshold)
-            and r.rate_category == rate_category
-            and r.bank in self.config.selected_banks
-            and r.term_months_normalised in self.config.tracked_terms_months
+            for _, r in sorted(newest_stale.items(), key=lambda kv: (kv[0][1], kv[0][0]))
         ]
+
+    def get_market_quarantined(
+        self, product_type: ProductType | str = ProductType.HOME_LOAN
+    ) -> set[tuple[str, int]]:
+        """(bank, term) pairs whose latest comparable reading is quarantined as suspicious.
+
+        The market view falls back to the last confirmed rate for these (or drops the bank if
+        none exists), so a caller showing that rate should say it is a fallback.
+        """
+        records = comparable_records(
+            self.store.get_current_observations(product_type=product_type),
+            rate_category=_resolve_rate_category(product_type, None),
+            banks=set(self.config.selected_banks),
+            terms=set(self.config.tracked_terms_months),
+            excluded_product_names=self.config.excluded_product_names,
+        )
+        return {(r.bank, r.term_months_normalised) for r in records if r.validation_status == "warning"}
 
     def get_competitive_position(
         self,

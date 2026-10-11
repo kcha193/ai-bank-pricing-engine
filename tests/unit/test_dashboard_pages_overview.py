@@ -43,3 +43,14 @@ def test_term_selector_offers_the_tracked_term_labels(market_factory):
     market = market_factory()
     app = run_page("overview", market.database, market.now)
     assert app.selectbox[0].options == ["1Y"]
+
+
+def test_a_quarantined_banks_fallback_rate_is_marked_not_shown_as_a_normal_rate(market_factory):
+    """Review finding: ANZ's latest reading was rejected; the 4.89% shown is its last confirmed
+    rate and must say so (it was previously an unmarked plain rate)."""
+    market = market_factory(anz_new_rate=8.49, anz_new_status="warning")
+    app = run_page("overview", market.database, market.now)
+    matrix = app.dataframe[0].value
+    assert matrix.loc["ANZ", "1Y"] == "⚠ 4.89% (quarantined: last confirmed)"
+    assert matrix.loc["ASB", "1Y"] == "4.89%"
+    assert "8.49" not in " ".join(str(v) for v in matrix.to_numpy().ravel())

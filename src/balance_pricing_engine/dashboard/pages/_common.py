@@ -53,6 +53,8 @@ def matrix_frame(matrix: MarketMatrix) -> pd.DataFrame:
                 text = EM_DASH
             elif cell.stale:
                 text = f"⚠ {fmt_rate_pct(cell.rate_pct)} (stale)"
+            elif cell.quarantined:
+                text = f"⚠ {fmt_rate_pct(cell.rate_pct)} (quarantined: last confirmed)"
             elif cell.is_leader:
                 text = f"◆ {fmt_rate_pct(cell.rate_pct)}"
             else:

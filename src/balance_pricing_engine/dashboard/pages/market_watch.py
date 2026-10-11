@@ -52,7 +52,11 @@ def render(services: DashboardServices) -> None:
                         if p.last_change_at
                         else "No recent change"
                     ),
-                    "Freshness": fmt_freshness(p.freshness),
+                    "Freshness": (
+                        "⚠ QUARANTINED (last confirmed rate)"
+                        if p.quarantined
+                        else fmt_freshness(p.freshness)
+                    ),
                 }
                 for p in positions
             ]
@@ -67,7 +71,10 @@ def render(services: DashboardServices) -> None:
     cols[1].metric("Rank", f"#{selected.rank}")
     cols[2].metric("vs leader", fmt_bps(selected.vs_leader_bps))
     cols[3].metric("vs median", fmt_bps(selected.vs_median_bps))
-    cols[4].metric("Freshness", fmt_freshness(selected.freshness))
+    cols[4].metric(
+        "Freshness",
+        "⚠ QUARANTINED" if selected.quarantined else fmt_freshness(selected.freshness),
+    )
 
     st.altair_chart(position_dot_plot(positions, summary.median_pct, bank), width="stretch")
     st.caption("Dashed line: market median. Blue: leader. Red: highlighted bank.")

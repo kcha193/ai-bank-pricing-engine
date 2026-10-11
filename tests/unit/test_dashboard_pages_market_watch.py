@@ -24,6 +24,16 @@ def test_market_watch_selected_bank_card(market_factory):
     assert values["vs leader"] == "+10 bps" and values["vs median"] == "+4 bps"
 
 
+def test_a_quarantined_bank_is_labelled_quarantined_not_unknown(market_factory):
+    market = market_factory(anz_new_rate=8.49, anz_new_status="warning")
+    app = run_page("market_watch", market.database, market.now)
+    frame = app.dataframe[0].value.set_index("Bank")
+    assert frame.loc["ANZ", "Freshness"] == "⚠ QUARANTINED (last confirmed rate)"
+    assert frame.loc["ASB", "Freshness"] == "FRESH"
+    app.selectbox(key="market_watch_bank").set_value("ANZ").run()
+    assert {m.label: m.value for m in app.metric}["Freshness"] == "⚠ QUARANTINED"
+
+
 def test_market_watch_with_no_data_degrades_to_guidance(tmp_path):
     from datetime import datetime, timezone
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Optional, Sequence
+from typing import TYPE_CHECKING, Collection, Optional, Sequence
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
 from balance_pricing_engine.pricing_intelligence.alerts import (
@@ -46,6 +46,32 @@ class HealthLevel(str, Enum):
 def is_stale(captured_at: datetime, now: datetime, max_age_hours: float) -> bool:
     """True when ``captured_at`` is strictly older than the freshness window."""
     return captured_at < now - timedelta(hours=max_age_hours)
+
+
+def comparable_records(
+    records: Sequence[CompetitorRateRecord],
+    *,
+    rate_category: Optional[str],
+    banks: Collection[str],
+    terms: Collection[int],
+    excluded_product_names: Collection[str],
+) -> list[CompetitorRateRecord]:
+    """Records eligible for the market snapshot, before the staleness check.
+
+    The same filters ``build_market_snapshot`` applies (comparable tier, tracked bank and term,
+    no ``non_comparable`` or name-excluded product). Exclusion and health logic must use this,
+    not a looser record set, or they would describe records the market view never considered.
+    """
+    markers = tuple(name.lower() for name in excluded_product_names)
+    return [
+        r
+        for r in records
+        if r.rate_category != "non_comparable"
+        and (rate_category is None or r.rate_category == rate_category)
+        and r.bank in banks
+        and r.term_months_normalised in terms
+        and not any(marker in r.product_name.lower() for marker in markers)
+    ]
 
 
 def collector_status(
@@ -190,7 +216,16 @@ def assess_system_health(
     config = service.config
     store = service.store
     report = store.check_integrity(thresholds=config.validation)
+    snapshot = service.get_market_snapshot(product_type=product, now=now)
     records = store.get_current_observations(product_type=product)
+    # Freshness describes what the market view uses, not every row ever stored for the bank.
+    comparable = comparable_records(
+        records,
+        rate_category=snapshot.rate_category,
+        banks=set(config.selected_banks),
+        terms=set(config.tracked_terms_months),
+        excluded_product_names=config.excluded_product_names,
+    )
     run_ids_by_bank = store.get_current_observation_run_ids(product_type=product)
     latest_run_id = store.latest_run_id(product_type=product)
     collectors = {c.bank: c for c in store.get_collector_health(product_type=product)}
@@ -198,7 +233,7 @@ def assess_system_health(
     banks = []
     for bank in config.selected_banks:
         freshness = assess_observation_freshness(
-            records,
+            comparable,
             bank,
             now=now,
             max_age_hours=config.max_observation_age_hours,
@@ -219,7 +254,6 @@ def assess_system_health(
                 health=_bank_health_level(freshness, status),
             )
         )
-    snapshot = service.get_market_snapshot(product_type=product, now=now)
     return SystemHealth(
         evaluated_at=now,
         product_type=product,

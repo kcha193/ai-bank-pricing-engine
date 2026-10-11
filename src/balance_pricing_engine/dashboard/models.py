@@ -23,6 +23,8 @@ class MatrixCell:
     is_leader: bool = False
     stale: bool = False
     rate_category: Optional[str] = None
+    #: The latest reading was quarantined; ``rate_pct`` is the last confirmed rate (a fallback).
+    quarantined: bool = False
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,7 @@ class BankPosition:
     vs_median_bps: float
     last_change_at: Optional[datetime]
     freshness: FreshnessState
+    quarantined: bool = False  # the shown rate is the last confirmed one; the latest was rejected
 
 
 @dataclass(frozen=True)
