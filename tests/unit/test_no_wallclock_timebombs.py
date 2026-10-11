@@ -22,7 +22,6 @@ from balance_pricing_engine.pricing_intelligence.config import PricingIntelligen
 #: Test modules whose collection timestamps feed a staleness-checked path.
 CLOCK_SENSITIVE_MODULES = (
     "tests/unit/test_pricing_intelligence_cli.py",
-    "tests/unit/test_dashboard_market_intelligence.py",
     "tests/unit/test_pricing_intelligence_service.py",
     "tests/unit/test_scheduled_collection_workflow.py",
 )

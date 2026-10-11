@@ -39,7 +39,7 @@ Optional extras (`pip install -e ".[extra]"`, comma-separate for more than one):
 | --- | --- |
 | `dev` | test/lint tooling plus everything needed to run the suite locally |
 | `api` | FastAPI + uvicorn for the serving layer |
-| `dashboard` | Streamlit dashboard (`scripts/streamlit_dashboard.py`) |
+| `dashboard` | Pricing Watch Streamlit console (`src/balance_pricing_engine/dashboard/app.py`; see [docs/pricing_intelligence.md](docs/pricing_intelligence.md#dashboard)). `scripts/streamlit_dashboard.py` is a separate, older profit-surface viewer |
 | `llm` | Anthropic client for the decision-support narration layer |
 | `ml` | LightGBM/XGBoost/lifelines candidate models for the diagnostic ML layer |
 | `kafka` | `KafkaEventPublisher` for the domain-event seam |
@@ -113,7 +113,11 @@ through `PricingService`) an additive decision record — all generated offline 
 dependencies. See [docs/run_ledger_guide.md](docs/run_ledger_guide.md).
 
 A minimal, secure local Docker deployment path exists (see
-[docs/deployment.md](docs/deployment.md)). The Streamlit dashboard remains an optional `dashboard`
-extra; full production deployment (authentication, TLS, durable event/feature/model stores,
-autoscaling, enterprise monitoring) is out of scope — see the production-boundaries list in
+[docs/deployment.md](docs/deployment.md)). The Pricing Watch Streamlit console is an optional
+`dashboard` extra, launched by double-clicking `Pricing Watch.command` (macOS) or with
+`streamlit run src/balance_pricing_engine/dashboard/app.py --server.address localhost` (setup, pages and Operations safety:
+[docs/pricing_intelligence.md → Dashboard](docs/pricing_intelligence.md#dashboard)); it is decision
+support only and has no built-in authentication beyond an optional Operations token. Full
+production deployment (authentication, TLS, durable event/feature/model stores, autoscaling,
+enterprise monitoring) is out of scope — see the production-boundaries list in
 [docs/deployment.md](docs/deployment.md).

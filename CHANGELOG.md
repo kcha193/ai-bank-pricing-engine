@@ -3,6 +3,35 @@
 All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Pricing Watch dashboard** (`src/balance_pricing_engine/dashboard/`): a seven-page
+  Streamlit operating console — Overview, Market Watch, Rate Changes, Historical Trends,
+  Pricing Scenarios (with the former YAML runner as *Scenario Lab*), Operations and System
+  Health — over the existing pricing-intelligence services. Refresh Dashboard reads stored
+  state only; Run Pricing Watch / Dry Run start a live collection only from an explicit click.
+  Decision support only. See [docs/pricing_intelligence.md](docs/pricing_intelligence.md#dashboard).
+- `pricing_intelligence/health.py`: one implementation of freshness, collector status and
+  system health, plus `PricingIntelligenceService.get_market_exclusions()` (why a record was
+  left out of the market snapshot), `snapshot.term_market_from_rates` and
+  `strategy.apply_manual_competitor_rate_to_config`.
+- **`Pricing Watch.command`**: a macOS double-click launcher in the repo root. Runs the
+  dashboard from the repository it lives in, on `127.0.0.1` only, loads `./.env`, reuses a
+  running instance, and opens the browser when the server is ready. `.env` and `.env.*`
+  (except `.env.example`) are now git-ignored, as `.env.example` already claimed.
+- Operations safeguards: optional `PRICING_WATCH_OPS_TOKEN` gate, single-flight runner with a
+  cooldown, backup and Telegram rate limits, process-wide unlock attempt limiter.
+- Environment variables `PRICING_WATCH_CONFIG` and `PRICING_WATCH_OPS_TOKEN` (see `.env.example`).
+
+### Changed
+
+- The `pricing_intelligence health` command and the dashboard frames now delegate to
+  `health.py`; their output is unchanged.
+- The single-script dashboard was replaced by the multi-page console. Launch command unchanged:
+  `streamlit run src/balance_pricing_engine/dashboard/app.py`.
+
 ## [0.2.0] - 2026-09-09
 
 **NZ Pricing Intelligence — Operational Monitoring.** Turns the verified

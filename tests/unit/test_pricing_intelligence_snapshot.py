@@ -198,3 +198,20 @@ def test_render_produces_a_bank_by_term_grid(snapshot):
     assert "ANZ" in rendered
     assert "Median" in rendered
     assert "Spread bps" in rendered
+
+
+def test_term_market_from_rates_matches_snapshot_semantics_including_ties():
+    from balance_pricing_engine.pricing_intelligence.snapshot import term_market_from_rates
+
+    market = term_market_from_rates(
+        12, {"ANZ": 4.79, "BNZ": 4.85, "Westpac": 4.85, "ASB": 4.89, "Kiwibank": 4.89}
+    )
+    assert [(e.bank, e.rank) for e in market.ranking()] == [
+        ("ANZ", 1),
+        ("BNZ", 2),
+        ("Westpac", 2),
+        ("ASB", 4),
+        ("Kiwibank", 4),
+    ]
+    assert market.best_rate == 4.79 and market.median_rate == 4.85
+    assert market.spread_bps == 10.0

@@ -287,7 +287,17 @@ date, BNZ advertised a Standard column, so the default 12-month special benchmar
 contained ANZ, ASB, Kiwibank and Westpac: median 4.99%, minimum 4.95%, mean 4.98%.
 Full promotional eligibility cannot be inferred from the normalised fields alone.
 Repeated suspicious values are not corroboration, and stale trusted fallback
-rates retain their original age. Market-state thresholds are transparent
+rates retain their original age. Dashboard freshness describes the selected trusted rate,
+not a bank's oldest observation at another term. System Health remains bank-wide: its age
+uses the oldest resolved trusted confirmation across tracked terms, while quarantine stays
+a separate flag. Scenario exclusion warnings describe only the selected term. Stale-only terms
+remain visible in the Overview audit matrix, but live selectors and their default use only
+snapshot terms. With no live terms, market pages show guidance; stored scenarios for unavailable
+terms are hidden. A stored scenario recommendation is hidden after loaded engine YAML changes,
+until an explicit rerun;
+its fingerprint covers the exact content supplied to the optimiser. Standard and non-comparable
+mortgage events remain audit history, with no ranks or medians borrowed from special-rate snapshots.
+Market-state thresholds are transparent
 heuristics, not empirically validated signals or optimisation objectives.
 
 Using exactly the same current manual config, the pre-intelligence source at
@@ -296,3 +306,9 @@ Using exactly the same current manual config, the pre-intelligence source at
 separate from the intelligence seam. The model remains synthetic and does not
 estimate strategic competitor reaction or validate advertised-rate eligibility.
 See the [audit](audits/2026-09-06-pricing-intelligence-audit.md) for scenario outputs.
+
+Pricing Watch quarantine badges describe only the representative observation selected by the
+trusted snapshot. A suspicious sibling remains in audit history without labelling a healthy
+representative as a fallback. Snapshot selection, freshness limits and pricing benchmarks are
+unchanged. Historical event details require the event's observation key and a state beginning
+no later than the event; unavailable historical parser evidence stays explicitly unavailable.

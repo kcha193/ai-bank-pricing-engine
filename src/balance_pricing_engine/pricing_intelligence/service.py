@@ -13,7 +13,7 @@ remains the optimiser's job.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 import logging
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -34,6 +34,11 @@ from balance_pricing_engine.pricing_intelligence.changes import (
     resolve_pairing,
 )
 from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
+from balance_pricing_engine.pricing_intelligence.health import (
+    MarketExclusion,
+    comparable_records,
+    is_stale,
+)
 from balance_pricing_engine.pricing_intelligence.market_state import (
     MarketStateAssessment,
     classify_market_state,
@@ -85,6 +90,7 @@ def _exclude_suspicious(
 def _resolve_suspicious(
     records: Sequence[CompetitorRateRecord],
     confirmed: Sequence[CompetitorRateRecord],
+    quarantined_keys: Optional[set[str]] = None,
 ) -> list[CompetitorRateRecord]:
     """Replace a suspicious-tagged record with its last confirmed state.
 
@@ -120,6 +126,7 @@ def _resolve_suspicious(
     own row, once again as the flagged record's substitute.
     """
     suspicious = [record for record in records if record.validation_status == "warning"]
+    healthy_keys = {r.observation_key() for r in records if r.validation_status != "warning"}
     fallback_by_key = resolve_pairing(confirmed, suspicious) if suspicious else {}
     claimed_confirmed_keys = {c.observation_key() for c in fallback_by_key.values()}
     unclaimed_confirmed = [c for c in confirmed if c.observation_key() not in claimed_confirmed_keys]
@@ -136,10 +143,24 @@ def _resolve_suspicious(
                 resolved.append(record)
             continue
         fallback = fallback_by_key.get(record.observation_key())
+        category_fallback = False
         if fallback is None:
             candidates = category_agnostic_candidates.get(record.category_agnostic_group_key(), [])
             if len(candidates) == 1:
                 fallback = candidates[0]
+                category_fallback = True
+        if (
+            fallback is not None
+            and quarantined_keys is not None
+            and (
+                fallback.observation_key() not in healthy_keys
+                or (category_fallback and fallback.rate_category != record.rate_category)
+            )
+        ):
+            # Eligibility pairing can point at an independently healthy sibling that
+            # is already in the current view; it is not a substituted fallback.
+            # A category-flip predecessor remains current by design (see above).
+            quarantined_keys.add(fallback.observation_key())
         if fallback is not None and fallback.observation_key() not in seen_keys:
             seen_keys.add(fallback.observation_key())
             resolved.append(fallback)
@@ -149,13 +170,14 @@ def _resolve_suspicious(
 def _resolve_suspicious_if_present(
     records: Sequence[CompetitorRateRecord],
     confirmed_source: Callable[[], Sequence[CompetitorRateRecord]],
+    quarantined_keys: Optional[set[str]] = None,
 ) -> list[CompetitorRateRecord]:
     """Apply :func:`_resolve_suspicious`, deferring the confirmed-fallback
     lookup (a separate store query) until a suspicious record is actually
     present. Shared by the live and historical (as-of) snapshot paths.
     """
     if any(record.validation_status == "warning" for record in records):
-        return _resolve_suspicious(records, confirmed_source())
+        return _resolve_suspicious(records, confirmed_source(), quarantined_keys)
     return list(records)
 
 
@@ -341,8 +363,7 @@ def _exclude_stale(
     a months-stale rate could otherwise silently drive MARKET_LEADER or
     MARKET_MEDIAN.
     """
-    cutoff = now - timedelta(hours=max_age_hours)
-    return [record for record in records if record.captured_at_utc >= cutoff]
+    return [r for r in records if not is_stale(r.captured_at_utc, now, max_age_hours)]
 
 
 def _resolve_rate_category(
@@ -936,6 +957,24 @@ class PricingIntelligenceService:
 
     # ------------------------------------------------------------ market view
 
+    def get_resolved_current_observations(
+        self,
+        *,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        quarantined_keys: Optional[set[str]] = None,
+    ) -> list[CompetitorRateRecord]:
+        """Current trusted states, substituting confirmed fallbacks before age filtering.
+
+        Shared by live snapshots, exclusions and health. Quarantine flags belong to the
+        raw current observations; substituted records retain their own confirmation time.
+        When supplied, ``quarantined_keys`` collects the identities of trusted substitutes.
+        """
+        return _resolve_suspicious_if_present(
+            self.store.get_current_observations(product_type=product_type),
+            lambda: self.store.get_last_confirmed_observations(product_type=product_type),
+            quarantined_keys,
+        )
+
     def get_market_snapshot(
         self,
         product_type: ProductType | str = ProductType.HOME_LOAN,
@@ -975,6 +1014,7 @@ class PricingIntelligenceService:
         if rate_category is _RATE_CATEGORY_OMITTED:
             rate_category = _resolve_rate_category(product_type, None)
         as_of: Optional[datetime] = None
+        quarantined_keys: set[str] = set()
         if as_of_run_id is not None:
             as_of = self.store.get_run_started_at(as_of_run_id)
             if as_of is None:
@@ -995,12 +1035,11 @@ class PricingIntelligenceService:
                     lambda: self.store.get_confirmed_observations_as_of(
                         as_of=as_of, product_type=product_type, before_run_id=as_of_run_id
                     ),
+                    quarantined_keys,
                 )
         else:
-            records = self.store.get_current_observations(product_type=product_type)
-            records = _resolve_suspicious_if_present(
-                records,
-                lambda: self.store.get_last_confirmed_observations(product_type=product_type),
+            records = self.get_resolved_current_observations(
+                product_type=product_type, quarantined_keys=quarantined_keys
             )
             records = _exclude_stale(
                 records,
@@ -1015,6 +1054,7 @@ class PricingIntelligenceService:
             banks=self.config.selected_banks,
             as_of=as_of,
             excluded_product_names=self.config.excluded_product_names,
+            quarantined_keys=quarantined_keys,
         )
 
     def get_previous_market_snapshot(
@@ -1144,9 +1184,13 @@ class PricingIntelligenceService:
         term_months: int,
         rate_category: Optional[str] = None,
         product_type: ProductType | str = ProductType.HOME_LOAN,
+        tz: tzinfo = timezone.utc,
     ) -> list[tuple[date, dict[str, float]]]:
         """Each bank's representative advertised rate at ``term_months``, one
         entry per date something changed, oldest first.
+
+        Dates are calendar days in ``tz`` (default UTC). Pass the market's local zone to bucket
+        a repricing at 09:00 NZST on the 12th under the 12th, not the 11th (UTC).
 
         Reconstructed via :meth:`~.store.ObservationStore.get_observations_as_of`
         (already handles withdrawal and eligibility-supersession exclusion) run
@@ -1165,7 +1209,7 @@ class PricingIntelligenceService:
         history = self.store.get_rate_history(
             term_months=term_months, product_type=product_type, rate_category=rate_category
         )
-        change_dates = {record.captured_at_utc.date() for record in history}
+        change_dates = {record.captured_at_utc.astimezone(tz).date() for record in history}
         for change in self.get_changes(
             days=None,
             term_months=term_months,
@@ -1175,11 +1219,11 @@ class PricingIntelligenceService:
             if change.change_type is ChangeType.REMOVED_PRODUCT and (
                 change.rate_category == rate_category
             ):
-                change_dates.add(change.detected_at.date())
+                change_dates.add(change.detected_at.astimezone(tz).date())
 
         series: list[tuple[date, dict[str, float]]] = []
         for day in sorted(change_dates):
-            as_of = datetime.combine(day, datetime.max.time(), tzinfo=timezone.utc)
+            as_of = datetime.combine(day, datetime.max.time(), tzinfo=tz).astimezone(timezone.utc)
             records = self.store.get_observations_as_of(as_of=as_of, product_type=product_type)
             # Matches get_market_snapshot()'s as_of_run_id branch: a
             # warning-tagged (suspicious) state must fall back to its last
@@ -1212,8 +1256,13 @@ class PricingIntelligenceService:
         now: Optional[datetime] = None,
         product_type: ProductType | str = ProductType.HOME_LOAN,
         rate_category: Optional[str] = None,
+        since: Optional[datetime] = None,
     ) -> MarketActivity:
         """Summarise repricing activity over a lookback window.
+
+        ``since`` replaces the rolling ``days`` window with an explicit calendar boundary
+        (e.g. local midnight, converted to UTC, for "today"), with the same scoping and the
+        same exclusion of suspicious and non-comparable moves.
 
         Scoped to ``selected_banks``/``tracked_terms_months``, matching every
         snapshot, the dashboard, and :meth:`get_market_state`: a database
@@ -1221,14 +1270,21 @@ class PricingIntelligenceService:
         not alter this public market summary via an excluded bank or term.
         """
         rate_category = _resolve_rate_category(product_type, rate_category)
-        days = days or self.config.market_state.lookback_days
+        if since is not None:
+            reference = now or datetime.now(timezone.utc)
+            # Wide enough that every change at or after ``since`` is inside the lookback.
+            days = max(1, (reference - since).days + 1)
+            window: dict = {"days": None, "since": since}
+        else:
+            days = days or self.config.market_state.lookback_days
+            window = {"days": days}
         return compute_market_activity(
             self.get_changes(
-                days=days,
                 now=now,
                 scope_to_market=True,
                 product_type=product_type,
                 rate_category=rate_category,
+                **window,
             ),
             lookback_days=days,
             now=now,
@@ -1262,6 +1318,76 @@ class PricingIntelligenceService:
         return classify_market_state(
             changes, thresholds=self.config.market_state, now=now
         )
+
+    def get_market_exclusions(
+        self,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        now: Optional[datetime] = None,
+    ) -> list[MarketExclusion]:
+        """Banks/terms the market snapshot is missing because every comparable rate is stale.
+
+        Built on the same record set as :meth:`get_market_snapshot` (comparable tier, tracked
+        bank and term, no name-excluded or non-comparable product, suspicious readings resolved
+        to their last confirmed state), so the explanation cannot diverge from the exclusion.
+        One entry per bank/term, only when that bank has *no* fresh comparable rate there: a
+        stale sibling product beside a fresh ranked one is not an exclusion. The entry carries
+        the newest stale record, i.e. the last known rate.
+        """
+        now = now or datetime.now(timezone.utc)
+        records = self.get_resolved_current_observations(product_type=product_type)
+        candidates = comparable_records(
+            _exclude_suspicious(records),
+            rate_category=_resolve_rate_category(product_type, None),
+            banks=set(self.config.selected_banks),
+            terms=set(self.config.tracked_terms_months),
+            excluded_product_names=self.config.excluded_product_names,
+        )
+        threshold = self.config.max_observation_age_hours
+        has_fresh = {
+            (r.bank, r.term_months_normalised)
+            for r in candidates
+            if not is_stale(r.captured_at_utc, now, threshold)
+        }
+        newest_stale: dict[tuple[str, int], CompetitorRateRecord] = {}
+        for r in candidates:
+            key = (r.bank, r.term_months_normalised)
+            if key in has_fresh or not is_stale(r.captured_at_utc, now, threshold):
+                continue
+            if key not in newest_stale or r.captured_at_utc > newest_stale[key].captured_at_utc:
+                newest_stale[key] = r
+        return [
+            MarketExclusion(
+                bank=r.bank,
+                term_months=r.term_months_normalised,
+                product_name=r.product_name,
+                rate_pct=r.advertised_rate_pct,
+                observed_at=r.captured_at_utc,
+                age_hours=(now - r.captured_at_utc).total_seconds() / 3600,
+                threshold_hours=threshold,
+            )
+            for _, r in sorted(newest_stale.items(), key=lambda kv: (kv[0][1], kv[0][0]))
+        ]
+
+    def get_market_quarantined(
+        self,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        *,
+        snapshot: Optional[MarketSnapshot] = None,
+        now: Optional[datetime] = None,
+    ) -> set[tuple[str, int]]:
+        """Bank/term representatives actually selected from trusted quarantine fallbacks.
+
+        Pass the displayed snapshot to keep badges tied to that exact selection and clock.
+        Missing or stale fallbacks have no representative; raw warnings remain in audit history.
+        """
+        if snapshot is None:
+            snapshot = self.get_market_snapshot(product_type=product_type, now=now)
+        return {
+            (entry.bank, term)
+            for term, market in snapshot.terms.items()
+            for entry in market.entries
+            if entry.quarantined
+        }
 
     def get_competitive_position(
         self,

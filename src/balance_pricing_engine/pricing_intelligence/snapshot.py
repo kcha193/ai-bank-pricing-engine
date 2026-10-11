@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from statistics import fmean, median
-from typing import Iterable, Optional
+from typing import Iterable, Mapping, Optional
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps, spread_bps
@@ -46,6 +46,7 @@ class BankTermRate:
     observed_at: datetime
     max_lvr: Optional[float] = None
     cashback_text: Optional[str] = None
+    quarantined: bool = False
 
     @property
     def is_leader(self) -> bool:
@@ -211,6 +212,7 @@ def build_market_snapshot(
     as_of: Optional[datetime] = None,
     banks: Optional[Iterable[str]] = None,
     excluded_product_names: Optional[Iterable[str]] = None,
+    quarantined_keys: Optional[set[str]] = None,
 ) -> MarketSnapshot:
     """Build a market snapshot from a set of current observations.
 
@@ -292,8 +294,11 @@ def build_market_snapshot(
                 observed_at=record.captured_at_utc,
                 max_lvr=record.max_lvr,
                 cashback_text=record.cashback_text,
+                quarantined=record.observation_key() in (quarantined_keys or set()),
             )
-            for record, rank in zip(ordered, _competition_ranks([r.advertised_rate_pct for r in ordered]))
+            for record, rank in zip(
+                ordered, _competition_ranks([r.advertised_rate_pct for r in ordered])
+            )
         )
         terms[term] = TermMarket(term_months=term, product_type=product, entries=entries)
 
@@ -303,6 +308,35 @@ def build_market_snapshot(
         terms=terms,
         rate_category=rate_category,
     )
+
+
+def term_market_from_rates(
+    term_months: int,
+    rates: Mapping[str, float],
+    product_type: ProductType | str = ProductType.HOME_LOAN,
+) -> TermMarket:
+    """Build a ``TermMarket`` from already-resolved ``{bank: rate_pct}``.
+
+    For history charts: per-date market statistics come from the same ranking and
+    dispersion code the live snapshot uses, never from UI-side arithmetic.
+    """
+    product = ProductType(product_type)
+    lower_is_better = _better_is_lower(product)
+    ordered = sorted(rates.items(), key=lambda kv: (kv[1] if lower_is_better else -kv[1], kv[0]))
+    ranks = _competition_ranks([rate for _, rate in ordered])
+    entries = tuple(
+        BankTermRate(
+            bank=bank,
+            rate_pct=rate,
+            rank=rank,
+            product_name="",
+            rate_category="",
+            source_url="",
+            observed_at=datetime.min.replace(tzinfo=timezone.utc),
+        )
+        for (bank, rate), rank in zip(ordered, ranks)
+    )
+    return TermMarket(term_months=term_months, product_type=product, entries=entries)
 
 
 def _is_more_competitive(candidate: float, incumbent: float, lower_is_better: bool) -> bool:
