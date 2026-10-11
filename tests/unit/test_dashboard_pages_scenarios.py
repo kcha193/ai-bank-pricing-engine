@@ -45,6 +45,10 @@ def test_displayed_numbers_equal_the_backend_result(market_factory):
     assert list(table["Our rate"]) == [fmt_rate_fraction(r.our_rate) for r in truth.rows]
     assert list(table["Competitor"]) == [fmt_rate_fraction(r.competitor_rate) for r in truth.rows]
     assert list(table["Objective"]) == [fmt_money_m(r.objective) for r in truth.rows]
+    metrics = {m.label: m.value for m in app.metric}
+    assert metrics["Expected loan volume"] == fmt_money_m(truth.selected.expected_loan_volume)
+    assert metrics["Funding shortfall"] == fmt_money_m(truth.selected.funding_shortfall)
+    assert metrics["Optimal rate"] == fmt_rate_fraction(truth.selected.our_rate)
     text = " ".join(m.value for m in app.markdown)
     assert "10 bps above the market leader" in text and "Decision support only" in text
     assert len(app.get("vega_lite_chart")) == 1

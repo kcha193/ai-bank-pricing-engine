@@ -88,6 +88,18 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _last_update(service: PricingIntelligenceService) -> Optional[datetime]:
+    """Completion time of the newest run that stored data (SUCCESS or PARTIAL_SUCCESS).
+
+    A FAILED run collected nothing, so presenting its time as "last successful update" would
+    suggest the data is fresher than it is.
+    """
+    for run in service.store.get_recent_run_records(product_type=ProductType.HOME_LOAN, limit=50):
+        if run.status != "FAILED":
+            return run.completed_at
+    return None
+
+
 class _MissingDatabase(Exception):
     pass
 
@@ -142,10 +154,9 @@ class DashboardServices:
             now = self._clock()
             health = assess_system_health(service, now=now)
             state = service.get_market_state(now=now)
-            run = health.latest_run
             return Result.ok(
                 HeaderInfo(
-                    last_update=run.completed_at if run else None,
+                    last_update=_last_update(service),
                     market_state=state.state.value,
                     fresh_banks=health.fresh_bank_count,
                     configured_banks=len(health.banks),
@@ -191,11 +202,10 @@ class DashboardServices:
                     (exclusion.bank, exclusion.term_months),
                     MatrixCell(rate_pct=exclusion.rate_pct, stale=True),
                 )
-            run = health.latest_run
             return Result.ok(
                 Overview(
                     header=HeaderInfo(
-                        last_update=run.completed_at if run else None,
+                        last_update=_last_update(service),
                         market_state=state.state.value,
                         fresh_banks=health.fresh_bank_count,
                         configured_banks=len(health.banks),

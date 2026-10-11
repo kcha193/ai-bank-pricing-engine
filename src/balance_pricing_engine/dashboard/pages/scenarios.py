@@ -75,11 +75,12 @@ def _render_result(view: ScenarioView) -> None:
 
     st.subheader("Selected assumption")
     selected = view.selected
-    cols = st.columns(4)
+    cols = st.columns(5)
     cols[0].metric("Competitor assumption", fmt_rate_fraction(selected.competitor_rate))
     cols[1].metric("Optimal rate", fmt_rate_fraction(selected.our_rate))
     cols[2].metric("Objective", fmt_money_m(selected.objective))
-    cols[3].metric("Funding shortfall", fmt_money_m(selected.funding_shortfall))
+    cols[3].metric("Expected loan volume", fmt_money_m(selected.expected_loan_volume))
+    cols[4].metric("Funding shortfall", fmt_money_m(selected.funding_shortfall))
     st.caption(selected.rationale)
     if view.position is not None:
         pos = view.position

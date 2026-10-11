@@ -106,3 +106,71 @@ def test_empty_database_is_an_empty_result(tmp_path):
 def test_every_read_degrades_on_a_missing_database(tmp_path, method):
     services = DashboardServices(load_settings({}, database_path=str(tmp_path / "x.db")))
     assert getattr(services, method)().status == "EMPTY"
+
+
+def _record_failed_run(market, hours_after_now=-1):
+    from datetime import timedelta
+
+    from balance_pricing_engine.competitor_rates.models import ProductType
+    from balance_pricing_engine.pricing_intelligence.store import RunRecord
+
+    when = market.now + timedelta(hours=hours_after_now)
+    store = ObservationStore(market.database)
+    store.write_run_record(
+        RunRecord(
+            run_id="op-failed",
+            started_at=when,
+            completed_at=when + timedelta(minutes=1),
+            status="FAILED",
+            product_type=ProductType.HOME_LOAN,
+            banks_attempted=market.banks,
+            banks_successful=(),
+            banks_failed=market.banks,
+            rates_observed=0,
+            rates_changed=0,
+            validation_failures=0,
+            suspicious_observations=0,
+            market_state=None,
+            error_summary="all banks unreachable",
+        )
+    )
+    store.close()
+    return when
+
+
+def test_last_update_is_the_latest_run_that_produced_data_not_a_failed_one(market_factory):
+    from datetime import timedelta
+
+    market = market_factory()
+    _record_failed_run(market)  # newer than every good run, but it collected nothing
+    expected = market.now - timedelta(days=1) + timedelta(minutes=2)  # run-2's completion
+    services = make_services(market)
+    assert services.header().value.last_update == expected
+    assert services.overview().value.header.last_update == expected
+
+
+def test_last_update_counts_a_partial_run_because_it_did_store_data(market_factory):
+    from datetime import timedelta
+
+    market = market_factory(stale_banks=("Westpac",))  # newest run is PARTIAL_SUCCESS
+    expected = market.now - timedelta(days=1) + timedelta(minutes=2)
+    assert make_services(market).header().value.last_update == expected
+
+
+def test_last_update_is_unknown_when_every_run_failed(tmp_path):
+    from types import SimpleNamespace
+
+    from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
+
+    database = tmp_path / "only-failures.db"
+    market = SimpleNamespace(
+        database=database,
+        banks=("ANZ", "ASB"),
+        now=__import__("datetime").datetime(
+            2026, 10, 11, tzinfo=__import__("datetime").timezone.utc
+        ),
+        config=PricingIntelligenceConfig(database_path=str(database)),
+    )
+    ObservationStore(database).close()
+    _record_failed_run(market)
+    assert make_services(market).header().value.last_update is None
