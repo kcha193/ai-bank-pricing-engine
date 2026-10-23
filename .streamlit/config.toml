@@ -1,0 +1,30 @@
+# Pricing Watch console theme. Streamlit reads this file when it is launched from the repository
+# root (as "Pricing Watch.command" does). Users can still switch light/dark in the app menu.
+# Design tokens for charts and CSS live in src/balance_pricing_engine/dashboard/theme.py.
+
+[client]
+toolbarMode = "viewer"
+
+[theme]
+baseRadius = "0.6rem"
+showWidgetBorder = true
+headingFontWeights = [700, 650, 650, 600, 600, 600]
+chartCategoricalColors = ["#1F5AA6", "#E07B39", "#0E8C8C", "#8E5BB5", "#C9A227", "#4F8A4C", "#D45087", "#6C7A89"]
+
+[theme.light]
+primaryColor = "#0F5F8C"
+backgroundColor = "#F7F9FC"
+secondaryBackgroundColor = "#EDF2F8"
+textColor = "#0B1F3A"
+linkColor = "#0F5F8C"
+borderColor = "#D5DEEA"
+dataframeHeaderBackgroundColor = "#E8EEF6"
+
+[theme.dark]
+primaryColor = "#4FB3D9"
+backgroundColor = "#0B1220"
+secondaryBackgroundColor = "#131D31"
+textColor = "#E6ECF5"
+linkColor = "#7CC7E6"
+borderColor = "#26344D"
+dataframeHeaderBackgroundColor = "#17233A"

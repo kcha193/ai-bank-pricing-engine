@@ -108,7 +108,7 @@ import streamlit as st
 from datetime import datetime
 from balance_pricing_engine.dashboard.services import DashboardServices
 from balance_pricing_engine.dashboard.settings import load_settings
-from balance_pricing_engine.dashboard.pages import {page} as page
+from balance_pricing_engine.dashboard.views import {page} as page
 settings = load_settings({{}}, database_path={str(market.database)!r})
 services = DashboardServices(settings, clock=lambda: st.session_state.get(
     'test_now', datetime.fromisoformat({market.now.isoformat()!r})))

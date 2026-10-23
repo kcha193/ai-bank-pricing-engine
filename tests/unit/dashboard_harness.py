@@ -35,10 +35,23 @@ from datetime import datetime
 {setup}
 from balance_pricing_engine.dashboard.services import DashboardServices
 from balance_pricing_engine.dashboard.settings import load_settings
-from balance_pricing_engine.dashboard.pages import {page} as page
+from balance_pricing_engine.dashboard.views import {page} as page
 
 settings = load_settings({dict(env or {})!r}, database_path={str(database)!r})
 services = DashboardServices(settings, clock=lambda: datetime.fromisoformat({now.isoformat()!r}))
 page.render(services)
 """
     return AppTest.from_string(script, default_timeout=30).run()
+
+
+def frame_with(app, column: str):
+    """The first dataframe on the page that has ``column`` (robust to layout order)."""
+    for element in app.dataframe:
+        if column in element.value.columns:
+            return element.value
+    raise AssertionError(f"no dataframe with a {column!r} column")
+
+
+def chart_count(app) -> int:
+    # Streamlit 1.51 uses the older Arrow element name for the same chart.
+    return sum(len(app.get(kind)) for kind in ("vega_lite_chart", "arrow_vega_lite_chart"))

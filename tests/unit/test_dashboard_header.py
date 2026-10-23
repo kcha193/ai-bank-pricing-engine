@@ -8,7 +8,7 @@ AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
 def render_header(database, now):
     script = f"""
 from datetime import datetime
-from balance_pricing_engine.dashboard.pages._common import render_header
+from balance_pricing_engine.dashboard.views._common import render_header
 from balance_pricing_engine.dashboard.services import DashboardServices
 from balance_pricing_engine.dashboard.settings import load_settings
 

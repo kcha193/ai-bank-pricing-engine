@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from balance_pricing_engine.competitor_rates.models import ProductType
+from balance_pricing_engine.dashboard.charts import freshness_bars
 from balance_pricing_engine.dashboard.formatting import (
     EM_DASH,
     fmt_age_hours,
@@ -21,7 +22,7 @@ from balance_pricing_engine.dashboard.formatting import (
     fmt_rate_pct,
     fmt_term,
 )
-from balance_pricing_engine.dashboard.pages._common import cached, unwrap
+from balance_pricing_engine.dashboard.views._common import cached, unwrap
 from balance_pricing_engine.dashboard.services import DashboardServices
 from balance_pricing_engine.pricing_intelligence.health import (
     CollectorStatus,
@@ -191,10 +192,72 @@ def _suspicious(services: DashboardServices, product: ProductType) -> None:
     st.caption("These readings are quarantined. They never feed rankings, medians or scenarios.")
 
 
+DATA_STATES = """
+| You see | It means |
+| --- | --- |
+| **No rate changes** | Every bank that was collected kept its rates. A quiet market, not missing data. |
+| **No market data** | Nothing has been collected yet (or the database is unavailable). |
+| **⚠ Stale** | The latest validated observation is older than the freshness limit; it is excluded from rankings and statistics. |
+| **Collection failing** | The collector could not read the bank's page. Its last validated rate is kept and ages normally; it is never treated as a withdrawal. |
+| **Quarantined** | A reading failed plausibility checks. The last confirmed rate is shown and labelled instead. |
+| **Incomplete coverage** | Fewer banks are fresh than are configured, so market statistics cover fewer banks. |
+"""
+
+
+RUN_STATUS_SHORT = {"SUCCESS": "Success", "PARTIAL_SUCCESS": "Partial", "FAILED": "Failed"}
+
+
+def _overview_tiles(services: DashboardServices, health: SystemHealth) -> None:
+    run = health.latest_run
+    failing = sum(1 for b in health.banks if b.collector is CollectorStatus.FAILING)
+    suspicious = services.suspicious(ProductType.HOME_LOAN)
+    quarantined = len(suspicious.value) if suspicious.status == "OK" and suspicious.value else 0
+    cols = st.columns(6)
+    cols[0].metric("Database", "HEALTHY" if health.database_ok else "⚠ ISSUES", border=True)
+    run_age = EM_DASH
+    if run is not None:
+        run_age = f"{fmt_age_hours((health.evaluated_at - run.started_at).total_seconds() / 3600)} ago"
+    cols[1].metric(
+        "Latest run",
+        RUN_STATUS_SHORT.get(run.status, run.status) if run else "None",
+        border=True,
+        help=f"Status {run.status}" if run else "No operational run recorded.",
+    )
+    cols[2].metric("Last run age", run_age, border=True)
+    cols[3].metric(
+        "Fresh banks",
+        f"{health.fresh_bank_count} / {len(health.banks)}",
+        border=True,
+        help=f"Observations older than {health.max_observation_age_hours:.0f} h are stale.",
+    )
+    cols[4].metric("Collectors failing", failing, border=True)
+    cols[5].metric(
+        "Suspicious readings",
+        quarantined,
+        border=True,
+        help="Implausible mortgage readings recorded so far (all time). They are quarantined: "
+        "never part of a ranking, median or scenario. Listed in the Mortgage tab below.",
+    )
+    channels = [
+        f"Telegram {'✓ configured' if health.telegram_configured else '✗ not configured'}",
+        f"Webhook {'✓ configured' if health.webhook_configured else '✗ not configured'}",
+    ]
+    st.caption("Alert channels: " + " · ".join(channels))
+
+
 def render(services: DashboardServices) -> None:
     health = unwrap(services.health())
     if health is None:
         return
+    _overview_tiles(services, health)
+    st.subheader("Data freshness by bank", anchor=False)
+    st.caption(
+        "Age of each bank's latest validated mortgage observation. Bars past the dashed limit "
+        "are stale and excluded from market statistics."
+    )
+    st.altair_chart(freshness_bars(health), width="stretch")
+    with st.expander("How to read data states"):
+        st.markdown(DATA_STATES)
     st.subheader("Components")
     st.dataframe(_components(health), hide_index=True, width="stretch")
     st.caption(
