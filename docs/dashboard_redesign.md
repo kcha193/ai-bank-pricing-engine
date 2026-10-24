@@ -241,3 +241,9 @@ economics moved into the UI.
 mortgage and deposit observations from the same five banks, plus PIE and managed-fund rows that
 must never enter the deposit market.
 
+
+Screenshots (synthetic `dual_market_factory` data, clock pinned to the fixture date):
+[both markets](images/dual_product_dashboard/command_centre_both_markets.jpeg) ·
+[term-deposit detail](images/dual_product_dashboard/command_centre_term_deposit_detail.jpeg) ·
+[term-deposit scenario](images/dual_product_dashboard/pricing_studio_term_deposit.jpeg) ·
+[narrow viewport](images/dual_product_dashboard/command_centre_narrow.jpeg).
