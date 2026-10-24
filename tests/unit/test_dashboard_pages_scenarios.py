@@ -50,7 +50,7 @@ def test_displayed_numbers_equal_the_backend_result(market_factory):
     metrics = {m.label: m.value for m in app.metric}
     assert metrics["Expected loan volume"] == fmt_money_m(truth.selected.expected_loan_volume)
     assert metrics["Funding shortfall"] == fmt_money_m(truth.selected.funding_shortfall)
-    assert metrics["Optimal rate"] == fmt_rate_fraction(truth.selected.our_rate)
+    assert metrics["Optimal home-loan rate"] == fmt_rate_fraction(truth.selected.our_rate)
     text = " ".join(m.value for m in app.markdown)
     assert "10 bps above the market leader" in text and "Decision support only" in text
     # the scenario comparison dumbbell and the objective curve
@@ -65,7 +65,7 @@ def test_manual_strategy_needs_and_uses_a_manual_rate(market_factory):
     app.button(key="scenario_run").click().run()
     assert not app.exception
     metrics = {m.label: m.value for m in app.metric}
-    assert metrics["Competitor assumption"] == "5.09%"
+    assert metrics["Competitor mortgage assumption"] == "5.09%"
 
 
 def test_a_scenario_error_is_an_operational_message(market_factory):
@@ -84,7 +84,7 @@ def test_stale_banks_are_called_out_next_to_the_results(market_factory):
     market = market_factory(stale_banks=("Westpac",))
     app = run_page("scenarios", market.database, market.now)
     app.button(key="scenario_run").click().run()
-    assert any("Westpac excluded from the benchmark" in w.value for w in app.warning)
+    assert any("Westpac excluded from the mortgage benchmark" in w.value for w in app.warning)
 
 
 def test_changed_inputs_are_flagged_instead_of_silently_mixing_results(market_factory):

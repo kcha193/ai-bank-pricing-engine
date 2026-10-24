@@ -3,6 +3,13 @@
 Every number shown in the dashboard comes from here, and every number here comes
 from a backend call. No rankings, bps, freshness or market statistics are derived
 in this module -- see tests/unit/test_dashboard_boundaries.py.
+
+Every market read takes ``product_type`` (default ``HOME_LOAN``, so existing callers are
+unchanged) and passes it to *every* backend call it makes: the snapshot, exclusions,
+quarantine, activity, changes, history and health. Mortgages rank lowest-first and deposits
+highest-first in the backend; a read that forgot the product on one call would silently mix
+markets or invert a ranking. Pages pass the product positionally through ``cached`` so it is
+part of the cache identity.
 """
 
 from __future__ import annotations
@@ -21,6 +28,10 @@ from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.config import EngineConfig
 from balance_pricing_engine.dashboard.formatting import NZ_TZ
 from balance_pricing_engine.dashboard.models import (
+    SCENARIO_HOME_LOAN,
+    SCENARIO_JOINT,
+    SCENARIO_MODES,
+    SCENARIO_TERM_DEPOSIT,
     BankPosition,
     ChangeFilters,
     ChangeRow,
@@ -80,6 +91,23 @@ NO_DATA_MESSAGE = (
     "No market data collected yet. Open Operations and run Pricing Watch, or run the "
     "collector from the CLI (see docs/pricing_intelligence.md)."
 )
+NO_DEPOSIT_DATA_MESSAGE = (
+    "No term-deposit market data collected yet. Deposit rates are collected separately from "
+    "mortgages: run `python3 scripts/collect_market_rates_workflow.py --product term_deposit "
+    "--render-javascript` (see docs/pricing_intelligence.md). Mortgage rates are never "
+    "substituted."
+)
+
+
+def no_data_message(product_type: ProductType | str = ProductType.HOME_LOAN) -> str:
+    if ProductType(product_type) is ProductType.TERM_DEPOSIT:
+        return NO_DEPOSIT_DATA_MESSAGE
+    return NO_DATA_MESSAGE
+
+
+def _no_term_message(term_months: int, product_type: ProductType | str) -> str:
+    noun = "term-deposit" if ProductType(product_type) is ProductType.TERM_DEPOSIT else "mortgage"
+    return f"No comparable {noun} market data at {term_months} months."
 DB_UNAVAILABLE_MESSAGE = (
     "Market database unavailable. Stored data cannot be read right now; "
     "see System Health and the application log."
@@ -90,13 +118,16 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _last_update(service: PricingIntelligenceService) -> Optional[datetime]:
-    """Completion time of the newest run that stored data (SUCCESS or PARTIAL_SUCCESS).
+def _last_update(
+    service: PricingIntelligenceService, product_type: ProductType = ProductType.HOME_LOAN
+) -> Optional[datetime]:
+    """Completion time of the product's newest run that stored data (SUCCESS or PARTIAL_SUCCESS).
 
     A FAILED run collected nothing, so presenting its time as "last successful update" would
-    suggest the data is fresher than it is.
+    suggest the data is fresher than it is. Each product has its own runs: a fresh mortgage
+    collection says nothing about deposit freshness.
     """
-    for run in service.store.get_recent_run_records(product_type=ProductType.HOME_LOAN, limit=50):
+    for run in service.store.get_recent_run_records(product_type=product_type, limit=50):
         if run.status != "FAILED":
             return run.completed_at
     return None
@@ -140,12 +171,16 @@ class DashboardServices:
         finally:
             service.close()
 
-    def _guard(self, fn: Callable[[PricingIntelligenceService], Result[T]]) -> Result[T]:
+    def _guard(
+        self,
+        fn: Callable[[PricingIntelligenceService], Result[T]],
+        product_type: ProductType = ProductType.HOME_LOAN,
+    ) -> Result[T]:
         try:
             with self._service() as service:
                 return fn(service)
         except _MissingDatabase:
-            return Result.empty(NO_DATA_MESSAGE)
+            return Result.empty(no_data_message(product_type))
         except (sqlite3.Error, OSError):
             logger.exception("market database read failed")
             return Result.error(DB_UNAVAILABLE_MESSAGE)
@@ -155,31 +190,24 @@ class DashboardServices:
 
     # -------------------------------------------------------------- reads
 
-    def header(self) -> Result[HeaderInfo]:
+    def header(self, product_type: ProductType = ProductType.HOME_LOAN) -> Result[HeaderInfo]:
+        product = ProductType(product_type)
+
         def build(service: PricingIntelligenceService) -> Result[HeaderInfo]:
             now = self._clock()
-            health = assess_system_health(service, now=now)
-            state = service.get_market_state(now=now)
-            return Result.ok(
-                HeaderInfo(
-                    last_update=_last_update(service),
-                    market_state=state.state.value,
-                    fresh_banks=health.fresh_bank_count,
-                    configured_banks=len(health.banks),
-                )
-            )
+            return Result.ok(_header_info(service, product, now)[0])
 
-        return self._guard(build)
+        return self._guard(build, product)
 
-    def overview(self) -> Result[Overview]:
+    def overview(self, product_type: ProductType = ProductType.HOME_LOAN) -> Result[Overview]:
+        product = ProductType(product_type)
+
         def build(service: PricingIntelligenceService) -> Result[Overview]:
             now = self._clock()
-            snapshot = service.get_market_snapshot(now=now)
-            exclusions = tuple(service.get_market_exclusions(now=now))
+            snapshot = service.get_market_snapshot(product_type=product, now=now)
+            exclusions = tuple(service.get_market_exclusions(product_type=product, now=now))
             if not snapshot.terms and not exclusions:
-                return Result.empty(NO_DATA_MESSAGE)
-            health = assess_system_health(service, now=now)
-            state = service.get_market_state(now=now)
+                return Result.empty(no_data_message(product))
             local_midnight = now.astimezone(NZ_TZ).replace(
                 hour=0, minute=0, second=0, microsecond=0
             )
@@ -187,18 +215,22 @@ class DashboardServices:
             # computation, which excludes suspicious and non-comparable moves, so the counts
             # always agree with the market-state rationale shown beneath them.
             today_activity = service.get_market_activity(
-                since=local_midnight.astimezone(timezone.utc), now=now
+                since=local_midnight.astimezone(timezone.utc), now=now, product_type=product
             )
-            week_activity = service.get_market_activity(days=7, now=now)
+            week_activity = service.get_market_activity(days=7, now=now, product_type=product)
             moves_by_term: dict[int, int] = {}
             for change in service.get_changes(
-                days=7, now=now, scope_to_market=True, rate_category=snapshot.rate_category
+                days=7,
+                now=now,
+                scope_to_market=True,
+                product_type=product,
+                rate_category=snapshot.rate_category,
             ):
                 if change.is_rate_move and not change.suspicious and change.term_months:
                     moves_by_term[change.term_months] = moves_by_term.get(change.term_months, 0) + 1
             terms = tuple(sorted(set(snapshot.term_months) | {e.term_months for e in exclusions}))
             selectable_terms = snapshot.term_months
-            quarantined = service.get_market_quarantined(snapshot=snapshot)
+            quarantined = service.get_market_quarantined(product, snapshot=snapshot)
             cells: dict[tuple[str, int], MatrixCell] = {}
             for term in snapshot.term_months:
                 for entry in snapshot[term].entries:
@@ -213,14 +245,10 @@ class DashboardServices:
                     (exclusion.bank, exclusion.term_months),
                     MatrixCell(rate_pct=exclusion.rate_pct, stale=True),
                 )
+            header, rationale = _header_info(service, product, now)
             return Result.ok(
                 Overview(
-                    header=HeaderInfo(
-                        last_update=_last_update(service),
-                        market_state=state.state.value,
-                        fresh_banks=health.fresh_bank_count,
-                        configured_banks=len(health.banks),
-                    ),
+                    header=header,
                     changes_today=today_activity.changes,
                     changes_7d=week_activity.changes,
                     banks_repricing_7d=week_activity.banks_changed,
@@ -230,7 +258,7 @@ class DashboardServices:
                         if moves_by_term
                         else None
                     ),
-                    market_state_rationale=state.rationale,
+                    market_state_rationale=rationale,
                     matrix=MarketMatrix(
                         banks=tuple(service.config.selected_banks), terms=terms, cells=cells
                     ),
@@ -241,17 +269,22 @@ class DashboardServices:
                         else (selectable_terms[0] if selectable_terms else None)
                     ),
                     exclusions=exclusions,
+                    product_type=product,
                 )
             )
 
-        return self._guard(build)
+        return self._guard(build, product)
 
-    def term_summary(self, term_months: int) -> Result[TermSummary]:
+    def term_summary(
+        self, term_months: int, product_type: ProductType = ProductType.HOME_LOAN
+    ) -> Result[TermSummary]:
+        product = ProductType(product_type)
+
         def build(service: PricingIntelligenceService) -> Result[TermSummary]:
             now = self._clock()
-            market = service.get_market_snapshot(now=now).term(term_months)
+            market = service.get_market_snapshot(product_type=product, now=now).term(term_months)
             if market is None:
-                return Result.empty(f"No comparable market data at {term_months} months.")
+                return Result.empty(_no_term_message(term_months, product))
             return Result.ok(
                 TermSummary(
                     term_months=term_months,
@@ -268,25 +301,32 @@ class DashboardServices:
                         RankedBank(e.rank, e.bank, e.rate_pct, e.product_name)
                         for e in market.ranking()
                     ),
+                    best_pct=market.best_rate,
+                    product_type=product,
                 )
             )
 
-        return self._guard(build)
+        return self._guard(build, product)
 
-    def bank_positions(self, term_months: int) -> Result[tuple[BankPosition, ...]]:
+    def bank_positions(
+        self, term_months: int, product_type: ProductType = ProductType.HOME_LOAN
+    ) -> Result[tuple[BankPosition, ...]]:
+        product = ProductType(product_type)
+
         def build(service: PricingIntelligenceService) -> Result[tuple[BankPosition, ...]]:
             now = self._clock()
-            snapshot = service.get_market_snapshot(now=now)
+            snapshot = service.get_market_snapshot(product_type=product, now=now)
             market = snapshot.term(term_months)
             if market is None:
-                return Result.empty(f"No comparable market data at {term_months} months.")
-            quarantined = service.get_market_quarantined(snapshot=snapshot)
+                return Result.empty(_no_term_message(term_months, product))
+            quarantined = service.get_market_quarantined(product, snapshot=snapshot)
             last_change: dict[str, datetime] = {}
             for change in service.get_changes(
                 days=None,
                 term_months=term_months,
                 now=now,
                 scope_to_market=True,
+                product_type=product,
                 rate_category=snapshot.rate_category,
             ):
                 if change.is_rate_move and not change.suspicious:
@@ -313,25 +353,31 @@ class DashboardServices:
                 )
             )
 
-        return self._guard(build)
+        return self._guard(build, product)
 
     # ------------------------------------------------------------- history
 
     def history(
-        self, term_months: int, banks: tuple[str, ...], days: Optional[int]
+        self,
+        term_months: int,
+        banks: tuple[str, ...],
+        days: Optional[int],
+        product_type: ProductType = ProductType.HOME_LOAN,
     ) -> Result[HistoryData]:
         """Per-bank rate history, market median/leader/spread per date, repricing timeline.
 
         ``banks`` filters the lines only; market statistics always use every bank
-        observed on that date (via ``term_market_from_rates``, the snapshot's own maths).
+        observed on that date (via ``term_market_from_rates``, the snapshot's own maths,
+        given the product so a deposit leader is the *highest* rate on each date).
         """
+        product = ProductType(product_type)
 
         def build(service: PricingIntelligenceService) -> Result[HistoryData]:
             now = self._clock()
             local_now = now.astimezone(NZ_TZ)
-            rate_category = service.get_market_snapshot(now=now).rate_category
+            rate_category = service.get_market_snapshot(product_type=product, now=now).rate_category
             series = service.get_rate_history_series(
-                term_months=term_months, rate_category=rate_category, tz=NZ_TZ
+                term_months=term_months, rate_category=rate_category, product_type=product, tz=NZ_TZ
             )
             if days is not None:
                 cutoff = (local_now - timedelta(days=days)).date()
@@ -355,7 +401,7 @@ class DashboardServices:
             for day, rates in series:
                 if not rates:
                     continue
-                term_market = term_market_from_rates(term_months, rates)
+                term_market = term_market_from_rates(term_months, rates, product_type=product)
                 market.append(
                     MarketPoint(
                         day,
@@ -373,6 +419,7 @@ class DashboardServices:
                         term_months=term_months,
                         now=now,
                         scope_to_market=True,
+                        product_type=product,
                         rate_category=rate_category,
                     )
                     if c.is_rate_move and not c.suspicious
@@ -390,9 +437,9 @@ class DashboardServices:
                 for c in moves
                 if first is not None and c.change_bps is not None
             )
-            return Result.ok(HistoryData(points, tuple(market), timeline))
+            return Result.ok(HistoryData(points, tuple(market), timeline, product))
 
-        return self._guard(build)
+        return self._guard(build, product)
 
     # -------------------------------------------------------------- health
 
@@ -404,7 +451,7 @@ class DashboardServices:
                 assess_system_health(service, product_type=product_type, now=self._clock())
             )
 
-        return self._guard(build)
+        return self._guard(build, product_type)
 
     def exclusions(
         self, product_type: ProductType = ProductType.HOME_LOAN
@@ -481,10 +528,16 @@ class DashboardServices:
     def scenarios(self, request: ScenarioRequest) -> Result[ScenarioView]:
         """Run the optimiser's scenario set plus the operator's selected assumption.
 
-        Decision support only: nothing here prices anything. The comparison rows are
-        ``run_triggered_scenarios``'s own; the selected scenario is one optimiser run under
-        the chosen competitor assumption.
+        Decision support only: nothing here prices anything. ``request.mode`` picks the side
+        whose competitor benchmark is overlaid, through the same seams the scheduled workflow
+        uses: ``run_triggered_scenarios`` with a home-loan *or* a term-deposit snapshot, and
+        ``apply_market_strategy_to_config`` with its loan or ``deposit_*`` arguments (both for
+        the joint mode). The optimiser always solves loan and deposit rates jointly; a mode only
+        decides which competitor input moves and which output is the scenario's own rate.
         """
+        mode = request.mode
+        if mode not in SCENARIO_MODES:
+            return Result.error(f"Unknown scenario mode: {mode}.")
 
         def build(service: PricingIntelligenceService) -> Result[ScenarioView]:
             now = self._clock()
@@ -495,28 +548,27 @@ class DashboardServices:
                 return Result.error(
                     "The engine config could not be read; check PRICING_WATCH_CONFIG."
                 )
-            snapshot = service.get_market_snapshot(now=now)
-            if request.term_months not in snapshot.term_months:
-                return Result.empty(f"No comparable market data at {request.term_months} months.")
+            loan_snapshot = deposit_snapshot = deposit_term = None
+            if mode in (SCENARIO_HOME_LOAN, SCENARIO_JOINT):
+                loan_snapshot = service.get_market_snapshot(now=now)
+                if request.term_months not in loan_snapshot.term_months:
+                    return Result.empty(
+                        _no_term_message(request.term_months, ProductType.HOME_LOAN)
+                    )
+            if mode in (SCENARIO_TERM_DEPOSIT, SCENARIO_JOINT):
+                deposit_snapshot = service.get_market_snapshot(
+                    product_type=ProductType.TERM_DEPOSIT, now=now
+                )
+                deposit_term = (
+                    request.deposit_term_months if mode == SCENARIO_JOINT else request.term_months
+                )
+                if deposit_term not in deposit_snapshot.term_months:
+                    return Result.empty(_no_term_message(deposit_term, ProductType.TERM_DEPOSIT))
             strategy = CompetitorRateStrategy(request.strategy)
             try:
-                comparison = run_triggered_scenarios(
-                    base, term_months=request.term_months, snapshot=snapshot
+                comparison, selected_config = self._scenario_configs(
+                    base, request, strategy, loan_snapshot, deposit_snapshot
                 )
-                if strategy is CompetitorRateStrategy.MANUAL:
-                    if request.manual_rate_pct is None:
-                        raise MarketStrategyError("MANUAL needs a manual competitor rate.")
-                    selected_config = apply_manual_competitor_rate_to_config(
-                        base, request.manual_rate_pct / 100
-                    )
-                else:
-                    selected_config = apply_market_strategy_to_config(
-                        base,
-                        strategy=strategy,
-                        snapshot=snapshot,
-                        term_months=request.term_months,
-                        offset_bps=request.offset_bps,
-                    )
                 diagnostics = run_baseline_diagnostics(selected_config)
             except MarketStrategyError as exc:
                 return Result.error(f"Scenario could not be built: {exc}")
@@ -527,21 +579,16 @@ class DashboardServices:
                 return Result.error("The pricing scenario failed to run; see the log.")
 
             best = diagnostics.best_result
-            # A view of the backend grid (best objective at each loan rate across deposit
-            # rates) for charting; no economics are computed here.
-            curve = tuple(
-                CurvePoint(float(rate), float(objective))
-                for rate, objective in diagnostics.grid_results.groupby("loan_rate")[
-                    "total_objective"
-                ]
-                .max()
-                .items()
-            )
+            is_deposit = mode == SCENARIO_TERM_DEPOSIT
+            side_product = ProductType.TERM_DEPOSIT if is_deposit else ProductType.HOME_LOAN
             position = None
-            if request.current_rate_pct is not None:
+            if request.current_rate_pct is not None and mode != SCENARIO_JOINT:
                 try:
                     pos = service.get_competitive_position(
-                        request.current_rate_pct, term_months=request.term_months, now=now
+                        request.current_rate_pct,
+                        term_months=request.term_months,
+                        now=now,
+                        product_type=side_product,
                     )
                 except ValueError:
                     pos = None
@@ -554,7 +601,23 @@ class DashboardServices:
                         pos.market_median,
                         pos.bank_count,
                     )
-            optimum = comparison.model_optimum
+            optimum = comparison.model_optimum if comparison else None
+            market = selected_config.market
+            loan_exclusions = deposit_exclusions = ()
+            if loan_snapshot is not None:
+                loan_exclusions = tuple(
+                    e
+                    for e in service.get_market_exclusions(now=now)
+                    if e.term_months == request.term_months
+                )
+            if deposit_snapshot is not None:
+                deposit_exclusions = tuple(
+                    e
+                    for e in service.get_market_exclusions(
+                        product_type=ProductType.TERM_DEPOSIT, now=now
+                    )
+                    if e.term_months == deposit_term
+                )
             return Result.ok(
                 ScenarioView(
                     request=request,
@@ -562,30 +625,90 @@ class DashboardServices:
                         ScenarioRowView(
                             r.label, r.strategy, r.competitor_rate, r.our_rate, r.objective
                         )
-                        for r in comparison.rows
+                        for r in (comparison.rows if comparison else ())
                     ),
                     selected=SelectedScenario(
-                        our_rate=best.loan_rate,
+                        our_rate=best.deposit_rate if is_deposit else best.loan_rate,
                         objective=best.total_objective,
                         expected_loan_volume=best.expected_loan_volume,
                         funding_shortfall=best.funding_shortfall,
-                        competitor_rate=selected_config.market.competitor_loan_rate,
+                        competitor_rate=(
+                            market.competitor_deposit_rate
+                            if is_deposit
+                            else market.competitor_loan_rate
+                        ),
                         rationale=_rationale(strategy, request),
                         boundary_warning=diagnostics.boundary_diagnostics.has_warning,
                         policy_band_breached=bool(diagnostics.policy_band_breached),
+                        mode=mode,
+                        loan_rate=best.loan_rate,
+                        deposit_rate=best.deposit_rate,
+                        expected_deposit_volume=best.expected_deposit_volume,
+                        deposit_interest_cost=best.deposit_interest_cost,
+                        loan_competitor_rate=market.competitor_loan_rate,
+                        deposit_competitor_rate=market.competitor_deposit_rate,
                     ),
-                    curve=curve,
+                    curve=_objective_curve(diagnostics.grid_results, "loan_rate"),
                     position=position,
                     model_optimum_rate=optimum.our_rate if optimum else None,
-                    excluded_banks=tuple(
-                        e
-                        for e in service.get_market_exclusions(now=now)
-                        if e.term_months == request.term_months
-                    ),
+                    excluded_banks=deposit_exclusions if is_deposit else loan_exclusions,
+                    mode=mode,
+                    deposit_curve=_objective_curve(diagnostics.grid_results, "deposit_rate"),
+                    deposit_excluded_banks=deposit_exclusions if mode == SCENARIO_JOINT else (),
                 )
             )
 
         return self._guard(build)
+
+    @staticmethod
+    def _scenario_configs(base, request, strategy, loan_snapshot, deposit_snapshot):
+        """(comparison set or None, the selected scenario's config) for the request's mode."""
+        if request.mode == SCENARIO_JOINT:
+            deposit_strategy = CompetitorRateStrategy(request.deposit_strategy or request.strategy)
+            if CompetitorRateStrategy.MANUAL in (strategy, deposit_strategy):
+                raise MarketStrategyError(
+                    "the joint scenario needs a market benchmark on both sides"
+                )
+            # No comparison set: run_triggered_scenarios varies one side at a time.
+            return None, apply_market_strategy_to_config(
+                base,
+                strategy=strategy,
+                snapshot=loan_snapshot,
+                term_months=request.term_months,
+                offset_bps=request.offset_bps,
+                deposit_snapshot=deposit_snapshot,
+                deposit_strategy=deposit_strategy,
+                deposit_term_months=request.deposit_term_months,
+                deposit_offset_bps=request.deposit_offset_bps,
+            )
+        is_deposit = request.mode == SCENARIO_TERM_DEPOSIT
+        snapshot = deposit_snapshot if is_deposit else loan_snapshot
+        comparison = run_triggered_scenarios(
+            base, term_months=request.term_months, snapshot=snapshot
+        )
+        if strategy is CompetitorRateStrategy.MANUAL:
+            if request.manual_rate_pct is None:
+                raise MarketStrategyError("MANUAL needs a manual competitor rate.")
+            return comparison, apply_manual_competitor_rate_to_config(
+                base,
+                request.manual_rate_pct / 100,
+                product_type=snapshot.product_type,
+            )
+        if is_deposit:
+            return comparison, apply_market_strategy_to_config(
+                base,
+                deposit_strategy=strategy,
+                deposit_snapshot=snapshot,
+                deposit_term_months=request.term_months,
+                deposit_offset_bps=request.offset_bps,
+            )
+        return comparison, apply_market_strategy_to_config(
+            base,
+            strategy=strategy,
+            snapshot=snapshot,
+            term_months=request.term_months,
+            offset_bps=request.offset_bps,
+        )
 
     # -------------------------------------------------------------- changes
 
@@ -602,15 +725,21 @@ class DashboardServices:
         return {"days": 7}
 
     def changes(
-        self, window: ChangeWindow, filters: Optional[ChangeFilters] = None
+        self,
+        window: ChangeWindow,
+        filters: Optional[ChangeFilters] = None,
+        product_type: ProductType = ProductType.HOME_LOAN,
     ) -> Result[tuple[ChangeRow, ...]]:
+        """One product's events. Mortgage and deposit events are never mixed in one read."""
         filters = filters or ChangeFilters()
+        product = ProductType(product_type)
 
         def build(service: PricingIntelligenceService) -> Result[tuple[ChangeRow, ...]]:
             now = self._clock()
             changes = service.get_changes(
                 now=now,
                 scope_to_market=True,
+                product_type=product,
                 bank=filters.bank,
                 term_months=filters.term_months,
                 **self._window_args(window, now),
@@ -628,7 +757,7 @@ class DashboardServices:
             ranks = _RankCache(service)
             return Result.ok(tuple(self._row(c, ranks) for c in changes))
 
-        return self._guard(build)
+        return self._guard(build, product)
 
     @staticmethod
     def _row(change: RateChange, ranks: "_RankCache") -> ChangeRow:
@@ -646,15 +775,23 @@ class DashboardServices:
             previous_rank=previous_rank,
             new_rank=new_rank,
             rate_category=change.rate_category,
+            product_type=ProductType(change.product_type),
         )
 
-    def event_detail(self, key: str) -> Result[EventDetail]:
+    def event_detail(
+        self, key: str, product_type: ProductType = ProductType.HOME_LOAN
+    ) -> Result[EventDetail]:
+        """Provenance for one event, looked up in its own product's history only."""
+        product = ProductType(product_type)
+
         def build(service: PricingIntelligenceService) -> Result[EventDetail]:
             now = self._clock()
             change = next(
                 (
                     c
-                    for c in service.get_changes(days=None, now=now, scope_to_market=True)
+                    for c in service.get_changes(
+                        days=None, now=now, scope_to_market=True, product_type=product
+                    )
                     if _event_key(c) == key
                 ),
                 None,
@@ -665,6 +802,7 @@ class DashboardServices:
             history = service.get_rate_history(
                 bank=change.bank,
                 term_months=change.term_months,
+                product_type=change.product_type,
                 rate_category=change.rate_category,
                 days=None,
                 now=change.detected_at,
@@ -679,7 +817,11 @@ class DashboardServices:
                 None,
             )
             market = ranks.new_market(change)
-            state = service.get_market_state(now=change.detected_at) if market else None
+            state = (
+                service.get_market_state(now=change.detected_at, product_type=change.product_type)
+                if market
+                else None
+            )
             return Result.ok(
                 EventDetail(
                     row=self._row(change, ranks),
@@ -694,7 +836,23 @@ class DashboardServices:
                 )
             )
 
-        return self._guard(build)
+        return self._guard(build, product)
+
+
+def _header_info(
+    service: PricingIntelligenceService, product: ProductType, now: datetime
+) -> tuple[HeaderInfo, str]:
+    """One product's header and its market-state rationale, from that product's data only."""
+    health = assess_system_health(service, product_type=product, now=now)
+    state = service.get_market_state(now=now, product_type=product)
+    header = HeaderInfo(
+        last_update=_last_update(service, product),
+        market_state=state.state.value,
+        fresh_banks=health.fresh_bank_count,
+        configured_banks=len(health.banks),
+        product_type=product,
+    )
+    return header, state.rationale
 
 
 def _run_row(record: RunRecord) -> RunRow:
@@ -711,10 +869,29 @@ def _run_row(record: RunRecord) -> RunRow:
 
 
 def _rationale(strategy: CompetitorRateStrategy, request: ScenarioRequest) -> str:
+    side = {SCENARIO_TERM_DEPOSIT: "term deposit", SCENARIO_JOINT: "home loan"}.get(
+        request.mode, "home loan"
+    )
     if strategy is CompetitorRateStrategy.MANUAL:
-        return f"manual competitor rate {request.manual_rate_pct:.2f}%"
+        return f"{side} manual competitor rate {request.manual_rate_pct:.2f}%"
     offset = f", offset {request.offset_bps:+.0f} bps" if request.offset_bps else ""
-    return f"{strategy.value} at {request.term_months} months{offset}"
+    text = f"{side} {strategy.value} at {request.term_months} months{offset}"
+    if request.mode == SCENARIO_JOINT:
+        deposit = request.deposit_strategy or strategy.value
+        deposit_offset = (
+            f", offset {request.deposit_offset_bps:+.0f} bps" if request.deposit_offset_bps else ""
+        )
+        text += f"; term deposit {deposit} at {request.deposit_term_months} months{deposit_offset}"
+    return text
+
+
+def _objective_curve(grid_results, rate_column: str) -> tuple[CurvePoint, ...]:
+    """A view of the backend grid: best objective at each candidate rate on one side, across
+    every rate on the other. For charting only; no economics are computed here."""
+    return tuple(
+        CurvePoint(float(rate), float(objective))
+        for rate, objective in grid_results.groupby(rate_column)["total_objective"].max().items()
+    )
 
 
 def _event_key(change: RateChange) -> str:

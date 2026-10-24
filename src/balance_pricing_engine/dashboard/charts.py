@@ -328,15 +328,19 @@ def history_lines(
     return _finish(alt.layer(line, dots), height=theme.CHART_HEIGHT + 40)
 
 
-def market_levels(market: Sequence[MarketPoint]):
-    """Market leader and median rates over time (percent), from backend per-date statistics."""
+def market_levels(market: Sequence[MarketPoint], leader_series: str = "Market leader"):
+    """Market leader and median rates over time (percent), from backend per-date statistics.
+
+    ``leader_series`` names the leader line for the product ("Leader (highest rate)" for
+    deposits), so the legend never implies one ranking direction for both markets.
+    """
     rows = []
     for m in market:
         rows.append({"day": m.day, "series": "Market median", "value": m.median_pct})
         rows.append(
             {
                 "day": m.day,
-                "series": "Market leader",
+                "series": leader_series,
                 "value": m.leader_pct,
                 "leaders": ", ".join(m.leaders),
             }
@@ -354,13 +358,13 @@ def market_levels(market: Sequence[MarketPoint]):
             color=alt.Color(
                 "series:N",
                 scale=alt.Scale(
-                    domain=["Market leader", "Market median"], range=[theme.TEAL, theme.NAVY]
+                    domain=[leader_series, "Market median"], range=[theme.TEAL, theme.NAVY]
                 ),
                 legend=alt.Legend(title=None),
             ),
             strokeDash=alt.StrokeDash(
                 "series:N",
-                scale=alt.Scale(domain=["Market leader", "Market median"], range=[[1, 0], [6, 3]]),
+                scale=alt.Scale(domain=[leader_series, "Market median"], range=[[1, 0], [6, 3]]),
                 legend=None,
             ),
             tooltip=[
@@ -535,18 +539,23 @@ def scenario_rates(rows: Sequence[ScenarioRowView], labels: Mapping[str, str]):
     )
 
 
-def objective_curve(curve: Sequence[CurvePoint], markers: Mapping[str, float]):
+def objective_curve(
+    curve: Sequence[CurvePoint],
+    markers: Mapping[str, float],
+    rate_title: str = "Our home-loan rate (%)",
+):
     """Modelled objective across our candidate rates, with reference rates marked.
 
     ``curve`` rates are fractions (as the optimiser reports) and are plotted in percent;
     ``markers`` are already percent (current rate, market median/leader, model optimum).
+    ``rate_title`` names the side the curve is drawn along (loan or deposit rate).
     """
     frame = pd.DataFrame([{"rate": p.rate * 100, "objective": p.objective} for p in curve])
     line = (
         alt.Chart(frame)
         .mark_line(point=alt.OverlayMarkDef(size=30), strokeWidth=2.5, color=theme.NAVY)
         .encode(
-            x=alt.X("rate:Q", title="Our home-loan rate (%)", scale=alt.Scale(zero=False)),
+            x=alt.X("rate:Q", title=rate_title, scale=alt.Scale(zero=False)),
             y=alt.Y("objective:Q", title="Modelled objective ($)", axis=alt.Axis(format="~s")),
             tooltip=[
                 alt.Tooltip("rate:Q", title="Our rate (%)", format=".2f"),

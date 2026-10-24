@@ -191,3 +191,59 @@ the limit, data-state key, components, per-product collector/run/suspicious tabl
 - **Scheduler state** is still not observable; nothing claims a scheduler is active.
 - **Charts are canvases/SVG** with tooltips and an adjacent table or caption as the text
   alternative; full screen-reader parity for chart content is not achievable in Vega-Lite.
+
+## 10. Dual-product extension (2026-10-24)
+
+The redesign was mortgage-centric: every service read defaulted to `HOME_LOAN`, history
+reconstruction ranked deposits lowest-first, the event inspector could only find mortgage
+events, and copy said "lowest" and "borrower" everywhere. The backend already supported term
+deposits (`ProductType.TERM_DEPOSIT`, highest-first ranking, the `term_deposit` comparable tier);
+the dashboard now uses it end to end.
+
+**Product context.** `DashboardServices.header/overview/term_summary/bank_positions/history/
+changes/event_detail` take `product_type` (default `HOME_LOAN`). View models gained additive
+fields: `product_type` on `HeaderInfo`, `Overview`, `TermSummary` (plus `best_pct`, the
+backend's direction-aware best rate), `ChangeRow` (the event's own stored product) and
+`HistoryData`. Missing deposit data returns its own empty message; mortgage rates are never
+substituted.
+
+**Navigation.** A segmented `[ HOME LOANS ] [ TERM DEPOSITS ]` selector (`ui.product_selector`)
+sits on Command Centre (detail section), Market Explorer, Rate Movements and Market Trends.
+The choice is shared through `pw_shared_product`, follows the user between pages and can be
+seeded with `?product=term_deposit`. Lending is blue with ⌂ and a house icon; deposits are teal
+with ◎ and a savings icon; every page title names the product ("Term Deposit Market
+Explorer"). Term widgets are scoped per product (home loans keep the original keys); bank and
+config-derived filters are shared because both products offer the same options.
+
+**Command Centre.** Two market panels — leader, lowest/highest comparable rate, median,
+competitive spread, banks repricing in 7 days, fresh coverage, last update and an "Explore …"
+button that opens Market Explorer on that product — then the detailed analysis for the selected
+product. The brand bar reports activity and freshness per product.
+
+**Ranking copy.** "Mortgage market leader — lowest comparable rate" / "Term deposit market
+leader — highest comparable rate"; "Mortgage rates: lower is more attractive to borrowers" /
+"Deposit rates: higher is more attractive to depositors". Deposit copy states that a higher rate
+attracts depositors but raises the bank's funding cost. Rate rises and cuts stay neutral.
+
+**Pricing Studio.** Home loan scenario (unchanged behaviour, product-explicit labels), Term
+deposit scenario (deposit benchmark from the deposit market; headlines deposit rate, deposit
+volume, deposit funding cost and funding shortfall; the re-solved loan rate is shown as
+context only) and Joint balance sheet (both benchmarks; market strategies only; both rates,
+both volumes, funding shortfall and two objective curves; no comparison set, since the backend's
+comparison set varies one side at a time).
+
+**Not changed.** Operations & Trust controls and the live collection action (still
+mortgage-only from the dashboard; deposits are collected with
+`scripts/collect_market_rates_workflow.py --product term_deposit`). No ranking, freshness or
+economics moved into the UI.
+
+**Tests.** `tests/unit/test_dashboard_dual_product.py` uses `dual_market_factory`: separate
+mortgage and deposit observations from the same five banks, plus PIE and managed-fund rows that
+must never enter the deposit market.
+
+
+Screenshots (synthetic `dual_market_factory` data, clock pinned to the fixture date):
+[both markets](images/dual_product_dashboard/command_centre_both_markets.jpeg) ·
+[term-deposit detail](images/dual_product_dashboard/command_centre_term_deposit_detail.jpeg) ·
+[term-deposit scenario](images/dual_product_dashboard/pricing_studio_term_deposit.jpeg) ·
+[narrow viewport](images/dual_product_dashboard/command_centre_narrow.jpeg).

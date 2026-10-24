@@ -6,7 +6,15 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal, Mapping, Optional
 
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.health import FreshnessState, MarketExclusion
+
+#: Pricing Studio modes. A single-side scenario overlays one competitor benchmark; the joint mode
+#: overlays both and reads the optimiser's joint loan/deposit answer.
+SCENARIO_HOME_LOAN = "home_loan"
+SCENARIO_TERM_DEPOSIT = "term_deposit"
+SCENARIO_JOINT = "joint"
+SCENARIO_MODES = (SCENARIO_HOME_LOAN, SCENARIO_TERM_DEPOSIT, SCENARIO_JOINT)
 
 
 @dataclass(frozen=True)
@@ -15,6 +23,7 @@ class HeaderInfo:
     market_state: Optional[str]  # backend MarketState value
     fresh_banks: int
     configured_banks: int
+    product_type: ProductType = ProductType.HOME_LOAN
 
 
 @dataclass(frozen=True)
@@ -53,6 +62,10 @@ class TermSummary:
     banks_observed: int
     fresh_banks: int
     ranking: tuple[RankedBank, ...]
+    #: The backend's most competitive rate for this product (lowest for mortgages, highest for
+    #: deposits). ``None`` only for positional callers that predate product awareness.
+    best_pct: Optional[float] = None
+    product_type: ProductType = ProductType.HOME_LOAN
 
 
 @dataclass(frozen=True)
@@ -80,6 +93,7 @@ class Overview:
     selectable_terms: tuple[int, ...]  # live snapshot terms; matrix also retains stale terms
     default_term: Optional[int]
     exclusions: tuple[MarketExclusion, ...]
+    product_type: ProductType = ProductType.HOME_LOAN
 
 
 @dataclass(frozen=True)
@@ -113,6 +127,7 @@ class ChangeRow:
     previous_rank: Optional[int]
     new_rank: Optional[int]
     rate_category: str = ""  # additive: retain compatibility with positional callers
+    product_type: ProductType = ProductType.HOME_LOAN  # the event's real product, from the store
 
 
 @dataclass(frozen=True)
@@ -139,7 +154,7 @@ class HistoryPoint:
 class MarketPoint:
     day: date
     median_pct: float
-    leader_pct: float
+    leader_pct: float  # the product's best rate: lowest for mortgages, highest for deposits
     spread_bps: float
     leaders: tuple[str, ...]
 
@@ -157,17 +172,28 @@ class HistoryData:
     points: tuple[HistoryPoint, ...]
     market: tuple[MarketPoint, ...]
     timeline: tuple[TimelineEvent, ...]
+    product_type: ProductType = ProductType.HOME_LOAN
 
 
 @dataclass(frozen=True)
 class ScenarioRequest:
-    """Operator inputs. Rates here are percent (``4.89``); the optimiser works in fractions."""
+    """Operator inputs. Rates here are percent (``4.89``); the optimiser works in fractions.
+
+    ``mode`` picks the side the competitor benchmark is overlaid on. For a single-side mode the
+    first five fields describe that side (a deposit term, a deposit benchmark ...). ``joint``
+    reads them as the loan side and the ``deposit_*`` fields as the deposit side; it has no
+    manual or current-rate input.
+    """
 
     term_months: int
     strategy: str  # a CompetitorRateStrategy value
     manual_rate_pct: Optional[float]
     offset_bps: float
     current_rate_pct: Optional[float]  # operator's own advertised rate; positioning only
+    mode: str = SCENARIO_HOME_LOAN
+    deposit_term_months: Optional[int] = None  # joint only
+    deposit_strategy: Optional[str] = None  # joint only
+    deposit_offset_bps: float = 0.0  # joint only
 
 
 @dataclass(frozen=True)
@@ -198,6 +224,15 @@ class SelectedScenario:
     #: The optimiser's own grid-edge and policy-band flags (additive; default for old callers).
     boundary_warning: bool = False
     policy_band_breached: bool = False
+    #: ``our_rate``/``competitor_rate`` are the scenario's own side; these name both sides of
+    #: the optimiser's joint answer so a deposit result is never read off a loan field.
+    mode: str = SCENARIO_HOME_LOAN
+    loan_rate: Optional[float] = None
+    deposit_rate: Optional[float] = None
+    expected_deposit_volume: Optional[float] = None
+    deposit_interest_cost: Optional[float] = None
+    loan_competitor_rate: Optional[float] = None
+    deposit_competitor_rate: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -219,6 +254,11 @@ class ScenarioView:
     position: Optional[PositionView]
     model_optimum_rate: Optional[float]
     excluded_banks: tuple[MarketExclusion, ...]
+    mode: str = SCENARIO_HOME_LOAN
+    #: Best objective at each candidate deposit rate (``curve`` is per loan rate).
+    deposit_curve: tuple[CurvePoint, ...] = ()
+    #: Joint mode only: stale deposit-side banks (``excluded_banks`` holds the loan side).
+    deposit_excluded_banks: tuple[MarketExclusion, ...] = ()
 
 
 @dataclass(frozen=True)

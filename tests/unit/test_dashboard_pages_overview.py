@@ -11,9 +11,9 @@ def test_command_centre_shows_pulse_story_and_matrix(market_factory):
     assert matrix.loc["ANZ", "1Y"] == "◆ 4.79%"
     assert matrix.loc["ASB", "1Y"] == "4.89%"
     metrics = {m.label: m.value for m in app.metric}
-    assert metrics["Leader rate"] == "4.79%" and metrics["Market median"] == "4.85%"
-    assert metrics["Highest"] == "4.89%" and metrics["Dispersion"] == "10 bps"
-    assert metrics["Market leader"] == "ANZ" and metrics["Fresh coverage"] == "5 / 5"
+    assert metrics["Lowest rate"] == "4.79%" and metrics["Market median"] == "4.85%"
+    assert metrics["Competitive spread"] == "10 bps"
+    assert metrics["Mortgage leader"] == "ANZ" and metrics["Fresh coverage"] == "5 / 5"
     assert metrics["Repricing · 7d"] == "1"
     assert chart_count(app) == 1  # the market-story ranking chart
 
@@ -23,8 +23,8 @@ def test_command_centre_feed_lists_the_move_and_insights_state_backend_facts(mar
     app = run_page("overview", market.database, market.now)
     text = " ".join(m.value for m in app.markdown)
     assert "**ANZ** · 1Y" in text and "4.89% → **4.79%**" in text
-    assert "ANZ leads the 1Y market at 4.79%" in text
-    assert "1 confirmed rate move by 1 bank in the last 7 days" in text
+    assert "ANZ leads the 1Y mortgage market at 4.79%" in text
+    assert "1 confirmed mortgage rate move by 1 bank in the last 7 days" in text
 
 
 def test_highlighting_a_bank_shows_its_gaps_and_a_gap_insight(market_factory):
@@ -36,7 +36,7 @@ def test_highlighting_a_bank_shows_its_gaps_and_a_gap_insight(market_factory):
     assert metrics["Gap to leader"] == "+10 bps" and metrics["Gap to median"] == "+4 bps"
     assert metrics["Rank"] == "#4 of 5"
     text = " ".join(m.value for m in app.markdown)
-    assert "ASB is 10 bps above the 1Y market leader at 4.89% (rank #4 of 5)." in text
+    assert "ASB is 10 bps above the 1Y mortgage market leader at 4.89% (rank #4 of 5)." in text
 
 
 def test_a_quiet_market_shows_a_calm_empty_state_not_zeros(market_factory):
@@ -44,8 +44,8 @@ def test_a_quiet_market_shows_a_calm_empty_state_not_zeros(market_factory):
     app = run_page("overview", market.database, market.now)
     assert not app.exception
     text = " ".join(m.value for m in app.markdown)
-    assert "No confirmed repricing in the last 7 days" in text
-    assert "No confirmed repricing events were recorded in the last 7 days." in text
+    assert "No confirmed mortgage repricing in the last 7 days" in text
+    assert "No confirmed mortgage repricing events were recorded in the last 7 days." in text
 
 
 def test_overview_marks_stale_bank_and_explains_exclusion(market_factory):

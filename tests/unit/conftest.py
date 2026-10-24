@@ -200,3 +200,116 @@ def market_with_tier_event(market_factory, make_record):
         return market
 
     return build
+
+
+#: 12-month standard term-deposit rates by run. Run td-2 (NOW-1d) moves Westpac 3.95 -> 4.25,
+#: taking deposit leadership (highest rate) from Kiwibank; the mortgage leader stays ANZ (lowest).
+DEPOSIT_RUNS = (
+    ("td-0", timedelta(days=10), {"ANZ": 4.00, "ASB": 4.10, "BNZ": 4.10, "Westpac": 3.95, "Kiwibank": 4.20}),
+    ("td-1", timedelta(days=2), {"ANZ": 4.00, "ASB": 4.10, "BNZ": 4.10, "Westpac": 3.95, "Kiwibank": 4.20}),
+    ("td-2", timedelta(days=1), {"ANZ": 4.00, "ASB": 4.10, "BNZ": 4.10, "Westpac": 4.25, "Kiwibank": 4.20}),
+)
+
+
+@pytest.fixture
+def dual_market_factory(market_factory, make_record):
+    """The ``market_factory`` mortgage market plus a term-deposit market from the same banks.
+
+    Deposits are tracked at 6 and 12 months (mortgages only at 12), so a 6M choice cannot carry
+    over to home loans. Every run also stores rows that must never enter the deposit market: a
+    PIE "effective return" (``pie_term_deposit``, 4.60% -- it would win leadership if mixed in)
+    and a managed-fund return (``non_comparable``, 6.00%). ``stale_deposit_banks`` are only
+    observed in the first deposit run, so their deposit data is 10 days old.
+    """
+
+    def build(*, stale_deposit_banks=(), **mortgage_kwargs):
+        market = market_factory(**mortgage_kwargs)
+        store = ObservationStore(market.database)
+        config = market.config
+        previous = None
+        for index, (run_id, ago, rates) in enumerate(DEPOSIT_RUNS):
+            when = NOW - ago
+            live = [b for b in BANKS if index == 0 or b not in stale_deposit_banks]
+            records = []
+            for bank in live:
+                for term, offset in ((12, 0.0), (6, -0.25)):
+                    records.append(
+                        make_record(
+                            bank=bank,
+                            term_months=term,
+                            rate_pct=round(rates[bank] + offset, 2),
+                            observed_at=when,
+                            product_type="term_deposit",
+                            product_name="Term Deposit",
+                            rate_category="term_deposit",
+                        )
+                    )
+            if "ASB" in live:
+                records.append(
+                    make_record(
+                        bank="ASB",
+                        rate_pct=4.60,
+                        observed_at=when,
+                        product_type="term_deposit",
+                        product_name="PIE Term Deposit (effective rate of return)",
+                        rate_category="pie_term_deposit",
+                    )
+                )
+                records.append(
+                    make_record(
+                        bank="ASB",
+                        rate_pct=6.00,
+                        observed_at=when,
+                        product_type="term_deposit",
+                        product_name="Managed Fund Growth",
+                        rate_category="non_comparable",
+                    )
+                )
+            store.record_observations(
+                records, run_id=run_id, observed_at=when, product_type=ProductType.TERM_DEPOSIT
+            )
+            if previous is not None:
+                store.record_changes(
+                    detect_changes(
+                        previous,
+                        records,
+                        detected_at=when,
+                        thresholds=config.validation,
+                        run_id=run_id,
+                        banks_collected=live,
+                    )
+                )
+            for bank in BANKS:
+                ok = bank in live
+                store.update_collector_health(
+                    bank,
+                    ProductType.TERM_DEPOSIT,
+                    success=ok,
+                    error=None if ok else "ConnectionError",
+                    at=when,
+                    run_id=run_id,
+                )
+            store.write_run_record(
+                RunRecord(
+                    run_id=f"op-{run_id}",
+                    started_at=when,
+                    completed_at=when + timedelta(minutes=3),
+                    status="SUCCESS" if len(live) == len(BANKS) else "PARTIAL_SUCCESS",
+                    product_type=ProductType.TERM_DEPOSIT,
+                    banks_attempted=BANKS,
+                    banks_successful=tuple(live),
+                    banks_failed=tuple(b for b in BANKS if b not in live),
+                    rates_observed=len(records),
+                    rates_changed=0,
+                    validation_failures=0,
+                    suspicious_observations=0,
+                    market_state="NORMAL",
+                    error_summary=None,
+                    collection_run_id=run_id,
+                )
+            )
+            previous = records
+        store.close()
+        return market
+
+    return build

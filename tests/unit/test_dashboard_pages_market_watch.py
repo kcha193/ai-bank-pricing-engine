@@ -39,7 +39,7 @@ def test_the_selected_bank_detail_shows_its_terms_and_recent_moves(market_factor
     market = market_factory()
     app = run_page("market_watch", market.database, market.now)
     app.selectbox(key="market_watch_bank").set_value("ANZ").run()
-    assert any("ANZ in detail" in s.value for s in app.subheader)
+    assert any("ANZ home loans in detail" in s.value for s in app.subheader)
     text = " ".join(m.value for m in app.markdown)
     assert "**ANZ** · 1Y" in text and "4.89% → **4.79%**" in text
 
@@ -50,7 +50,7 @@ def test_market_watch_selected_bank_card(market_factory):
     app.selectbox(key="market_watch_bank").set_value("ASB").run()
     assert not app.exception
     values = {m.label: m.value for m in app.metric}
-    assert values["Current"] == "4.89%" and values["Rank"] == "#4"
+    assert values["Current mortgage rate"] == "4.89%" and values["Rank"] == "#4"
     assert values["vs leader"] == "+10 bps" and values["vs median"] == "+4 bps"
 
 
