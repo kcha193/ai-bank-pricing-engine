@@ -4,6 +4,10 @@ Timeline and event feed first, a single-event inspector beside them, and the ful
 demand. Events come from ``DashboardServices.changes`` (suspicious readings are excluded and
 shown in Operations & Trust). A collection failure is never an event: when a bank could not be
 collected the page says so above the timeline.
+
+One product at a time: mortgage and deposit events are read separately (the product is part of
+every service call and cache key), each event carries its own stored product type, and the
+event inspector looks the event up in that product's history only.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from collections import Counter
 import pandas as pd
 import streamlit as st
 
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.dashboard import theme, ui
 from balance_pricing_engine.dashboard.charts import movement_timeline
 from balance_pricing_engine.dashboard.formatting import (
@@ -24,6 +29,7 @@ from balance_pricing_engine.dashboard.formatting import (
     http_url_or_none,
 )
 from balance_pricing_engine.dashboard.models import ChangeFilters, ChangeWindow, EventDetail
+from balance_pricing_engine.dashboard.products import profile
 from balance_pricing_engine.dashboard.views._common import cached, unwrap
 from balance_pricing_engine.dashboard.services import DashboardServices
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType
@@ -46,6 +52,7 @@ def detail_rows(detail: EventDetail) -> list[tuple[str, str]]:
     scraped strings must never be interpreted as Markdown (links, images, directives).
     """
     return [
+        ("Market", profile(detail.row.product_type).label),
         ("Product", f"{detail.row.bank} — {detail.product_name}"),
         ("Observed", fmt_nz_datetime(detail.observed_at)),
         ("Effective date", detail.effective_date_text or "not published"),
@@ -63,6 +70,7 @@ def _table(rows) -> pd.DataFrame:
         [
             {
                 "Time": fmt_nz_datetime(r.detected_at),
+                "Market": profile(r.product_type).label,
                 "Bank": r.bank,
                 "Term": fmt_term(r.term_months),
                 "Rate type": r.rate_category,
@@ -78,8 +86,12 @@ def _table(rows) -> pd.DataFrame:
     )
 
 
-def _filters(services: DashboardServices):
-    """Render the filter bar. Returns (window, filters), or None when the window is invalid."""
+def _filters(services: DashboardServices, product: ProductType):
+    """Render the filter bar. Returns (window, filters), or None when the window is invalid.
+
+    Every option here comes from configuration and is the same for both products, so the
+    filters are kept when the product switches; only the event list itself is product-scoped.
+    """
     config = services.settings.intelligence
     with ui.filter_bar():
         top = st.columns([2, 1, 1], vertical_alignment="bottom")
@@ -93,7 +105,11 @@ def _filters(services: DashboardServices):
         flt = st.columns(4)
         bank = flt[0].selectbox("Bank", [ALL, *config.selected_banks], key="rate_changes_bank")
         term_labels = {fmt_term(t): t for t in config.tracked_terms_months}
-        term = flt[1].selectbox("Term", [ALL, *term_labels], key="rate_changes_term")
+        term = flt[1].selectbox(
+            f"{profile(product).noun.capitalize()} term",
+            [ALL, *term_labels],
+            key="rate_changes_term",
+        )
         direction = flt[2].selectbox(
             "Direction", list(DIRECTIONS), format_func=DIRECTIONS.get, key="rate_changes_direction"
         )
@@ -113,9 +129,9 @@ def _filters(services: DashboardServices):
     return window, filters
 
 
-def _coverage_notice(services: DashboardServices) -> None:
+def _coverage_notice(services: DashboardServices, product: ProductType) -> None:
     """Name banks we could not see, so a quiet feed is not mistaken for a quiet market."""
-    health = services.health().value  # evaluated now, never cached
+    health = services.health(product).value  # evaluated now, never cached
     if health is None:
         return
     failing = [b.bank for b in health.banks if b.collector is CollectorStatus.FAILING]
@@ -131,7 +147,7 @@ def _coverage_notice(services: DashboardServices) -> None:
         parts.append(f"no fresh observation for {', '.join(stale)}")
     if parts:
         st.info(
-            "Coverage is incomplete: "
+            f"{profile(product).label} coverage is incomplete: "
             + "; ".join(parts)
             + ". Missing observations are not treated as repricing or withdrawals."
         )
@@ -144,14 +160,16 @@ def _summary(rows) -> None:
         col.metric(f"{theme.DIRECTION_SYMBOLS[group]} {group}", counts.get(group, 0), border=True)
 
 
-def _inspector(services: DashboardServices, rows) -> None:
+def _inspector(services: DashboardServices, rows, product: ProductType) -> None:
     ui.section("Event inspector", "Provenance for one event, exactly as stored.")
     labels = [
         f"{n}. {fmt_nz_datetime(r.detected_at)} · {r.bank} · "
         f"{fmt_term(r.term_months)} · {fmt_bps(r.change_bps)}"
         for n, r in enumerate(rows, start=1)
     ]
-    index = labels.index(st.selectbox("Event", labels, key="rate_changes_event"))
+    index = labels.index(
+        st.selectbox("Event", labels, key=ui.product_key("rate_changes_event", product))
+    )
     row = rows[index]
     with st.container(border=True):
         left, right = st.columns(2)
@@ -159,7 +177,7 @@ def _inspector(services: DashboardServices, rows) -> None:
         right.metric("New rate", fmt_rate_pct(row.current_pct))
         left.metric("Movement", fmt_bps(row.change_bps))
         right.metric("Rank", f"{_rank(row.previous_rank)} → {_rank(row.new_rank)}")
-    detail = unwrap(cached(services, "event_detail", row.key))
+    detail = unwrap(cached(services, "event_detail", row.key, row.product_type))
     if detail is None:
         return
     st.dataframe(
@@ -173,22 +191,32 @@ def _inspector(services: DashboardServices, rows) -> None:
 
 
 def render(services: DashboardServices) -> None:
-    ui.page_header(
-        "Rate Movements",
-        "Confirmed competitor repricing: when it happened, how far rates moved and what it "
-        "did to the ranking.",
+    head = st.container()  # the title names the product, chosen just below it
+    product = ui.product_selector("rate_changes_product")
+    info = profile(product)
+    with head:
+        ui.page_header(
+            info.title("Rate Movements"),
+            f"Confirmed competitor {info.noun} repricing: when it happened, how far rates "
+            "moved and what it did to the ranking.",
+        )
+    ui.product_banner(product)
+    st.caption(
+        f"Rises and cuts are not labelled good or bad: a {info.rate_noun} cut is "
+        f"{'better for borrowers' if info.best_word == 'lowest' else 'worse for depositors'}"
+        f" and changes the competitive picture for every bank. {info.trade_off}"
     )
-    chosen = _filters(services)
+    chosen = _filters(services, product)
     if chosen is None:
         return
-    _coverage_notice(services)
-    rows = unwrap(cached(services, "changes", *chosen))
+    _coverage_notice(services, product)
+    rows = unwrap(cached(services, "changes", *chosen, product))
     if rows is None:
         return
 
     _summary(rows)
     ui.section(
-        "Repricing timeline",
+        f"{info.market} repricing timeline",
         "One lane per bank; marker size shows the size of the move. Order in time does not "
         "imply that one move caused another.",
     )
@@ -198,12 +226,12 @@ def render(services: DashboardServices) -> None:
 
     feed, inspector = st.columns([3, 2], gap="large")
     with feed:
-        ui.section("Event feed", f"{len(rows)} events, newest first.")
+        ui.section(f"{info.market} event feed", f"{len(rows)} {info.noun} events, newest first.")
         ui.movement_feed(rows, limit=FEED_LIMIT)
         if len(rows) > FEED_LIMIT:
             st.caption(f"Showing {FEED_LIMIT} of {len(rows)}; the full table is below.")
     with inspector:
-        _inspector(services, rows)
+        _inspector(services, rows, product)
 
     with st.expander("Advanced: full event table", expanded=False):
         st.dataframe(_table(rows), hide_index=True, width="stretch")

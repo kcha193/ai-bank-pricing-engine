@@ -115,6 +115,10 @@ APP_CSS = """
   --pw-teal-soft: rgba(14, 140, 140, 0.12);
   --pw-amber-soft: rgba(199, 124, 2, 0.13);
   --pw-muted: rgba(124, 141, 166, 1);
+  --pw-lending: #1F5AA6;
+  --pw-lending-soft: rgba(31, 90, 166, 0.09);
+  --pw-deposit: #0E8C8C;
+  --pw-deposit-soft: rgba(14, 140, 140, 0.10);
 }
 
 /* Layout: a calmer, wider canvas with consistent rhythm. */
@@ -200,6 +204,41 @@ APP_CSS = """
 /* Tabs: larger hit targets, clear active state. */
 [data-testid="stTabs"] button[role="tab"] { padding: 0.4rem 0.9rem; }
 [data-testid="stTabs"] button[role="tab"] p { font-size: 0.98rem; font-weight: 600; }
+
+/* Product identity. Lending is blue/navy, deposits teal/green; every accent is paired with a
+   symbol and a product name in the markup, so colour is never the only signal. */
+.st-key-pw-banner-home_loan, .st-key-pw-banner-term_deposit {
+  border-left: 5px solid var(--pw-lending);
+  background: var(--pw-lending-soft);
+  border-radius: var(--pw-radius);
+  padding: 0.45rem 0.9rem;
+}
+.st-key-pw-banner-term_deposit {
+  border-left-color: var(--pw-deposit);
+  background: var(--pw-deposit-soft);
+}
+.st-key-pw-banner-home_loan [data-testid="stCaptionContainer"] p,
+.st-key-pw-banner-term_deposit [data-testid="stCaptionContainer"] p { margin: 0; }
+.st-key-pw-panel-home_loan, .st-key-pw-panel-term_deposit {
+  border-top: 5px solid var(--pw-lending);
+  border-radius: var(--pw-radius);
+  padding-top: 0.2rem;
+}
+.st-key-pw-panel-term_deposit { border-top-color: var(--pw-deposit); }
+.st-key-pw-panel-home_loan [data-testid="stMetricLabel"] p,
+.st-key-pw-panel-term_deposit [data-testid="stMetricLabel"] p {
+  font-size: 0.72rem !important;
+  letter-spacing: 0.02em;
+}
+.st-key-pw-panel-home_loan [data-testid="stMetricValue"],
+.st-key-pw-panel-term_deposit [data-testid="stMetricValue"] { font-size: 1.5rem !important; }
+.st-key-pw-brand { padding-bottom: 0.9rem; }
+[class*="st-key-pw-product-switch"] button {
+  padding: 0.5rem 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+[class*="st-key-pw-product-switch"] button p { font-size: 0.95rem; font-weight: 700; }
 
 /* Keyboard focus is always visible. */
 a:focus-visible, button:focus-visible, [role="tab"]:focus-visible {

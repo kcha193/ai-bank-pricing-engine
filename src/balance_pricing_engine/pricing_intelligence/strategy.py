@@ -301,20 +301,30 @@ def apply_market_strategy_to_config(
 
 
 def apply_manual_competitor_rate_to_config(
-    config, rate_fraction: float, set_reference_rate: bool = True
+    config,
+    rate_fraction: float,
+    set_reference_rate: bool = True,
+    product_type: ProductType | str = ProductType.HOME_LOAN,
 ):
-    """Return ``config`` with an operator-entered competitor loan rate (decimal, ``0.0509``).
+    """Return ``config`` with an operator-entered competitor rate (decimal, ``0.0509``).
 
     The explicit-override counterpart of :func:`apply_market_strategy_to_config`. That
     function must keep returning the *same* config object under ``MANUAL`` (existing
     scenarios depend on it), so a caller that wants to impose its own manual rate uses
     this one instead and always receives a new, re-validated config.
+
+    ``product_type`` picks the side: ``HOME_LOAN`` (the default) sets the competitor loan
+    rate, ``TERM_DEPOSIT`` the competitor deposit rate. The other side is left untouched.
     """
     if not math.isfinite(rate_fraction) or rate_fraction < 0:
         raise MarketStrategyError("manual_rate must be finite and non-negative")
-    updates: dict = {"competitor_loan_rate": rate_fraction}
-    if set_reference_rate and config.market.home_loan_reference_rate is not None:
-        updates["home_loan_reference_rate"] = rate_fraction
+    if ProductType(product_type) is ProductType.TERM_DEPOSIT:
+        rate_field, reference_field = "competitor_deposit_rate", "term_deposit_reference_rate"
+    else:
+        rate_field, reference_field = "competitor_loan_rate", "home_loan_reference_rate"
+    updates: dict = {rate_field: rate_fraction}
+    if set_reference_rate and getattr(config.market, reference_field) is not None:
+        updates[reference_field] = rate_fraction
     updated_config = config.model_copy(
         update={"market": config.market.model_copy(update=updates)}
     )

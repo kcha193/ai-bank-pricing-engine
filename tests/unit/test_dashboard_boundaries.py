@@ -28,6 +28,7 @@ STREAMLIT_FREE = [
     "launcher_identity",
     "theme",
     "insights",
+    "products",
 ]
 
 #: Backend computations a page must not re-implement or call directly (it reads them from

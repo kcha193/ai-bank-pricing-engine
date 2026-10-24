@@ -29,14 +29,16 @@ def test_header_shows_title_last_update_in_nz_time_market_activity_and_fresh_ban
     assert any("NZ Retail Bank Pricing Watch" in t.value for t in app.title)
     text = captions(app)
     # run-2 completed 2 minutes after 10 Oct 00:00 UTC = 13:02 NZDT
-    assert "Last successful update: 10 Oct 2026 13:02 (Pacific/Auckland)" in text
-    assert any(c.startswith("Market activity: ") for c in text)
-    assert "Banks with fresh data: 5 / 5" in text
+    # One status line per product, home loans first. This fixture has no deposit data at all.
+    home, deposits = [c for c in text if c.startswith("Updated ")]
+    assert home == "Updated 10 Oct 2026 13:02 NZ · 5 / 5 fresh"
+    assert deposits.endswith("· 0 / 5 fresh")
 
 
 def test_header_counts_only_banks_whose_data_is_fresh(market_factory):
     market = market_factory(stale_banks=("Westpac",))
-    assert "Banks with fresh data: 4 / 5" in captions(render_header(market.database, market.now))
+    text = captions(render_header(market.database, market.now))
+    assert [c for c in text if c.startswith("Updated ")][0].endswith("· 4 / 5 fresh")
 
 
 def test_header_degrades_to_the_guidance_message_without_a_database(tmp_path):

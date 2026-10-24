@@ -47,7 +47,7 @@ def test_the_highlighted_bank_follows_the_user_to_other_pages(market_factory):
     app.run()
     assert not app.exception
     assert app.selectbox(key="market_watch_bank").value == "ASB"
-    assert {m.label: m.value for m in app.metric}["Current"] == "4.89%"
+    assert {m.label: m.value for m in app.metric}["Current mortgage rate"] == "4.89%"
     app.session_state["page"] = "trends"
     app.run()
     assert app.selectbox(key="trends_bank").value == "ASB"
@@ -101,25 +101,25 @@ def _views(market, bank=None):
 
 def test_insights_restate_backend_numbers_only(market_factory):
     lines = build_insights(*_views(market_factory(), "ASB"))
-    assert lines[0] == "ASB is 10 bps above the 1Y market leader at 4.89% (rank #4 of 5)."
+    assert lines[0] == "ASB is 10 bps above the 1Y mortgage market leader at 4.89% (rank #4 of 5)."
     assert lines[1] == (
-        "ANZ leads the 1Y market at 4.79%; the median is 4.85% and the spread across 5 banks "
-        "is 10 bps."
+        "ANZ leads the 1Y mortgage market at 4.79% (lowest comparable rate); the median is "
+        "4.85% and the spread across 5 banks is 10 bps."
     )
-    assert lines[2].startswith("1 confirmed rate move by 1 bank in the last 7 days")
+    assert lines[2].startswith("1 confirmed mortgage rate move by 1 bank in the last 7 days")
 
 
 def test_insights_name_stale_and_quarantined_banks(market_factory):
     stale = build_insights(*_views(market_factory(stale_banks=("Westpac",))))
     assert any(
-        "1 bank is excluded from the 1Y comparison because the latest data is stale: Westpac."
+        "1 bank is excluded from the 1Y mortgage comparison because the latest data is stale: Westpac."
         == line
         for line in stale
     )
     quarantined = build_insights(
         *_views(market_factory(anz_new_rate=8.49, anz_new_status="warning", name="q.db"))
     )
-    assert any("The latest 1Y reading for ANZ was quarantined" in line for line in quarantined)
+    assert any("The latest 1Y mortgage reading for ANZ was quarantined" in line for line in quarantined)
     assert not any("8.49" in line for line in quarantined)
 
 

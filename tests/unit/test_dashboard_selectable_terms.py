@@ -184,7 +184,7 @@ def test_stale_rates_never_reach_rankings_or_scenario_benchmarks(tmp_path, make_
     app = run_page("scenarios", market.database, market.now)
     app.button(key="scenario_run").click().run()
     assert not app.exception
-    assert {m.label: m.value for m in app.metric}["Competitor assumption"] == "4.79%"
+    assert {m.label: m.value for m in app.metric}["Competitor mortgage assumption"] == "4.79%"
     assert any("BNZ excluded" in w.value for w in app.warning)
     assert not any("ANZ excluded" in w.value for w in app.warning)
 
@@ -196,7 +196,7 @@ def test_scenario_for_a_newly_stale_term_is_hidden_until_explicit_rerun(
     market = recorded_market(tmp_path, make_record, (12, 24), ())
     app = clocked_page("scenarios", market)
     app.button(key="scenario_run").click().run()
-    assert any(m.label == "Optimal rate" for m in app.metric)
+    assert any(m.label == "Optimal home-loan rate" for m in app.metric)
     later = market.now + timedelta(hours=169)
     with ObservationStore(market.database) as store:
         store.record_observations(
@@ -208,13 +208,13 @@ def test_scenario_for_a_newly_stale_term_is_hidden_until_explicit_rerun(
     with patch.object(services_module, "run_triggered_scenarios") as optimiser:
         app.run()
         assert not app.exception
-        assert not any(m.label == "Optimal rate" for m in app.metric)
+        assert not any(m.label == "Optimal home-loan rate" for m in app.metric)
         optimiser.assert_not_called()
     if remaining_live:
         assert any("no longer available" in w.value for w in app.warning)
         app.button(key="scenario_run").click().run()
         assert not app.exception
-        assert any(m.label == "Optimal rate" for m in app.metric)
+        assert any(m.label == "Optimal home-loan rate" for m in app.metric)
 
 
 @pytest.mark.parametrize("fallback_age,expected,default", [(2, (12, 24), 12), (169, (24,), 24)])

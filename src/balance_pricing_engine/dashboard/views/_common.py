@@ -15,6 +15,7 @@ from balance_pricing_engine.dashboard.formatting import (
     fmt_term,
 )
 from balance_pricing_engine.dashboard.models import MarketMatrix, Overview
+from balance_pricing_engine.dashboard.products import PRODUCT_ORDER, profile
 from balance_pricing_engine.dashboard.results import Result
 from balance_pricing_engine.dashboard.services import DashboardServices
 
@@ -54,13 +55,15 @@ def live_term_selector(
     """Render live terms, retaining a valid choice or resetting to the service default.
 
     The choice is shared across pages (see ``ui.shared_selectbox``): picking 2Y on the Command
-    Centre opens Market Explorer on 2Y too.
+    Centre opens Market Explorer on 2Y too. Only the overview's own product's live terms are
+    offered, so a term that exists for mortgages but not deposits is dropped on switching.
     """
+    info = profile(overview.product_type)
     terms = overview.selectable_terms
     if not terms:
         st.session_state.pop(key, None)
         st.info(
-            "No fresh comparable market terms are available. "
+            f"No fresh comparable {info.noun} terms are available. "
             "Stale observations are kept for audit in the Market Explorer matrix; "
             "collect rates through Operations & Trust."
         )
@@ -73,7 +76,8 @@ def live_term_selector(
         shared_key=ui.SHARED_TERM,
         default=fmt_term(overview.default_term),
         container=container,
-        help="Mortgage term to compare. Only terms with fresh, comparable rates are offered.",
+        help=f"{info.noun.capitalize()} term to compare. Only terms with fresh, comparable "
+        f"{info.label.lower()} rates are offered.",
     )
     return terms[labels.index(chosen)]
 
@@ -127,6 +131,14 @@ MATRIX_LEGEND = (
 )
 
 
+def matrix_legend(product) -> str:
+    """``MATRIX_LEGEND`` with the product's own leader rule spelled out."""
+    info = profile(product)
+    return MATRIX_LEGEND.replace(
+        "◆ term leader", f"◆ term leader ({info.best_word} comparable {info.rate_noun})"
+    )
+
+
 def _cell_style(text: str) -> str:
     if text.startswith("⚠"):
         return "background-color: rgba(199, 124, 2, 0.16); font-style: italic;"
@@ -142,27 +154,38 @@ def styled_matrix(frame: pd.DataFrame):
 
 
 def render_header(services: DashboardServices) -> None:
-    """Brand bar on every page: identity, data timestamp, activity and coverage."""
-    result = services.header()  # uncached: freshness depends on 'now'
-    header = result.value
+    """Brand bar on every page: identity, then data timestamp, activity and coverage for each
+    product separately -- a fresh mortgage run says nothing about deposit freshness."""
     with st.container(key="pw-brand"):
         identity, status = st.columns([1, 2], vertical_alignment="center")
         with identity:
             st.title("NZ Retail Bank Pricing Watch", anchor=False)
-            st.caption("Home-loan pricing intelligence · decision support only")
+            st.caption(
+                "Home-loan and term-deposit pricing intelligence · decision support only"
+            )
         with status:
-            if header is None:
-                st.caption(result.message)
-                return
-            with st.container(horizontal=True, horizontal_alignment="right", gap="small"):
-                ui.market_state_badge(header.market_state)
-                ui.coverage_badge(header.fresh_banks, header.configured_banks)
-            with st.container(horizontal=True, horizontal_alignment="right", gap="medium"):
-                st.caption(
-                    f"Last successful update: {fmt_nz_datetime(header.last_update)} "
-                    "(Pacific/Auckland)"
-                )
-                st.caption(f"Market activity: {header.market_state or EM_DASH}")
-                st.caption(
-                    f"Banks with fresh data: {header.fresh_banks} / {header.configured_banks}"
-                )
+            for product in PRODUCT_ORDER:
+                _product_status(services, product)
+
+
+def _product_status(services: DashboardServices, product) -> None:
+    info = profile(product)
+    result = services.header(product)  # uncached: freshness depends on 'now'
+    header = result.value
+    with st.container(horizontal=True, horizontal_alignment="right", gap="small"):
+        ui.product_badge(product)
+        if header is None:
+            st.caption(
+                result.message
+                if result.status == "ERROR"
+                else f"No market data collected yet for {info.label.lower()}"
+            )
+            return
+        ui.market_state_badge(header.market_state)
+        ui.coverage_badge(header.fresh_banks, header.configured_banks)
+        st.caption(
+            f"Updated {fmt_nz_datetime(header.last_update)} NZ · "
+            f"{header.fresh_banks} / {header.configured_banks} fresh",
+            help=f"{info.label}: last successful update (Pacific/Auckland) and banks with fresh "
+            "data. Each product is collected and assessed separately.",
+        )

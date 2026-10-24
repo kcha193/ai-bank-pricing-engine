@@ -52,11 +52,10 @@ def test_flow_a_market_monitoring_matches_the_backend(market_factory):
         shown = matrix.loc[entry.bank, "1Y"].removeprefix("◆ ")
         assert shown == fmt_rate_pct(entry.rate_pct)
     metrics = {m.label: m.value for m in app.metric}
-    assert metrics["Market leader"] == ", ".join(truth.market_leaders)
-    assert metrics["Leader rate"] == fmt_rate_pct(truth.lowest_rate)
+    assert metrics["Mortgage leader"] == ", ".join(truth.market_leaders)
+    assert metrics["Lowest rate"] == fmt_rate_pct(truth.best_rate)
     assert metrics["Market median"] == fmt_rate_pct(truth.median_rate)
-    assert metrics["Highest"] == fmt_rate_pct(truth.highest_rate)
-    assert metrics["Dispersion"] == f"{truth.spread_bps:.0f} bps"
+    assert metrics["Competitive spread"] == f"{truth.spread_bps:.0f} bps"
     explorer = run_page("market_watch", market.database, market.now)
     ranking = frame_with(explorer, "Rank")
     assert [(r.rank, r.bank) for r in truth.ranking()] == list(

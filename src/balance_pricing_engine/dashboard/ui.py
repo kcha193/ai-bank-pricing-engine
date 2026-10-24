@@ -5,9 +5,11 @@ Text from bank pages or error messages (product names, source URLs, parser versi
 errors) never passes through a component here -- it belongs in dataframe cells -- and
 ``tests/unit/test_dashboard_boundaries.py`` scans this module like a page.
 
-Shared filters: the selected term and the highlighted bank follow the user between pages.
+Shared filters: the selected product, term and highlighted bank follow the user between pages.
 Each page keeps its own widget key (so a page's widgets are independent and testable), seeded
 from a canonical session value when the page is opened and writing back to it on every run.
+Pages scope their term and bank widget keys by product, so a term chosen for mortgages is only
+carried over to deposits when the deposit market actually offers it.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from typing import Iterator, Optional, Sequence
 
 import streamlit as st
 
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.dashboard import theme
 from balance_pricing_engine.dashboard.formatting import (
     EM_DASH,
@@ -26,9 +29,13 @@ from balance_pricing_engine.dashboard.formatting import (
     fmt_term,
 )
 from balance_pricing_engine.dashboard.models import ChangeRow
+from balance_pricing_engine.dashboard.products import PRODUCT_ORDER, ProductProfile, profile
 
 SHARED_TERM = "pw_shared_term"
 SHARED_BANK = "pw_shared_bank"
+SHARED_PRODUCT = "pw_shared_product"
+#: ``?product=term_deposit`` opens a market page on deposits (bookmarks, links from alerts).
+PRODUCT_QUERY_PARAM = "product"
 _PAGES = "pw_registered_pages"
 
 #: Destination ids used for cross-page links. ``app.py`` registers the matching pages.
@@ -101,6 +108,93 @@ def coverage_badge(fresh: int, configured: int) -> None:
         st.badge(
             f"{fresh} of {configured} banks fresh", icon=":material/warning:", color="orange"
         )
+
+
+# ----------------------------------------------------------------------------- product
+
+
+def _product_from(value) -> Optional[ProductType]:
+    try:
+        return ProductType(value) if value else None
+    except ValueError:
+        return None
+
+
+def product_key(base: str, product: ProductType) -> str:
+    """A widget key scoped to one product. Home loans keep the original, unsuffixed key so the
+    pre-dual-product pages (and anything keyed on them) behave exactly as before."""
+    product = ProductType(product)
+    return base if product is ProductType.HOME_LOAN else f"{base}_{product.value}"
+
+
+def current_product() -> ProductType:
+    """The product the user last selected anywhere (home loans until they choose)."""
+    return _product_from(st.session_state.get(SHARED_PRODUCT)) or ProductType.HOME_LOAN
+
+
+def set_product(product: ProductType) -> None:
+    st.session_state[SHARED_PRODUCT] = ProductType(product).value
+
+
+def product_selector(key: str) -> ProductType:
+    """The persistent [ ⌂ HOME LOANS ] [ ◎ TERM DEPOSITS ] control.
+
+    Seeded, in order, from this page's own choice, the shared choice, a ``?product=`` query
+    parameter, then home loans; always writes back to the shared choice, so the product follows
+    the user across pages. ``required`` stops a click on the active segment clearing it.
+    """
+    values = [product.value for product in PRODUCT_ORDER]
+    if st.session_state.get(key) not in values:
+        seed = (
+            _product_from(st.session_state.get(SHARED_PRODUCT))
+            or _product_from(st.query_params.get(PRODUCT_QUERY_PARAM))
+            or ProductType.HOME_LOAN
+        )
+        st.session_state[key] = seed.value
+    with st.container(key=f"pw-product-switch-{key}"):
+        chosen = st.segmented_control(
+            "Product market",
+            values,
+            key=key,
+            required=True,
+            format_func=lambda value: f"{profile(value).icon} {profile(value).label.upper()}",
+            help="Home loans (lending) and term deposits (deposit funding) are separate markets, "
+            "ranked in opposite directions. Your choice follows you between pages.",
+        )
+    product = _product_from(chosen) or ProductType.HOME_LOAN
+    set_product(product)
+    return product
+
+
+def product_banner(product: ProductType) -> None:
+    """A strong, product-coloured strip under a page header naming the market and its rule."""
+    info = profile(product)
+    with st.container(key=f"pw-banner-{info.product_type.value}"):
+        with st.container(horizontal=True, gap="small", vertical_alignment="center"):
+            product_badge(product)
+            st.caption(f"{info.side} · {info.ranking_rule} · comparable tier: {info.tier}")
+
+
+def product_badge(product: ProductType) -> None:
+    info = profile(product)
+    st.badge(info.label, icon=info.icon, color=info.badge)
+
+
+def product_nav_button(
+    destination: str, label: str, product: ProductType, *, key: str, icon: Optional[str] = None
+) -> None:
+    """A button that opens ``destination`` already switched to ``product``."""
+    if st.button(label, key=key, icon=icon, on_click=set_product, args=(product,)):
+        page = st.session_state.get(_PAGES, {}).get(destination)
+        if page is not None:
+            st.switch_page(page)
+
+
+def ranking_help(info: ProductProfile) -> str:
+    return (
+        f"{info.leader_label}. {info.ranking_rule}. Rankings come from the backend snapshot; "
+        f"tied banks share a rank. {info.trade_off}"
+    )
 
 
 # ---------------------------------------------------------------------- shared filters
@@ -176,13 +270,19 @@ def change_label(row: ChangeRow) -> str:
 
 
 def movement_card(row: ChangeRow) -> None:
-    """One repricing event as a compact card. Every value is structured backend data."""
+    """One repricing event as a compact card. Every value is structured backend data.
+
+    The product tag comes from the event's own stored product type, never from the page.
+    """
     group = theme.change_group(row.change_type)
+    info = profile(row.product_type)
     with st.container(border=True):
         top, rates, move = st.columns([3, 3, 2], vertical_alignment="center")
         with top:
-            st.badge(change_label(row), color=theme.CHANGE_BADGE_COLOURS[group])
-            st.markdown(f"**{row.bank}** · {fmt_term(row.term_months)}")
+            with st.container(horizontal=True, gap="small"):
+                st.badge(change_label(row), color=theme.CHANGE_BADGE_COLOURS[group])
+                st.badge(info.tag, color=info.badge)
+            st.markdown(f"**{row.bank}** · {fmt_term(row.term_months)} {info.noun}")
         rates.markdown(f"{fmt_rate_pct(row.previous_pct)} → **{fmt_rate_pct(row.current_pct)}**")
         rates.caption(fmt_nz_datetime(row.detected_at))
         move.markdown(f"##### {fmt_bps(row.change_bps) if row.change_bps is not None else EM_DASH}")
