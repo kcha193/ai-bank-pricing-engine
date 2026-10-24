@@ -238,7 +238,7 @@ def test_quarantined_observations_are_listed_by_bank_and_term(market_factory):
     with PricingIntelligenceService(
         config=market.config, store=ObservationStore(market.database)
     ) as service:
-        assert service.get_market_quarantined() == {("ANZ", 12)}
+        assert service.get_market_quarantined(now=market.now) == {("ANZ", 12)}
         assert "ANZ" in service.get_market_snapshot(now=market.now).banks  # fallback rate used
 
 
@@ -247,7 +247,7 @@ def test_a_healthy_market_has_nothing_quarantined(market_factory):
     with PricingIntelligenceService(
         config=market.config, store=ObservationStore(market.database)
     ) as service:
-        assert service.get_market_quarantined() == set()
+        assert service.get_market_quarantined(now=market.now) == set()
 
 
 @pytest.mark.parametrize(
