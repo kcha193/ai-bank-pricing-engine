@@ -253,17 +253,17 @@ operating layer over the services above; the only dependency direction is
 `pricing_scenario_trigger`; freshness, ranking, bps, market state and scenario economics
 are never recomputed in the UI. Freshness and health have one implementation,
 `pricing_intelligence/health.py`, shared by the CLI `health` command, the market
-snapshot and the dashboard. Market Watch assesses the selected trusted snapshot entry's
+snapshot and the dashboard. Market Explorer assesses the selected trusted snapshot entry's
 confirmation time with `health.is_stale`, rather than using bank-wide freshness across terms.
-System Health resolves the same trusted fallbacks as live snapshots before assessing age;
+Operations & Trust (Data health) resolves the same trusted fallbacks as live snapshots before assessing age;
 raw quarantine flags remain separate, and bank-wide age is the oldest trusted confirmation
 across tracked terms. Scenario exclusions are scoped to the requested term. Stored scenario
 results include a SHA-256 fingerprint of the loaded engine YAML; a changed or unavailable
 configuration hides the recommendation until an explicit Run scenario action.
 Snapshot entries carry quarantine provenance from the selected observation identity, so a
-healthy sibling is never labelled as a fallback. Overview and Market Watch use that same snapshot.
-Overview retains stale-only terms in its audit matrix. Its frozen `selectable_terms` comes
-from the live snapshot; all four market pages use it, preferring 12 months only when available.
+healthy sibling is never labelled as a fallback. Command Centre and Market Explorer use that same snapshot.
+The bank × term matrix retains stale-only terms for audit. The frozen `selectable_terms` comes
+from the live snapshot; all four term selectors use it, preferring 12 months only when available.
 Selectors retain valid choices and reset unavailable ones to the live default. All-stale
 markets show guidance, and scenario results for unavailable terms are hidden until an explicit rerun.
 Scenario Lab renders static validation/option errors without exposing YAML values.
@@ -271,13 +271,22 @@ The macOS launcher verifies local listener ownership and the exact checkout comm
 `lsof`/`ps`, checking PID/start time around health probes and before reusing a port. Startup
 browser opening also requires the listener to be the launcher's own child; unavailable or
 ambiguous identity prevents opening an occupied port.
-Rate Changes matches historical metadata by observation key and event time. It retains audit
+Rate Movements matches historical metadata by observation key and event time. It retains audit
 events with their rate category, but historical ranks and market
 context are unavailable for events outside the snapshot's comparable tier.
-Reads never reach `dashboard/actions.py`: only the
-Operations page does, and live collection runs as a subprocess of the scheduled workflow
+Reads never reach `dashboard/actions.py`: only `views/operations.py` (reached solely
+through the Operations & Trust composer) does, and live collection runs as a subprocess of the scheduled workflow
 script behind a single-flight runner. See
 [pricing_intelligence.md → Dashboard](pricing_intelligence.md#dashboard).
+
+The 2026-10 redesign reorganised the console into six destinations (Command Centre, Market
+Explorer, Rate Movements, Market Trends, Pricing Studio, Operations & Trust) without moving
+any calculation: design tokens live in `theme.py`, reusable components in `ui.py`, charts in
+`charts.py` and the templated Command Centre sentences in `insights.py` (all view-model
+inputs only). Page modules live in `dashboard/views/` rather than `pages/`, because a
+`pages/` folder beside the entry script puts Streamlit in legacy multipage mode until
+`st.navigation` first runs, which broke deep links. See
+[dashboard_redesign.md](dashboard_redesign.md).
 
 ### Pricing-intelligence audit boundary (2026-09-06)
 
@@ -325,7 +334,7 @@ Last verified against `src/balance_pricing_engine/` on 2026-09-26. Moved here fr
 - [competitor_rates/](../src/balance_pricing_engine/competitor_rates/) — ingestion pipeline with its own CLI ([cli.py](../src/balance_pricing_engine/competitor_rates/cli.py)) and subcommands `fetch | fetch-interest-co-nz | validate | apply | report` (`fetch-interest-co-nz` pulls fallback rates from interest.co.nz aggregator tables). Backed by `sources.py` (official bank pages), `extractors.py`, `normalise.py`, `validate.py`, `store.py`, `apply.py`. [collectors/](../src/balance_pricing_engine/competitor_rates/collectors/) adds per-bank adapters (`anz.py`, `asb.py`, `bnz.py`, `westpac.py`, `kiwibank.py`) over a shared `base.py` that owns fetching, retry/backoff, snapshotting, enrichment and per-bank failure isolation — a bank changing its website should require editing only that bank's collector.
 - [pricing_intelligence/](../src/balance_pricing_engine/pricing_intelligence/) — NZ public-market intelligence layer built **on top of** `competitor_rates`, not replacing it. `bps.py` (exact Decimal basis points), `config.py` (all thresholds/timeouts), `store.py` (SQLite historical observation store, one row per distinct advertised state), `validation.py`, `changes.py` (`RateChange` events), `snapshot.py` (per-term dispersion + standard competition ranking), `positioning.py`, `market_state.py` (deterministic LOW/NORMAL/ELEVATED/HIGH), `alerts.py` (`WebhookAlertSink` — Slack/Teams/Discord-compatible JSON POST, gated on `PRICING_INTELLIGENCE_ALERT_WEBHOOK_URL`; `dispatch_alerts_safely()` mirrors `events.publisher.publish_safely()` — a broken webhook is logged, never fails the run), `service.py` (`PricingIntelligenceService` facade), `rbnz.py` (RBNZ Official Cash Rate: `fetch_ocr_series`/`OcrSeries`, a single fetch already carries the full published monthly history, so unlike bank rates there is no local store or scheduled collection for it — parsing anchors on the "Official Cash Rate" heading text, never on column shape alone, since the page renders several charts with an identical `Date | series | series` accessible-table shape), `strategy.py` (`CompetitorRateStrategy`/`apply_market_strategy_to_config` for bank rates, `CashRateStrategy`/`apply_cash_rate_strategy_to_config` for the OCR — two independent seams, both `MANUAL`-default), `dashboard_data.py`, `cli.py` (`ocr` subcommand). **Answers "what is the market doing?" only — it never prices anything.**
 - [pricing_intelligence/health.py](../src/balance_pricing_engine/pricing_intelligence/health.py) — single source of freshness/health semantics: `FreshnessState`, `CollectorStatus`, `HealthLevel`, `is_stale`, `collector_status`, `assess_observation_freshness`, `assess_system_health`, `MarketExclusion` (what `PricingIntelligenceService.get_market_exclusions()` reports for records the snapshot dropped as stale). Imports no optimiser. Related additive seams: `snapshot.term_market_from_rates` (per-date market statistics from resolved rates) and `strategy.apply_manual_competitor_rate_to_config` (an explicit manual override that always returns a new, re-validated config; `apply_market_strategy_to_config` under `MANUAL` still returns the same object).
-- [dashboard/](../src/balance_pricing_engine/dashboard/) — Pricing Watch Streamlit console. `app.py` (router) and `pages/` (render only: Overview, Market Watch, Rate Changes, Historical Trends, Pricing Scenarios + Scenario Lab, Operations, System Health); `services.py` (`DashboardServices` → frozen `models.py` view models inside a `Result`); `formatting.py`, `charts.py`, `scenario_text.py` (pure); `actions.py` (live/dry runs as subprocesses, backup, Telegram test, `JobRunner`, cooldowns) and `run_worker.py` (dry-run subprocess); `guard.py` (process-wide unlock attempt limiter); `settings.py`; `launcher_identity.py` (standard-library listener ownership and health probe for the macOS launcher). Only `pages/operations.py` imports `actions.py`; only `services.py` talks to the backend.
+- [dashboard/](../src/balance_pricing_engine/dashboard/) — Pricing Watch Streamlit console. `app.py` (router: six top-nav destinations plus hidden redirects for the pre-redesign URLs) and `views/` (render only: Command Centre `overview.py`, Market Explorer `market_watch.py`, Rate Movements `rate_changes.py`, Market Trends `trends.py`, Pricing Studio `scenarios.py` + `scenario_lab.py`, Operations & Trust `operations_trust.py` composing `system_health.py` and `operations.py`); `services.py` (`DashboardServices` → frozen `models.py` view models inside a `Result`); `formatting.py`, `charts.py`, `scenario_text.py`, `insights.py`, `theme.py` (pure, Streamlit-free); `ui.py` (shared components and cross-page filter state); `actions.py` (live/dry runs as subprocesses, backup, Telegram test, `JobRunner`, cooldowns) and `run_worker.py` (dry-run subprocess); `guard.py` (process-wide unlock attempt limiter); `settings.py`; `launcher_identity.py` (standard-library listener ownership and health probe for the macOS launcher). Only `views/operations.py` imports `actions.py`, and only `views/operations_trust.py` imports `views/operations.py`; only `services.py` talks to the backend.
 - [grid_utils.py](../src/balance_pricing_engine/grid_utils.py) — `build_inclusive_numeric_grid`: shared helper for inclusive numeric grids used by the optimiser.
 - [reporting.py](../src/balance_pricing_engine/reporting.py), [plotting.py](../src/balance_pricing_engine/plotting.py) — output formatting.
 - [utils/random.py](../src/balance_pricing_engine/utils/random.py) — `make_rng` for reproducible RNGs.

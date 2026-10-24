@@ -571,6 +571,8 @@ class DashboardServices:
                         funding_shortfall=best.funding_shortfall,
                         competitor_rate=selected_config.market.competitor_loan_rate,
                         rationale=_rationale(strategy, request),
+                        boundary_warning=diagnostics.boundary_diagnostics.has_warning,
+                        policy_band_breached=bool(diagnostics.policy_band_breached),
                     ),
                     curve=curve,
                     position=position,

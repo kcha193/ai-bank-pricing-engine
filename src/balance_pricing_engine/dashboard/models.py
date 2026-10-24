@@ -195,6 +195,9 @@ class SelectedScenario:
     funding_shortfall: float
     competitor_rate: float
     rationale: str
+    #: The optimiser's own grid-edge and policy-band flags (additive; default for old callers).
+    boundary_warning: bool = False
+    policy_band_breached: bool = False
 
 
 @dataclass(frozen=True)

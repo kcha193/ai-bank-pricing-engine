@@ -2,7 +2,7 @@
 
 Live collection runs as a subprocess of the *scheduled* workflow script so it shares that
 script's single-instance lock, exit codes, scenario trigger and JSON summary, and so Playwright
-never runs inside Streamlit's script thread. Only ``pages/operations.py`` may import this module
+never runs inside Streamlit's script thread. Only ``views/operations.py`` may import this module
 (enforced by ``tests/unit/test_dashboard_boundaries.py``).
 """
 

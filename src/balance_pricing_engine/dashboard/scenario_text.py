@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from balance_pricing_engine.dashboard.formatting import fmt_money_m, fmt_rate_fraction
 from balance_pricing_engine.dashboard.models import ScenarioView
+from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
 
 DISCLAIMER = "Decision support only — this dashboard never changes a bank price."
 
@@ -44,3 +45,37 @@ def build_decision_text(view: ScenarioView) -> str:
         )
     paragraphs.append(DISCLAIMER)
     return "\n\n".join(paragraphs)
+
+
+#: Backend row label -> what the console calls it. "No change" is the optimiser's answer under
+#: an unchanged competitor assumption, not the bank's advertised rate (which it never reads).
+DISPLAY_LABELS = {"No change": "No-change optimum"}
+BASELINE_LABEL = "Match median"
+
+
+def scenario_differences(view: ScenarioView) -> list[dict[str, str]]:
+    """Each scenario against the Match-median run, as display strings.
+
+    Differences are of the optimiser's own outputs (objective dollars, modelled rate); they are
+    deterministic restatements, not new economics. Returns ``[]`` without a baseline row.
+    """
+    baseline = next((row for row in view.rows if row.label == BASELINE_LABEL), None)
+    if baseline is None:
+        return []
+    return [
+        {
+            "Scenario": DISPLAY_LABELS.get(row.label, row.label),
+            "Our rate": fmt_rate_fraction(row.our_rate),
+            "Rate vs Match median": (
+                f"{rate_change_bps(baseline.our_rate * 100, row.our_rate * 100):+.0f} bps"
+                if row.our_rate != baseline.our_rate
+                else "same"
+            ),
+            "Objective vs Match median": (
+                fmt_money_m(row.objective - baseline.objective, signed=True)
+                if row.objective != baseline.objective
+                else "same"
+            ),
+        }
+        for row in view.rows
+    ]

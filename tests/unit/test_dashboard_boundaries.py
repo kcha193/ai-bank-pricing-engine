@@ -11,7 +11,7 @@ import pytest
 
 SRC = Path("src/balance_pricing_engine")
 DASH = SRC / "dashboard"
-PAGES = sorted((DASH / "pages").glob("*.py"))
+PAGES = sorted((DASH / "views").glob("*.py"))
 
 #: Modules that must stay importable and testable without Streamlit.
 STREAMLIT_FREE = [
@@ -26,6 +26,8 @@ STREAMLIT_FREE = [
     "run_worker",
     "guard",
     "launcher_identity",
+    "theme",
+    "insights",
 ]
 
 #: Backend computations a page must not re-implement or call directly (it reads them from
@@ -119,7 +121,11 @@ def _attribute_names(node: ast.AST) -> set[str]:
     return {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
 
 
-@pytest.mark.parametrize("page", [p for p in PAGES if p.name != "__init__.py"])
+#: Rendering modules outside ``views/`` that call Streamlit: scanned exactly like a page.
+RENDERERS = [DASH / "ui.py"]
+
+
+@pytest.mark.parametrize("page", [p for p in PAGES if p.name != "__init__.py"] + RENDERERS)
 def test_untrusted_text_never_reaches_a_markdown_surface(page):
     """``st.dataframe`` cells and ``st.link_button`` URLs are literal; Markdown is not."""
     tree = ast.parse(page.read_text(encoding="utf-8"))
@@ -162,19 +168,34 @@ def test_market_intelligence_does_not_depend_on_the_dashboard():
     assert offenders == []
 
 
-def test_the_router_registers_all_seven_pages_and_no_stubs_remain():
+def test_the_router_registers_six_destinations_and_keeps_legacy_urls():
     router = (DASH / "app.py").read_text(encoding="utf-8")
     for title in (
-        "Overview",
-        "Market Watch",
-        "Rate Changes",
-        "Historical Trends",
-        "Pricing Scenarios",
-        "Operations",
-        "System Health",
+        "Command Centre",
+        "Market Explorer",
+        "Rate Movements",
+        "Market Trends",
+        "Pricing Studio",
+        "Operations & Trust",
     ):
         assert f'"{title}"' in router
+    # Pre-redesign bookmarks stay valid: hidden pages redirect to the new destinations.
+    for legacy in ("overview", "market-watch", "rate-changes", "trends", "scenarios"):
+        assert f'"{legacy}"' in router
+    assert '"system-health"' in router and 'visibility="hidden"' in router
     assert not [p.name for p in PAGES if "Coming in a later task" in p.read_text(encoding="utf-8")]
+
+
+def test_only_the_operations_and_trust_composer_and_router_reach_the_operations_page():
+    """The collection controls stay one hop from the router: no reading page embeds them."""
+    importers = sorted(
+        p.name
+        for p in [*PAGES, DASH / "app.py", DASH / "ui.py"]
+        if "import operations" in p.read_text(encoding="utf-8")
+        or "pages.operations" in p.read_text(encoding="utf-8")
+        or "    operations,\n" in p.read_text(encoding="utf-8")
+    )
+    assert importers == ["operations_trust.py"]
 
 
 def test_dashboard_dependency_floor_supports_all_used_streamlit_apis():
@@ -184,9 +205,10 @@ def test_dashboard_dependency_floor_supports_all_used_streamlit_apis():
     match = re.search(r'dashboard = \["(streamlit[^" ]+)"', Path("pyproject.toml").read_text())
     assert match is not None
     dependency = Requirement(match.group(1))
-    # Navigation/fragment predate the limiting API: altair_chart(width="stretch") in 1.51.
-    assert "1.50.0" not in dependency.specifier
-    assert "1.51.0" in dependency.specifier
+    # The redesign uses top navigation, hidden pages, st.badge, bordered metrics, horizontal
+    # containers and [theme.light]/[theme.dark]; 1.57 is the release they were verified on.
+    assert "1.56.0" not in dependency.specifier
+    assert "1.57.0" in dependency.specifier
 
 
 @pytest.mark.parametrize("surface", ["error", "warning", "info", "markdown"])

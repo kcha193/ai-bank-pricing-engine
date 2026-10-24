@@ -30,7 +30,8 @@ dev = [
     "httpx>=0.27",
 ]
 api = ["fastapi>=0.110", "httpx>=0.27", "uvicorn[standard]>=0.29"]
-dashboard = ["streamlit>=1.51.0", "matplotlib>=3.8"]
+# pyarrow 26+ requires NumPy 2; the core pins numpy<2, so Streamlit's pyarrow must stay <26.
+dashboard = ["streamlit>=1.57.0", "matplotlib>=3.8", "pyarrow<26"]
 llm = ["anthropic>=0.30"]
 ml = ["lightgbm>=4.0", "xgboost>=2.0", "lifelines>=0.28"]
 kafka = ["kafka-python>=2.0"]

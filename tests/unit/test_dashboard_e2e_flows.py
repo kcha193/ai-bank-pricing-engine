@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
-from dashboard_harness import make_services, run_page
+from dashboard_harness import frame_with, make_services, run_page
 
 from balance_pricing_engine.dashboard import actions
 from balance_pricing_engine.dashboard.formatting import (
@@ -24,6 +24,7 @@ from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 
 ALL_PAGES = (
     "overview",
+    "operations_trust",
     "market_watch",
     "rate_changes",
     "trends",
@@ -52,11 +53,12 @@ def test_flow_a_market_monitoring_matches_the_backend(market_factory):
         assert shown == fmt_rate_pct(entry.rate_pct)
     metrics = {m.label: m.value for m in app.metric}
     assert metrics["Market leader"] == ", ".join(truth.market_leaders)
-    assert metrics["Lowest"] == fmt_rate_pct(truth.lowest_rate)
-    assert metrics["Median"] == fmt_rate_pct(truth.median_rate)
+    assert metrics["Leader rate"] == fmt_rate_pct(truth.lowest_rate)
+    assert metrics["Market median"] == fmt_rate_pct(truth.median_rate)
     assert metrics["Highest"] == fmt_rate_pct(truth.highest_rate)
-    assert metrics["Spread"] == f"{truth.spread_bps:.0f} bps"
-    ranking = app.dataframe[1].value
+    assert metrics["Dispersion"] == f"{truth.spread_bps:.0f} bps"
+    explorer = run_page("market_watch", market.database, market.now)
+    ranking = frame_with(explorer, "Rank")
     assert [(r.rank, r.bank) for r in truth.ranking()] == list(
         zip(ranking["Rank"], ranking["Bank"])
     )
@@ -81,7 +83,7 @@ def test_flow_b_a_rate_change_flows_through_every_view(market_factory):
     assert history[-1].rate_pct == 4.79
 
     app = run_page("rate_changes", market.database, market.now)
-    row = app.dataframe[0].value.iloc[0]
+    row = frame_with(app, "Old").iloc[0]
     assert (row["Old"], row["New"], row["Movement"]) == ("4.89%", "4.79%", "-10 bps")
 
 

@@ -30,7 +30,11 @@ def _run(config_yaml_str: str, include_sensitivity_flag: bool) -> dict:
 
 
 def render(services: DashboardServices) -> None:
-    st.caption("Decision support only — runs the optimiser on a pasted EngineConfig YAML.")
+    st.subheader("Scenario Lab", anchor=False)
+    st.caption(
+        "For advanced users: run the optimiser on a full EngineConfig YAML, with the profit "
+        "surface and optional sensitivity analysis. Decision support only."
+    )
     config_yaml = st.text_area(
         "YAML config",
         value=services.settings.engine_config_text or "# paste your config YAML here\n",
@@ -68,14 +72,14 @@ def render(services: DashboardServices) -> None:
 
     with tab_summary:
         col1, col2, col3 = st.columns(3)
-        col1.metric("Best loan rate", fmt_rate(best.loan_rate))
-        col2.metric("Best deposit rate", fmt_rate(best.deposit_rate))
-        col3.metric("Objective", fmt_money(best.total_objective))
+        col1.metric("Best loan rate", fmt_rate(best.loan_rate), border=True)
+        col2.metric("Best deposit rate", fmt_rate(best.deposit_rate), border=True)
+        col3.metric("Objective", fmt_money(best.total_objective), border=True)
 
         col4, col5, col6 = st.columns(3)
-        col4.metric("Loan volume", fmt_money(best.expected_loan_volume))
-        col5.metric("Deposit volume", fmt_money(best.expected_deposit_volume))
-        col6.metric("Funding shortfall", fmt_money(best.funding_shortfall))
+        col4.metric("Loan volume", fmt_money(best.expected_loan_volume), border=True)
+        col5.metric("Deposit volume", fmt_money(best.expected_deposit_volume), border=True)
+        col6.metric("Funding shortfall", fmt_money(best.funding_shortfall), border=True)
 
         if diagnostics.boundary_diagnostics.has_warning:
             st.warning(

@@ -11,7 +11,7 @@ import pytest
 import yaml
 from dashboard_harness import run_page
 
-from balance_pricing_engine.dashboard.pages import scenario_lab
+from balance_pricing_engine.dashboard.views import scenario_lab
 
 NOW = datetime(2026, 10, 11, tzinfo=timezone.utc)
 

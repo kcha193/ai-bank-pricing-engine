@@ -14,6 +14,34 @@ def test_market_watch_shows_rank_gaps_and_freshness(market_factory):
     assert frame.loc["ANZ", "Freshness"] == "FRESH"
     assert frame.loc["ANZ", "Last change"] == "10 Oct 2026 13:00"  # 10 Oct 00:00 UTC = NZDT +13
     assert frame.loc["ASB", "Last change"] == "No recent change"
+    assert list(app.dataframe[0].value["Rank"]) == [1, 2, 2, 4, 4]  # ties exactly as ranked
+
+
+def test_market_explorer_tabs_hold_ranking_gaps_matrix_and_term_structure(market_factory):
+    from dashboard_harness import chart_count
+
+    market = market_factory()
+    app = run_page("market_watch", market.database, market.now)
+    assert [t.label for t in app.tabs] == [
+        "Ranking",
+        "Gap analysis",
+        "Bank × term matrix",
+        "Term structure",
+    ]
+    assert chart_count(app) == 3  # ranking, gaps, term structure
+    matrix = [e.value for e in app.dataframe if "1Y" in e.value.columns]
+    assert matrix[0].loc["ANZ", "1Y"] == "◆ 4.79%"
+    app.multiselect(key="explorer_structure_banks").set_value([]).run()
+    assert not app.exception and chart_count(app) == 2
+
+
+def test_the_selected_bank_detail_shows_its_terms_and_recent_moves(market_factory):
+    market = market_factory()
+    app = run_page("market_watch", market.database, market.now)
+    app.selectbox(key="market_watch_bank").set_value("ANZ").run()
+    assert any("ANZ in detail" in s.value for s in app.subheader)
+    text = " ".join(m.value for m in app.markdown)
+    assert "**ANZ** · 1Y" in text and "4.89% → **4.79%**" in text
 
 
 def test_market_watch_selected_bank_card(market_factory):

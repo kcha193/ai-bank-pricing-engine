@@ -416,10 +416,13 @@ writes a rate to any pricing system.
 
 #### Launch
 
-The dashboard requires Python 3.10+ and Streamlit 1.51.0+ (the `dashboard` extra
-sets this minimum). Navigation and fragments are available in earlier releases,
-but the console's Altair charts require `width="stretch"`, added in 1.51.0.
-See the [Streamlit release notes](https://docs.streamlit.io/develop/quick-reference/release-notes/2025#version-1510).
+The dashboard requires Python 3.10+ and Streamlit 1.57.0+ (the `dashboard` extra
+sets this minimum). The 2026-10 redesign uses top navigation, hidden pages (legacy-URL
+redirects), `st.badge`, bordered metrics, horizontal containers and the
+`[theme.light]`/`[theme.dark]` config sections; 1.57 is the release it was verified on.
+The visual theme lives in [`.streamlit/config.toml`](../.streamlit/config.toml), which
+Streamlit reads when launched from the repository root (as the launcher does). See
+[dashboard_redesign.md](dashboard_redesign.md) for the design system and page specification.
 
 ```bash
 python3 -m pip install -e ".[dashboard]"
@@ -449,7 +452,7 @@ streamlit run src/balance_pricing_engine/dashboard/app.py --server.address local
   the `browser` extra: `pip install -e ".[browser]" && python3 -m playwright install chromium`.
 - `scripts/streamlit_dashboard.py` is a separate, older profit-surface viewer. The
   console is `src/balance_pricing_engine/dashboard/app.py`; its former YAML runner
-  now lives on in the Pricing Scenarios page as **Scenario Lab**.
+  now lives on in the Pricing Studio as **Advanced: Scenario Lab**.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
@@ -462,13 +465,16 @@ All timestamps display in `Pacific/Auckland`.
 
 #### Daily workflow
 
-1. Open **Overview**: market state, changes today, the bank-by-term matrix.
-2. On **Operations**, tick the confirmation and click **Run Pricing Watch** (or let
-   the scheduler have done it, and click **Refresh Dashboard** to re-read).
-3. Inspect **Rate Changes** for what moved and how it changed the ranking.
-4. Analyse the affected term in **Market Watch** and **Historical Trends**.
-5. Use **Pricing Scenarios** if the move warrants a response.
-6. Check **System Health**: failing or stale collectors, suspicious observations.
+1. Open **Command Centre**: market pulse for the selected term, the market story chart,
+   what changed in the last 7 days, key insights and data trust.
+2. On **Operations & Trust → Collection & maintenance**, tick the confirmation and click
+   **Run Pricing Watch** (or let the scheduler have done it, and click **Refresh
+   Dashboard** to re-read).
+3. Inspect **Rate Movements** for what moved and how it changed the ranking.
+4. Analyse the affected term in **Market Explorer** and **Market Trends**.
+5. Use **Pricing Studio** if the move warrants a response.
+6. Check **Operations & Trust → Data health**: failing or stale collectors, quarantined
+   readings, run history.
 
 #### Refresh versus run
 
@@ -490,70 +496,96 @@ subprocess that exceeds 30 minutes is stopped and reported as `TIMED_OUT`.
 
 #### Pages
 
-**Overview** answers "what is the market doing right now?". The header (on every
-page) shows when data was last stored ("Last successful update": the newest run that
-stored data, `SUCCESS` or `PARTIAL_SUCCESS`; a `FAILED` run collected nothing and is
-not counted), the market-activity state and how many banks have fresh data (`N / M`). The page shows changes today and over 7 days, banks
-repricing, dominant direction, the most active term and the market-state
-rationale; the bank-by-term matrix of advertised specials (`◆` marks the term
-leader, `⚠ ... (stale)` a stale record, `⚠ ... (quarantined: last confirmed)` a rate that
-is the last confirmed one because the bank's latest reading was rejected); a warning
-for each excluded stale bank/term; and, for the chosen term, leader, lowest, median, highest, spread, banks
-observed and the full ranking.
+Six destinations sit in a top navigation bar. The **term** and **highlighted bank** you
+choose follow you between pages (each page keeps its own widget, seeded from the shared
+choice); `pricing_intelligence.our_bank`, when configured, is the default highlight. Every
+pre-redesign URL (`/overview`, `/market-watch`, `/rate-changes`, `/trends`, `/scenarios`,
+`/system-health`) redirects to its new page.
 
-**Market Watch** answers "where does each bank sit competitively?". Pick a term and
-a bank to highlight. It lists every bank's rank, rate, bps versus the leader and
-the median, last change and freshness (`QUARANTINED` when the shown rate is a
-fallback), with a dot plot against the market median.
-Comparable tier: advertised specials; stale observations are excluded.
+The **header** (on every page) shows when data was last stored ("Last successful
+update": the newest run that stored data, `SUCCESS` or `PARTIAL_SUCCESS`; a `FAILED` run
+collected nothing and is not counted), the market-activity state and how many banks have
+fresh data (`N / M`), with badges for activity and coverage.
 
-**Rate Changes** answers "what changed, and what did it do to the ranking?". Filter
-by window (Today from NZ midnight, 7 days, 30 days, custom dates), bank, term,
-direction and event type. Each row shows old and new rate, movement in bps and the
-previous and new rank. Selecting an event shows its provenance (product, observed
-time, effective date, rate type, market median and state at the event, parser
-version, source) and an "Open official source page" link. Suspicious readings never
-appear here. Previous/new rank shows `—` when the store cannot reconstruct the
-run the event came from.
+**Command Centre** (`/command-centre`, the landing page) answers, in order: what is the
+market doing (KPI cards: market leader, leader rate, median, dispersion, banks repricing
+in 7 days, fresh coverage, plus the market-state rationale); where each bank sits (a
+lollipop chart from the median to each bank's rate, leader and highlighted bank
+emphasised, with a "your position" panel: rate, rank, gap to leader and median); what
+changed (an event feed of the last 7 days, or a calm empty state); two to four **key
+insights** (deterministic sentences templated in `dashboard/insights.py` from backend
+values only: no causes, no recommendations); and **data trust** (one warning per stale bank
+naming the excluded terms, age and limit). The full bank × term matrix is one click away,
+and quick links lead to the other destinations.
 
-**Historical Trends** answers "how have rates and the market moved?". Pick a term,
-the banks to plot and a range (30 days, 90 days, 1 year, all). It charts each
-bank's advertised rate, the market median, leader or spread over time (a radio
-selects the series), and a repricing timeline with days since the first move.
-The bank filter changes the lines only; market statistics always use every bank
-observed on that date. Dates are Pacific/Auckland calendar days; each line holds its last rate up to today
-(a rate stands until it changes), and a window with no change inside it starts from the
-rate in force when it opened. The timeline records sequence, not causation.
+**Market Explorer** (`/market-explorer`) compares competitors. Pick a term and a bank to
+highlight; its rate, rank, gaps and freshness show as cards (`⚠ QUARANTINED` when the shown
+rate is a fallback). Tabs: **Ranking** (lollipop chart plus the full table: rank, rate, bps
+versus leader and median, last change, freshness), **Gap analysis** (bps to leader and
+median per bank), **Bank × term matrix** (every tracked term, shaded: `◆` leader, `⚠` stale
+or quarantined; stale-only terms are retained for audit) and **Term structure** (each
+bank's specials across terms; stale rates left out, quarantined fallbacks hollow). Below
+the tabs, the highlighted bank's rates across terms and its changes in the last 30 days.
+All views read the same snapshot, so charts and tables always agree. Comparable tier:
+advertised specials.
 
-**Pricing Scenarios** answers "what does the optimiser say under different
-competitor assumptions?". It has two tabs.
+**Rate Movements** (`/rate-movements`) answers "what changed, and what did it do to the
+ranking?". Filter by window (Today from NZ midnight, 7 days, 30 days, custom dates), bank,
+term, direction and event type. It shows counts by event type (increase, decrease, new
+product, withdrawn, other), a timeline with one lane per bank (direction by colour and
+shape, magnitude by size), an event feed, and an **event inspector**: previous and new
+rate, movement, rank before → after, and provenance (product, observed time, effective
+date, rate type, market median and state at the event, parser version, source) with an
+"Open official source page" link. The full table is under *Advanced*. When a collector is
+failing or a bank has no fresh observation, the page says so above the timeline: a missing
+observation is never shown as repricing or a withdrawal. Suspicious readings never appear
+here. Previous/new rank shows `—` when the store cannot reconstruct the event's run.
 
-- *Scenarios*: choose a mortgage term, a competitor benchmark (`MARKET_MEDIAN`,
-  `MARKET_LEADER`, `MARKET_SECOND_LOWEST`, `MARKET_MEAN` with an offset in bps, or
-  `MANUAL` with a rate) and optionally your current rate, then click **Run
-  scenario**. The optimiser runs only on that click; the result is kept for the
-  session, stamped with when it was computed, and flagged when the inputs or the
-  stored market data change. It shows a comparison table
-  (scenario, competitor rate, our rate, objective), an objective-by-our-rate curve,
-  the selected assumption's competitor rate, optimal rate, objective, expected loan
-  volume and funding shortfall, any banks excluded as stale, and a deterministic decision-support
-  summary (templated text, no LLM, no volume claims).
-- *Scenario Lab*: the original YAML profit-surface runner. It runs the optimiser on
-  pasted `EngineConfig` YAML (default: the `PRICING_WATCH_CONFIG` file) and shows
-  summary metrics including loan and deposit volume, the profit surface and an
-  optional sensitivity analysis.
+**Market Trends** (`/market-trends`) answers "how have rates and the market moved?". Pick a
+term, the banks to plot, a range (30 days, 90 days, 1 year, all) and a bank to highlight.
+It charts each bank's advertised rate as step lines (the highlighted bank emphasised; a
+bank with no rate on a covered date gets a gap, never a bridged line), the market leader
+and median (percent) and the dispersion (bps, its own zero-based axis), a repricing
+timeline (table on demand) and today's term structure. The bank filter changes the lines
+only; market statistics always use every bank observed on that date. Dates are
+Pacific/Auckland calendar days; each line holds its last rate up to today, and a window
+with no change inside it starts from the rate in force when it opened. The timeline
+records sequence, not causation.
 
-**Operations** answers "can I update the data, and is it safe to?". It holds
-Refresh Dashboard, Run Pricing Watch, Dry Run, Create Backup and Send Test
-Notification (see [Operations safety](#operations-safety)).
+**Pricing Studio** (`/pricing-studio`) answers "what does the optimiser say under
+different competitor assumptions?". Two tabs:
 
-**System Health** answers "is Pricing Watch itself healthy and current?". It shows
-database integrity, whether the market snapshot is non-empty, the last run's
-status and age, and whether Telegram and the webhook are configured. Mortgage and
-Term deposit tabs list the collector table (last success, observation age,
-consecutive failures, freshness, health, current record count, last error) and
-recent runs with per-run detail. Suspicious observations appear here, under
-"Excluded from trusted benchmark", and nowhere else.
+- *Guided scenario*, in three steps. **1 · Define**: a mortgage term, a competitor
+  benchmark (market median, leader, second-lowest, mean — with an offset in bps — or a
+  manual rate) and optionally your current advertised rate; an expander explains each
+  input. **2 · Results**, after an explicit **Run scenario** click: modelled optimal rate,
+  competitor assumption, objective, expected loan volume and funding shortfall; the
+  optimiser's own governance flags (grid-edge boundary warning, policy-band breach) when
+  raised; stale-bank exclusions; and a scenario comparison (dumbbell chart of competitor
+  versus modelled rate, plus the table). **3 · Trade-offs**: the objective-by-rate curve
+  with current (entered), market median/leader and model-optimum markers,
+  scenario-to-scenario differences against Match median, a deterministic decision-support
+  summary (templated text, no LLM, no volume claims) and a limitations note. The result is
+  kept for the session, stamped with when it was computed, flagged when inputs or stored
+  market data change, and hidden until an explicit rerun when the engine config changes or
+  the term stops being live.
+- *Advanced: Scenario Lab*: the original YAML profit-surface runner. It runs the optimiser
+  on pasted `EngineConfig` YAML (default: the `PRICING_WATCH_CONFIG` file) and shows
+  summary metrics including loan and deposit volume, the profit surface and an optional
+  sensitivity analysis.
+
+**Operations & Trust** (`/operations`) has two tabs. **Data health** (read-only, never
+cached) opens with status tiles (database, latest run and its age, fresh banks, failing
+collectors, suspicious readings recorded, alert channels), a freshness-by-bank chart against the
+configured limit, a "how to read data states" key (no movement vs no data vs stale vs
+collection failure vs quarantined vs incomplete coverage), then the components table and
+Mortgage / Term deposit tabs with the collector table (last success, observation age,
+consecutive failures, freshness, health, current record count, last error), recent runs
+with per-run detail, and suspicious observations under "Excluded from trusted benchmark"
+(and nowhere else). **Collection & maintenance** holds Refresh Dashboard, Run Pricing
+Watch, Dry Run, Create Backup and Send Test Notification (see
+[Operations safety](#operations-safety)). Pricing Watch does not observe the external
+scheduler, so no page claims it is active.
 
 #### Scenario semantics
 
@@ -586,13 +618,13 @@ a threshold.
 A bank's overall health is `HEALTHY`, `DEGRADED` or `UNKNOWN`: `HEALTHY` needs fresh
 observations, a fresh collector and no quarantined readings.
 
-A stale record is shown in the Overview matrix as `⚠ 4.85% (stale)` but is
+A stale record is shown in the bank × term matrix as `⚠ 4.85% (stale)` but is
 **excluded** from rankings, medians, spreads and scenarios. The UI states each
 exclusion and the configured limit. Exclusions and bank health are computed on the
 same record set the market snapshot uses (comparable tier, tracked terms, no
 name-excluded or non-comparable product): an exclusion is reported once per bank and
 term, and only when the bank has no fresh comparable rate there, so a stale niche or
-sibling product beside a fresh ranked one never makes the bank look excluded. System Health reports the age per bank (its
+sibling product beside a fresh ranked one never makes the bank look excluded. Data health reports the age per bank (its
 oldest confirmed record); the market snapshot applies the same limit per record.
 The two measures can disagree: a collector can be `FAILING` while its last
 observation is still within the limit, in which case that observation is still
@@ -633,31 +665,36 @@ validated as plain `http(s)`. These rules are enforced by
 
 | Symptom | Cause and fix |
 | --- | --- |
-| "No market data collected yet" | The database does not exist or holds no comparable records. Run Pricing Watch from Operations, or collect from the CLI. |
-| "Market database unavailable" | Path, permissions or a corrupt file. Check `PRICING_INTELLIGENCE_DB_PATH` and the application log; System Health reports integrity once readable. |
+| "No market data collected yet" | The database does not exist or holds no comparable records. Run Pricing Watch from Operations & Trust, or collect from the CLI. |
+| "Market database unavailable" | Path, permissions or a corrupt file. Check `PRICING_INTELLIGENCE_DB_PATH` and the application log; Operations & Trust → Data health reports integrity once readable. |
 | Operations: "already running" | Another collection (this dashboard, the scheduler or the CLI) holds the workflow lock. Wait for it to finish. |
 | "Please wait N s" | A run finished less than 60 s ago (cooldown), or a run is in progress. |
 | Live run fails immediately | The `browser` extra is missing: `pip install -e ".[browser]" && python3 -m playwright install chromium`. |
-| A bank is marked stale or excluded | Open System Health, find the bank in the collector table and read `Last error`. |
+| A bank is marked stale or excluded | Open Operations & Trust → Data health, find the bank in the collector table and read `Last error`. |
 | Operations are locked | Enter the token, or wait out the lockout (up to 300 s) after repeated wrong tokens. If the page says the token must be at least 16 characters, fix `PRICING_WATCH_OPS_TOKEN`. |
 | Backup "created N minutes ago" | The 10-minute limit; use the existing backup. |
 
 #### Known limitations
 
 - **No scheduler state.** The backend has no signal for whether the external scheduler
-  is active; System Health shows only the last run's age.
+  is active; Data health shows only the last run's age.
 - **No live progress.** A running job shows a "running" notice, then a result table;
   there is no per-bank streaming.
 - **Run result is totals plus per-bank pass/fail.** The workflow summary carries no
-  per-bank record counts; those appear on System Health as "Current records".
+  per-bank record counts; those appear in Data health as "Current records".
 - **Event ranks** show `—` when the store cannot reconstruct the run an event
   belongs to.
 - **Scenario rows carry rates and a modelled objective only**: no volume or margin.
   The selected-scenario detail adds expected loan volume and funding
   shortfall; deposit volume appears only in Scenario Lab.
-- **Mortgage-only market view.** Overview, Market Watch, Rate Changes, Trends and
-  Scenarios use mortgages; System Health also has a Term deposit tab for collector
-  and run tables.
+- **Mortgage-only market view.** Command Centre, Market Explorer, Rate Movements, Market
+  Trends and Pricing Studio use home-loan specials; Data health also has a Term deposit tab
+  for collector and run tables. A product selector was left out deliberately: deposit
+  rankings read highest-is-best, and adding them safely needs product-aware services.
+- **No KPI deltas against history.** The KPI cards show current values only; a "change
+  since 7 days ago" would mix the live snapshot (freshness-filtered) with the history series
+  (not freshness-filtered) and could show a move that did not happen. Market Trends shows
+  the history instead.
 - **Dry Run is not covered by the workflow's cross-process lock** (it persists nothing, so
   it needs none), so it can run alongside a scheduled live collection and doubles bank
   traffic for that window.
@@ -668,6 +705,8 @@ validated as plain `http(s)`. These rules are enforced by
   read-only connection would remove both the cost and the write path.
 - `ruff format` is not enforced repo-wide (it would change 110 pre-existing files);
   the new dashboard files are formatted and type-checked.
+- **Phone widths work but are long.** Below ~640 px Streamlit stacks every column, so KPI
+  cards become a single column and the top navigation folds into a menu.
 
 ## Pricing-engine integration
 

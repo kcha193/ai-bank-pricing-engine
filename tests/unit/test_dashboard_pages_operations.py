@@ -97,7 +97,7 @@ def test_a_second_click_while_running_does_not_launch_twice(market_factory, clea
             # directly to prove single-flight protection also holds beyond the UI lock.
             script = f"""
 import streamlit as st
-from balance_pricing_engine.dashboard.pages import operations
+from balance_pricing_engine.dashboard.views import operations
 from balance_pricing_engine.dashboard.settings import load_settings
 settings = load_settings({{}}, database_path={str(market.database)!r})
 operations._start_job("dry_run", "run_dry", settings)
@@ -286,7 +286,7 @@ def test_a_locked_session_cannot_start_a_job_even_by_calling_the_callback(
 
     market = market_factory()
     script = f"""
-from balance_pricing_engine.dashboard.pages import operations
+from balance_pricing_engine.dashboard.views import operations
 from balance_pricing_engine.dashboard.settings import load_settings
 settings = load_settings({TOKEN_ENV!r}, database_path={str(market.database)!r})
 operations._start_job("live", "run_live", settings)
