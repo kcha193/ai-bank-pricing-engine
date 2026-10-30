@@ -157,22 +157,21 @@ def render_header(services: DashboardServices) -> None:
     """Brand bar on every page: identity, then data timestamp, activity and coverage for each
     product separately -- a fresh mortgage run says nothing about deposit freshness."""
     with st.container(key="pw-brand"):
-        identity, status = st.columns([1, 2], vertical_alignment="center")
+        identity, status = st.columns([2, 1], vertical_alignment="center")
         with identity:
             st.title("NZ Retail Bank Pricing Watch", anchor=False)
-            st.caption(
-                "Home-loan and term-deposit pricing intelligence · decision support only"
-            )
+            st.caption("Home-loan and term-deposit pricing intelligence · decision support only")
         with status:
-            for product in PRODUCT_ORDER:
-                _product_status(services, product)
+            with st.expander("Market data status", icon=":material/verified:"):
+                for product in PRODUCT_ORDER:
+                    _product_status(services, product)
 
 
 def _product_status(services: DashboardServices, product) -> None:
     info = profile(product)
     result = services.header(product)  # uncached: freshness depends on 'now'
     header = result.value
-    with st.container(horizontal=True, horizontal_alignment="right", gap="small"):
+    with st.container():
         ui.product_badge(product)
         if header is None:
             st.caption(

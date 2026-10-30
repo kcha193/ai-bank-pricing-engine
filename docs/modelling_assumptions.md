@@ -41,6 +41,16 @@
   implementation warns because competitor gaps will shift mechanically.
 - Rates are annualized assumptions within each scenario period.
 
+## Dashboard interpretation
+
+The premium dashboard presents the same portfolio-level synthetic scenario economics. Its
+financial-value comparison plots each existing scenario's `objective`; it does not estimate
+realised profit or introduce a new optimisation criterion. A negative value is a modelled loss.
+Advertised-rate history uses step lines and retains missing-data gaps. Rate axes are narrowed
+for comparison and labelled in percent; dispersion and movement remain on separate bps axes.
+Deposit market leadership means the highest comparable deposit rate, not the best bank margin.
+Each product's health summary reflects its own backend freshness and collector state.
+
 ## Response calibration (2026-08-26)
 
 The home-loan response coefficients were recalibrated against the live-verified

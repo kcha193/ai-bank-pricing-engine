@@ -46,9 +46,7 @@ def _exclusion_warnings(overview) -> None:
 
 def _matrix(overview, *, expanded: bool) -> None:
     info = profile(overview.product_type)
-    with st.expander(
-        f"All {info.noun} terms at a glance — bank × term matrix", expanded=expanded
-    ):
+    with st.expander(f"All {info.noun} terms at a glance — bank × term matrix", expanded=expanded):
         st.dataframe(styled_matrix(matrix_frame(overview.matrix)), width="stretch")
         st.caption(matrix_legend(overview.product_type))
 
@@ -74,14 +72,14 @@ def _quick_actions(product: ProductType) -> None:
 
 def _panel_metrics(info, overview, summary) -> None:
     header = overview.header
-    top = st.columns(3)
-    top[0].metric(
+    top = ui.metric_columns(3, key=f"headline-{info.product_type.value}")
+    top[1].metric(
         f"{info.noun.capitalize()} leader",
         ", ".join(summary.leaders),
         border=True,
         help=ui.ranking_help(info),
     )
-    top[1].metric(
+    top[0].metric(
         f"{info.best_word.capitalize()} rate",
         fmt_rate_pct(summary.best_pct),
         border=True,
@@ -93,26 +91,25 @@ def _panel_metrics(info, overview, summary) -> None:
         border=True,
         help=f"Median of fresh, comparable {info.tier} at this term.",
     )
-    bottom = st.columns(3)
+    bottom = ui.metric_columns(3, key=f"market-{info.product_type.value}")
     bottom[0].metric(
         "Competitive spread",
         f"{summary.spread_bps:.0f} bps",
-        border=True,
+        border=False,
         help="Gap between the highest and lowest comparable rate at this term.",
     )
     bottom[1].metric(
         "Repricing · 7d",
         overview.banks_repricing_7d,
-        border=True,
+        border=False,
         help=f"Banks with at least one confirmed comparable {info.noun} rate move in the last "
         "7 days.",
     )
     bottom[2].metric(
         "Fresh coverage",
         f"{header.fresh_banks} / {header.configured_banks}",
-        border=True,
-        help=f"Banks whose latest validated {info.noun} observation is within the freshness "
-        "limit.",
+        border=False,
+        help=f"Banks whose latest validated {info.noun} observation is within the freshness limit.",
     )
 
 
@@ -120,7 +117,7 @@ def _market_panel(services: DashboardServices, product: ProductType) -> None:
     """One product's headline market at its default term, or an honest empty state."""
     info = profile(product)
     with st.container(border=True, key=f"pw-panel-{product.value}"):
-        st.markdown(f"#### {info.icon} {info.market} market")
+        st.subheader(f"{info.icon} {info.market} market", anchor=False)
         st.caption(f"{info.symbol} {info.side} · {info.ranking_rule}")
         result = cached(services, "overview", product)
         overview = result.value
@@ -141,7 +138,7 @@ def _market_panel(services: DashboardServices, product: ProductType) -> None:
                 "Market Explorer matrix."
             )
         else:
-            st.caption(f"{fmt_term(term)} {info.tier} · latest stored data")
+            st.caption(f"{fmt_term(term)} comparable {info.rate_noun}s · latest stored data")
             _panel_metrics(info, overview, summary)
             if overview.exclusions:
                 banks = sorted({e.bank for e in overview.exclusions})
@@ -232,7 +229,9 @@ def _detail(services: DashboardServices, product: ProductType) -> None:
     config = services.settings.intelligence
     with ui.filter_bar():
         left, right, note = st.columns([1, 1, 2], vertical_alignment="bottom")
-        term = live_term_selector(overview, ui.product_key("overview_term", product), container=left)
+        term = live_term_selector(
+            overview, ui.product_key("overview_term", product), container=left
+        )
         bank = ui.bank_selector(
             config.selected_banks,
             "overview_bank",
@@ -260,10 +259,11 @@ def _detail(services: DashboardServices, product: ProductType) -> None:
         "market median to each bank's rate.",
     )
     st.caption(f"Market activity rationale: {overview.market_state_rationale}")
-    chart, panel = st.columns([5, 2])
-    chart.altair_chart(position_dot_plot(positions, summary.median_pct, bank), width="stretch")
-    with panel:
-        _selected_panel(positions, summary, bank)
+    with ui.chart_panel("positioning"):
+        chart, panel = st.columns([5, 2])
+        ui.render_chart(position_dot_plot(positions, summary.median_pct, bank), container=chart)
+        with panel:
+            _selected_panel(positions, summary, bank)
 
     feed, side = st.columns([3, 2], gap="large")
     with feed:
@@ -295,14 +295,14 @@ def _detail(services: DashboardServices, product: ProductType) -> None:
 def render(services: DashboardServices) -> None:
     ui.page_header(
         "Command Centre",
-        "Both sides of the NZ retail balance sheet: what the home-loan (lending) and "
-        "term-deposit (funding) markets are doing, what changed, where your bank sits — and "
-        "whether the data behind it can be trusted.",
+        "Your view of NZ lending and deposit funding. Compare competitors, track repricing "
+        "and check the evidence behind every number.",
     )
-    columns = st.columns(len(PRODUCT_ORDER), gap="medium")
-    for column, product in zip(columns, PRODUCT_ORDER):
-        with column:
-            _market_panel(services, product)
+    with st.container(key="pw-markets"):
+        columns = st.columns(len(PRODUCT_ORDER), gap="medium")
+        for column, product in zip(columns, PRODUCT_ORDER):
+            with column:
+                _market_panel(services, product)
 
     ui.section(
         "Detailed market analysis",

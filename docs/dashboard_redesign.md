@@ -247,3 +247,58 @@ Screenshots (synthetic `dual_market_factory` data, clock pinned to the fixture d
 [term-deposit detail](images/dual_product_dashboard/command_centre_term_deposit_detail.jpeg) ·
 [term-deposit scenario](images/dual_product_dashboard/pricing_studio_term_deposit.jpeg) ·
 [narrow viewport](images/dual_product_dashboard/command_centre_narrow.jpeg).
+
+## 11. UI UX Pro Max refinement (2026-10-31)
+
+Recovery found the requested feature branch at `bd27002`, identical to fetched
+`origin/master` after PR #62. Claude's unfinished addition was the untracked
+[`design-system/nz-pricing-watch/MASTER.md`](../design-system/nz-pricing-watch/MASTER.md).
+It is retained unchanged. PR #60's six destinations, PR #61's two product markets and
+PR #62's deposit collection fixes are the implementation baseline.
+
+The installed UI UX Pro Max search script confirmed a dense comparative analytics layout,
+banking navy/blue, tabular data typography and line/ranking charts with data alternatives.
+The generated marketing gateway was unsuitable for this console; verified application and
+six page overrides refine it without replacing the master. See
+[`APPLICATION.md`](../design-system/nz-pricing-watch/APPLICATION.md) for queries, accepted and
+rejected results, implementation decisions and primary accessibility/chart references.
+
+| Destination | Refinement |
+| --- | --- |
+| Command Centre | Strong rate headlines, separate lending/funding surfaces, responsive metrics and grouped positioning/bank analysis |
+| Market Explorer | Responsive position strip, labelled ranking/gap surfaces, explicit non-zero rate-axis guidance |
+| Rate Movements | Responsive direction counts, contained timeline, retained old/new rates and source inspector |
+| Market Trends | Full-width comparison, distinct bank line/point styles, x-only zoom/pan/reset, native bank/range controls and raw history/benchmark tables |
+| Pricing Studio | Three-step guide, explicit human-review badge, separate rate/value comparisons, original objective/sensitivity access |
+| Operations & Trust | Independent per-product freshness, collector/run/quarantine summaries and charts; existing collection gate and controls |
+
+`theme.py` owns the semantic palette, CSS and chart tokens. `ui.py` owns reusable metric grids,
+chart surfaces, the workflow guide and theme-aware text marks. Native controls, tables,
+navigation, legacy redirects and the product query parameter are retained. The header's
+**Market data status** disclosure shows activity and freshness for each product. Fira fonts
+are preferred when installed, with local system fallbacks and no external font dependency.
+
+### Verification and reproducible visual review
+
+Use the existing virtual environment (the host `python3` does not have Streamlit installed):
+
+```bash
+source .venv/bin/activate
+python3 -m ruff check .
+python3 -m pytest -q -m 'not live_rates'
+python3 tests/visual/dashboard_review.py --output-dir /tmp/pricing-watch-review
+```
+
+The browser utility requires the existing dashboard, browser and dev extras plus an installed
+Playwright Chromium. It starts the documented Streamlit entry point on loopback with a
+disposable synthetic fixture database. It never reads the operational database, unlocks
+Operations, contacts a bank or sends an alert. It captures every destination in light/dark
+at 1440, 1024, 768 and 390px, checks page overflow and product-control target sizes, and
+exercises product/term/bank filters, returning navigation, keyboard focus, reduced motion,
+deposit/joint scenarios and the locked collection controls. Separate fixtures cover partial
+coverage, missing deposits, all-stale deposits, no database and a corrupt database.
+
+Review evidence and limitations are recorded in
+[`dashboard_visual_review_2026-10-31.md`](dashboard_visual_review_2026-10-31.md).
+This is functional and visual QA in Chromium, not a formal WCAG conformance assessment or
+cross-browser certification. Native wide tables scroll within their own region on mobile.

@@ -289,6 +289,15 @@ inputs only). Page modules live in `dashboard/views/` rather than `pages/`, beca
 `st.navigation` first runs, which broke deep links. See
 [dashboard_redesign.md](dashboard_redesign.md).
 
+The premium presentation refinement keeps those boundaries: `ui.render_chart` applies the
+active native theme's text-mark colour, while `charts.py` remains Streamlit-free. Shared
+metric grids reflow without altering their values. Market Trends supplies literal history
+and benchmark tables alongside its step charts; Pricing Studio adds a comparison of the
+existing modelled objective values. Operations places freshness, run and quarantine summaries
+inside each product's health tab, using that product for every service read. The brand bar's
+native **Market data status** disclosure retains both products' activity and freshness without
+crowding mobile navigation. No collection or optimiser execution moved into a render path.
+
 The console is dual-product: home loans (lending) and term deposits (funding) are separate
 markets throughout. Every `DashboardServices` market read takes `product_type`
 (default `HOME_LOAN`, so existing callers are unchanged) and passes it to *every* backend call

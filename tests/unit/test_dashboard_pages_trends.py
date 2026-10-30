@@ -1,4 +1,4 @@
-from dashboard_harness import chart_count, run_page
+from dashboard_harness import chart_count, frame_with, run_page
 
 
 def test_trends_renders_one_history_chart_for_all_banks_and_a_timeline(market_factory):
@@ -7,7 +7,7 @@ def test_trends_renders_one_history_chart_for_all_banks_and_a_timeline(market_fa
     assert not app.exception
     # history, leader/median, dispersion, timeline, term structure; never one chart per bank
     assert chart_count(app) == 5
-    timeline = app.dataframe[0].value
+    timeline = frame_with(app, "Movement")
     assert timeline.iloc[0]["Bank"] == "ANZ" and timeline.iloc[0]["Movement"] == "-10 bps"
     assert timeline.iloc[0]["Days after first move"] == 0.0
 

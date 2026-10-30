@@ -11,7 +11,9 @@ import pandas as pd
 import streamlit as st
 
 from balance_pricing_engine.competitor_rates.models import ProductType
+from balance_pricing_engine.dashboard import ui
 from balance_pricing_engine.dashboard.charts import freshness_bars
+from balance_pricing_engine.dashboard.products import profile
 from balance_pricing_engine.dashboard.formatting import (
     EM_DASH,
     fmt_age_hours,
@@ -158,6 +160,18 @@ def _product_tab(services: DashboardServices, product: ProductType) -> None:
     health = unwrap(result)
     if health is None:
         return
+    info = profile(product)
+    ui.product_banner(product)
+    _overview_tiles(services, health, product)
+    st.subheader(f"{info.market} data freshness by bank", anchor=False)
+    st.caption(
+        f"Age of each bank's latest validated {info.noun} observation. Bars past the dashed "
+        "limit are stale and excluded from market statistics."
+    )
+    with ui.chart_panel(f"freshness-{product.value}"):
+        ui.render_chart(freshness_bars(health))
+    with st.expander(f"{info.market} system components"):
+        st.dataframe(_components(health), hide_index=True, width="stretch")
     exclusions = unwrap(services.exclusions(product)) or ()
     _explain(health, exclusions)
     st.subheader("Collector health")
@@ -207,36 +221,44 @@ DATA_STATES = """
 RUN_STATUS_SHORT = {"SUCCESS": "Success", "PARTIAL_SUCCESS": "Partial", "FAILED": "Failed"}
 
 
-def _overview_tiles(services: DashboardServices, health: SystemHealth) -> None:
+def _overview_tiles(
+    services: DashboardServices, health: SystemHealth, product: ProductType
+) -> None:
+    info = profile(product)
+    prefix = "Term deposit · " if product is ProductType.TERM_DEPOSIT else ""
     run = health.latest_run
     failing = sum(1 for b in health.banks if b.collector is CollectorStatus.FAILING)
-    suspicious = services.suspicious(ProductType.HOME_LOAN)
+    suspicious = services.suspicious(product)
     quarantined = len(suspicious.value) if suspicious.status == "OK" and suspicious.value else 0
-    cols = st.columns(6)
-    cols[0].metric("Database", "HEALTHY" if health.database_ok else "⚠ ISSUES", border=True)
+    cols = ui.metric_columns(6, key=f"health-{product.value}")
+    cols[0].metric(
+        prefix + "Database", "HEALTHY" if health.database_ok else "⚠ ISSUES", border=True
+    )
     run_age = EM_DASH
     if run is not None:
-        run_age = f"{fmt_age_hours((health.evaluated_at - run.started_at).total_seconds() / 3600)} ago"
+        run_age = (
+            f"{fmt_age_hours((health.evaluated_at - run.started_at).total_seconds() / 3600)} ago"
+        )
     cols[1].metric(
-        "Latest run",
+        prefix + "Latest run",
         RUN_STATUS_SHORT.get(run.status, run.status) if run else "None",
         border=True,
         help=f"Status {run.status}" if run else "No operational run recorded.",
     )
-    cols[2].metric("Last run age", run_age, border=True)
+    cols[2].metric(prefix + "Last run age", run_age, border=True)
     cols[3].metric(
-        "Fresh banks",
+        prefix + "Fresh banks",
         f"{health.fresh_bank_count} / {len(health.banks)}",
         border=True,
         help=f"Observations older than {health.max_observation_age_hours:.0f} h are stale.",
     )
-    cols[4].metric("Collectors failing", failing, border=True)
+    cols[4].metric(prefix + "Collectors failing", failing, border=True)
     cols[5].metric(
-        "Suspicious readings",
+        prefix + "Suspicious readings",
         quarantined,
         border=True,
-        help="Implausible mortgage readings recorded so far (all time). They are quarantined: "
-        "never part of a ranking, median or scenario. Listed in the Mortgage tab below.",
+        help=f"Implausible {info.noun} readings recorded so far (all time). They are quarantined: "
+        "never part of a ranking, median or scenario. Listed below.",
     )
     channels = [
         f"Telegram {'✓ configured' if health.telegram_configured else '✗ not configured'}",
@@ -246,20 +268,8 @@ def _overview_tiles(services: DashboardServices, health: SystemHealth) -> None:
 
 
 def render(services: DashboardServices) -> None:
-    health = unwrap(services.health())
-    if health is None:
-        return
-    _overview_tiles(services, health)
-    st.subheader("Data freshness by bank", anchor=False)
-    st.caption(
-        "Age of each bank's latest validated mortgage observation. Bars past the dashed limit "
-        "are stale and excluded from market statistics."
-    )
-    st.altair_chart(freshness_bars(health), width="stretch")
     with st.expander("How to read data states"):
         st.markdown(DATA_STATES)
-    st.subheader("Components")
-    st.dataframe(_components(health), hide_index=True, width="stretch")
     st.caption(
         "Pricing Watch does not observe the external scheduler; the last run's age is the only signal."
     )

@@ -47,7 +47,9 @@ def render(services: DashboardServices) -> None:
     config = services.settings.intelligence
     with ui.filter_bar():
         cols = st.columns([1, 2, 1, 1], vertical_alignment="bottom")
-        term = live_term_selector(overview, ui.product_key("trends_term", product), container=cols[0])
+        term = live_term_selector(
+            overview, ui.product_key("trends_term", product), container=cols[0]
+        )
         if term is None:
             return
         banks = cols[1].multiselect(
@@ -61,9 +63,7 @@ def render(services: DashboardServices) -> None:
             allow_none=True,
             container=cols[3],
         )
-        st.caption(
-            f"Rate type: {info.tier} (the comparable tier). Dates are NZ calendar days."
-        )
+        st.caption(f"Rate type: {info.tier} (the comparable tier). Dates are NZ calendar days.")
 
     data = unwrap(cached(services, "history", term, tuple(banks), days, product))
     if data is None:
@@ -76,31 +76,71 @@ def render(services: DashboardServices) -> None:
         "comparable rate on those dates.",
     )
     if data.points:
-        st.altair_chart(
-            history_lines(
-                data.points, days=days_covered, selected_bank=highlight, banks=config.selected_banks
-            ),
-            width="stretch",
-        )
+        with ui.chart_panel("history"):
+            ui.render_chart(
+                history_lines(
+                    data.points,
+                    days=days_covered,
+                    selected_bank=highlight,
+                    banks=config.selected_banks,
+                )
+            )
+            st.caption(
+                "Scroll to zoom the date range; drag to pan; double-click to reset. "
+                "Use the bank and range controls for keyboard filtering. "
+                "The rate axis is narrowed to show differences."
+            )
+        with st.expander("Rate history as a table"):
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Date": p.day,
+                            "Market": info.label,
+                            "Bank": p.bank,
+                            "Advertised rate (%)": p.rate_pct,
+                        }
+                        for p in data.points
+                    ]
+                ),
+                hide_index=True,
+                width="stretch",
+            )
     else:
         st.info("Select at least one bank to plot its rate history.")
 
-    left, right = st.columns(2, gap="large")
-    with left:
+    levels_tab, dispersion_tab = st.tabs(["Market benchmarks", "Competitive dispersion"])
+    with levels_tab:
         ui.section(
             f"{info.market} leader and median",
             f"Computed per date across every bank observed then. The leader line is the "
             f"{info.best_word} comparable rate ({info.ranking_rule.lower()}).",
         )
-        st.altair_chart(
-            market_levels(data.market, f"Leader ({info.best_word} rate)"), width="stretch"
-        )
-    with right:
+        ui.render_chart(market_levels(data.market, f"Leader ({info.best_word} rate)"))
+    with dispersion_tab:
         ui.section(
             f"{info.market} dispersion",
             "Highest minus lowest comparable rate, in basis points.",
         )
-        st.altair_chart(market_dispersion(data.market), width="stretch")
+        ui.render_chart(market_dispersion(data.market))
+    with st.expander("Market benchmarks as a table"):
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Date": m.day,
+                        "Market": info.label,
+                        "Median (%)": m.median_pct,
+                        f"Leader ({info.best_word}, %)": m.leader_pct,
+                        "Spread (bps)": m.spread_bps,
+                        "Leader banks": ", ".join(m.leaders),
+                    }
+                    for m in data.market
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+        )
 
     ui.section(
         f"{info.market} repricing timeline",
@@ -112,7 +152,7 @@ def render(services: DashboardServices) -> None:
             "Rates held steady for every bank at this term. Widen the range to see earlier moves.",
         )
     else:
-        st.altair_chart(repricing_timeline(data.timeline, config.selected_banks), width="stretch")
+        ui.render_chart(repricing_timeline(data.timeline, config.selected_banks))
         with st.expander("Timeline as a table", expanded=False):
             st.dataframe(
                 pd.DataFrame(
@@ -137,4 +177,4 @@ def render(services: DashboardServices) -> None:
         f"Current {info.tier} across terms for the selected banks (stale rates left out).",
     )
     if banks:
-        st.altair_chart(term_structure(overview.matrix, banks, highlight), width="stretch")
+        ui.render_chart(term_structure(overview.matrix, banks, highlight))

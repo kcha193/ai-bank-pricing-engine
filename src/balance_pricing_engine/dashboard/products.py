@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from balance_pricing_engine.competitor_rates.models import ProductType
+from balance_pricing_engine.dashboard import theme
 
 
 @dataclass(frozen=True)
@@ -68,7 +69,7 @@ PRODUCTS: dict[ProductType, ProductProfile] = {
         better="lower",
         icon=":material/home:",
         symbol="⌂",
-        accent="#1F5AA6",
+        accent=theme.BLUE,
         badge="blue",
         trade_off=(
             "A lower mortgage rate attracts borrowers but narrows the bank's lending margin."
@@ -87,7 +88,7 @@ PRODUCTS: dict[ProductType, ProductProfile] = {
         better="higher",
         icon=":material/savings:",
         symbol="◎",
-        accent="#0E8C8C",
+        accent=theme.TEAL,
         badge="green",
         trade_off=(
             "A higher deposit rate attracts depositors but raises the bank's funding cost; "

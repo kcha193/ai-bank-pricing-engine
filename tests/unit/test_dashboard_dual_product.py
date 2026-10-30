@@ -208,8 +208,8 @@ def test_command_centre_shows_both_markets_with_their_own_leaders(dual_market_fa
     market = dual_market_factory()
     app = run_page("overview", market.database, market.now)
     assert not app.exception
-    text = markdown(app)
-    assert "Home Loan market" in text and "Term Deposit market" in text
+    headings = " ".join(h.value for h in app.subheader)
+    assert "Home Loan market" in headings and "Term Deposit market" in headings
     values = metrics(app)
     assert values["Mortgage leader"] == "ANZ" and values["Lowest rate"] == "4.79%"
     assert values["Term deposit leader"] == "Westpac" and values["Highest rate"] == "4.25%"
