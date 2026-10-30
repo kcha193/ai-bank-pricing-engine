@@ -15,7 +15,7 @@ BANKS = {"ANZ", "ASB", "BNZ", "Westpac", "Kiwibank"}
 def run_dry(tmp_path, fixture_fetcher, monkeypatch):
     """Run the worker against saved bank pages (no network), returning (code, payload, db)."""
 
-    def go(failing_banks=()):
+    def go(failing_banks=(), product=None):
         def service_factory(**kwargs):
             config = kwargs["config"].model_copy(
                 update={"collection": CollectionConfig(inter_request_delay_seconds=0)}
@@ -24,6 +24,7 @@ def run_dry(tmp_path, fixture_fetcher, monkeypatch):
                 config=config,
                 store=kwargs["store"],
                 fetcher=fixture_fetcher(failing_banks=failing_banks),
+                raw_root=tmp_path / "raw",  # never the repository's data/raw/
             )
 
         monkeypatch.setattr(run_worker, "PricingIntelligenceService", service_factory)
@@ -33,6 +34,7 @@ def run_dry(tmp_path, fixture_fetcher, monkeypatch):
                 "--config", str(ROOT / "configs/base.yaml"),
                 "--database", str(database),
                 "--result-file", str(result),
+                *(["--product", product] if product else []),
             ]
         )  # fmt: skip
         return code, json.loads(result.read_text()), database
@@ -53,3 +55,25 @@ def test_dry_run_reports_a_partial_failure_with_the_failed_bank(run_dry):
     assert code == 2 and payload["status"] == "PARTIAL_SUCCESS"
     assert payload["summary"]["banks_failed"] == ["ANZ"]
     assert not database.exists()
+
+
+def test_dry_run_defaults_to_home_loans_for_existing_callers(run_dry):
+    _, payload, _ = run_dry()
+    assert payload["summary"]["product_type"] == "home_loan"
+
+
+def test_term_deposit_dry_run_collects_every_bank_and_persists_nothing(run_dry):
+    """Runs the real fetch -> parse -> validate path on the 2026-10-30 page structures."""
+    code, payload, database = run_dry(product="term_deposit")
+    assert code == 0 and payload["status"] == "SUCCESS", payload["summary"]["failures"]
+    assert payload["summary"]["product_type"] == "term_deposit"
+    assert set(payload["summary"]["banks_succeeded"]) == BANKS
+    assert payload["summary"]["rates_accepted"] > 0
+    assert payload["summary"]["validation_errors"] == 0
+    assert not database.exists()
+
+
+def test_term_deposit_dry_run_reports_a_partial_failure(run_dry):
+    code, payload, _ = run_dry(failing_banks=["Kiwibank"], product="term_deposit")
+    assert code == 2 and payload["status"] == "PARTIAL_SUCCESS"
+    assert payload["summary"]["banks_failed"] == ["Kiwibank"]

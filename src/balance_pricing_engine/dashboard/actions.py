@@ -4,6 +4,11 @@ Live collection runs as a subprocess of the *scheduled* workflow script so it sh
 script's single-instance lock, exit codes, scenario trigger and JSON summary, and so Playwright
 never runs inside Streamlit's script thread. Only ``views/operations.py`` may import this module
 (enforced by ``tests/unit/test_dashboard_boundaries.py``).
+
+The workflow collects one product per invocation (each with its own lock and summary), so a run
+covering both markets is one subprocess per product, in sequence. Each market keeps its own
+result; the combined status is never better than the worst market's, so a failed term-deposit
+collection cannot hide behind a successful home-loan one.
 """
 
 from __future__ import annotations
@@ -19,8 +24,10 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Sequence
 
+from balance_pricing_engine.competitor_rates.models import ProductType
+from balance_pricing_engine.dashboard.products import PRODUCTS
 from balance_pricing_engine.dashboard.settings import DashboardSettings
 from balance_pricing_engine.pricing_intelligence.alerts import (
     AlertSink,
@@ -59,6 +66,10 @@ _MESSAGES = {
 _DRY_RUN_NOTE = (
     " Dry run: nothing was persisted, no alerts were sent, collector health was not updated."
 )
+_MIXED_MESSAGE = "The markets finished differently; see each market's result below."
+
+#: Both markets by default: the workflow script itself still defaults to home loans only.
+ALL_PRODUCTS: tuple[ProductType, ...] = (ProductType.HOME_LOAN, ProductType.TERM_DEPOSIT)
 
 
 def _utcnow() -> datetime:
@@ -113,6 +124,40 @@ class ActionResult:
     elapsed_seconds: float = 0.0
     banks: tuple[BankOutcome, ...] = ()
     summary: Mapping[str, object] = field(default_factory=dict)
+    #: The market a collection result covers (``None`` for non-collection actions).
+    product_type: Optional[ProductType] = None
+    #: One result per market when a collection covered more than one.
+    parts: tuple["ActionResult", ...] = ()
+
+
+def _combine(action: str, parts: Sequence[ActionResult], completed_at: datetime) -> ActionResult:
+    """One result for a multi-market collection, never better than its worst market.
+
+    Every market the same status keeps that status. Otherwise any market that stored data makes
+    the whole PARTIAL_SUCCESS, and none storing data makes it FAILED.
+    """
+    if not parts:
+        return ActionResult(
+            action, "FAILED", "No market was selected; nothing was started.", completed_at
+        )
+    if len(parts) == 1:
+        return parts[0]
+    statuses = [part.status for part in parts]
+    per_market = " · ".join(f"{PRODUCTS[part.product_type].label}: {part.status}" for part in parts)
+    if len(set(statuses)) == 1:
+        status = statuses[0]
+        detail = " ".join(dict.fromkeys(part.message for part in parts))
+    else:
+        status = "PARTIAL_SUCCESS" if {"SUCCESS", "PARTIAL_SUCCESS"} & set(statuses) else "FAILED"
+        detail = _MIXED_MESSAGE + (_DRY_RUN_NOTE if action == "dry_run" else "")
+    return ActionResult(
+        action,
+        status,
+        f"{per_market}. {detail}",
+        completed_at,
+        sum(part.elapsed_seconds for part in parts),
+        parts=tuple(parts),
+    )
 
 
 def _subprocess_env(settings: DashboardSettings) -> dict[str, str]:
@@ -155,6 +200,7 @@ def _run_process(
     *,
     summary_key: Optional[str],
     dry: bool,
+    product_type: ProductType,
 ) -> ActionResult:
     started = time.monotonic()
     try:
@@ -174,10 +220,17 @@ def _run_process(
             "The run exceeded its time limit and was stopped.",
             clock(),
             time.monotonic() - started,
+            product_type=product_type,
         )
     except OSError:
         logger.exception("could not launch %s", action)
-        return ActionResult(action, "FAILED", "The run could not be started; see the log.", clock())
+        return ActionResult(
+            action,
+            "FAILED",
+            "The run could not be started; see the log.",
+            clock(),
+            product_type=product_type,
+        )
 
     elapsed = time.monotonic() - started
     status = _STATUS_BY_EXIT.get(completed.returncode, "FAILED")
@@ -195,18 +248,30 @@ def _run_process(
     if dry:
         message += _DRY_RUN_NOTE
     return ActionResult(
-        action, status, message, clock(), elapsed, _banks_from_summary(summary), dict(summary)
+        action,
+        status,
+        message,
+        clock(),
+        elapsed,
+        _banks_from_summary(summary),
+        dict(summary),
+        product_type=product_type,
     )
 
 
 def run_live(
     settings: DashboardSettings,
     *,
+    products: Sequence[ProductType] = ALL_PRODUCTS,
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     clock: Callable[[], datetime] = _utcnow,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> ActionResult:
-    """Collect live rates by running the scheduled workflow script (one process, one lock)."""
+    """Collect live rates by running the scheduled workflow script once per product.
+
+    Each invocation takes the workflow's own per-product lock and writes its own summary, exactly
+    as the scheduled ``--product`` jobs do.
+    """
     script = settings.repo_root / WORKFLOW_SCRIPT
     if not script.is_file():  # e.g. a non-editable install that does not ship scripts/
         return ActionResult(
@@ -216,51 +281,64 @@ def run_live(
             "(pip install -e .).",
             clock(),
         )
-    with tempfile.TemporaryDirectory() as tmp:
-        result_path = Path(tmp) / "summary.json"
-        command = [sys.executable, str(script)]
-        if settings.engine_config_path.exists():
-            command += ["--config", str(settings.engine_config_path)]
-        command += [
-            "--database",
-            settings.intelligence.database_path,
-            "--render-javascript",
-            "--quiet",
-            "--summary-file",
-            str(result_path),
-        ]
-        return _run_process(
-            "live", command, result_path, settings, runner, clock, timeout_seconds,
-            summary_key=None, dry=False,
-        )  # fmt: skip
+    parts = []
+    for product in products:
+        with tempfile.TemporaryDirectory() as tmp:
+            result_path = Path(tmp) / "summary.json"
+            command = [sys.executable, str(script)]
+            if settings.engine_config_path.exists():
+                command += ["--config", str(settings.engine_config_path)]
+            command += [
+                "--database",
+                settings.intelligence.database_path,
+                "--product",
+                ProductType(product).value,
+                "--render-javascript",
+                "--quiet",
+                "--summary-file",
+                str(result_path),
+            ]
+            part = _run_process(
+                "live", command, result_path, settings, runner, clock, timeout_seconds,
+                summary_key=None, dry=False, product_type=ProductType(product),
+            )  # fmt: skip
+            parts.append(part)
+    return _combine("live", parts, clock())
 
 
 def run_dry(
     settings: DashboardSettings,
     *,
+    products: Sequence[ProductType] = ALL_PRODUCTS,
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     clock: Callable[[], datetime] = _utcnow,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> ActionResult:
-    """One non-persisting operational cycle (see ``run_worker``): live pages, nothing stored."""
-    with tempfile.TemporaryDirectory() as tmp:
-        result_path = Path(tmp) / "result.json"
-        command = [
-            sys.executable,
-            "-m",
-            WORKER_MODULE,
-            "--config",
-            str(settings.engine_config_path),
-            "--database",
-            settings.intelligence.database_path,
-            "--render-javascript",
-            "--result-file",
-            str(result_path),
-        ]
-        return _run_process(
-            "dry_run", command, result_path, settings, runner, clock, timeout_seconds,
-            summary_key="summary", dry=True,
-        )  # fmt: skip
+    """One non-persisting operational cycle per product (see ``run_worker``): nothing stored."""
+    parts = []
+    for product in products:
+        with tempfile.TemporaryDirectory() as tmp:
+            result_path = Path(tmp) / "result.json"
+            command = [
+                sys.executable,
+                "-m",
+                WORKER_MODULE,
+                "--config",
+                str(settings.engine_config_path),
+                "--database",
+                settings.intelligence.database_path,
+                "--product",
+                ProductType(product).value,
+                "--render-javascript",
+                "--result-file",
+                str(result_path),
+            ]
+            part = _run_process(
+                "dry_run", command, result_path, settings, runner, clock, timeout_seconds,
+                summary_key="summary", dry=True, product_type=ProductType(product),
+            )  # fmt: skip
+            parts.append(part)
+    return _combine("dry_run", parts, clock())
 
 
 def _latest_backup(backup_dir: Path, stem: str) -> Optional[tuple[Path, datetime]]:

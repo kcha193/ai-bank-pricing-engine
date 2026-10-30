@@ -43,22 +43,26 @@ SUMMARY = {
 }
 
 
-def test_live_run_launches_the_scheduled_workflow_once_with_render_javascript(settings):
+def test_live_run_launches_the_scheduled_workflow_once_per_product(settings):
     calls = []
     result = actions.run_live(settings, runner=fake_runner(2, SUMMARY, calls), clock=clock)
-    assert len(calls) == 1
-    command, kwargs = calls[0]
-    assert command[1].endswith("scripts/collect_market_rates_workflow.py")
-    assert "--render-javascript" in command and "--summary-file" in command
-    assert command[command.index("--database") + 1] == settings.intelligence.database_path
-    assert command[command.index("--config") + 1] == str(settings.engine_config_path)
-    assert str(settings.repo_root / "src") in kwargs["env"]["PYTHONPATH"]
+    assert [c[0][c[0].index("--product") + 1] for c in calls] == ["home_loan", "term_deposit"]
+    for command, kwargs in calls:
+        assert command[1].endswith("scripts/collect_market_rates_workflow.py")
+        assert "--render-javascript" in command and "--summary-file" in command
+        assert command[command.index("--database") + 1] == settings.intelligence.database_path
+        assert command[command.index("--config") + 1] == str(settings.engine_config_path)
+        assert str(settings.repo_root / "src") in kwargs["env"]["PYTHONPATH"]
+    # Each product writes its own summary: the workflow's per-product lock/summary contract.
+    assert len({c[0][c[0].index("--summary-file") + 1] for c in calls}) == 2
     assert result.status == "PARTIAL_SUCCESS"
     assert "last-known observations are retained" in result.message
     assert "max_observation_age_hours" in result.message
     assert "marked stale" not in result.message
-    assert {b.bank: b.ok for b in result.banks} == {"ASB": True, "ANZ": True, "Westpac": False}
-    assert result.summary["changes_detected"] == 2
+    assert [p.product_type for p in result.parts] == list(actions.ALL_PRODUCTS)
+    for part in result.parts:
+        assert {b.bank: b.ok for b in part.banks} == {"ASB": True, "ANZ": True, "Westpac": False}
+        assert part.summary["changes_detected"] == 2
 
 
 def test_live_run_without_an_engine_config_runs_database_only(tmp_path):
@@ -147,11 +151,121 @@ def test_dry_run_uses_the_worker_and_never_the_workflow_script(settings):
     result = actions.run_dry(
         settings, runner=fake_runner(0, payload, calls, flag="--result-file"), clock=clock
     )
-    command = calls[0][0]
-    assert "balance_pricing_engine.dashboard.run_worker" in command
-    assert not any("collect_market_rates_workflow" in part for part in command)
+    assert [c[0][c[0].index("--product") + 1] for c in calls] == ["home_loan", "term_deposit"]
+    for command, _ in calls:
+        assert "balance_pricing_engine.dashboard.run_worker" in command
+        assert not any("collect_market_rates_workflow" in part for part in command)
     assert result.status == "SUCCESS" and "nothing was persisted" in result.message.lower()
-    assert {b.bank for b in result.banks} == {"ASB", "ANZ", "Westpac"}
+    for part in result.parts:
+        assert {b.bank for b in part.banks} == {"ASB", "ANZ", "Westpac"}
+
+
+def per_product_runner(codes, summaries, calls=None, flag="--summary-file"):
+    """A runner whose exit code and summary depend on the ``--product`` it was launched with."""
+
+    def run(cmd, **kwargs):
+        product = cmd[cmd.index("--product") + 1]
+        if calls is not None:
+            calls.append(product)
+        if summaries.get(product) is not None:
+            Path(cmd[cmd.index(flag) + 1]).write_text(json.dumps(summaries[product]))
+        return subprocess.CompletedProcess(cmd, codes[product], stdout="", stderr="")
+
+    return run
+
+
+ALL_OK = {**SUMMARY, "banks_succeeded": ["ANZ", "ASB", "BNZ", "Kiwibank", "Westpac"]}
+ALL_OK = {**ALL_OK, "banks_failed": [], "failures": []}
+TD_FAILED = {
+    "banks_succeeded": [],
+    "banks_failed": ["ANZ", "ASB", "BNZ", "Kiwibank", "Westpac"],
+    "failures": [
+        {"bank": bank, "error_type": "ParserError", "error": "no rates"}
+        for bank in ("ANZ", "ASB", "BNZ", "Kiwibank", "Westpac")
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    ("home_loan", "term_deposit", "overall"),
+    [
+        ((0, ALL_OK), (1, TD_FAILED), "PARTIAL_SUCCESS"),
+        ((1, TD_FAILED), (0, ALL_OK), "PARTIAL_SUCCESS"),
+        ((0, ALL_OK), (2, SUMMARY), "PARTIAL_SUCCESS"),
+        ((0, ALL_OK), (3, None), "PARTIAL_SUCCESS"),
+        ((1, TD_FAILED), (1, TD_FAILED), "FAILED"),
+        ((1, TD_FAILED), (3, None), "FAILED"),
+        ((0, ALL_OK), (0, ALL_OK), "SUCCESS"),
+    ],
+)
+def test_one_market_failing_is_never_reported_as_overall_success(
+    settings, home_loan, term_deposit, overall
+):
+    runner = per_product_runner(
+        {"home_loan": home_loan[0], "term_deposit": term_deposit[0]},
+        {"home_loan": home_loan[1], "term_deposit": term_deposit[1]},
+    )
+    result = actions.run_live(settings, runner=runner, clock=clock)
+    assert result.status == overall
+    by_product = {part.product_type: part for part in result.parts}
+    assert by_product[actions.ProductType.HOME_LOAN].status == actions._STATUS_BY_EXIT[home_loan[0]]
+    assert (
+        by_product[actions.ProductType.TERM_DEPOSIT].status
+        == actions._STATUS_BY_EXIT[term_deposit[0]]
+    )
+    # The message names each market's own outcome.
+    assert f"Home loans: {by_product[actions.ProductType.HOME_LOAN].status}" in result.message
+    assert f"Term deposits: {by_product[actions.ProductType.TERM_DEPOSIT].status}" in result.message
+
+
+def test_a_failed_term_deposit_market_keeps_its_own_bank_failures(settings):
+    runner = per_product_runner(
+        {"home_loan": 0, "term_deposit": 1}, {"home_loan": ALL_OK, "term_deposit": TD_FAILED}
+    )
+    result = actions.run_live(settings, runner=runner, clock=clock)
+    loans, deposits = result.parts
+    assert all(b.ok for b in loans.banks)
+    assert [(b.bank, b.ok, b.detail) for b in deposits.banks] == [
+        (bank, False, "ParserError") for bank in ("ANZ", "ASB", "BNZ", "Kiwibank", "Westpac")
+    ]
+    assert result.banks == ()  # never a merged list that loses which market a bank failed in
+
+
+@pytest.mark.parametrize("action", ["run_live", "run_dry"])
+@pytest.mark.parametrize(
+    "products", [(actions.ProductType.TERM_DEPOSIT,), (actions.ProductType.HOME_LOAN,)]
+)
+def test_a_single_market_selection_launches_only_that_market(settings, action, products):
+    calls = []
+    flag = "--summary-file" if action == "run_live" else "--result-file"
+    payload = ALL_OK if action == "run_live" else {"status": "SUCCESS", "summary": ALL_OK}
+    runner = per_product_runner(
+        {"home_loan": 0, "term_deposit": 0},
+        {"home_loan": payload, "term_deposit": payload},
+        calls,
+        flag=flag,
+    )
+    result = getattr(actions, action)(settings, products=products, runner=runner, clock=clock)
+    assert calls == [products[0].value]
+    assert result.product_type is products[0] and result.parts == ()
+
+
+def test_dry_run_covers_both_markets_and_reports_each(settings):
+    calls = []
+    runner = per_product_runner(
+        {"home_loan": 0, "term_deposit": 2},
+        {
+            "home_loan": {"status": "SUCCESS", "summary": ALL_OK},
+            "term_deposit": {"status": "PARTIAL_SUCCESS", "summary": SUMMARY},
+        },
+        calls,
+        flag="--result-file",
+    )
+    result = actions.run_dry(settings, runner=runner, clock=clock)
+    assert calls == ["home_loan", "term_deposit"]
+    assert result.status == "PARTIAL_SUCCESS"
+    assert "nothing was persisted" in result.message.lower()
+    assert [p.status for p in result.parts] == ["SUCCESS", "PARTIAL_SUCCESS"]
 
 
 def test_backup_reports_the_location_inside_the_backup_directory(tmp_path):
