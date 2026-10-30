@@ -68,7 +68,7 @@ def _positions_frame(positions) -> pd.DataFrame:
 
 def _bank_card(selected, bank_count: int, product: ProductType) -> None:
     info = profile(product)
-    cols = st.columns(5)
+    cols = ui.metric_columns(5, key="bank-position")
     cols[0].metric(f"Current {info.rate_noun}", fmt_rate_pct(selected.rate_pct), border=True)
     cols[1].metric(
         "Rank",
@@ -136,7 +136,9 @@ def render(services: DashboardServices) -> None:
     positions = summary = bank = None
     with ui.filter_bar():
         left, right, note = st.columns([1, 1, 2], vertical_alignment="bottom")
-        term = live_term_selector(overview, ui.product_key("market_watch_term", product), container=left)
+        term = live_term_selector(
+            overview, ui.product_key("market_watch_term", product), container=left
+        )
         if term is not None:
             positions = unwrap(cached(services, "bank_positions", term, product))
             summary = unwrap(cached(services, "term_summary", term, product))
@@ -172,7 +174,11 @@ def render(services: DashboardServices) -> None:
             f"(dashed). {info.ranking_rule}.",
         )
         st.caption(info.trade_off)
-        st.altair_chart(position_dot_plot(positions, summary.median_pct, bank), width="stretch")
+        with ui.chart_panel("ranking"):
+            ui.render_chart(position_dot_plot(positions, summary.median_pct, bank))
+            st.caption(
+                "Rate axis is narrowed to show differences; the values are labelled directly."
+            )
         st.dataframe(_positions_frame(positions), hide_index=True, width="stretch")
     with gaps:
         ui.section(
@@ -183,7 +189,8 @@ def render(services: DashboardServices) -> None:
             f"so gaps to the leader are zero or "
             f"{'positive' if info.best_word == 'lowest' else 'negative'}.",
         )
-        st.altair_chart(gap_bars(positions, bank), width="stretch")
+        with ui.chart_panel("gaps"):
+            ui.render_chart(gap_bars(positions, bank))
     with matrix:
         ui.section(
             f"{info.market} bank × term matrix",
@@ -210,7 +217,7 @@ def render(services: DashboardServices) -> None:
             key=ui.product_key("explorer_structure_banks", product),
         )
         if chosen:
-            st.altair_chart(term_structure(overview.matrix, chosen, bank), width="stretch")
+            ui.render_chart(term_structure(overview.matrix, chosen, bank))
         else:
             st.caption("Select at least one bank to draw its term structure.")
 

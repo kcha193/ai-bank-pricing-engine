@@ -27,7 +27,11 @@ import streamlit as st
 
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.dashboard import ui
-from balance_pricing_engine.dashboard.charts import objective_curve, scenario_rates
+from balance_pricing_engine.dashboard.charts import (
+    objective_curve,
+    scenario_objectives,
+    scenario_rates,
+)
 from balance_pricing_engine.dashboard.formatting import (
     fmt_bps,
     fmt_money_m,
@@ -189,7 +193,7 @@ def _governance(view: ScenarioView) -> None:
 
 def _home_loan_metrics(view: ScenarioView) -> None:
     selected = view.selected
-    cols = st.columns(5)
+    cols = ui.metric_columns(5, key="scenario-home-loan")
     cols[0].metric(
         "Optimal home-loan rate",
         fmt_rate_fraction(selected.our_rate),
@@ -214,7 +218,7 @@ def _home_loan_metrics(view: ScenarioView) -> None:
 
 def _deposit_metrics(view: ScenarioView) -> None:
     selected = view.selected
-    cols = st.columns(3)
+    cols = ui.metric_columns(3, key="scenario-deposit-rates")
     cols[0].metric(
         "Optimal term-deposit rate",
         fmt_rate_fraction(selected.our_rate),
@@ -234,7 +238,7 @@ def _deposit_metrics(view: ScenarioView) -> None:
         border=True,
         help="Modelled expected risk-adjusted value after the funding-shortfall penalty.",
     )
-    cols = st.columns(3)
+    cols = ui.metric_columns(3, key="scenario-deposit-volumes")
     cols[0].metric(
         "Expected deposit volume", fmt_money_m(selected.expected_deposit_volume), border=True
     )
@@ -254,10 +258,8 @@ def _deposit_metrics(view: ScenarioView) -> None:
 
 def _joint_metrics(view: ScenarioView) -> None:
     selected = view.selected
-    cols = st.columns(3)
-    cols[0].metric(
-        "⌂ Optimal home-loan rate", fmt_rate_fraction(selected.loan_rate), border=True
-    )
+    cols = ui.metric_columns(3, key="scenario-joint-rates")
+    cols[0].metric("⌂ Optimal home-loan rate", fmt_rate_fraction(selected.loan_rate), border=True)
     cols[1].metric(
         "◎ Optimal term-deposit rate", fmt_rate_fraction(selected.deposit_rate), border=True
     )
@@ -268,8 +270,10 @@ def _joint_metrics(view: ScenarioView) -> None:
         help="Modelled expected risk-adjusted value of the joint loan and deposit book after the "
         "funding-shortfall penalty.",
     )
-    cols = st.columns(3)
-    cols[0].metric("⌂ Expected loan volume", fmt_money_m(selected.expected_loan_volume), border=True)
+    cols = ui.metric_columns(3, key="scenario-joint-volumes")
+    cols[0].metric(
+        "⌂ Expected loan volume", fmt_money_m(selected.expected_loan_volume), border=True
+    )
     cols[1].metric(
         "◎ Expected deposit volume", fmt_money_m(selected.expected_deposit_volume), border=True
     )
@@ -284,12 +288,17 @@ def _comparison(view: ScenarioView) -> None:
     info = profile(_side_product(view.mode))
     ui.section(
         f"{info.market} scenario comparison",
-        f"Each scenario re-runs the optimiser under a different competitor {info.noun} "
-        "assumption.",
+        f"Each scenario re-runs the optimiser under a different competitor {info.noun} assumption.",
     )
-    chart, table = st.columns([3, 2], gap="large")
-    chart.altair_chart(scenario_rates(view.rows, DISPLAY_LABELS), width="stretch")
-    table.dataframe(
+    rate_tab, value_tab = st.tabs(["Modelled rates", "Modelled financial value"])
+    with rate_tab:
+        ui.render_chart(scenario_rates(view.rows, DISPLAY_LABELS))
+    with value_tab:
+        ui.render_chart(scenario_objectives(view.rows, DISPLAY_LABELS))
+        st.caption(
+            "Zero-based value axis. Negative values are modelled losses, not realised profit."
+        )
+    st.dataframe(
         pd.DataFrame(
             [
                 {
@@ -304,7 +313,7 @@ def _comparison(view: ScenarioView) -> None:
         hide_index=True,
         width="stretch",
     )
-    table.caption(
+    st.caption(
         f"Rates are {info.rate_noun}s. Our rate is the optimiser's recommendation under each "
         "competitor assumption; Objective is the modelled risk-adjusted value. Model optimum is "
         "the Match median row, not a separate strategy."
@@ -319,10 +328,9 @@ def _trade_offs(view: ScenarioView) -> None:
             "across every rate on the other side.",
         )
         left, right = st.columns(2, gap="large")
-        left.altair_chart(objective_curve(view.curve, {}), width="stretch")
-        right.altair_chart(
-            objective_curve(view.deposit_curve, {}, "Our term-deposit rate (%)"),
-            width="stretch",
+        ui.render_chart(objective_curve(view.curve, {}), container=left)
+        ui.render_chart(
+            objective_curve(view.deposit_curve, {}, "Our term-deposit rate (%)"), container=right
         )
         return
     is_deposit = view.mode == SCENARIO_TERM_DEPOSIT
@@ -332,13 +340,12 @@ def _trade_offs(view: ScenarioView) -> None:
         f"The modelled objective at each candidate rate (best {other} rate for each), with the "
         "reference rates marked.",
     )
-    st.altair_chart(
+    ui.render_chart(
         objective_curve(
             view.deposit_curve if is_deposit else view.curve,
             _markers(view),
             "Our term-deposit rate (%)" if is_deposit else "Our home-loan rate (%)",
-        ),
-        width="stretch",
+        )
     )
     differences = scenario_differences(view)
     if differences:
@@ -347,6 +354,7 @@ def _trade_offs(view: ScenarioView) -> None:
 
 
 def _render_result(view: ScenarioView) -> None:
+    st.badge("Human review required", icon=":material/person_check:", color="orange")
     _governance(view)
     selected = view.selected
     ui.section(
@@ -486,9 +494,7 @@ def _define_joint(services: DashboardServices):
     lending, deposits = st.columns(2, gap="large")
     with lending:
         st.markdown("**⌂ Lending side**")
-        loan = _benchmark_inputs(
-            SCENARIO_JOINT, ProductType.HOME_LOAN, loan_overview, [st, st, st]
-        )
+        loan = _benchmark_inputs(SCENARIO_JOINT, ProductType.HOME_LOAN, loan_overview, [st, st, st])
     with deposits:
         st.markdown("**◎ Deposit side**")
         deposit = _benchmark_inputs(
@@ -610,6 +616,7 @@ def render(services: DashboardServices) -> None:
         "optimiser and see the trade-offs. Results are decision support for human review.",
     )
     st.warning(DISCLAIMER)
+    ui.workflow_steps()
     scenarios_tab, lab_tab = st.tabs(["Guided scenario", "Advanced: Scenario Lab"])
     with scenarios_tab:
         _scenarios_tab(services)

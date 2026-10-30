@@ -155,7 +155,7 @@ def _coverage_notice(services: DashboardServices, product: ProductType) -> None:
 
 def _summary(rows) -> None:
     counts = Counter(theme.change_group(r.change_type) for r in rows)
-    cols = st.columns(len(theme.DIRECTION_SYMBOLS))
+    cols = ui.metric_columns(len(theme.DIRECTION_SYMBOLS), key="events")
     for col, group in zip(cols, theme.DIRECTION_SYMBOLS):
         col.metric(f"{theme.DIRECTION_SYMBOLS[group]} {group}", counts.get(group, 0), border=True)
 
@@ -220,9 +220,8 @@ def render(services: DashboardServices) -> None:
         "One lane per bank; marker size shows the size of the move. Order in time does not "
         "imply that one move caused another.",
     )
-    st.altair_chart(
-        movement_timeline(rows, services.settings.intelligence.selected_banks), width="stretch"
-    )
+    with ui.chart_panel("movements"):
+        ui.render_chart(movement_timeline(rows, services.settings.intelligence.selected_banks))
 
     feed, inspector = st.columns([3, 2], gap="large")
     with feed:

@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from typing import Iterator, Optional, Sequence
 
 import streamlit as st
+from streamlit.delta_generator import DeltaGenerator
 
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.dashboard import theme
@@ -52,7 +53,13 @@ OPERATIONS = "operations"
 
 def inject_theme() -> None:
     """Scoped CSS for the whole app (a style-only block takes no layout space)."""
-    st.html(theme.APP_CSS)
+    st.html(theme.app_css(dark=st.context.theme.type == "dark"))
+
+
+def render_chart(chart, *, container=None) -> None:
+    """Render text marks as legibly as native axes in either theme, without changing data."""
+    ink = theme.DARK_TEXT if st.context.theme.type == "dark" else theme.NAVY
+    (container or st).altair_chart(chart.configure_text(color=ink), width="stretch")
 
 
 def register_pages(pages: dict) -> None:
@@ -70,6 +77,7 @@ def nav_link(destination: str, label: str, *, icon: Optional[str] = None, help=N
 
 def page_header(title: str, subtitle: str) -> None:
     with st.container(key="pw-page-header"):
+        st.caption("MARKET INTELLIGENCE / NEW ZEALAND")
         st.header(title, anchor=False)
         st.caption(subtitle)
 
@@ -85,6 +93,35 @@ def filter_bar() -> Iterator[None]:
     """One tinted strip holding a page's filters, so they read as a unit."""
     with st.container(key="pw-filters"):
         yield
+
+
+def metric_columns(count: int, *, key: str) -> list[DeltaGenerator]:
+    """Native metric columns that reflow as a grid on smaller screens."""
+    with st.container(key=f"pw-metrics-{count}-{key}"):
+        return st.columns(count, gap="small")
+
+
+@contextmanager
+def chart_panel(key: str) -> Iterator[None]:
+    """A consistent analytical surface; callers retain the chart, title and data alternative."""
+    with st.container(border=True, key=f"pw-chart-{key}"):
+        yield
+
+
+def workflow_steps() -> None:
+    with st.container(key="pw-workflow", border=True):
+        steps = st.columns(3)
+        for col, label, note in zip(
+            steps,
+            ("01 · Define assumptions", "02 · Run & compare", "03 · Human review"),
+            (
+                "Choose a market and benchmark",
+                "Inspect modelled rates and value",
+                "Review limits before any decision",
+            ),
+        ):
+            col.markdown(f"**{label}**")
+            col.caption(note)
 
 
 def calm_empty_state(title: str, body: str) -> None:
@@ -105,9 +142,7 @@ def coverage_badge(fresh: int, configured: int) -> None:
     if configured and fresh == configured:
         st.badge(f"All {configured} banks fresh", icon=":material/check_circle:", color="green")
     else:
-        st.badge(
-            f"{fresh} of {configured} banks fresh", icon=":material/warning:", color="orange"
-        )
+        st.badge(f"{fresh} of {configured} banks fresh", icon=":material/warning:", color="orange")
 
 
 # ----------------------------------------------------------------------------- product
@@ -170,9 +205,7 @@ def product_banner(product: ProductType) -> None:
     """A strong, product-coloured strip under a page header naming the market and its rule."""
     info = profile(product)
     with st.container(key=f"pw-banner-{info.product_type.value}"):
-        with st.container(horizontal=True, gap="small", vertical_alignment="center"):
-            product_badge(product)
-            st.caption(f"{info.side} · {info.ranking_rule} · comparable tier: {info.tier}")
+        st.caption(f"{info.icon} **{info.label}** · {info.side} · {info.ranking_rule}")
 
 
 def product_badge(product: ProductType) -> None:

@@ -50,6 +50,8 @@ def _finish(chart, *, height: Optional[int] = None):
             titleFontSize=12,
             symbolSize=110,
             padding=4,
+            labelLimit=180,
+            columns=2,
         )
         .configure_view(strokeWidth=0)
     )
@@ -108,7 +110,8 @@ def position_dot_plot(
     )
     rates = list(frame["rate"]) + [median_pct]
     pad = max((max(rates) - min(rates)) * 0.25, 0.05)
-    x_scale = alt.Scale(domain=[min(rates) - pad, max(rates) + pad], zero=False, nice=False)
+    # Leave enough space for direct labels, including a quarantined leader, at narrow widths.
+    x_scale = alt.Scale(domain=[min(rates) - pad, max(rates) + pad * 2], zero=False, nice=False)
     y = alt.Y(
         "bank:N",
         sort=alt.EncodingSortField("rank", order="ascending"),
@@ -134,7 +137,7 @@ def position_dot_plot(
             "median:Q",
             scale=x_scale,
             title=RATE_AXIS,
-            axis=alt.Axis(format=".2f", tickCount=6, labelFlush=False),
+            axis=alt.Axis(format=".2f", tickCount=4, labelFlush=False),
         ),
         x2="rate:Q",
         color=colour,
@@ -152,7 +155,7 @@ def position_dot_plot(
     )
     median_label = (
         alt.Chart(pd.DataFrame({"rate": [median_pct], "text": [f"Median {median_pct:.2f}%"]}))
-        .mark_text(align="left", dx=4, dy=-6, fontSize=11, color=theme.SLATE, baseline="bottom")
+        .mark_text(align="left", dx=4, dy=-6, fontSize=11, baseline="bottom")
         .encode(x="rate:Q", y=alt.value(0), text="text:N")
     )
     height = theme.CHART_ROW_HEIGHT * max(len(frame), 3) + theme.CHART_CHROME
@@ -314,10 +317,16 @@ def history_lines(
         color=colour,
     )
     line = base.mark_line(interpolate="step-after", invalid="break-paths-show-domains").encode(
+        strokeDash=alt.StrokeDash(
+            "bank:N",
+            scale=alt.Scale(domain=domain, range=list(theme.BANK_DASHES)[: len(domain)]),
+            legend=None,
+        ),
         strokeWidth=alt.condition(emphasis, alt.value(3.2), alt.value(1.6)),
         opacity=alt.condition(emphasis, alt.value(1.0), alt.value(0.5)),
     )
-    dots = base.mark_circle(size=36).encode(
+    dots = base.mark_point(size=48, filled=True).encode(
+        shape=alt.Shape("bank:N", legend=None),
         opacity=alt.condition(emphasis, alt.value(1.0), alt.value(0.45)),
         tooltip=[
             alt.Tooltip("bank:N", title="Bank"),
@@ -325,7 +334,7 @@ def history_lines(
             alt.Tooltip("rate:Q", title="Rate (%)", format=".2f"),
         ],
     )
-    return _finish(alt.layer(line, dots), height=theme.CHART_HEIGHT + 40)
+    return _finish(alt.layer(line, dots).interactive(bind_y=False), height=theme.CHART_HEIGHT + 40)
 
 
 def market_levels(market: Sequence[MarketPoint], leader_series: str = "Market leader"):
@@ -358,7 +367,7 @@ def market_levels(market: Sequence[MarketPoint], leader_series: str = "Market le
             color=alt.Color(
                 "series:N",
                 scale=alt.Scale(
-                    domain=[leader_series, "Market median"], range=[theme.TEAL, theme.NAVY]
+                    domain=[leader_series, "Market median"], range=[theme.TEAL, theme.CHART_INK]
                 ),
                 legend=alt.Legend(title=None),
             ),
@@ -383,7 +392,7 @@ def market_dispersion(market: Sequence[MarketPoint]):
     frame = pd.DataFrame([{"day": m.day, "spread": m.spread_bps} for m in market])
     chart = (
         alt.Chart(frame)
-        .mark_area(interpolate="step-after", opacity=0.25, color=theme.BLUE, line=True)
+        .mark_area(interpolate="step-after", opacity=0.25, color=theme.CHART_BLUE, line=True)
         .encode(
             x=_time_x("day:T"),
             y=alt.Y("spread:Q", title="Dispersion (bps)", scale=alt.Scale(zero=True)),
@@ -523,7 +532,7 @@ def scenario_rates(rows: Sequence[ScenarioRowView], labels: Mapping[str, str]):
             x="rate:Q",
             color=alt.Color(
                 "kind:N",
-                scale=alt.Scale(domain=kinds, range=[theme.SLATE, theme.BLUE]),
+                scale=alt.Scale(domain=kinds, range=[theme.SLATE, theme.CHART_BLUE]),
                 legend=alt.Legend(title=None),
             ),
             tooltip=[
@@ -553,7 +562,7 @@ def objective_curve(
     frame = pd.DataFrame([{"rate": p.rate * 100, "objective": p.objective} for p in curve])
     line = (
         alt.Chart(frame)
-        .mark_line(point=alt.OverlayMarkDef(size=30), strokeWidth=2.5, color=theme.NAVY)
+        .mark_line(point=alt.OverlayMarkDef(size=30), strokeWidth=2.5, color=theme.CHART_INK)
         .encode(
             x=alt.X("rate:Q", title=rate_title, scale=alt.Scale(zero=False)),
             y=alt.Y("objective:Q", title="Modelled objective ($)", axis=alt.Axis(format="~s")),
@@ -566,7 +575,7 @@ def objective_curve(
     layers = [line]
     if markers:
         names = list(markers)
-        palette = [theme.BLUE, theme.SLATE, theme.TEAL, theme.AMBER, theme.RED]
+        palette = [theme.CHART_BLUE, theme.SLATE, theme.TEAL, theme.AMBER, theme.RED]
         rules = (
             alt.Chart(
                 pd.DataFrame([{"marker": name, "rate": rate} for name, rate in markers.items()])
@@ -587,6 +596,44 @@ def objective_curve(
         )
         layers.append(rules)
     return _finish(alt.layer(*layers), height=theme.CHART_HEIGHT)
+
+
+def scenario_objectives(rows: Sequence[ScenarioRowView], labels: Mapping[str, str]):
+    """Compare modelled value alongside rate comparisons; do not imply realised profit."""
+    frame = pd.DataFrame(
+        [
+            {
+                "scenario": labels.get(r.label, r.label),
+                "objective": r.objective,
+                "rate": r.our_rate * 100,
+            }
+            for r in rows
+        ]
+    )
+    chart = (
+        alt.Chart(frame)
+        .mark_bar(color=theme.CHART_INK, cornerRadiusEnd=3)
+        .encode(
+            y=alt.Y(
+                "scenario:N",
+                sort=list(frame["scenario"]),
+                title=None,
+                axis=alt.Axis(labelLimit=170),
+            ),
+            x=alt.X(
+                "objective:Q",
+                title="Modelled risk-adjusted value ($)",
+                scale=alt.Scale(zero=True),
+                axis=alt.Axis(format="~s", tickCount=4),
+            ),
+            tooltip=[
+                alt.Tooltip("scenario:N", title="Scenario"),
+                alt.Tooltip("objective:Q", title="Modelled value ($)", format=",.0f"),
+                alt.Tooltip("rate:Q", title="Modelled optimal rate (%)", format=".2f"),
+            ],
+        )
+    )
+    return _finish(chart, height=theme.CHART_ROW_HEIGHT * max(len(frame), 3) + theme.CHART_CHROME)
 
 
 def freshness_bars(health: SystemHealth):

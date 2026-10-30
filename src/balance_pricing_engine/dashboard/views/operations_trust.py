@@ -21,6 +21,9 @@ def render(services: DashboardServices) -> None:
         "Data freshness, collector health, quarantined readings and run history — and the "
         "controls that collect new market data.",
     )
+    st.caption(
+        "Review stored evidence in Data health. Start a collection explicitly in Collection & maintenance."
+    )
     health_tab, controls_tab = st.tabs(["Data health", "Collection & maintenance"])
     with health_tab:
         system_health.render(services)

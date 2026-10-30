@@ -9,14 +9,14 @@ toolbarMode = "viewer"
 baseRadius = "0.6rem"
 showWidgetBorder = true
 headingFontWeights = [700, 650, 650, 600, 600, 600]
-chartCategoricalColors = ["#1F5AA6", "#E07B39", "#0E8C8C", "#8E5BB5", "#C9A227", "#4F8A4C", "#D45087", "#6C7A89"]
+chartCategoricalColors = ["#4C78A8", "#E07B39", "#0E8C8C", "#8E5BB5", "#C9A227", "#4F8A4C", "#D45087", "#6C7A89"]
 
 [theme.light]
-primaryColor = "#0F5F8C"
-backgroundColor = "#F7F9FC"
+primaryColor = "#1E40AF"
+backgroundColor = "#F8FAFC"
 secondaryBackgroundColor = "#EDF2F8"
 textColor = "#0B1F3A"
-linkColor = "#0F5F8C"
+linkColor = "#1E40AF"
 borderColor = "#D5DEEA"
 dataframeHeaderBackgroundColor = "#E8EEF6"
 
