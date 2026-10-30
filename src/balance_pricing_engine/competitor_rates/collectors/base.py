@@ -188,6 +188,14 @@ def _fetch_with_retries(config: CollectionConfig, url: str, attempt: Callable[[]
     raise FetchError(f"could not fetch {url}: {last_error}") from last_error
 
 
+#: Browser readiness: some table cell shows a percentage. ``parse_html_rates`` reads rates only
+#: from ``td``/``th`` cells, so this is the earliest point a parse can succeed.
+RATE_TABLE_READY_JS = (
+    "() => Array.from(document.querySelectorAll('td, th'))"
+    ".some((cell) => /\\d+(?:\\.\\d+)?\\s*%/.test(cell.textContent))"
+)
+
+
 def build_browser_fetcher(config: CollectionConfig) -> Fetcher:
     """Return a fetcher that renders the page in a headless browser first.
 
@@ -239,14 +247,18 @@ def build_browser_fetcher(config: CollectionConfig) -> Fetcher:
                 # in the initial document (ASB confirmed 2026-09-17; Westpac
                 # too, though it can still fail downstream for unrelated
                 # reasons -- see ParserError), and gives an async-rendering
-                # bank like BNZ the time its XHR actually needs. A timeout
+                # bank like BNZ the time its XHR actually needs. The
+                # percentage must be in a table cell (RATE_TABLE_READY_JS),
+                # the only place the parser reads rates from: a promotional
+                # banner ("Earn 4.85% p.a.") in the page text would otherwise
+                # satisfy the wait before the rate table renders. A timeout
                 # here is not re-raised: the page still loaded, so this falls
                 # through to the ordinary "no rates confidently extracted"
                 # ParserError downstream rather than masking that outcome as
                 # a FetchError.
                 try:
                     page.wait_for_function(
-                        "() => /\\d+(?:\\.\\d+)?\\s*%/.test(document.body.innerText)",
+                        RATE_TABLE_READY_JS,
                         timeout=int(config.request_timeout_seconds * 1000),
                     )
                 except PlaywrightTimeoutError:
@@ -355,6 +367,15 @@ class BankPricingCollector(abc.ABC):
         "income tax rate",
         "after tax",
         "prescribed investor rate",
+        # Savings accounts and fee tables on the same page. Kiwibank's deposit page lists
+        # Notice Saver / Online Call rates ("2.20 % p.a. for 32 days notice period") and an
+        # early-termination charge ("within the first 30 days"), which parsed as 1-month term
+        # deposits; a notice period is not a term.
+        "notice saver",
+        "notice period",
+        "online call",
+        "call account",
+        "termination charge",
     )
 
     #: Word-boundary-matched counterpart to excluded_deposit_product_markers,

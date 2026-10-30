@@ -31,6 +31,28 @@ class NormalisedTerm:
     special_label: Optional[str] = None
 
 
+#: Average days per month, and how far a day-based term may sit from a whole number of months
+#: and still be that month term. Banks advertise both "180 days" and "6 months" for the same
+#: tenor, so 30/60/.../270/365 days must line up with their month equivalents (the furthest of
+#: those, 270 days, is ~4 days off). Anything further is a term of its own.
+_DAYS_PER_MONTH = 365.25 / 12
+_MONTH_TOLERANCE_DAYS = 7.0
+
+
+def _whole_months(days: int) -> Optional[int]:
+    """The month term a day-based term is, or ``None`` when it is not a whole number of months.
+
+    Rounding every day term to its nearest month made BNZ's 7-day rate a "1-month" rate that
+    collided with its 30-day rate (validation then rejected both and failed the bank), and put
+    Kiwibank's 200-day rate in the market comparison against other banks' 210-day rates. A
+    ``None`` term keeps the row (identified by its own label) but out of month-term statistics.
+    """
+    months = round(days / _DAYS_PER_MONTH)
+    if months < 1 or abs(days - months * _DAYS_PER_MONTH) > _MONTH_TOLERANCE_DAYS:
+        return None
+    return months
+
+
 def normalise_term(label: str) -> NormalisedTerm:
     """Normalise a bank-advertised term while preserving the original label."""
     raw_label = label.strip()
@@ -52,7 +74,7 @@ def normalise_term(label: str) -> NormalisedTerm:
         days = int(days_match.group(1))
         if days == 0:
             return NormalisedTerm(raw_label=raw_label, months=None, days=None)
-        return NormalisedTerm(raw_label=raw_label, months=max(round(days / 30), 1), days=days)
+        return NormalisedTerm(raw_label=raw_label, months=_whole_months(days), days=days)
 
     months_match = re.search(r"\b(\d+)\s*months?\b", text)
     if months_match:

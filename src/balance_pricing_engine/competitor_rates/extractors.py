@@ -252,7 +252,12 @@ def parse_html_rates(
         )
         if not rate_categories:
             continue
+        pie_table = product == ProductType.TERM_DEPOSIT and _is_pie_return_table(
+            current_header_row
+        )
         for rate, category, own_header, own_context in rate_categories:
+            if pie_table and category == "term_deposit":
+                category = "pie_term_deposit"
             # own_context (this record's row text with sibling rate-bearing
             # cells excluded) plus own_header, not the shared `context` --
             # so a bank-specific category alias living only in the header
@@ -401,6 +406,30 @@ def _strip_term_label(text: str, term_label: str) -> str:
 #: _product_name() (a candidate product-name cell must not carry one, since
 #: that is exactly the mutable value identity must not embed).
 _RATE_PERCENTAGE_PATTERN = re.compile(r"\d+(?:\.\d+)?\s*%")
+
+
+#: "Effective rate of return" is excluded: it is the tax-adjusted comparison column banks also
+#: print beside ordinary term-deposit rates (ANZ's single-table layout, 2026-08-27), and those
+#: cells are fenced off as non-comparable on their own.
+_PIE_RETURN_HEADER_PATTERN = re.compile(
+    r"(?<!effective )\brates? of return\b|\breturn frequency\b"
+)
+
+
+def _is_pie_return_table(header_row: list[str] | None) -> bool:
+    """Whether a deposit table's header row describes a PIE fund's returns.
+
+    A PIE fund pays a "rate of return", not interest, and ANZ, BNZ and Westpac publish that table
+    beside their ordinary term-deposit table with no "PIE" in any cell (only in a heading the
+    table parser does not see): "Rate of return", "Rate of return p.a.", "Return Frequency"
+    (live pages, 2026-10-30).
+    Read as ordinary term deposits, a PIE rate above the advertised rate wins market leadership
+    and a different one collides with the advertised rate at the same identity. Kiwibank's
+    header names its PIE column outright, which the per-cell "pie" hint already handles.
+    """
+    return header_row is not None and bool(
+        _PIE_RETURN_HEADER_PATTERN.search(" ".join(header_row).lower())
+    )
 
 
 def _is_header_row(row: list[str]) -> bool:
