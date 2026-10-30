@@ -158,6 +158,60 @@ def test_bank_results_are_listed_after_a_partial_run(market_factory, clean_runne
     assert any("Changes detected: 2" in m.value for m in app.markdown)
 
 
+@pytest.mark.parametrize(
+    ("choice", "expected"),
+    [
+        (None, actions.ALL_PRODUCTS),  # the default
+        ("Both markets", actions.ALL_PRODUCTS),
+        ("Term deposits", (actions.ProductType.TERM_DEPOSIT,)),
+        ("Home loans", (actions.ProductType.HOME_LOAN,)),
+    ],
+)
+@pytest.mark.parametrize(("button", "action"), [("run_live", "run_live"), ("run_dry", "run_dry")])
+def test_the_market_selection_reaches_the_collection(
+    market_factory, clean_runner, choice, expected, button, action
+):
+    market = market_factory()
+    with patch.object(actions, action, side_effect=lambda *a, **k: ok(action)) as run:
+        app = run_page("operations", market.database, market.now)
+        assert app.radio(key="ops_markets").value == "Both markets"
+        if choice is not None:
+            app.radio(key="ops_markets").set_value(choice).run()
+        if button == "run_live":
+            app.checkbox(key="confirm_live").check().run()
+        app.button(key=button).click().run()
+        clean_runner.wait()
+    assert run.call_count == 1
+    assert tuple(run.call_args.kwargs["products"]) == expected
+
+
+def test_each_market_is_reported_separately_after_a_mixed_run(market_factory, clean_runner):
+    market = market_factory()
+    loans = actions.ActionResult(
+        "live", "SUCCESS", "Pricing Watch run completed.", DONE,
+        banks=(actions.BankOutcome("ASB", True),),
+        product_type=actions.ProductType.HOME_LOAN,
+    )  # fmt: skip
+    deposits = actions.ActionResult(
+        "live", "FAILED", "Run failed; stored data is unchanged.", DONE,
+        banks=(actions.BankOutcome("ASB", False, "ParserError"),),
+        product_type=actions.ProductType.TERM_DEPOSIT,
+    )  # fmt: skip
+    combined = actions._combine("live", [loans, deposits], DONE)
+    with patch.object(actions, "run_live", return_value=combined):
+        app = run_page("operations", market.database, market.now)
+        app.checkbox(key="confirm_live").check().run()
+        app.button(key="run_live").click().run()
+        clean_runner.wait()
+        app.run()
+    assert not any(s.value.startswith("SUCCESS: Home loans") for s in app.success)
+    assert any(w.value.startswith("PARTIAL_SUCCESS: Home loans: SUCCESS") for w in app.warning)
+    assert any("Term deposits" in m.value for m in app.markdown)
+    assert any(e.value.startswith("FAILED") for e in app.error)
+    tables = [dict(zip(t.value["Bank"], t.value["Result"])) for t in app.dataframe]
+    assert tables == [{"ASB": "SUCCESS"}, {"ASB": "FAILED"}]
+
+
 def test_telegram_not_configured_is_a_warning_and_shows_no_secret_names(
     market_factory, monkeypatch
 ):

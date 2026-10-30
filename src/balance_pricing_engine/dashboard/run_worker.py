@@ -29,7 +29,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--database", required=True, help="Observation store path")
     parser.add_argument("--result-file", required=True, help="Where to write the JSON result")
     parser.add_argument("--render-javascript", action="store_true")
+    parser.add_argument(
+        "--product",
+        default=ProductType.HOME_LOAN.value,
+        choices=[product.value for product in ProductType],
+        help="Which market to dry-run (default: home_loan, as before this option existed)",
+    )
     args = parser.parse_args(argv)
+    product = ProductType(args.product)
 
     config_path = Path(args.config)
     text = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
@@ -39,12 +46,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         store=ObservationStore(config.database_path, read_only=True),
         render_javascript=args.render_javascript,
     ) as service:
-        result = run_operational_cycle(service, product_type=ProductType.HOME_LOAN, dry_run=True)
+        result = run_operational_cycle(service, product_type=product, dry_run=True)
     Path(args.result_file).write_text(
         json.dumps(
             {
                 "status": result.status,
-                "summary": build_summary(result.outcome, ProductType.HOME_LOAN),
+                "summary": build_summary(result.outcome, product),
             }
         ),
         encoding="utf-8",

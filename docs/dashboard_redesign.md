@@ -232,10 +232,10 @@ context only) and Joint balance sheet (both benchmarks; market strategies only; 
 both volumes, funding shortfall and two objective curves; no comparison set, since the backend's
 comparison set varies one side at a time).
 
-**Not changed.** Operations & Trust controls and the live collection action (still
-mortgage-only from the dashboard; deposits are collected with
-`scripts/collect_market_rates_workflow.py --product term_deposit`). No ranking, freshness or
-economics moved into the UI.
+**Not changed.** Operations & Trust controls. No ranking, freshness or economics moved into
+the UI. (The live collection action was mortgage-only here; since 2026-10-30 Run Pricing Watch
+and Dry Run collect both markets by default -- see
+[pricing_intelligence.md](pricing_intelligence.md#refresh-versus-run).)
 
 **Tests.** `tests/unit/test_dashboard_dual_product.py` uses `dual_market_factory`: separate
 mortgage and deposit observations from the same five banks, plus PIE and managed-fund rows that

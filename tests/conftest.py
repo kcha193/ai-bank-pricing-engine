@@ -14,6 +14,18 @@ FIXTURE_PAGES = {
     collector.home_loan_url: f"{collector.bank.lower()}_home_loans.html"
     for collector in COLLECTOR_CLASSES
 }
+#: Term-deposit pages trimmed (tables and their nearest headings only) from the
+#: live pages rendered on 2026-10-30, so the PIE tables, day-based terms and
+#: savings-account tables the live pages carry are all exercised offline.
+TERM_DEPOSIT_FIXTURE_DIR = "term_deposits_2026-10-30"
+FIXTURE_PAGES.update(
+    {
+        collector.term_deposit_url: (
+            f"{TERM_DEPOSIT_FIXTURE_DIR}/{collector.bank.lower()}_term_deposits.html"
+        )
+        for collector in COLLECTOR_CLASSES
+    }
+)
 
 
 def pytest_addoption(parser):
@@ -38,7 +50,9 @@ def fixture_fetcher():
         failing = set(failing_banks)
         empty = set(empty_banks)
         url_to_bank = {
-            collector.home_loan_url: collector.bank for collector in COLLECTOR_CLASSES
+            url: collector.bank
+            for collector in COLLECTOR_CLASSES
+            for url in (collector.home_loan_url, collector.term_deposit_url)
         }
 
         def fetch(url: str) -> bytes:
