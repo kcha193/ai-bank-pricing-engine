@@ -276,7 +276,8 @@ events with their rate category, but historical ranks and market
 context are unavailable for events outside the snapshot's comparable tier.
 Reads never reach `dashboard/actions.py`: only `views/operations.py` (reached solely
 through the Operations & Trust composer) does, and live collection runs as a subprocess of the scheduled workflow
-script behind a single-flight runner. See
+script behind a single-flight runner -- one `--product` subprocess per selected market (both by
+default), each with its own lock, summary and reported result. See
 [pricing_intelligence.md → Dashboard](pricing_intelligence.md#dashboard).
 
 The 2026-10 redesign reorganised the console into six destinations (Command Centre, Market

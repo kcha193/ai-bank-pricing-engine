@@ -484,6 +484,16 @@ All timestamps display in `Pacific/Auckland`.
 | Run Pricing Watch | **Yes** | Yes | Live collection: runs `scripts/collect_market_rates_workflow.py` as a subprocess, so it shares that script's single-instance lock, exit codes (0 ok, 1 failed, 2 partial, 3 already running), scenario trigger and JSON summary. Sends alerts when a channel is configured. |
 | Dry Run | **Yes** | No | Collects live pages and classifies them as normal (`python -m balance_pricing_engine.dashboard.run_worker`), but persists nothing, sends no alerts and leaves collector health untouched. |
 
+Both run buttons cover the markets chosen in the **Markets** selector: **Both markets**
+(the default), Home loans or Term deposits. Each market is one subprocess with
+`--product`, run in sequence, so each takes that product's own workflow lock and writes
+its own summary, exactly as the two scheduled jobs do. The result shows one section per
+market with its own per-bank table. The overall status is never better than the worst
+market's: every market alike keeps that status; otherwise any market that stored data
+makes the run `PARTIAL_SUCCESS` and none makes it `FAILED`. Before 2026-10-30 both buttons
+collected home loans only, so the deposit market went stale (and was then, correctly,
+excluded as stale) unless a separate `--product term_deposit` job ran.
+
 A rerender or page navigation never starts a collection; only an explicit click on
 one of the two run buttons does. Collection runs in a subprocess so Playwright
 stays out of Streamlit's script thread. The run buttons stay locked while a job
@@ -670,6 +680,7 @@ validated as plain `http(s)`. These rules are enforced by
 | Operations: "already running" | Another collection (this dashboard, the scheduler or the CLI) holds the workflow lock. Wait for it to finish. |
 | "Please wait N s" | A run finished less than 60 s ago (cooldown), or a run is in progress. |
 | Live run fails immediately | The `browser` extra is missing: `pip install -e ".[browser]" && python3 -m playwright install chromium`. |
+| Term Deposits view empty although deposits were collected once | The stored deposit observations are older than `max_observation_age_hours` and are excluded as stale (listed under exclusions, never silently used). Run Pricing Watch with **Both markets** or **Term deposits**, or install the term-deposit schedule. |
 | A bank is marked stale or excluded | Open Operations & Trust → Data health, find the bank in the collector table and read `Last error`. |
 | Operations are locked | Enter the token, or wait out the lockout (up to 300 s) after repeated wrong tokens. If the page says the token must be at least 16 characters, fix `PRICING_WATCH_OPS_TOKEN`. |
 | Backup "created N minutes ago" | The 10-minute limit; use the existing backup. |
@@ -1022,6 +1033,25 @@ git-ignored. They are diagnostic material, not a permanent archive.
     Because deposits rank highest-is-best, including these made both banks look
     like market leaders by 70 bps when their advertised 1-year rate (3.90%) is
     at parity with ASB.
+
+  Re-verified live on 2026-10-30 (all five banks, no validation rejections after
+  the fixes below). Three further row classes were found:
+  - **PIE fund tables without "PIE" in any cell.** ANZ ("Rate of return"), BNZ
+    ("Rate of return p.a.") and Westpac ("Return Frequency") publish their PIE
+    fund's returns as a second table. These are `pie_term_deposit`, never the
+    comparable `term_deposit`; an "Effective rate of return" column alone does
+    not make a table PIE.
+  - **Day terms that are not whole months.** BNZ's 7-day term rounded to "1
+    month" and collided with its 30-day rate, so validation rejected both and
+    failed BNZ; Kiwibank's 100- and 200-day terms rounded to 3 and 7 months. A
+    day term maps to months only within 7 days of a whole number of months;
+    otherwise it keeps its own label and stays out of month-term statistics.
+  - **Savings accounts and charges.** Kiwibank's page carries Notice Saver /
+    Online Call rates and an early-termination charge; they are `non_comparable`.
+
+  Browser readiness waits for a percentage inside a table cell (the only place
+  the parser reads), not anywhere in the page text, so a promotional banner
+  cannot end the wait before the rate table renders.
 
   Deposit elasticities and `rate_anchor` were recalibrated against this data on
   2026-09-02; see

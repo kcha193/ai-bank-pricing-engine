@@ -8,7 +8,10 @@ name: Collector canary
 # gate a pull request. It is also not a history store -- durable observation
 # history accrues locally via deploy/scheduling/ (see docs/pricing_intelligence.md).
 # This job collects into a throwaway database and reports only whether each
-# collector still parses its page.
+# collector still parses its page -- once per product, because the home-loan
+# and term-deposit pages are different pages with different parsers, and a
+# term-deposit regression is otherwise invisible (the workflow defaults to
+# home loans).
 #
 # Before assuming a red run means a parser regression, read "Known
 # Limitations" in docs/competitor_rate_ingestion.md: ASB, Westpac, Kiwibank,
@@ -40,8 +43,16 @@ concurrency:
 
 jobs:
   canary:
+    name: canary (${{ matrix.product }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      # One product's breakage must not cancel or hide the other's result, and the
+      # two run one after the other so each bank sees one request at a time.
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        product: [home_loan, term_deposit]
 
     steps:
       - name: Check out repository
@@ -68,6 +79,7 @@ jobs:
         run: |
           set +e
           python scripts/collect_market_rates_workflow.py \
+            --product "${{ matrix.product }}" \
             --render-javascript \
             --database "${RUNNER_TEMP}/canary.db" \
             --lock-file "${RUNNER_TEMP}/canary.lock" \
@@ -78,15 +90,37 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: collection-summary
+          name: collection-summary-${{ matrix.product }}
           path: ${{ runner.temp }}/summary.json
           if-no-files-found: warn
+
+      - name: Per-bank results
+        if: always()
+        run: |
+          python - "${RUNNER_TEMP}/summary.json" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          try:
+              summary = json.load(open(sys.argv[1], encoding="utf-8"))
+          except (OSError, ValueError):
+              print("No run summary was written.")
+              raise SystemExit(0)
+          errors = {f.get("bank"): f.get("error_type", "") for f in summary.get("failures") or []}
+          print(f"### {summary.get('product_type')}: per-bank collection")
+          print("| Bank | Result | Error type |")
+          print("|---|---|---|")
+          for bank in summary.get("banks_succeeded") or []:
+              print(f"| {bank} | SUCCESS | |")
+          for bank in summary.get("banks_failed") or []:
+              print(f"| {bank} | FAILED | {errors.get(bank, '')} |")
+          print(f"\nRates accepted: {summary.get('rates_accepted')}, "
+                f"rejected: {summary.get('rates_rejected')}")
+          PY
 
       - name: Report collector health
         run: |
           CODE="${{ steps.collect.outputs.exit_code }}"
           case "$CODE" in
-            0) echo "All five collectors parsed their live pages." ;;
+            0) echo "All five ${{ matrix.product }} collectors parsed their live pages." ;;
             2) echo "::error::Collection is incomplete - inspect the uploaded run summary." ;;
             1) echo "::error::No collector succeeded. Live collection is broken." ;;
             3) echo "::error::Lock held unexpectedly in a fresh runner." ;;
