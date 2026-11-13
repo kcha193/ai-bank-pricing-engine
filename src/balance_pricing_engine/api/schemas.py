@@ -78,6 +78,11 @@ class ModelLineageSchema(BaseModel):
     champion_status: str | None = None
     artifact_path: str | None = None
     used_fallback: bool
+    artifact_sha256: str | None = None
+    feature_names: list[str] | None = None
+    n_features: int | None = None
+    integrity_check: str | None = None
+    prediction_check: str | None = None
 
 
 class FeatureLineageSchema(BaseModel):

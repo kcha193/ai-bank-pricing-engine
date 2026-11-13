@@ -218,6 +218,66 @@ def test_approved_champion_model_gate_reports_champion_metadata():
     assert loan_gate.evidence["model_name"] == "LogisticResponseModel"
 
 
+def _approved_loan_lineage(**overrides):
+    values = dict(
+        product="loan",
+        response_source="approved_ml_champion",
+        model_name="LogisticResponseModel",
+        model_version="v1",
+        governance_status="approved",
+        champion_status="champion",
+        artifact_path="/tmp/model.joblib",
+        used_fallback=False,
+        artifact_sha256="a" * 64,
+        feature_names=("offered_rate", "competitor_rate"),
+        n_features=2,
+        integrity_check="passed",
+        prediction_check="passed",
+    )
+    values.update(overrides)
+    return ModelLineage(**values)
+
+
+def test_verified_champion_artifact_gate_carries_integrity_evidence():
+    gates = evaluate_gates(
+        config=_config(),
+        diagnostics=_clean_diagnostics(),
+        model_lineage={"loan": _approved_loan_lineage(), "deposit": synthetic_model_lineage("deposit")},
+        feature_lineage=_feature_lineage(),
+        competitor_rate_issues=None,
+    )
+
+    gate = next(g for g in gates if g.code == "MODEL_ARTIFACT_AVAILABLE[loan]")
+    assert gate.status is GateStatus.PASS
+    assert gate.evidence["artifact_sha256"] == "a" * 64
+    assert gate.evidence["feature_names"] == ["offered_rate", "competitor_rate"]
+    assert gate.evidence["n_features"] == 2
+    assert gate.evidence["integrity_check"] == "passed"
+    assert gate.evidence["prediction_check"] == "passed"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"artifact_sha256": None}, {"integrity_check": None}, {"prediction_check": "failed"}],
+    ids=["no_sha", "no_integrity_check", "prediction_failed"],
+)
+def test_champion_lineage_without_verified_integrity_blocks(overrides):
+    gates = evaluate_gates(
+        config=_config(),
+        diagnostics=_clean_diagnostics(),
+        model_lineage={
+            "loan": _approved_loan_lineage(**overrides),
+            "deposit": synthetic_model_lineage("deposit"),
+        },
+        feature_lineage=_feature_lineage(),
+        competitor_rate_issues=None,
+    )
+
+    gate = next(g for g in gates if g.code == "MODEL_ARTIFACT_AVAILABLE[loan]")
+    assert gate.status is GateStatus.BLOCK
+    assert decision_status_from_gates(gates) is DecisionStatus.BLOCKED
+
+
 def test_missing_lineage_warns_incomplete():
     gates = evaluate_gates(
         config=_config(),

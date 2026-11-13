@@ -87,6 +87,31 @@ def _deposit_dataset(seed: int = 456):
     )
 
 
+def _approvable_loan_artifact(tmp_path, name: str = "approvable_loan.joblib"):
+    """Persist a named-DataFrame logistic loan model that passes approval-time checks."""
+    from balance_pricing_engine.modelling.models import build_logistic_regression_model
+
+    dataset = _loan_dataset()
+    model = build_logistic_regression_model(42).fit(
+        dataset[LOAN_FEATURE_COLUMNS], dataset[LOAN_TARGET_COLUMN]
+    )
+    path = tmp_path / name
+    save_model(model, path)
+    return path
+
+
+def _approvable_deposit_artifact(tmp_path, name: str = "approvable_deposit.joblib"):
+    from balance_pricing_engine.modelling.models import build_logistic_regression_model
+
+    dataset = _deposit_dataset()
+    model = build_logistic_regression_model(42).fit(
+        dataset[DEPOSIT_FEATURE_COLUMNS], dataset[DEPOSIT_TARGET_COLUMN]
+    )
+    path = tmp_path / name
+    save_model(model, path)
+    return path
+
+
 def test_training_agent_trains_and_recommends(tmp_path):
     dataset = _loan_dataset()
     agent = ModelTrainingAgent(
@@ -351,7 +376,9 @@ def test_bootstrap_ensemble_response_model_champion_scores_after_persistence(tmp
         registry=registry,
         run_name="loan_bootstrap",
     )
-    registry.promote_champion("BootstrapEnsembleResponseModel", approver="integration_test")
+    registry.promote_champion(
+        "BootstrapEnsembleResponseModel", approver="integration_test", product="loan"
+    )
 
     scoring_agent = ModelScoringAgent(registry_path=tmp_path / "model_registry.json")
     fallback = SyntheticLoanResponseFn(elasticity=-85.0, competitor_gap_elasticity=-65.0)
@@ -788,9 +815,11 @@ def test_registry_approve_model_sets_governance_status(tmp_path):
     registry.register({
         "model_name": "LogisticResponseModel",
         "governance_status": "pending_human_approval",
+        "artifact_path": str(_approvable_loan_artifact(tmp_path)),
+        "feature_columns": LOAN_FEATURE_COLUMNS,
     })
 
-    registry.approve_model("LogisticResponseModel", approver="analyst@bank.nz")
+    registry.approve_model("LogisticResponseModel", approver="analyst@bank.nz", product="loan")
 
     record = registry.latest_for_model("LogisticResponseModel")
     assert record["governance_status"] == "approved"
@@ -810,14 +839,17 @@ def test_registry_promote_champion_sets_champion_and_retires_previous(tmp_path):
         "model_name": "ElasticityBaselineModel",
         "governance_status": "approved",
         "champion_status": "champion",
+        "feature_columns": LOAN_FEATURE_COLUMNS,
     })
     registry.register({
         "model_name": "LogisticResponseModel",
         "governance_status": "pending_human_approval",
         "champion_status": "challenger",
+        "artifact_path": str(_approvable_loan_artifact(tmp_path)),
+        "feature_columns": LOAN_FEATURE_COLUMNS,
     })
 
-    registry.promote_champion("LogisticResponseModel", approver="analyst@bank.nz")
+    registry.promote_champion("LogisticResponseModel", approver="analyst@bank.nz", product="loan")
 
     logistic = registry.latest_for_model("LogisticResponseModel")
     elasticity = registry.latest_for_model("ElasticityBaselineModel")
@@ -834,6 +866,8 @@ def test_registry_promote_champion_can_target_specific_run(tmp_path):
         "run_name": "loan",
         "governance_status": "pending_human_approval",
         "champion_status": "challenger",
+        "artifact_path": str(_approvable_loan_artifact(tmp_path)),
+        "feature_columns": LOAN_FEATURE_COLUMNS,
     })
     registry.register({
         "model_name": "LogisticResponseModel",
@@ -841,12 +875,15 @@ def test_registry_promote_champion_can_target_specific_run(tmp_path):
         "run_name": "deposit",
         "governance_status": "pending_human_approval",
         "champion_status": "challenger",
+        "artifact_path": str(_approvable_deposit_artifact(tmp_path)),
+        "feature_columns": DEPOSIT_FEATURE_COLUMNS,
     })
 
     registry.promote_champion(
         "LogisticResponseModel",
         approver="analyst@bank.nz",
         run_name="loan",
+        product="loan",
     )
 
     records = registry.load()["models"]
@@ -988,10 +1025,13 @@ def test_generate_card_for_champion_returns_none_when_no_champion(tmp_path):
 def test_generate_card_for_champion_writes_card_for_champion(tmp_path):
     registry_path = tmp_path / "registry.json"
     registry = ModelRegistry(registry_path)
-    record = _make_record("logistic")
+    record = replace(
+        _make_record("logistic", artifact_path=str(_approvable_loan_artifact(tmp_path))),
+        feature_columns=LOAN_FEATURE_COLUMNS,
+    )
     registry.append(record)
-    registry.approve_model("logistic", approver="test-user")
-    registry.promote_champion("logistic", approver="test-user")
+    registry.approve_model("logistic", approver="test-user", product="loan")
+    registry.promote_champion("logistic", approver="test-user", product="loan")
 
     card_path = generate_card_for_champion(registry, tmp_path / "cards")
 
@@ -1081,7 +1121,7 @@ def test_scoring_agent_resolve_response_fn_returns_ml_adapter_for_approved_champ
         registry=registry,
         run_name="loan",
     )
-    registry.promote_champion("LogisticResponseModel", approver="analyst@bank.nz")
+    registry.promote_champion("LogisticResponseModel", approver="analyst@bank.nz", product="loan")
 
     scoring_agent = ModelScoringAgent(registry_path=tmp_path / "model_registry.json")
     fallback = SyntheticLoanResponseFn(elasticity=-85.0, competitor_gap_elasticity=-65.0)
@@ -1095,33 +1135,38 @@ def test_scoring_agent_resolve_response_fn_returns_ml_adapter_for_approved_champ
 
 
 def test_scoring_agent_resolve_response_fn_uses_feature_compatible_champion(tmp_path):
-    loan_artifact = tmp_path / "loan.joblib"
-    deposit_artifact = tmp_path / "deposit.joblib"
-    save_model(ElasticityBaselineModel(probability_column="loan_probability"), loan_artifact)
-    save_model(ElasticityBaselineModel(probability_column="deposit_probability"), deposit_artifact)
+    loan_artifact = _approvable_loan_artifact(tmp_path)
+    deposit_artifact = _approvable_deposit_artifact(tmp_path)
 
     registry = ModelRegistry(tmp_path / "registry.json")
-    registry.register({
-        "model_name": "LogisticResponseModel",
-        "champion_status": "champion",
-        "governance_status": "approved",
-        "artifact_path": str(loan_artifact),
-        "feature_columns": LOAN_FEATURE_COLUMNS,
-    })
-    registry.register({
-        "model_name": "LogisticResponseModel",
-        "champion_status": "champion",
-        "governance_status": "approved",
-        "artifact_path": str(deposit_artifact),
-        "feature_columns": DEPOSIT_FEATURE_COLUMNS,
-    })
+    for version, artifact, features in (
+        ("loan-v1", loan_artifact, LOAN_FEATURE_COLUMNS),
+        ("deposit-v1", deposit_artifact, DEPOSIT_FEATURE_COLUMNS),
+    ):
+        registry.register({
+            "model_name": "LogisticResponseModel",
+            "version": version,
+            "champion_status": "challenger",
+            "governance_status": "pending_human_approval",
+            "artifact_path": str(artifact),
+            "feature_columns": features,
+        })
+    registry.promote_champion(
+        "LogisticResponseModel", approver="analyst@bank.nz", version="loan-v1", product="loan"
+    )
+    registry.promote_champion(
+        "LogisticResponseModel",
+        approver="analyst@bank.nz",
+        version="deposit-v1",
+        product="deposit",
+    )
     agent = ModelScoringAgent(registry_path=tmp_path / "registry.json")
     fallback = SyntheticLoanResponseFn(elasticity=-85.0, competitor_gap_elasticity=-65.0)
 
     fn = agent.resolve_response_fn(feature_columns=LOAN_FEATURE_COLUMNS, fallback=fallback)
 
     assert isinstance(fn, MLResponseFnAdapter)
-    assert fn.model.probability_column == "loan_probability"
+    assert list(fn.model.feature_names_in_) == LOAN_FEATURE_COLUMNS
 
 
 def test_scoring_agent_resolve_response_fn_falls_back_for_incompatible_champion(tmp_path):
@@ -1196,7 +1241,7 @@ def test_end_to_end_train_approve_and_use_in_optimizer(tmp_path):
     )
 
     # Step 2: Approve and promote
-    registry.promote_champion("LogisticResponseModel", approver="integration_test")
+    registry.promote_champion("LogisticResponseModel", approver="integration_test", product="loan")
 
     # Step 3: Resolve ResponseFn
     scoring_agent = ModelScoringAgent(registry_path=tmp_path / "model_registry.json")

@@ -196,15 +196,54 @@ def _model_gates(model_lineage: dict[str, "ModelLineage"]) -> list[GateResult]:
                 },
             )
         )
-        gates.append(
-            GateResult(
-                code=f"MODEL_ARTIFACT_AVAILABLE[{product}]",
-                status=GateStatus.PASS,
-                message="Approved champion artifact loaded successfully.",
-                severity="info",
-                evidence={"artifact_path": lineage.artifact_path},
-            )
+        integrity_evidence = {
+            "artifact_path": lineage.artifact_path,
+            "artifact_sha256": lineage.artifact_sha256,
+            "feature_names": (
+                None if lineage.feature_names is None else list(lineage.feature_names)
+            ),
+            "n_features": lineage.n_features,
+            "integrity_check": lineage.integrity_check,
+            "prediction_check": lineage.prediction_check,
+        }
+        verified = (
+            lineage.artifact_sha256 is not None
+            and lineage.integrity_check == "passed"
+            and lineage.prediction_check == "passed"
         )
+        if verified:
+            gates.append(
+                GateResult(
+                    code=f"MODEL_ARTIFACT_AVAILABLE[{product}]",
+                    status=GateStatus.PASS,
+                    message=(
+                        "Approved champion artifact matched its approved SHA-256 and feature "
+                        "contract, and passed the prediction probe."
+                    ),
+                    severity="info",
+                    evidence=integrity_evidence,
+                )
+            )
+        else:
+            # Resolution raises GovernanceError for any unverified approved champion, so this
+            # only fires when lineage disagrees with what resolution verified (for example a
+            # registry edited mid-run). Never let that reach RECOMMENDED.
+            gates.append(
+                GateResult(
+                    code=f"MODEL_ARTIFACT_AVAILABLE[{product}]",
+                    status=GateStatus.BLOCK,
+                    message=(
+                        f"Lineage for the approved {product} champion lacks verified "
+                        "integrity evidence."
+                    ),
+                    severity="critical",
+                    evidence=integrity_evidence,
+                    remediation=(
+                        "Re-approve the champion with ModelRegistry.approve_model(..., "
+                        "product=...) and re-run the scenario."
+                    ),
+                )
+            )
     return gates
 
 

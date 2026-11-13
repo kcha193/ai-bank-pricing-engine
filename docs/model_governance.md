@@ -65,7 +65,8 @@ for the design rationale and alternatives considered.
 **Invariant preserved, not re-implemented:** `application.PricingService.run_scenario()` calls
 `run_baseline_diagnostics(registry=...)` exactly as before. If an approved champion's artifact is
 missing or unloadable, `GovernanceError` still propagates out of `run_scenario()` unchanged — it
-is never downgraded to a `BLOCKED` `PricingDecision`. An inconsistent governed model state must
+is never downgraded to a `BLOCKED` `PricingDecision`. The same holds for an approved champion that
+fails integrity or scoring-contract validation. An inconsistent governed model state must
 fail loud, not be represented as a normal (if blocked) decision. The FastAPI `/v1/pricing/scenarios`
 endpoint is the only place this exception is translated — into a `503` with a structured
 `MODEL_ARTIFACT_UNAVAILABLE` error body, never a raw stack trace.
@@ -83,16 +84,152 @@ functions and help check whether learned models recover sensible rate-response d
 An ML response model can influence optimization only through the explicit governed registry path:
 `run_baseline_diagnostics(registry=...)` asks `ModelScoringAgent` for an approved compatible
 champion and receives an `MLResponseFnAdapter` only when the champion is approved and its artifact
-exists. If no approved compatible champion is available — no champion at all, or one that is not
+passes every integrity and scoring-contract check (see *Approved-champion integrity* below). If no
+approved compatible champion is available — no champion at all, or one that is not
 yet approved — the runner falls back to the deterministic synthetic response functions.
 
 Fallback is deliberately restricted to those benign cases. If an *approved* champion is selected
-but its artifact is missing or cannot be loaded, that is an inconsistent governed state: the
+but its artifact is missing, cannot be loaded, or fails any integrity or scoring-contract check,
+that is an inconsistent governed state: the
 registry promises an approved model that cannot actually set prices. The runner raises
 `GovernanceError` rather than silently repricing on the synthetic fallback, so a pricing run can
 never be recorded as "used approved champion X" while actually having used synthetic. Repair the
 registry/artifact or retire the champion before pricing. This path is not enabled by default and
 does not remove the portfolio-level, synthetic-data, human-review boundary of the prototype.
+
+## Approved-champion integrity (GOV-001, SEC-007)
+
+Implementation: `modelling/champion_integrity.py` (checks), `modelling/persistence.py`
+(hash-then-load), `ModelRegistry.approve_model` / `promote_champion` (approval) and
+`ModelScoringAgent.resolve_response_fn` (resolution). One validator serves both moments.
+
+### Approval-time checks
+
+`approve_model(..., product="loan"|"deposit")` and `promote_champion(..., product=...)` refuse
+to approve, and leave the registry file unchanged, unless all of these hold:
+
+1. `product` is given, or already on the record, and is `loan` or `deposit`. It is never
+   inferred from the model name. A `product` that conflicts with the recorded one is refused.
+2. The record has an `artifact_path` that exists, and a `feature_columns` contract: a non-empty,
+   ordered list of unique names.
+3. The artifact bytes are read once and hashed (SHA-256). The model is deserialised from those
+   same bytes.
+4. The object has a supported prediction interface: `predict_probability` (the `ResponseModel`
+   protocol) or `predict_proba` (sklearn). A dict, a class or any other object is refused.
+5. The object declares `feature_names_in_` (and `n_features_in_` when present), and it equals the
+   contract in count, names and order. A model trained on a bare NumPy array has no names, so its
+   column order cannot be verified and it is refused.
+6. The deterministic probe below passes.
+7. On re-approval, the artifact still matches the recorded `artifact_sha256`. A changed artifact
+   must be registered as a new version, not re-approved in place.
+
+On success the record gains these additive fields: `product`, `artifact_sha256`,
+`feature_names`, `n_features`, `prediction_interface` and `integrity_validation`
+(`status`, `schema_version`, `validated_at_utc`, `probe`). Any earlier `approved_by` /
+`approved_at_utc` is kept in `previous_approvals`, not overwritten silently. Approval raises
+`ChampionValidationError`, a `ValueError`.
+
+### Resolution-time checks
+
+Before an approved champion may drive pricing, `resolve_response_fn(feature_columns, fallback,
+product=...)` checks the following. The runner passes `product="loan"` / `"deposit"`.
+
+1. The artifact exists.
+2. The record carries `artifact_sha256`, `feature_names`, `n_features` and `product`.
+3. The recorded product is `loan` or `deposit` and matches the requested product.
+4. The recorded hash is a 64-character hex digest.
+5. The recorded `feature_names` and `n_features` equal the requested contract.
+6. The artifact bytes match the approved SHA-256. This is checked **before** deserialisation,
+   and the model is built from the verified in-memory bytes, so nothing is re-opened between
+   check and use.
+7. Checks 4–6 from the approval list run again: interface, feature contract and probe.
+
+Any failure raises `GovernanceError`. The fallback still applies, unchanged, when no compatible
+champion exists or the selected champion is not approved. Resolution never writes to the
+registry, so it never backfills a hash.
+
+### Probe
+
+The probe runs `MLResponseFnAdapter` exactly as pricing does, so it derives `rate_gap_to_competitor`,
+`risk_segment` and `wealth_segment` the same way. It uses 200 synthetic customers of the product
+from a private generator (seed `20261113`), so it never touches the pricing run's random stream.
+It holds the competitor rate fixed (loan 5.5%, deposit 4.5%) and sweeps 15 offered rates (loan
+3%–10%, deposit 1%–8%). For each rate, the predictions must be a 1-D array with one value per
+customer, numeric, finite, and within [0, 1].
+
+The mean probability across the sweep is then checked against tolerance `1e-6`, the same value
+`modelling.evaluation.check_monotonicity` uses:
+
+- **Loan:** no step may rise by more than the tolerance. **Deposit:** no step may fall by more
+  than the tolerance. A violation is reported as an economically inverted response.
+- Flat steps are allowed, so a model that saturates near 0 or 1 at the ends is not rejected.
+- Across the whole sweep the mean must move the right way by more than the tolerance. A fully
+  flat response means the direction cannot be established, so it fails. The probe does not
+  claim a pass it cannot show.
+
+### GovernanceError cases
+
+| Case | Message fragment |
+|---|---|
+| Artifact missing | `has a missing artifact` |
+| Legacy approval without integrity metadata | `missing required integrity metadata ... re-approval is required` |
+| Recorded product invalid or different from the request | `recorded product` |
+| Recorded hash malformed | `artifact_sha256 is not a 64-character hex digest` |
+| Recorded feature contract different from the request | `recorded feature_names` / `recorded n_features` |
+| Artifact bytes changed after approval | `artifact SHA-256 mismatch` |
+| Corrupt or unloadable bytes | `artifact could not be loaded (<ExceptionType>)` |
+| Loadable non-model object | `has no supported prediction interface` |
+| Feature count, name or order mismatch | `feature count mismatch` / `feature name mismatch` / `feature order mismatch` |
+| No verifiable feature names (for example NumPy-trained) | `declares no feature names` |
+| Wrong shape, non-numeric, NaN/inf or outside [0, 1] | `prediction shape` / `non-numeric` / `non-finite` / `outside [0, 1]` |
+| Scoring raised during the probe | `prediction failed during probe ... <ExceptionType>` |
+| Inverted rate response | `economically inverted <product> response` |
+| Flat rate response | `rate-response direction could not be established` |
+
+Messages name exception types, not exception text or artifact bytes. `PricingService.run_scenario()`
+lets the error propagate unchanged, and the API still translates it into the structured `503`.
+
+### Lineage and gates
+
+`ModelLineage` gains these additive fields: `artifact_sha256`, `feature_names`, `n_features`,
+`integrity_check` and `prediction_check`. They also appear in `decision_record.json` and the
+`/v1` response. They are `None` on the synthetic path. `MODEL_ARTIFACT_AVAILABLE[<product>]`
+carries them as evidence. It returns `BLOCK` if lineage reports an approved champion without
+verified integrity evidence. That can happen only if the registry changes between resolution and
+lineage capture (see GOV-005), so such a run can never be `RECOMMENDED`.
+
+### Legacy migration
+
+Champions approved before this change have no integrity metadata. They fail closed with
+`GovernanceError` until a human re-approves them. Historical records are never changed
+automatically. To migrate one record:
+
+1. Confirm that the artifact at `artifact_path` is the model that was originally approved. Use
+   its training run, model card and metrics, because no earlier hash exists to compare against.
+2. If it was trained on a NumPy array, or exposes no `feature_names_in_`, retrain it on a named
+   DataFrame and register it as a new version.
+3. Call `ModelRegistry.approve_model(model_name, approver, version=..., product="loan"|"deposit")`.
+   This runs the full approval checks and records the hash and contract. The earlier approver is
+   kept in `previous_approvals`.
+4. Re-run the scenario and confirm `integrity_check="passed"` in the decision lineage.
+
+The deterministic `ElasticityBaselineModel` cannot be approved as a pricing champion: it has no
+feature names and its rate response is flat under the probe. This closes the J5 oracle case.
+
+### Remaining model-risk limitations
+
+- Hash verification protects the approved identity of an artifact. It does **not** make a
+  joblib/pickle safe: loading still executes the pickle. Treat artifacts as trusted local assets
+  only.
+- The probe is a minimum bar, not a validation. It checks the mean response at one competitor
+  rate over a fixed cohort. It does not check calibration, per-customer monotonicity, the
+  competitor-gap elasticity (MOD-001), or behaviour outside the sweep (MOD-002).
+- Approval does not yet enforce a distinct approver or validation evidence (GOV-003).
+- Lineage is still re-read from the registry after pricing, not captured at resolution
+  (GOV-005).
+- Shadow evaluation (`governance/shadow.py`) and diagnostic `ModelScoringAgent.score()` still
+  load unapproved artifacts without a hash check. Neither one sets prices.
+- Registry writes are not atomic, and the registry file itself is not signed (GOV-008).
 
 ## Calibration Expectations
 
@@ -150,7 +287,8 @@ approval is bound to:
 1. **Proposer** assembles the evidence package (below) and the proposed parameter value(s).
 2. **Independent reviewer** — not the proposer — checks the evidence against the acceptance gates.
 3. **Approver** (model-risk owner) records sign-off. For an ML champion this is
-   `ModelRegistry.approve_model(model_name, approver, config_hash=...)`; for config-level
+   `ModelRegistry.approve_model(model_name, approver, product=..., config_hash=...)`, which also
+   runs the approval-time integrity checks above; for config-level
    parameters it is a run-ledger governance-checklist sign-off
    (`sign_off_item` / `sign_off_all_items` in `run_ledger/checklist.py`) on the run that first
    uses the new value. No parameter change is "approved" until this record exists.
@@ -277,7 +415,8 @@ commit-specific path, when artifacts need to be reproducible experiment records.
 - Synthetic circularity: ML diagnostics trained on synthetic outcomes do not validate real customer
   behavior.
 - Approved-champion path: ML response models can affect optimization only when explicitly supplied
-  through a registry and approved champion; verify champion scope, artifact existence, and fallback
-  behavior before interpreting results.
+  through a registry and approved champion whose artifact hash, feature contract and probe are
+  verified at resolution; verify champion scope, `integrity_check` lineage and fallback behaviour
+  before interpreting results.
 - Conduct scope: portfolio-level pricing does not remove the need for future fairness and conduct
   controls if the project moves toward segmented or personalized pricing.
