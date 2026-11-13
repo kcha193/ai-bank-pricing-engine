@@ -14,7 +14,11 @@
 - Funding shortfalls receive a financial penalty.
 - `min_return_on_equity`, when configured, is an optimizer floor over the grid's ROE diagnostic
   column. If no evaluated candidate has a finite qualifying ROE, winner selection falls back to the
-  unconstrained objective ranking.
+  unconstrained objective ranking. That fallback is disclosed, not silent: `roe_constraint_relaxed`
+  is true on `ScenarioDiagnostics` and in `summary.json`, and the `ROE_FLOOR_MET` governance gate
+  WARNs. The flag describes the final grid after adaptive boundary expansion, so a floor that the
+  initial grid cannot meet but the expanded grid can is not relaxed. The segmented optimiser has no
+  constrained alternative, so a segmented result below the floor is always relaxed.
 - The optimizer chooses one portfolio-level home loan rate and one portfolio-level term deposit rate.
 - ML response models are trained on synthetic observed outcomes generated from the explicit
   response functions. By default, scenario runs use the deterministic synthetic response functions.

@@ -11,7 +11,8 @@ diagnostics) are unified per decision by an explicit governance layer:
 - `governance.gates.evaluate_gates()` runs a fixed set of typed `GateResult` checks (config
   validity, competitor-rate freshness, model approval status, model artifact availability,
   model/feature compatibility, boundary warning, expansion-cap, policy-band breach, funding
-  shortfall, lineage completeness, objective finiteness) and derives a `DecisionStatus`:
+  shortfall, lineage completeness, objective finiteness, objective sign, non-zero volume, ROE
+  floor) and derives a `DecisionStatus`:
   `RECOMMENDED`, `REVIEW_REQUIRED`, or `BLOCKED`. Policy is conservative but not maximal: any
   `BLOCK` gate yields `BLOCKED`; otherwise any `WARN` yields `REVIEW_REQUIRED`; a clean gate set
   is `RECOMMENDED`. The underlying optimiser recommendation is preserved for `REVIEW_REQUIRED` —
@@ -29,6 +30,34 @@ diagnostics) are unified per decision by an explicit governance layer:
   the latest compatible, non-champion challenger, purely for observation. It never changes the
   selected rates, never bypasses champion approval, and never raises — a missing or unscoreable
   challenger is recorded as an `error` field on the result, not propagated.
+
+### Economic-validity gates (OPT-001, GOV-002)
+
+Three WARN-level gates stop an infeasible, loss-making or degenerate scenario from receiving a
+clean `RECOMMENDED` status. They never change the selected rates.
+
+| Gate | PASS | WARN |
+|---|---|---|
+| `ROE_FLOOR_MET` | No floor configured, or the selected ROE is finite and meets the floor | The floor was relaxed (`roe_constraint_relaxed`), or the ROE evidence is missing, non-finite or below the floor |
+| `OBJECTIVE_POSITIVE` | Finite objective above zero | Zero or negative objective, or a non-finite one (which `OBJECTIVE_FINITE` also BLOCKs) |
+| `VOLUME_NONZERO` | Expected loan and deposit volumes are both finite and above zero | Either volume is zero, negative, non-finite or missing |
+
+- **ROE-relaxed recommendation.** No candidate met `min_return_on_equity`, so the engine returned
+  the highest-objective candidate anyway. It is a diagnostic answer to "what is the best price if
+  the hurdle is ignored?", not a price that meets the hurdle. A reviewer must lower or justify the
+  floor, widen the grid, or reject the result.
+- **Negative objective.** Every evaluated candidate loses money under the synthetic model. The
+  result is the least-bad price, not a profitable one.
+- **Zero volume.** A rate that attracts no business is not a usable price. Zero loan volume also
+  leaves ROE undefined.
+- **No materiality threshold.** `VOLUME_NONZERO` tests for strictly positive, finite volume. Any
+  materiality threshold needs a business justification and a policy change.
+- **Synthetic limitation.** A PASS on `OBJECTIVE_POSITIVE` or `ROE_FLOOR_MET` means the synthetic
+  model's objective or ROE clears the test. It is not evidence of real-world profitability or of
+  a real capital return. The model is uncalibrated and for decision support only.
+
+The gate outcomes, with their evidence, are recorded in `decision_record.json`. `summary.json`
+gains one additive key, `roe_constraint_relaxed`. Every existing key keeps its meaning.
 
 See [docs/adr/0003-governance-centred-decision-record.md](docs/adr/0003-governance-centred-decision-record.md)
 for the design rationale and alternatives considered.
