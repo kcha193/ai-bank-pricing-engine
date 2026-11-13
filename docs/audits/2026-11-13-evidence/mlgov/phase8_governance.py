@@ -24,7 +24,7 @@ from balance_pricing_engine.run_ledger import write_run_ledger
 from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
 
 HERE = Path(__file__).parent
-TMP = Path(tempfile.mkdtemp(prefix="mlgov_p8_", dir=str(HERE / "tmp")))
+TMP = Path(tempfile.mkdtemp(prefix="mlgov_p8_"))
 R: dict = {}
 cfg = load_config("configs/base.yaml")
 

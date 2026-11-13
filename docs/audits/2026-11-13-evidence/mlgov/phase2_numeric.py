@@ -186,7 +186,7 @@ R["generator_coefficient_mismatch"] = {
 }
 
 # 9. ModelTrainingAgent: oracle baseline, test split unused
-tmp = Path(tempfile.mkdtemp(prefix="mlgov_p2_", dir=str(Path(__file__).with_name("tmp"))))
+tmp = Path(tempfile.mkdtemp(prefix="mlgov_p2_"))
 agent = ModelTrainingAgent(artifacts_dir=tmp)
 reg = ModelRegistry(tmp / "reg.json")
 res = agent.train(dataset=ds, candidates={"elasticity_baseline": ElasticityBaselineModel(),

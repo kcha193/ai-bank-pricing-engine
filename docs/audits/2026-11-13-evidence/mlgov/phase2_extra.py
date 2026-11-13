@@ -47,7 +47,7 @@ c = cfg.market.competitor_loan_rate
 R["hgb_in_support_competitor_shift(r=5.0%)"] = {
     str(bps): round(float(ad(L, 0.05, c + bps / 1e4).mean()), 4) for bps in (-50, 0, 50)}
 
-tmp = Path(tempfile.mkdtemp(prefix="mlgov_hgb_", dir=str(Path(__file__).with_name("tmp"))))
+tmp = Path(tempfile.mkdtemp(prefix="mlgov_hgb_"))
 p = tmp / "hgb.joblib"
 joblib.dump(hgb.fitted_model, p)
 reg = ModelRegistry(tmp / "reg.json")
