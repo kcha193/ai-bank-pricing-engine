@@ -707,3 +707,100 @@ def test_capital_sensitivity_cases_produce_identical_objectives() -> None:
     ].iloc[0]
 
     assert hurdle_lower == pytest.approx(rwa_lower, abs=1e-6)
+
+
+# --- Phase 1a (OPT-001): ROE relaxation flag on the adaptive grid and summary.json ---
+
+
+def _with_roe_floor(config, floor):
+    balance_sheet = config.balance_sheet.model_copy(update={"min_return_on_equity": floor})
+    return config.model_copy(update={"balance_sheet": balance_sheet})
+
+
+def test_roe_flag_is_false_without_a_configured_floor():
+    diagnostics = run_baseline_diagnostics(load_config("configs/base.yaml"))
+
+    assert diagnostics.roe_constraint_relaxed is False
+
+
+def test_infeasible_roe_floor_sets_relaxed_flag_on_final_grid():
+    config = _with_roe_floor(load_config("configs/base.yaml"), 10.0)
+
+    diagnostics = run_baseline_diagnostics(config)
+
+    assert diagnostics.roe_constraint_relaxed is True
+    assert not (diagnostics.grid_results["return_on_equity"] >= 10.0).any()
+    assert diagnostics.selected_return_on_equity is not None
+
+
+def test_roe_flag_reflects_final_grid_feasibility_after_adaptive_expansion():
+    # Base initial grid: max ROE ~0.046. After one expansion round: max ROE ~0.64.
+    config = _with_roe_floor(load_config("configs/base.yaml"), 0.30)
+
+    initial_only = run_baseline_diagnostics(config, max_boundary_expansions=0)
+    expanded = run_baseline_diagnostics(config)
+
+    assert initial_only.roe_constraint_relaxed is True
+    assert expanded.expansion_rounds > 0
+    assert expanded.initial_boundary_diagnostics.has_warning
+    assert expanded.roe_constraint_relaxed is False
+    assert expanded.selected_return_on_equity >= 0.30
+
+
+def test_feasible_roe_floor_selects_best_qualifying_candidate_from_final_grid():
+    config = _with_roe_floor(load_config("configs/base.yaml"), 0.50)
+
+    diagnostics = run_baseline_diagnostics(config)
+
+    grid = diagnostics.grid_results
+    qualifying = grid[grid["return_on_equity"] >= 0.50]
+    assert diagnostics.roe_constraint_relaxed is False
+    assert diagnostics.selected_return_on_equity >= 0.50
+    assert diagnostics.best_result.total_objective == pytest.approx(
+        qualifying["total_objective"].max()
+    )
+
+
+def test_roe_constraint_relaxed_is_an_additive_summary_json_key(tmp_path):
+    base = load_config("configs/base.yaml")
+    unconstrained_dir = tmp_path / "unconstrained"
+    relaxed_dir = tmp_path / "relaxed"
+
+    run_baseline_diagnostics(base).write_artifacts(unconstrained_dir)
+    run_baseline_diagnostics(_with_roe_floor(base, 10.0)).write_artifacts(relaxed_dir)
+
+    unconstrained = json.loads((unconstrained_dir / "summary.json").read_text("utf-8"))
+    relaxed = json.loads((relaxed_dir / "summary.json").read_text("utf-8"))
+    assert unconstrained["roe_constraint_relaxed"] is False
+    assert relaxed["roe_constraint_relaxed"] is True
+    # Every pre-existing key keeps its value: the fallback still selects the same rates.
+    existing_keys = set(unconstrained) - {"roe_constraint_relaxed"}
+    assert {
+        "best_loan_rate",
+        "best_deposit_rate",
+        "objective_value",
+        "expected_loan_volume",
+        "expected_deposit_volume",
+        "funding_shortfall",
+        "excess_deposit_income",
+        "boundary_warning_flag",
+        "initial_boundary_warning_flag",
+        "expansion_rounds",
+        "expansion_capped",
+        "policy_band_breached",
+    } <= existing_keys
+    assert {key: relaxed[key] for key in existing_keys} == {
+        key: unconstrained[key] for key in existing_keys
+    }
+
+
+def test_roe_disclosure_does_not_change_grid_or_pricing_math():
+    base = load_config("configs/base.yaml")
+
+    unconstrained = run_baseline_diagnostics(base)
+    relaxed = run_baseline_diagnostics(_with_roe_floor(base, 10.0))
+
+    pd.testing.assert_frame_equal(unconstrained.grid_results, relaxed.grid_results)
+    assert unconstrained.best_result == relaxed.best_result
+    assert unconstrained.best_result.loan_rate == pytest.approx(0.0619)
+    assert unconstrained.best_result.deposit_rate == pytest.approx(0.0405)

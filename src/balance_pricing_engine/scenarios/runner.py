@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -66,6 +67,10 @@ class ScenarioDiagnostics:
     deposit_competitor_gap_elasticity: float | None = None
     response_coefficients: ResponseCoefficientsConfig | None = None
     segmented_tier_rates: dict[str, dict[str, float]] | None = None
+    # True when a configured min_return_on_equity had no finite qualifying candidate
+    # in the final selected grid and selection fell back (OPT-001). Additive field.
+    roe_constraint_relaxed: bool = False
+    selected_return_on_equity: float | None = None
 
     def top_results(self, n: int = 5) -> pd.DataFrame:
         """Return the top objective rows for reporting."""
@@ -154,6 +159,7 @@ class ScenarioDiagnostics:
             "expansion_rounds": self.expansion_rounds,
             "expansion_capped": self.expansion_capped,
             "policy_band_breached": self.policy_band_breached,
+            "roe_constraint_relaxed": bool(self.roe_constraint_relaxed),
         }
         if self.segmented_tier_rates is not None:
             summary["segmented_tier_rates"] = self.segmented_tier_rates
@@ -282,6 +288,8 @@ def run_baseline_diagnostics(
         expansion_rounds=diagnostics.expansion_rounds,
         expansion_capped=diagnostics.expansion_capped,
         policy_band_breached=diagnostics.policy_band_breached,
+        roe_constraint_relaxed=diagnostics.roe_constraint_relaxed,
+        selected_return_on_equity=diagnostics.selected_return_on_equity,
         loan_customers=loan_customers,
         deposit_customers=deposit_customers,
         market=market,
@@ -397,14 +405,16 @@ def _segmented_diagnostics(
         best_result,
         loan_rwa_weight=loan_rwa_weight,
     )
+    return_on_equity = float(grid_results["return_on_equity"].iloc[0])
     boundary_diagnostics = _segmented_boundary_diagnostics(
         result,
         config,
         best_result,
         market,
         min_return_on_equity=min_return_on_equity,
-        return_on_equity=float(grid_results["return_on_equity"].iloc[0]),
+        return_on_equity=return_on_equity,
     )
+    roe_is_finite = math.isfinite(return_on_equity)
     return ScenarioDiagnostics(
         best_result=best_result,
         grid_results=grid_results,
@@ -420,6 +430,13 @@ def _segmented_diagnostics(
             "loan_tiers": {tier.tier_name: tier.rate for tier in result.loan_tiers},
             "deposit_tiers": {tier.tier_name: tier.rate for tier in result.deposit_tiers},
         },
+        # The tier-wise optimiser has no constrained alternative: a configured floor
+        # that the single segmented result misses is, by definition, relaxed.
+        roe_constraint_relaxed=(
+            min_return_on_equity is not None
+            and not (roe_is_finite and return_on_equity >= min_return_on_equity)
+        ),
+        selected_return_on_equity=return_on_equity if roe_is_finite else None,
     )
 
 

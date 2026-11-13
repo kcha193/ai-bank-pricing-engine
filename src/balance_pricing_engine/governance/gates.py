@@ -94,6 +94,9 @@ def evaluate_gates(
         _funding_shortfall_gate(diagnostics),
         _lineage_completeness_gate(model_lineage, feature_lineage),
         _objective_finite_gate(diagnostics),
+        _objective_positive_gate(diagnostics),
+        _volume_nonzero_gate(diagnostics),
+        _roe_floor_gate(config, diagnostics),
     ]
     return gates
 
@@ -336,4 +339,165 @@ def _objective_finite_gate(diagnostics: "ScenarioDiagnostics") -> GateResult:
         message="Objective value is finite.",
         severity="info",
         evidence={"objective_value": objective},
+    )
+
+
+def _finite_or_none(value: Any) -> float | None:
+    """Return ``value`` as a finite float, or None when it is missing or not finite."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _objective_positive_gate(diagnostics: "ScenarioDiagnostics") -> GateResult:
+    objective = diagnostics.best_result.total_objective
+    finite_objective = _finite_or_none(objective)
+    if finite_objective is None:
+        return GateResult(
+            code="OBJECTIVE_POSITIVE",
+            status=GateStatus.WARN,
+            message=(
+                f"Objective sign cannot be assessed because it is not finite ({objective!r}); "
+                "see OBJECTIVE_FINITE."
+            ),
+            severity="warning",
+            evidence={"objective_value": None},
+            remediation="Resolve the OBJECTIVE_FINITE block before assessing profitability.",
+        )
+    if finite_objective <= 0:
+        return GateResult(
+            code="OBJECTIVE_POSITIVE",
+            status=GateStatus.WARN,
+            message=(
+                f"Best modelled objective is not positive (${finite_objective:,.0f}): every "
+                "evaluated candidate is loss-making or break-even under the synthetic model."
+            ),
+            severity="warning",
+            evidence={"objective_value": finite_objective},
+            remediation=(
+                "Treat the selected rates as the least-bad option, not a profitable price. "
+                "Review the policy band, funding inputs and calibration before sign-off."
+            ),
+        )
+    return GateResult(
+        code="OBJECTIVE_POSITIVE",
+        status=GateStatus.PASS,
+        message=(
+            "Best modelled objective is positive under the synthetic model; this is not "
+            "evidence of real-world profitability."
+        ),
+        severity="info",
+        evidence={"objective_value": finite_objective},
+    )
+
+
+def _volume_nonzero_gate(diagnostics: "ScenarioDiagnostics") -> GateResult:
+    best_result = diagnostics.best_result
+    raw_volumes = {
+        "loan": getattr(best_result, "expected_loan_volume", None),
+        "deposit": getattr(best_result, "expected_deposit_volume", None),
+    }
+    volumes = {product: _finite_or_none(value) for product, value in raw_volumes.items()}
+    # Both products are priced jointly, so both need strictly positive, finite volume.
+    # A zero loan volume also leaves ROE undefined (required capital is zero).
+    degenerate = [product for product, volume in volumes.items() if volume is None or volume <= 0]
+    evidence = {
+        "expected_loan_volume": volumes["loan"],
+        "expected_deposit_volume": volumes["deposit"],
+        "degenerate_products": degenerate,
+    }
+    if degenerate:
+        return GateResult(
+            code="VOLUME_NONZERO",
+            status=GateStatus.WARN,
+            message=(
+                "Expected volume is zero, negative, non-finite or missing for: "
+                f"{', '.join(degenerate)}. The recommended rate for that product is degenerate."
+            ),
+            severity="warning",
+            evidence=evidence,
+            remediation=(
+                "Check the response elasticities, rate grid and customer simulation; a "
+                "rate that attracts no business is not a usable price."
+            ),
+        )
+    return GateResult(
+        code="VOLUME_NONZERO",
+        status=GateStatus.PASS,
+        message="Expected loan and deposit volumes are both positive and finite.",
+        severity="info",
+        evidence=evidence,
+    )
+
+
+def _roe_floor_gate(config: "EngineConfig", diagnostics: "ScenarioDiagnostics") -> GateResult:
+    floor = config.balance_sheet.min_return_on_equity
+    relaxed = getattr(diagnostics, "roe_constraint_relaxed", None)
+    selected_roe = _finite_or_none(getattr(diagnostics, "selected_return_on_equity", None))
+    evidence = {
+        "min_return_on_equity": floor,
+        "selected_return_on_equity": selected_roe,
+        "roe_constraint_relaxed": relaxed if isinstance(relaxed, bool) else None,
+    }
+    if floor is None:
+        return GateResult(
+            code="ROE_FLOOR_MET",
+            status=GateStatus.PASS,
+            message="No minimum return on equity is configured.",
+            severity="info",
+            evidence=evidence,
+        )
+    if relaxed is True:
+        return GateResult(
+            code="ROE_FLOOR_MET",
+            status=GateStatus.WARN,
+            message=(
+                f"No evaluated candidate met the configured minimum return on equity "
+                f"{floor:.2%}; the optimiser fell back to the unconstrained "
+                "highest-objective candidate."
+            ),
+            severity="warning",
+            evidence=evidence,
+            remediation=(
+                "The ROE hurdle is not met by this recommendation. Lower or justify the "
+                "floor, widen the grid, or reject the result at pricing committee."
+            ),
+        )
+    if relaxed is not False or selected_roe is None:
+        return GateResult(
+            code="ROE_FLOOR_MET",
+            status=GateStatus.WARN,
+            message=(
+                f"A minimum return on equity of {floor:.2%} is configured, but the ROE "
+                "evidence for the selected result is missing or not finite."
+            ),
+            severity="warning",
+            evidence=evidence,
+            remediation="Re-run the scenario through run_baseline_diagnostics to record ROE.",
+        )
+    if selected_roe < floor:
+        return GateResult(
+            code="ROE_FLOOR_MET",
+            status=GateStatus.WARN,
+            message=(
+                f"Selected return on equity {selected_roe:.2%} is below the configured "
+                f"minimum {floor:.2%}, although the floor was not reported as relaxed."
+            ),
+            severity="warning",
+            evidence=evidence,
+            remediation="Investigate the inconsistent ROE evidence before sign-off.",
+        )
+    return GateResult(
+        code="ROE_FLOOR_MET",
+        status=GateStatus.PASS,
+        message=(
+            f"Selected return on equity {selected_roe:.2%} meets the configured minimum "
+            f"{floor:.2%}."
+        ),
+        severity="info",
+        evidence=evidence,
     )

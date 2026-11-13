@@ -13,7 +13,7 @@ from balance_pricing_engine.grid_utils import build_inclusive_numeric_grid
 from balance_pricing_engine.optimization.grid_search import (
     OptimizationResult,
     evaluate_joint_rate_grid,
-    select_best_result,
+    select_best_result_with_disclosure,
 )
 from balance_pricing_engine.optimization.response_fn import ResponseFn
 from balance_pricing_engine.pricing.profit import maturity_adjusted_rwa_weight
@@ -144,6 +144,9 @@ class AdaptiveGridResult:
     expansion_rounds: int
     expansion_capped: bool
     policy_band_breached: bool
+    # Describe the FINAL selected grid (after adaptive expansion), never the initial one.
+    roe_constraint_relaxed: bool = False
+    selected_return_on_equity: float | None = None
 
 
 def objective_decomposition_from_result(result: OptimizationResult) -> ObjectiveDecomposition:
@@ -315,10 +318,11 @@ def evaluate_adaptive_joint_rate_grid(
             loan_response_fn=loan_response_fn,
             deposit_response_fn=deposit_response_fn,
         )
-        best_result = select_best_result(
+        selection = select_best_result_with_disclosure(
             grid_results,
             min_return_on_equity=min_return_on_equity,
         )
+        best_result = selection.best_result
         boundary_diagnostics = evaluate_boundary_diagnostics(
             best_result,
             loan_rate_grid,
@@ -358,6 +362,8 @@ def evaluate_adaptive_joint_rate_grid(
             home_loan_reference_rate=home_loan_reference_rate,
             term_deposit_reference_rate=term_deposit_reference_rate,
         ),
+        roe_constraint_relaxed=selection.roe_constraint_relaxed,
+        selected_return_on_equity=selection.selected_return_on_equity,
     )
 
 

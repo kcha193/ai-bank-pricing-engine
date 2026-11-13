@@ -364,6 +364,16 @@ def test_segmented_scenario_warns_when_selected_result_misses_roe_floor():
         "minimum return on equity" in warning
         for warning in diagnostics.boundary_diagnostics.warnings
     )
+    assert diagnostics.roe_constraint_relaxed is True
+    assert diagnostics.selected_return_on_equity < 10.0
+
+
+def test_segmented_scenario_without_roe_floor_is_not_relaxed():
+    config = load_config("configs/segmented_pricing.yaml")
+
+    diagnostics = run_baseline_diagnostics(config, max_boundary_expansions=0)
+
+    assert diagnostics.roe_constraint_relaxed is False
 
 
 def test_segmented_diagnostics_warn_when_tier_winner_is_at_boundary():

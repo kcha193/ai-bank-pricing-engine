@@ -284,6 +284,22 @@ def optimization_result_from_row(row: pd.Series) -> OptimizationResult:
     )
 
 
+@dataclass(frozen=True)
+class SelectionResult:
+    """Winning grid row plus disclosure of how the ROE floor was applied.
+
+    ``roe_constraint_relaxed`` is True only when ``min_return_on_equity`` was
+    configured and no evaluated candidate had a finite ROE meeting it, so the
+    selection fell back to the unconstrained objective ranking (OPT-001).
+    ``selected_return_on_equity`` is the winner's ROE, or None when the grid
+    carries no finite ROE for it.
+    """
+
+    best_result: OptimizationResult
+    roe_constraint_relaxed: bool
+    selected_return_on_equity: float | None
+
+
 def select_best_result(
     grid_results: pd.DataFrame,
     min_return_on_equity: float | None = None,
@@ -291,18 +307,39 @@ def select_best_result(
     """Select the highest-objective pricing result from evaluated grid results.
 
     When min_return_on_equity is set, prefer rows meeting the floor; fall back
-    to unconstrained best if no row qualifies (avoids hard infeasibility).
+    to unconstrained best if no row qualifies (avoids hard infeasibility). Use
+    ``select_best_result_with_disclosure`` when the caller must know whether
+    that fallback happened.
     """
+    return select_best_result_with_disclosure(
+        grid_results,
+        min_return_on_equity=min_return_on_equity,
+    ).best_result
+
+
+def select_best_result_with_disclosure(
+    grid_results: pd.DataFrame,
+    min_return_on_equity: float | None = None,
+) -> SelectionResult:
+    """Select the winner exactly as ``select_best_result`` does, and disclose ROE relaxation."""
     if grid_results.empty:
         raise ValueError("At least one loan rate and one deposit rate are required.")
 
+    has_roe = "return_on_equity" in grid_results.columns
     candidates = grid_results
-    if min_return_on_equity is not None and "return_on_equity" in grid_results.columns:
-        return_on_equity = grid_results["return_on_equity"]
-        if return_on_equity.notna().any():
-            qualified = grid_results[return_on_equity >= min_return_on_equity]
-            if not qualified.empty:
-                candidates = qualified
+    roe_constraint_relaxed = False
+    if min_return_on_equity is not None:
+        roe_constraint_relaxed = True
+        if has_roe:
+            return_on_equity = grid_results["return_on_equity"]
+            finite_qualifying = np.isfinite(return_on_equity) & (
+                return_on_equity >= min_return_on_equity
+            )
+            roe_constraint_relaxed = not bool(finite_qualifying.any())
+            if return_on_equity.notna().any():
+                qualified = grid_results[return_on_equity >= min_return_on_equity]
+                if not qualified.empty:
+                    candidates = qualified
 
     market_spread_distance = (
         candidates["home_loan_spread_to_market_bps"].abs()
@@ -317,7 +354,14 @@ def select_best_result(
         )
         .iloc[0]
     )
-    return optimization_result_from_row(best_row)
+    selected_return_on_equity: float | None = None
+    if has_roe and np.isfinite(best_row["return_on_equity"]):
+        selected_return_on_equity = float(best_row["return_on_equity"])
+    return SelectionResult(
+        best_result=optimization_result_from_row(best_row),
+        roe_constraint_relaxed=roe_constraint_relaxed,
+        selected_return_on_equity=selected_return_on_equity,
+    )
 
 
 def optimize_joint_rates(

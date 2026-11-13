@@ -8,11 +8,13 @@ from balance_pricing_engine.optimization import grid_search as grid_search_modul
 from balance_pricing_engine.optimization.grid_search import (
     GRID_RESULT_COLUMNS,
     OptimizationResult,
+    SelectionResult,
     build_rate_grid,
     evaluate_joint_rate_grid,
     optimize_joint_market_relative_rates,
     optimize_joint_rates,
     select_best_result,
+    select_best_result_with_disclosure,
 )
 from balance_pricing_engine.optimization.response_fn import (
     SyntheticDepositResponseFn,
@@ -1035,3 +1037,106 @@ def _evaluate_joint_rate_grid_unhoisted(
     if not rows:
         raise ValueError("At least one loan rate and one deposit rate are required.")
     return pd.DataFrame(rows, columns=GRID_RESULT_COLUMNS)
+
+
+# --- Phase 1a (OPT-001): ROE floor relaxation must be disclosed ---
+
+
+def _roe_grid(rows):
+    """Build a grid-results frame from (loan_rate, total_objective, return_on_equity)."""
+    return pd.DataFrame(
+        [
+            {
+                "loan_rate": loan_rate,
+                "deposit_rate": 0.03,
+                "home_loan_spread_to_market_bps": 0.0,
+                "term_deposit_spread_to_market_bps": 0.0,
+                "loan_interest_income": 100.0,
+                "expected_credit_loss": 10.0,
+                "capital_charge": 4.0,
+                "deposit_interest_cost": 25.0,
+                "wholesale_funding_cost": 5.0,
+                "excess_deposit_income": 0.0,
+                "funding_shortfall_penalty": 1.0,
+                "total_objective": objective,
+                "expected_loan_volume": 1_000.0,
+                "expected_deposit_volume": 700.0,
+                "funding_shortfall": 0.0,
+                "return_on_equity": roe,
+            }
+            for loan_rate, objective, roe in rows
+        ],
+        columns=GRID_RESULT_COLUMNS,
+    )
+
+
+_ROE_ROWS = [(0.060, 50.0, 0.30), (0.065, 75.0, 0.10), (0.070, 60.0, 0.25)]
+
+
+def test_selection_without_roe_floor_is_not_relaxed():
+    selection = select_best_result_with_disclosure(_roe_grid(_ROE_ROWS))
+
+    assert isinstance(selection, SelectionResult)
+    assert selection.roe_constraint_relaxed is False
+    assert selection.best_result.loan_rate == pytest.approx(0.065)
+    assert selection.selected_return_on_equity == pytest.approx(0.10)
+
+
+def test_selection_with_feasible_roe_floor_picks_best_qualifying_row():
+    selection = select_best_result_with_disclosure(
+        _roe_grid(_ROE_ROWS), min_return_on_equity=0.20
+    )
+
+    assert selection.roe_constraint_relaxed is False
+    # 0.070 (objective 60) beats 0.060 (objective 50) among rows with ROE >= 0.20.
+    assert selection.best_result.loan_rate == pytest.approx(0.070)
+    assert selection.selected_return_on_equity == pytest.approx(0.25)
+
+
+def test_selection_with_infeasible_roe_floor_discloses_relaxed_fallback():
+    grid = _roe_grid(_ROE_ROWS)
+
+    selection = select_best_result_with_disclosure(grid, min_return_on_equity=10.0)
+
+    assert selection.roe_constraint_relaxed is True
+    # Fallback keeps the existing diagnostic behaviour: unconstrained best is returned.
+    assert selection.best_result == select_best_result(grid)
+    assert selection.selected_return_on_equity == pytest.approx(0.10)
+
+
+def test_selection_relaxed_when_all_roe_values_are_nan():
+    grid = _roe_grid([(0.060, 50.0, float("nan")), (0.065, 75.0, float("nan"))])
+
+    selection = select_best_result_with_disclosure(grid, min_return_on_equity=0.10)
+
+    assert selection.roe_constraint_relaxed is True
+    assert selection.best_result.loan_rate == pytest.approx(0.065)
+    assert selection.selected_return_on_equity is None
+
+
+def test_selection_relaxed_when_roe_column_is_missing():
+    grid = _roe_grid(_ROE_ROWS).drop(columns=["return_on_equity"])
+
+    selection = select_best_result_with_disclosure(grid, min_return_on_equity=0.10)
+
+    assert selection.roe_constraint_relaxed is True
+    assert selection.selected_return_on_equity is None
+
+
+def test_selection_relaxed_when_only_non_finite_roe_meets_floor():
+    grid = _roe_grid([(0.060, 50.0, float("inf")), (0.065, 75.0, 0.05)])
+
+    selection = select_best_result_with_disclosure(grid, min_return_on_equity=0.10)
+
+    assert selection.roe_constraint_relaxed is True
+
+
+def test_select_best_result_public_contract_is_unchanged_by_disclosure():
+    grid = _roe_grid(_ROE_ROWS)
+
+    for floor in (None, 0.20, 10.0):
+        result = select_best_result(grid, min_return_on_equity=floor)
+        assert isinstance(result, OptimizationResult)
+        assert result == select_best_result_with_disclosure(
+            grid, min_return_on_equity=floor
+        ).best_result

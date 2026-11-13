@@ -661,3 +661,55 @@ def test_competitor_rate_issues_report_missing_and_non_strict_failed_sources(tmp
     assert failed_issues is not None
     assert failed_issues[0].severity == "warning"
     assert failed_issues[0].message == "Competitor-rate source file failed validation."
+
+
+# --- Phase 1a (OPT-001 / GOV-002): governed path discloses ROE relaxation ---
+
+_PHASE_1A_GATES = ("ROE_FLOOR_MET", "OBJECTIVE_POSITIVE", "VOLUME_NONZERO")
+
+
+def _gate_statuses(decision) -> dict[str, str]:
+    return {gate.code: gate.status.value for gate in decision.governance.gates}
+
+
+def test_infeasible_roe_floor_is_never_recommended_and_is_recorded(tmp_path):
+    config = _small_config()
+    balance_sheet = config.balance_sheet.model_copy(update={"min_return_on_equity": 10.0})
+    config = config.model_copy(update={"balance_sheet": balance_sheet})
+
+    decision = PricingService().run_scenario(
+        PricingScenarioRequest(
+            config=config,
+            scenario_name="roe_floor_infeasible",
+            config_path="configs/base.yaml",
+            persist_ledger=True,
+            ledger_base_dir=tmp_path,
+        )
+    )
+
+    statuses = _gate_statuses(decision)
+    assert statuses["ROE_FLOOR_MET"] == "WARN"
+    assert decision.governance.status is not DecisionStatus.RECOMMENDED
+    assert any("return on equity" in reason.lower() for reason in decision.governance.review_reasons)
+
+    summary = json.loads((decision.run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["roe_constraint_relaxed"] is True
+    record = json.loads((decision.run_dir / "decision_record.json").read_text(encoding="utf-8"))
+    recorded = {gate["code"]: gate for gate in record["governance_gates"]}
+    for code in _PHASE_1A_GATES:
+        assert code in recorded
+        assert recorded[code]["evidence"] is not None
+    assert recorded["ROE_FLOOR_MET"]["status"] == "WARN"
+    assert recorded["ROE_FLOOR_MET"]["evidence"]["roe_constraint_relaxed"] is True
+
+
+def test_baseline_scenario_passes_phase_1a_gates_without_changing_rates():
+    config = _small_config()
+    baseline = run_baseline_diagnostics(config)
+
+    decision = PricingService().run_scenario(PricingScenarioRequest(config=config))
+
+    statuses = _gate_statuses(decision)
+    assert all(statuses[code] == "PASS" for code in _PHASE_1A_GATES), statuses
+    assert decision.best_loan_rate == baseline.best_result.loan_rate
+    assert decision.best_deposit_rate == baseline.best_result.deposit_rate
