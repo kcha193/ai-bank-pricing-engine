@@ -1,0 +1,1193 @@
+{
+ "audit": "Full repository audit",
+ "date": "2026-11-13",
+ "baseline": {
+  "branch": "master",
+  "sha": "62b81d2b64d2b3298044100895f6950df59b10c7",
+  "working_tree": "clean (only new docs/audits files added)"
+ },
+ "environment": {
+  "os": "macOS Darwin 27",
+  "python": "3.12.13",
+  "numpy": "1.26.4",
+  "pandas": "3.0.2",
+  "pydantic": "2.13.3",
+  "scikit_learn": "1.8.0",
+  "streamlit": "1.57.0",
+  "fastapi": "0.136.1",
+  "pytest": "9.0.3",
+  "ruff": "0.15.12",
+  "ci_python": "3.11",
+  "network": "none"
+ },
+ "commands": [
+  {
+   "cmd": "python -m ruff check .",
+   "outcome": "PASS",
+   "exit": 0,
+   "evidence": "docs/audits/2026-11-13-evidence/ruff.txt"
+  },
+  {
+   "cmd": "python -m pytest --cov=balance_pricing_engine --cov-report=term-missing --cov-fail-under=95 -m 'not live_rates' -q",
+   "outcome": "2177 passed, 1 failed, 2 skipped; coverage 96.39%",
+   "exit": 1,
+   "failure_classification": "environment (port 8765 in use by local dashboard; TEST-001)",
+   "evidence": "docs/audits/2026-11-13-evidence/pytest_cov.txt"
+  },
+  {
+   "cmd": "python -m bandit -r src scripts -q",
+   "outcome": "0 High; B608 x20 false positives; B104 real (SEC-001)"
+  },
+  {
+   "cmd": "workstream test subsets",
+   "outcome": "ingestion 1057 passed/2 skipped; ML+gov 358 passed; dashboard+API 571 passed/1 failed (same env failure)"
+  },
+  {
+   "cmd": "PYTHONPATH=src .venv/bin/python docs/audits/2026-11-13-evidence/fin/challenge_core.py",
+   "outcome": "completed",
+   "evidence": "docs/audits/2026-11-13-evidence/fin/results.json"
+  },
+  {
+   "cmd": "PYTHONPATH=src .venv/bin/python docs/audits/2026-11-13-evidence/fin/followup.py",
+   "outcome": "completed",
+   "evidence": "docs/audits/2026-11-13-evidence/fin/followup.json"
+  },
+  {
+   "cmd": "PYTHONPATH=src .venv/bin/python docs/audits/2026-11-13-evidence/fin/governed.py",
+   "outcome": "completed (note: nan case error in this script is a harness round(nan) artefact; see fin/nan_status.py -> BLOCKED)",
+   "evidence": "docs/audits/2026-11-13-evidence/fin/governed.json"
+  }
+ ],
+ "independent_validation": {
+  "hand_example": {
+   "objective_hand": -120.0,
+   "objective_engine": -120.0,
+   "match": true
+  },
+  "reference_optimiser": {
+   "grid_points": 357,
+   "max_abs_objective_diff": 2.98e-08,
+   "same_argmax": true
+  },
+  "canonical_result": {
+   "initial_grid_best": {
+    "loan": 0.0549,
+    "deposit": 0.042,
+    "objective": -4508278.79
+   },
+   "reported": {
+    "loan": 0.0619,
+    "deposit": 0.0405,
+    "objective": 5920859.37,
+    "loan_volume": 509991692,
+    "deposit_volume": 328903314,
+    "policy_band_breached": true,
+    "governed_status": "REVIEW_REQUIRED"
+   }
+  },
+  "performance": {
+   "697_rows_1k_to_20k_customers_s": [
+    0.018,
+    0.048
+   ],
+   "16281_rows_s": 0.432
+  }
+ },
+ "scorecard": {
+  "engineering_code_quality": "PASS WITH LIMITATIONS",
+  "financial_mathematics": "PASS WITH LIMITATIONS (multi-period FAIL)",
+  "statistical_model_validity": "FAIL (ML layer)",
+  "mortgage_data_reliability": "PASS WITH LIMITATIONS",
+  "term_deposit_data_reliability": "FAIL",
+  "optimisation_correctness": "PASS WITH LIMITATIONS (segmented FAIL)",
+  "model_governance": "FAIL",
+  "dashboard_decision_usability": "FAIL",
+  "security": "PASS WITH LIMITATIONS (local) / FAIL (network-exposed)",
+  "operational_resilience": "FAIL (unattended)",
+  "testing_release_quality": "PASS WITH LIMITATIONS",
+  "production_readiness": "FAIL"
+ },
+ "severity_counts": {
+  "P0": 0,
+  "P1": 12,
+  "P2": 27,
+  "P3": 34,
+  "total": 73
+ },
+ "aliases": {
+  "UX-011": "TEST-001",
+  "DATA-021": "UX-001",
+  "OPT-001": "see also GOV-002"
+ },
+ "findings": [
+  {
+   "id": "FIN-001",
+   "severity": "P1",
+   "classification": "VERIFIED (outcome) / DESIGN LIMITATION (calibration)",
+   "confidence": "high",
+   "title": "Canonical recommendation breaches its policy band; driven by uncalibrated ECL (~0.8% p.a.) and deposit-pool scale",
+   "locations": [
+    "configs/base.yaml:12-20,47-48",
+    "src/balance_pricing_engine/synthetic/customers.py:21",
+    "src/balance_pricing_engine/diagnostics.py:251-263"
+   ],
+   "reproduction": "docs/audits/2026-11-13-evidence/fin/challenge_core.py (reference_check, perturbations); docs/audits/2026-11-13-evidence/fin/followup.py",
+   "impact": "Every scenario recommends ~6.19% home loan (+120 bp) outside the \u00b150 bp band; every in-band candidate is a modelled loss (-$4.51m). n_deposit_customers 5k/10k/25k -> 6.19/5.99/5.79%.",
+   "remediation": "Calibrate ECL and deposit supply (share curve); document as primary drivers; canonical-config in-band test",
+   "regression_test": "test_canonical_config_recommendation_within_policy_band_or_reason",
+   "effort": "M (+SME)",
+   "roadmap_phase": "Phase 4",
+   "domain": "financial_mathematics"
+  },
+  {
+   "id": "FIN-002",
+   "severity": "P1",
+   "classification": "VERIFIED",
+   "confidence": "high",
+   "title": "Multi-period back-book economics internally inconsistent (held book +$5.92m -> -$0.57m)",
+   "locations": [
+    "src/balance_pricing_engine/scenarios/multiperiod.py:83-101,115-134"
+   ],
+   "reproduction": "docs/audits/2026-11-13-evidence/fin/challenge_core.py::multiperiod_case",
+   "impact": "NPV materially misstated with wrong sign for a held book; diagnostic only (examples/run_multiperiod.py).",
+   "remediation": "Carry period-0 decomposition on surviving balances or relabel as new-business-only; drift reference rates",
+   "regression_test": "test_zero_runoff_back_book_equals_period0_contribution",
+   "effort": "M",
+   "roadmap_phase": "Phase 3",
+   "domain": "financial_mathematics"
+  },
+  {
+   "id": "OPT-001",
+   "severity": "P1",
+   "classification": "VERIFIED",
+   "confidence": "high",
+   "title": "min_return_on_equity floor silently not enforced when infeasible; no flag or gate",
+   "locations": [
+    "src/balance_pricing_engine/optimization/grid_search.py:299-305",
+    "src/balance_pricing_engine/governance/gates.py:72-99",
+    "src/balance_pricing_engine/scenarios/runner.py:461-473"
+   ],
+   "reproduction": "docs/audits/2026-11-13-evidence/fin/challenge_core.py::roe_cases; docs/audits/2026-11-13-evidence/fin/governed.py",
+   "impact": "Configured hurdle appears enforced but is not; floors 1.0/10.0 -> 0 qualifying rows, same rate, no warning.",
+   "remediation": "Expose roe_constraint_relaxed flag (additive summary key) + ROE_FLOOR gate",
+   "regression_test": "test_infeasible_roe_floor_sets_flag_and_gate",
+   "effort": "S",
+   "roadmap_phase": "Phase 1",
+   "domain": "optimisation"
+  },
+  {
+   "id": "OPT-002",
+   "severity": "P1",
+   "classification": "VERIFIED",
+   "confidence": "high",
+   "title": "Segmented optimiser greedy/decoupled; returns loss-making result dominated within its own search space",
+   "locations": [
+    "src/balance_pricing_engine/optimization/segmented.py:126-142,258-265,313-321",
+    "src/balance_pricing_engine/scenarios/runner.py:210-217"
+   ],
+   "reproduction": "docs/audits/2026-11-13-evidence/fin/followup.py (wide_single_tier)",
+   "impact": "Single-tier segmented -$0.27m @5.65% vs joint +$5.90m @6.15% on same grid; no warning beyond FUNDING_SHORTFALL.",
+   "remediation": "Include deposit funding/penalty in loan-tier objective (coordinate descent) or joint grid for small tier counts",
+   "regression_test": "test_single_tier_segmented_equals_joint",
+   "effort": "M",
+   "roadmap_phase": "Phase 3",
+   "domain": "optimisation"
+  },
+  {
+   "id": "GOV-001",
+   "severity": "P1",
+   "classification": "VERIFIED",
+   "confidence": "high",
+   "title": "Approved champion not checked against feature contract/hash/probe; feature-compatibility gate always passes",
+   "locations": [
+    "src/balance_pricing_engine/modelling/agentic.py:1381-1427",
+    "src/balance_pricing_engine/governance/gates.py:208-223"
+   ],
+   "reproduction": "docs/audits/2026-11-13-evidence/mlgov/challenge_j.py (J2b,J4b,J4c)",
+   "impact": "Permuted artifact priced 4.99% with zero loan volume, lineage approved_ml_champion, all model gates PASS.",
+   "remediation": "Verify artifact_sha256, feature_names_in_/n_features_in_, probe score at resolution; raise GovernanceError",
+   "regression_test": "test_loadable_but_incompatible_champion_raises_governance_error",
+   "effort": "M",
+   "roadmap_phase": "Phase 1",
+   "domain": "model_governance"
+  },
+  {
+   "id": "GOV-002",
+   "severity": "P1",
+   "classification": "VERIFIED",
+   "confidence": "high",
+   "title": "No gates for negative objective, zero volume, ROE floor or ML response sanity",
+   "locations": [
+    "src/balance_pricing_engine/governance/gates.py:72-98"
+   ],
+   "reproduction": "docs/audits/2026-11-13-evidence/mlgov/phase8_governance.py (gate_combinations)",
+   "impact": "Degenerate/infeasible results can be RECOMMENDED.",
+   "remediation": "Add OBJECTIVE_POSITIVE, VOLUME_NONZERO, ROE_FLOOR_MET, ML_RESPONSE_SANITY, ML_CHAMPION_IN_USE; update AGENTS.md policy",
+   "regression_test": "test_gate_matrix_degenerate_results_not_recommended",
+   "effort": "S-M",
+   "roadmap_phase": "Phase 1",
+   "domain": "model_governance"
+  },
+  {
+   "id": "MOD-001",
+   "severity": "P1",
+   "classification": "VERIFIED",
+   "confidence": "high",
+   "title": "ML training holds competitor rate constant; own-rate and gap elasticities unidentifiable",
+   "locations": [
+    "src/balance_pricing_engine/modelling/datasets.py:60-61,99-100",
+    "src/balance_pricing_engine/modelling/workflows.py:55,64",
+    "src/balance_pricing_engine/features/local_store.py:60,70"
+   ],
+   "reproduction": "docs/audits/2026-11-13-evidence/mlgov/phase2_numeric.py; docs/audits/2026-11-13-evidence/mlgov/phase2_extra.py",
+   "impact": "Logistic -146.75/0/-146.75 vs truth -170/-130; HGB zero competitor response; an approved champion would ignore competitor repricing.",
+   "remediation": "Sample competitor rate per row independent of offered rate; competitor-sign approval check",
+   "regression_test": "test_training_data_competitor_variation_and_sign",
+   "effort": "M",
+   "roadmap_phase": "Phase 5",
+   "domain": "statistical_validity"
+  },
+  {
+   "id": "MOD-002",
+   "severity": "P1",
+   "classification": "VERIFIED",
+   "confidence": "high",
+   "title": "No guard on ML training rate range; HistGBM flat beyond 5.49%; approved champion prices 8.49%",
+   "locations": [
+    "src/balance_pricing_engine/modelling/workflows.py:48",
+    "src/balance_pricing_engine/optimization/response_fn.py:93-125"
+   ],
+   "reproduction": "docs/audits/2026-11-13-evidence/mlgov/phase2_extra.py (hgb_champion_pricing)",
+   "impact": "+230 bp mispricing with only REVIEW_REQUIRED.",
+   "remediation": "Train on expanded grid; record training range; range gate; monotonic_cst",
+   "regression_test": "test_champion_out_of_range_gate",
+   "effort": "M",
+   "roadmap_phase": "Phase 5",
+   "domain": "statistical_validity"
+  },
+  {
+   "id": "DATA-001",
+   "severity": "P1",
+   "classification": "VERIFIED (mechanism); live prevalence NOT VERIFIED",
+   "confidence": "high",
+   "title": "Term-deposit 'special' rows silently excluded from the TD market",
+   "locations": [
+    "src/balance_pricing_engine/competitor_rates/extractors.py:693-698",
+    "src/balance_pricing_engine/pricing_intelligence/service.py:386-390",
+    "src/balance_pricing_engine/pricing_intelligence/orchestration.py:449"
+   ],
+   "reproduction": "docs/audits/2026-11-13-evidence/ingest/td_special_mixed.py",
+   "impact": "Exit 0 SUCCESS; ASB 4.50% special ignored; MARKET_LEADER 4.05.",
+   "remediation": "Treat TD specials as comparable promotions or flag partial (exit 2)",
+   "regression_test": "test_td_special_row_counted_or_flagged",
+   "effort": "S-M",
+   "roadmap_phase": "Phase 2",
+   "domain": "term_deposit_data"
+  },
+  {
+   "id": "DATA-002",
+   "severity": "P1",
+   "classification": "VERIFIED",
+   "confidence": "high",
+   "title": "Genuine >=75 bp moves never admitted: quarantine has no approval path (confirm_suspicious_changes uncalled)",
+   "locations": [
+    "src/balance_pricing_engine/pricing_intelligence/store.py:1783"
+   ],
+   "reproduction": "docs/audits/2026-11-13-evidence/ingest/case_Q_storage.py (Q7)",
+   "impact": "Stale rate priced days 8-13, bank silently absent from day 14, exit 0 throughout.",
+   "remediation": "Authenticated append-only approve/reject command; exit 2 + health escalation while quarantined N runs",
+   "regression_test": "test_persistent_quarantine_escalates_and_approval_admits",
+   "effort": "M",
+   "roadmap_phase": "Phase 2",
+   "domain": "mortgage_and_term_deposit_data"
+  },
+  {
+   "id": "UX-001",
+   "severity": "P1",
+   "classification": "VERIFIED",
+   "confidence": "high",
+   "title": "Pricing Studio shows two conflicting 'optimal' rates; 'model optimum' is always the Match-median run (incl. DATA-021)",
+   "locations": [
+    "src/balance_pricing_engine/dashboard/scenario_text.py:69-73",
+    "src/balance_pricing_engine/dashboard/views/scenarios.py:158-159",
+    "src/balance_pricing_engine/dashboard/services.py:604,631,653",
+    "src/balance_pricing_engine/pricing_scenario_trigger.py:152-162"
+   ],
+   "reproduction": "docs/audits/2026-11-13-evidence/uxsec/challenge/test_ux_scenarios.py",
+   "impact": "HL leader headline 6.09% vs text 6.15%; TD 4.20% vs 4.15%.",
+   "remediation": "Rename to 'Median-benchmark optimum (reference)'; drop 'under current assumptions'",
+   "regression_test": "AppTest summary text agrees with headline",
+   "effort": "S",
+   "roadmap_phase": "Phase 1",
+   "domain": "dashboard"
+  },
+  {
+   "id": "SEC-001",
+   "severity": "P1",
+   "classification": "VERIFIED (default config)",
+   "confidence": "high",
+   "title": "API unauthenticated by default, binds 0.0.0.0, unbounded compute",
+   "locations": [
+    "src/balance_pricing_engine/api/auth.py:45-47",
+    "src/balance_pricing_engine/api/server.py:40",
+    "docs/deployment.md:16,65",
+    "src/balance_pricing_engine/config.py:22-47",
+    "src/balance_pricing_engine/api/schemas.py"
+   ],
+   "reproduction": "docs/audits/2026-11-13-evidence/uxsec/exp_api.py",
+   "impact": "Anyone reaching the port can run unbounded scenarios and write ledgers (synthetic data).",
+   "remediation": "Loopback default; refuse non-loopback without keys; size caps; limit_concurrency",
+   "regression_test": "test_default_host_loopback; test_oversized_request_422",
+   "effort": "S-M",
+   "roadmap_phase": "Phase 1",
+   "domain": "security"
+  },
+  {
+   "id": "FIN-003",
+   "severity": "P2",
+   "classification": "DESIGN LIMITATION",
+   "title": "FTP = OCR + flat 120 bp for 12m fixed; penalty in ROE numerator; no tax/opex",
+   "locations": [
+    "src/balance_pricing_engine/synthetic/market.py:17-20",
+    "src/balance_pricing_engine/optimization/grid_search.py:226-238"
+   ],
+   "effort": "M (+SME)",
+   "roadmap_phase": "Phase 4",
+   "domain": "financial_mathematics"
+  },
+  {
+   "id": "OPT-003",
+   "severity": "P2",
+   "classification": "VERIFIED",
+   "title": "Config accepts NaN/inf and wrong-sign elasticities; direct path returns NaN silently (governed path BLOCKs)",
+   "locations": [
+    "src/balance_pricing_engine/config.py:50-56,153-158",
+    "src/balance_pricing_engine/pricing_scenario_trigger.py:133-135"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 1",
+   "domain": "optimisation"
+  },
+  {
+   "id": "OPT-004",
+   "severity": "P2",
+   "classification": "VERIFIED",
+   "title": "ScenarioRow/alerts drop policy-band, boundary, capped, shortfall, ROE flags",
+   "locations": [
+    "src/balance_pricing_engine/pricing_scenario_trigger.py:52-61,167-191"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 1",
+   "domain": "optimisation"
+  },
+  {
+   "id": "TEST-002",
+   "severity": "P2",
+   "classification": "VERIFIED",
+   "title": "96% coverage missed economic/governance invariants; dashboard/app.py 0%",
+   "locations": [
+    "tests/unit"
+   ],
+   "effort": "M",
+   "roadmap_phase": "Phase 3",
+   "domain": "testing"
+  },
+  {
+   "id": "MOD-003",
+   "severity": "P2",
+   "classification": "VERIFIED (latent)",
+   "title": "Training generator ignores response.coefficients",
+   "locations": [
+    "src/balance_pricing_engine/modelling/datasets.py:154-160,173-179"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 5",
+   "domain": "statistical_validity"
+  },
+  {
+   "id": "MOD-004",
+   "severity": "P2",
+   "classification": "VERIFIED",
+   "title": "Leaky in-sample validation (87.4% customer overlap); test split never scored",
+   "locations": [
+    "src/balance_pricing_engine/modelling/datasets.py:139",
+    "src/balance_pricing_engine/modelling/agentic.py:1001-1006,1102"
+   ],
+   "effort": "S-M",
+   "roadmap_phase": "Phase 5",
+   "domain": "statistical_validity"
+  },
+  {
+   "id": "MOD-005",
+   "severity": "P2",
+   "classification": "VERIFIED",
+   "title": "Oracle baseline sets champion bar; promotable; flat 0.5 demand; mislabelled",
+   "locations": [
+    "src/balance_pricing_engine/modelling/agentic.py:131-139,1044,1064-1073,1174-1179"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 5",
+   "domain": "statistical_validity"
+  },
+  {
+   "id": "GOV-003",
+   "severity": "P2",
+   "classification": "VERIFIED",
+   "title": "Approval accepts empty approver / failing metrics; documented controls unenforced",
+   "locations": [
+    "src/balance_pricing_engine/modelling/agentic.py:587-660",
+    "docs/model_governance.md:129,138-140"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 5",
+   "domain": "model_governance"
+  },
+  {
+   "id": "GOV-004",
+   "severity": "P2",
+   "classification": "VERIFIED (in-process callers)",
+   "title": "Decision record hashes config file, not priced config",
+   "locations": [
+    "src/balance_pricing_engine/application/pricing_service.py:486-505,568-575",
+    "src/balance_pricing_engine/run_ledger/writer.py:43-55"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 1",
+   "domain": "model_governance"
+  },
+  {
+   "id": "GOV-005",
+   "severity": "P2",
+   "classification": "VERIFIED / race STRONGLY SUSPECTED",
+   "title": "ML-priced runs get synthetic sensitivity and memo; lineage re-read after pricing",
+   "locations": [
+    "src/balance_pricing_engine/application/pricing_service.py:180-183,513-519",
+    "src/balance_pricing_engine/run_ledger/memo.py:177-187"
+   ],
+   "effort": "M",
+   "roadmap_phase": "Phase 5",
+   "domain": "model_governance"
+  },
+  {
+   "id": "GOV-007",
+   "severity": "P2",
+   "classification": "VERIFIED",
+   "title": "No elasticity sign validation; LLM patch path has no allow-list; thin audit log",
+   "locations": [
+    "src/balance_pricing_engine/config.py:153-158",
+    "src/balance_pricing_engine/llm/scenario_interface.py:60-80,235-248"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 1",
+   "domain": "model_governance"
+  },
+  {
+   "id": "DATA-003",
+   "severity": "P2",
+   "classification": "VERIFIED",
+   "title": "No minimum bank count; as_of hides oldest input age",
+   "locations": [
+    "src/balance_pricing_engine/pricing_intelligence/strategy.py:144,173",
+    "src/balance_pricing_engine/pricing_intelligence/snapshot.py:306"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 2",
+   "domain": "mortgage_and_term_deposit_data"
+  },
+  {
+   "id": "DATA-004",
+   "severity": "P2",
+   "classification": "VERIFIED",
+   "title": "Freshness table 'Fresh' after total collection failure",
+   "locations": [
+    "src/balance_pricing_engine/pricing_intelligence/service.py:727-760",
+    "src/balance_pricing_engine/pricing_intelligence/store.py:2296",
+    "src/balance_pricing_engine/pricing_intelligence/dashboard_data.py:25"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 2",
+   "domain": "mortgage_and_term_deposit_data"
+  },
+  {
+   "id": "DATA-005",
+   "severity": "P2",
+   "classification": "DESIGN LIMITATION",
+   "title": "TD benchmark uses each bank's best tier/frequency",
+   "locations": [
+    "src/balance_pricing_engine/pricing_intelligence/snapshot.py:265-270"
+   ],
+   "effort": "S-M",
+   "roadmap_phase": "Phase 2",
+   "domain": "term_deposit_data"
+  },
+  {
+   "id": "DATA-006",
+   "severity": "P2",
+   "classification": "VERIFIED",
+   "title": "Legacy competitor_rates path stores fund returns as TDs; strict always fails; non-strict 8.12%; drops stale warnings",
+   "locations": [
+    "src/balance_pricing_engine/competitor_rates/cli.py:128-131",
+    "src/balance_pricing_engine/competitor_rates/apply.py:28-44"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 2",
+   "domain": "term_deposit_data"
+  },
+  {
+   "id": "DATA-007",
+   "severity": "P2",
+   "classification": "STRONGLY SUSPECTED",
+   "title": "Browser readiness accepts any table with '%'; timeouts ignored; untested",
+   "locations": [
+    "src/balance_pricing_engine/competitor_rates/collectors/base.py:193-197,259-266"
+   ],
+   "effort": "M",
+   "roadmap_phase": "Phase 2",
+   "domain": "term_deposit_data"
+  },
+  {
+   "id": "DATA-008",
+   "severity": "P2",
+   "classification": "VERIFIED (absence)",
+   "title": "No overall run deadline/stall alert",
+   "locations": [
+    "scripts/collect_market_rates_workflow.py",
+    "deploy/scheduling/"
+   ],
+   "effort": "S-M",
+   "roadmap_phase": "Phase 2",
+   "domain": "operational_resilience"
+  },
+  {
+   "id": "DATA-013",
+   "severity": "P2",
+   "classification": "DESIGN LIMITATION",
+   "title": "Mortgage LVR/equity eligibility inferred from 'special' without flag",
+   "locations": [
+    "src/balance_pricing_engine/competitor_rates/collectors/base.py:516-560"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 2",
+   "domain": "mortgage_data"
+  },
+  {
+   "id": "DATA-016",
+   "severity": "P2",
+   "classification": "DESIGN LIMITATION",
+   "title": "+60 bp misread accepted as MARKET_LEADER; no void mechanism",
+   "locations": [
+    "src/balance_pricing_engine/pricing_intelligence/validation.py"
+   ],
+   "effort": "M",
+   "roadmap_phase": "Phase 2",
+   "domain": "mortgage_and_term_deposit_data"
+  },
+  {
+   "id": "DATA-019",
+   "severity": "P2",
+   "classification": "VERIFIED",
+   "title": "Tests inject fixture fetchers; Playwright uncovered; TD fixtures lack specials/tiers/partial pages",
+   "locations": [
+    "tests/unit",
+    "tests/fixtures"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 3",
+   "domain": "testing"
+  },
+  {
+   "id": "SEC-002",
+   "severity": "P2",
+   "classification": "VERIFIED",
+   "title": "Telegram token / webhook URL leaks to collect.log on malformed secret",
+   "locations": [
+    "src/balance_pricing_engine/pricing_intelligence/alerts.py:576-582"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 1",
+   "domain": "security"
+  },
+  {
+   "id": "SEC-003",
+   "severity": "P2",
+   "classification": "STRONGLY SUSPECTED",
+   "title": "Streamlit bind not pinned to loopback; Operations open without token",
+   "locations": [
+    ".streamlit/config.toml",
+    "src/balance_pricing_engine/dashboard/settings.py:75",
+    "src/balance_pricing_engine/dashboard/views/operations.py:150-156"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 1",
+   "domain": "security"
+  },
+  {
+   "id": "UX-002",
+   "severity": "P2",
+   "classification": "VERIFIED",
+   "title": "Stale result stays rendered after inputs change",
+   "locations": [
+    "src/balance_pricing_engine/dashboard/views/scenarios.py:589-594"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 1",
+   "domain": "dashboard"
+  },
+  {
+   "id": "UX-003",
+   "severity": "P2",
+   "classification": "VERIFIED",
+   "title": "'Optimal' headline despite policy-band breach banner",
+   "locations": [
+    "src/balance_pricing_engine/dashboard/views/scenarios.py:179-228"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 1",
+   "domain": "dashboard"
+  },
+  {
+   "id": "UX-004",
+   "severity": "P2",
+   "classification": "VERIFIED",
+   "title": "Synthetic vs observed provenance weak ('synthetic' appears once, collapsed)",
+   "locations": [
+    "src/balance_pricing_engine/dashboard/views/scenarios.py:113"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 1",
+   "domain": "dashboard"
+  },
+  {
+   "id": "UX-005",
+   "severity": "P2",
+   "classification": "DESIGN LIMITATION",
+   "title": "No objective waterfall; deposit-mode objective is joint book",
+   "locations": [
+    "src/balance_pricing_engine/dashboard/views/scenarios.py:194-284"
+   ],
+   "effort": "M",
+   "roadmap_phase": "Phase 4",
+   "domain": "dashboard"
+  },
+  {
+   "id": "UX-007",
+   "severity": "P2",
+   "classification": "VERIFIED",
+   "title": "Rationale shows raw enums; deposit MARKET_SECOND_LOWEST means second-highest",
+   "locations": [
+    "src/balance_pricing_engine/dashboard/services.py:871-878"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 1",
+   "domain": "dashboard"
+  },
+  {
+   "id": "FIN-004",
+   "severity": "P3",
+   "classification": "DESIGN LIMITATION",
+   "title": "Tier-1 ratio hard-coded x3; flat RWA ignores LVR; maturity uplift on retail",
+   "locations": [
+    "src/balance_pricing_engine/pricing/profit.py:43,51-61",
+    "src/balance_pricing_engine/optimization/grid_search.py:224",
+    "src/balance_pricing_engine/scenarios/runner.py:606"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "FIN-005",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "Stale doc explanation of deposit funding mechanism",
+   "locations": [
+    "docs/modelling_assumptions.md"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "ARCH-001",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "Package-level dependency inversions; health<->service module cycle",
+   "locations": [
+    "src/balance_pricing_engine/config.py:12-14"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "TEST-001",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "Non-hermetic launcher test (port 8765); alias UX-011",
+   "locations": [
+    "tests/unit/test_dashboard_launcher.py:193"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "TEST-003",
+   "severity": "P3",
+   "classification": "STRONGLY SUSPECTED",
+   "title": "Python>=3.9 declared, CI 3.11 only; PEP 604 in pydantic models; no lockfile",
+   "locations": [
+    "pyproject.toml:10",
+    "src/balance_pricing_engine/api/schemas.py",
+    "src/balance_pricing_engine/competitor_rates/models.py"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "MOD-006",
+   "severity": "P3",
+   "classification": "DESIGN LIMITATION",
+   "title": "ML reproduces generator; uncertainty unused",
+   "locations": [
+    "src/balance_pricing_engine/run_ledger/memo.py:182"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "MOD-007",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "PDP doesn't recompute gap",
+   "locations": [
+    "src/balance_pricing_engine/modelling/evaluation.py:43-61"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "MOD-008",
+   "severity": "P3",
+   "classification": "DESIGN LIMITATION",
+   "title": "Own/gap unidentifiable at fixed competitor rate",
+   "locations": [
+    "src/balance_pricing_engine/synthetic/response.py:33-41"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "GOV-006",
+   "severity": "P3",
+   "classification": "DESIGN LIMITATION",
+   "title": "Registry ignored silently in segmented mode / contract mismatch",
+   "locations": [
+    "src/balance_pricing_engine/scenarios/runner.py:210-217"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "GOV-008",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "Weak registry fingerprints, no artifact hash, non-atomic writes, shadow unpickles unapproved",
+   "locations": [
+    "src/balance_pricing_engine/modelling/agentic.py:834,886,991-997",
+    "src/balance_pricing_engine/governance/shadow.py:123"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "GOV-009",
+   "severity": "P3",
+   "classification": "STRONGLY SUSPECTED",
+   "title": "No synthetic marker in decision record; checklist can approve BLOCKED",
+   "locations": [
+    "src/balance_pricing_engine/run_ledger/checklist.py:294-318"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "GOV-010",
+   "severity": "P3",
+   "classification": "DESIGN LIMITATION",
+   "title": "No drift monitoring/recalibration/retention",
+   "locations": [
+    "docs/model_governance.md:103-113"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "DATA-009",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "'database is locked' uncaught; no summary written",
+   "locations": [
+    "src/balance_pricing_engine/pricing_intelligence/store.py:610",
+    "scripts/collect_market_rates_workflow.py:216"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "DATA-010",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "CLI collect takes no lock and writes no run ledger",
+   "locations": [
+    "src/balance_pricing_engine/pricing_intelligence/cli.py:372"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "DATA-011",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "Term/balance parse edge cases ('1 year 6 months'->6, '$500k+'->$500)",
+   "locations": [
+    "src/balance_pricing_engine/competitor_rates/normalise.py:79,358"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "DATA-012",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "effective_date_text never parsed; UI says 'not published'",
+   "locations": [
+    "src/balance_pricing_engine/dashboard/views/rate_changes.py:58"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "DATA-014",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "Own-bank matching brittle ('ASB Bank' not excluded)",
+   "locations": [
+    "src/balance_pricing_engine/pricing_intelligence/snapshot.py:33"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "DATA-015",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "Accepted rows stored as 'unvalidated'",
+   "locations": [
+    "src/balance_pricing_engine/pricing_intelligence/store.py"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "DATA-017",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "Backups manual, unverified, no restore",
+   "locations": [
+    "src/balance_pricing_engine/pricing_intelligence/backup.py"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "DATA-018",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "Legacy market_average weights by row count",
+   "locations": [
+    "src/balance_pricing_engine/competitor_rates/apply.py"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "DATA-020",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "Docs still say mortgage-only dashboard",
+   "locations": [
+    "docs/pricing_intelligence.md"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "SEC-004",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "File-existence oracle / path disclosure via API source_file",
+   "locations": [
+    "src/balance_pricing_engine/api/app.py:128-133,202-213,269"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "SEC-005",
+   "severity": "P3",
+   "classification": "STRONGLY SUSPECTED",
+   "title": "Unvalidated correlation_id/scenario_name",
+   "locations": [
+    "src/balance_pricing_engine/api/schemas.py",
+    "src/balance_pricing_engine/run_ledger/directory.py:20"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "SEC-006",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "Actions on mutable tags, no permissions block; no lockfile/Dependabot; base image unpinned",
+   "locations": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/collector-canary.yml",
+    "Dockerfile:7"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "SEC-007",
+   "severity": "P3",
+   "classification": "DESIGN LIMITATION",
+   "title": "joblib.load without integrity check",
+   "locations": [
+    "src/balance_pricing_engine/modelling/persistence.py:18-20"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "SEC-008",
+   "severity": "P3",
+   "classification": "STRONGLY SUSPECTED",
+   "title": "Dashboard opens SQLite read-write",
+   "locations": [
+    "src/balance_pricing_engine/pricing_intelligence/store.py:559-587"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "SEC-009",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "Fixed /tmp dir for API config files",
+   "locations": [
+    "src/balance_pricing_engine/api/app.py:233-238"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "SEC-010",
+   "severity": "P3",
+   "classification": "STRONGLY SUSPECTED",
+   "title": "CSV formula injection in legacy latest.csv",
+   "locations": [
+    "src/balance_pricing_engine/competitor_rates/store.py:33-34"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "UX-006",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "Quarantine insight truncated by 4-insight cap",
+   "locations": [
+    "src/balance_pricing_engine/dashboard/insights.py:19,98"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "UX-008",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "Scenario Lab inconsistent with Pricing Studio",
+   "locations": [
+    "src/balance_pricing_engine/dashboard/views/scenario_lab.py:24,48,75-82"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "UX-009",
+   "severity": "P3",
+   "classification": "DESIGN LIMITATION",
+   "title": "'Increase' red for both products",
+   "locations": [
+    "src/balance_pricing_engine/dashboard/theme.py:49-55"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "UX-010",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "?product= deep link ignored once session has product",
+   "locations": [
+    "src/balance_pricing_engine/dashboard/ui.py"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "UX-012",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "Minor cache/product_type state inconsistencies",
+   "locations": [
+    "src/balance_pricing_engine/dashboard/views/_common.py:23-38"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  },
+  {
+   "id": "UX-013",
+   "severity": "P3",
+   "classification": "VERIFIED",
+   "title": "MUTED token contrast 1.97:1",
+   "locations": [
+    "src/balance_pricing_engine/dashboard/charts.py:519"
+   ],
+   "effort": "S",
+   "roadmap_phase": "Phase 6"
+  }
+ ],
+ "challenge_cases": {
+  "A": {
+   "result": "PASS",
+   "evidence": "docs/audits/2026-11-13-evidence/fin/results.json#A_loan_rate_up"
+  },
+  "B": {
+   "result": "PASS",
+   "evidence": "docs/audits/2026-11-13-evidence/fin/results.json#B_deposit_rate_up"
+  },
+  "C": {
+   "result": "PASS",
+   "observed": "loan rec 6.19% -> 5.84%"
+  },
+  "D": {
+   "result": "PASS",
+   "observed": "deposit rec 4.05% -> 4.35%"
+  },
+  "E": {
+   "result": "PASS",
+   "observed": "ratio 1.0 -> corner L~D, shortfall 0, 6.39%/4.00%"
+  },
+  "F": {
+   "result": "PASS",
+   "observed": "wholesale +200bp -> 6.39%/4.00%"
+  },
+  "G": {
+   "result": "PASS",
+   "observed": "OCR +100bp 6.24%/3.95%; -100bp 5.74%/3.80% (joint effect explained)"
+  },
+  "H": {
+   "result": "PARTIAL FAIL",
+   "finding": [
+    "DATA-003",
+    "DATA-006"
+   ],
+   "evidence": "docs/audits/2026-11-13-evidence/ingest/case_H_stale.py"
+  },
+  "I": {
+   "result": "PASS WITH LIMITATIONS",
+   "finding": [
+    "DATA-004"
+   ],
+   "evidence": "docs/audits/2026-11-13-evidence/ingest/case_I_td_zero_rows.py"
+  },
+  "J": {
+   "result": "PASS (missing/corrupt) / FAIL (loadable-incompatible)",
+   "finding": [
+    "GOV-001",
+    "MOD-005"
+   ],
+   "evidence": "docs/audits/2026-11-13-evidence/mlgov/challenge_j.py"
+  },
+  "K": {
+   "result": "PASS",
+   "note": "wrong-sign elasticity accepted (OPT-003)",
+   "evidence": "docs/audits/2026-11-13-evidence/fin/results.json#K_boundary"
+  },
+  "L": {
+   "result": "FAIL",
+   "finding": [
+    "OPT-001"
+   ],
+   "evidence": "docs/audits/2026-11-13-evidence/fin/results.json#L_roe"
+  },
+  "M": {
+   "result": "PARTIAL FAIL",
+   "finding": [
+    "OPT-003"
+   ],
+   "evidence": "docs/audits/2026-11-13-evidence/fin/results.json#M_nonfinite; fin/nan_status.py (governed BLOCKED)"
+  },
+  "N": {
+   "result": "PASS",
+   "observed": "identical SHA-256 of grid_results"
+  },
+  "O": {
+   "result": "FAIL",
+   "finding": [
+    "FIN-002"
+   ],
+   "evidence": "docs/audits/2026-11-13-evidence/fin/results.json#O_multiperiod"
+  },
+  "P": {
+   "result": "PASS (4/4)",
+   "evidence": "docs/audits/2026-11-13-evidence/uxsec/challenge/test_challenge_p.py"
+  },
+  "Q": {
+   "result": "PASS integrity / FAIL quarantine recovery",
+   "finding": [
+    "DATA-002"
+   ],
+   "evidence": "docs/audits/2026-11-13-evidence/ingest/case_Q_storage.py"
+  }
+ },
+ "not_run": [
+  {
+   "item": "examples/run_baseline.py, examples/train_response_models.py",
+   "reason": "write to data/outputs; equivalent run_baseline_diagnostics call verified; CI runs both"
+  },
+  {
+   "item": "live_rates tests, live collectors, collector canary",
+   "reason": "audit rule: no live bank requests"
+  },
+  {
+   "item": "webhook/Telegram/LLM delivery",
+   "reason": "audit rule: no external calls; mocked"
+  },
+  {
+   "item": "Docker build, network binds, GITHUB_TOKEN scope",
+   "reason": "no deployment or external access"
+  },
+  {
+   "item": "Python 3.9 environment",
+   "reason": "interpreter not available locally"
+  },
+  {
+   "item": "real browser/mobile/screen reader",
+   "reason": "no browser validation performed; screenshots only"
+  },
+  {
+   "item": "regulatory/conduct (CCCFA, CoFI, RBNZ capital)",
+   "reason": "outside engineering audit scope; no compliance claim"
+  }
+ ],
+ "secrets_or_sensitive_data_included": false
+}

@@ -1,0 +1,244 @@
+{
+  "J0_no_registry": {
+    "expect": "synthetic baseline",
+    "run_baseline_diagnostics": {
+      "outcome": "returned",
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.04,
+      "boundary_warning": false,
+      "expected_loan_volume": 198155582
+    },
+    "PricingService.run_scenario": {
+      "outcome": "returned",
+      "status": "REVIEW_REQUIRED",
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.04,
+      "loan_response_source": "deterministic_synthetic",
+      "warn_gates": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "block_gates": []
+    }
+  },
+  "J1_approved_missing_artifact": {
+    "expect": "GovernanceError from both",
+    "run_baseline_diagnostics": {
+      "outcome": "GovernanceError",
+      "msg": "Approved champion 'MissingArtifact' has a missing artifact (artifact_path='<tmp>"
+    },
+    "PricingService.run_scenario": {
+      "outcome": "GovernanceError",
+      "msg": "Approved champion 'MissingArtifact' has a missing artifact (artifact_path='<tmp>"
+    }
+  },
+  "J2_approved_corrupt_artifact": {
+    "expect": "GovernanceError from both",
+    "run_baseline_diagnostics": {
+      "outcome": "GovernanceError",
+      "msg": "Approved champion 'CorruptArtifact' artifact at '<tmp>"
+    },
+    "PricingService.run_scenario": {
+      "outcome": "GovernanceError",
+      "msg": "Approved champion 'CorruptArtifact' artifact at '<tmp>"
+    }
+  },
+  "J2b_approved_loadable_non_model": {
+    "expect": "should fail loud (GovernanceError ideally)",
+    "run_baseline_diagnostics": {
+      "outcome": "AttributeError",
+      "msg": "'dict' object has no attribute 'predict_proba'"
+    },
+    "PricingService.run_scenario": {
+      "outcome": "AttributeError",
+      "msg": "'dict' object has no attribute 'predict_proba'"
+    }
+  },
+  "J3_unapproved_valid_artifact": {
+    "expect": "fallback; rates identical to J0",
+    "run_baseline_diagnostics": {
+      "outcome": "returned",
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.04,
+      "boundary_warning": false,
+      "expected_loan_volume": 198155582
+    },
+    "PricingService.run_scenario": {
+      "outcome": "returned",
+      "status": "REVIEW_REQUIRED",
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.04,
+      "loan_response_source": "deterministic_synthetic",
+      "warn_gates": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "block_gates": []
+    },
+    "identical_to_J0": true
+  },
+  "J3b_approved_noncampion": {
+    "expect": "fallback; rates identical to J0",
+    "run_baseline_diagnostics": {
+      "outcome": "returned",
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.04,
+      "boundary_warning": false,
+      "expected_loan_volume": 198155582
+    },
+    "PricingService.run_scenario": {
+      "outcome": "returned",
+      "status": "REVIEW_REQUIRED",
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.04,
+      "loan_response_source": "deterministic_synthetic",
+      "warn_gates": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "block_gates": []
+    }
+  },
+  "J4a_approved_incompatible_record_missing_artifact": {
+    "expect": "design says fallback; note the missing artifact is never detected",
+    "run_baseline_diagnostics": {
+      "outcome": "returned",
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.04,
+      "boundary_warning": false,
+      "expected_loan_volume": 198155582
+    },
+    "PricingService.run_scenario": {
+      "outcome": "returned",
+      "status": "REVIEW_REQUIRED",
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.04,
+      "loan_response_source": "deterministic_synthetic",
+      "warn_gates": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "block_gates": []
+    }
+  },
+  "J4b_record_matches_artifact_does_not": {
+    "expect": "fail loud; ideally GovernanceError",
+    "run_baseline_diagnostics": {
+      "outcome": "ValueError",
+      "msg": "The feature names should match those that were passed during fit.\nFeature names unseen at fit time:\n- risk_segment\n"
+    },
+    "PricingService.run_scenario": {
+      "outcome": "ValueError",
+      "msg": "The feature names should match those that were passed during fit.\nFeature names unseen at fit time:\n- risk_segment\n"
+    }
+  },
+  "J4c_permuted_columns_no_names": {
+    "expect": "should be rejected; silent mispricing if not",
+    "run_baseline_diagnostics": {
+      "outcome": "returned",
+      "loan_rate": 0.0499,
+      "deposit_rate": 0.021,
+      "boundary_warning": false,
+      "expected_loan_volume": 0
+    },
+    "PricingService.run_scenario": {
+      "outcome": "returned",
+      "status": "REVIEW_REQUIRED",
+      "loan_rate": 0.0499,
+      "deposit_rate": 0.021,
+      "loan_response_source": "approved_ml_champion",
+      "warn_gates": [
+        "POLICY_BAND_BREACH"
+      ],
+      "block_gates": []
+    }
+  },
+  "J5_elasticity_baseline_as_champion": {
+    "expect": "baseline is oracle-only; check flat demand",
+    "run_baseline_diagnostics": {
+      "outcome": "returned",
+      "loan_rate": 0.0849,
+      "deposit_rate": 0.042,
+      "boundary_warning": true,
+      "expected_loan_volume": 579787146
+    },
+    "PricingService.run_scenario": {
+      "outcome": "returned",
+      "status": "REVIEW_REQUIRED",
+      "loan_rate": 0.0849,
+      "deposit_rate": 0.042,
+      "loan_response_source": "approved_ml_champion",
+      "warn_gates": [
+        "BOUNDARY_WARNING",
+        "EXPANSION_CAPPED",
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "block_gates": []
+    }
+  },
+  "J6_inverted_sign_champion": {
+    "expect": "should not be RECOMMENDED",
+    "run_baseline_diagnostics": {
+      "outcome": "returned",
+      "loan_rate": 0.0349,
+      "deposit_rate": 0.0275,
+      "boundary_warning": true,
+      "expected_loan_volume": 12367663
+    },
+    "PricingService.run_scenario": {
+      "outcome": "returned",
+      "status": "REVIEW_REQUIRED",
+      "loan_rate": 0.0349,
+      "deposit_rate": 0.0275,
+      "loan_response_source": "approved_ml_champion",
+      "warn_gates": [
+        "BOUNDARY_WARNING",
+        "EXPANSION_CAPPED",
+        "POLICY_BAND_BREACH"
+      ],
+      "block_gates": []
+    }
+  },
+  "J7_trained_logistic_champion": {
+    "expect": "ML-driven price; compare to J0",
+    "run_baseline_diagnostics": {
+      "outcome": "returned",
+      "loan_rate": 0.0614,
+      "deposit_rate": 0.0405,
+      "boundary_warning": false,
+      "expected_loan_volume": 205915891
+    },
+    "PricingService.run_scenario": {
+      "outcome": "returned",
+      "status": "REVIEW_REQUIRED",
+      "loan_rate": 0.0614,
+      "deposit_rate": 0.0405,
+      "loan_response_source": "approved_ml_champion",
+      "warn_gates": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "block_gates": []
+    }
+  },
+  "J7b_competitor_shift_50bps": {
+    "synthetic_loan_rate_base": 0.0619,
+    "synthetic_loan_rate_shift": 0.0634,
+    "ml_loan_rate_base": 0.0614,
+    "ml_loan_rate_shift": 0.0634
+  },
+  "J8_full_config_unapproved_equals_no_registry": {
+    "no_registry": [
+      0.0619,
+      0.0405,
+      5920859.368621694
+    ],
+    "unapproved": [
+      0.0619,
+      0.0405,
+      5920859.368621694
+    ],
+    "grid_results_equal": true
+  }
+}

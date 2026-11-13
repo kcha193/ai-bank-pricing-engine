@@ -47,4 +47,4 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py39"
-exclude = ["notebooks/"]
+exclude = ["notebooks/", "docs/audits/2026-11-13-evidence/"]

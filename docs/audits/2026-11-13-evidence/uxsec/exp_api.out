@@ -1,0 +1,12 @@
+1 unauth /run-scenario (invalid cfg) status: 422 (401 would mean auth on)
+1 unauth /v1 (invalid cfg) status: 422
+2 n_customers=1e10 accepted by EngineConfig: True
+2 spread step=1e-6 bps accepted by EngineConfig: True
+2 config_yaml max_length constraint: []
+3 missing file: 422 COMPETITOR_RATE_VALIDATION_ERROR | [Errno 2] No such file or directory: '/etc/definitely_missing_audit.json'
+3 existing non-JSON file: 500 INTERNAL_ERROR | Unexpected scenario execution error
+4 /ready bad path: 503 {'error_code': 'CONFIG_UNAVAILABLE', 'message': "[Errno 2] No such file or directory: '/nonexistent/audit/base.yaml'", 'correlation_id': None}
+5 CORS preflight: 405 {}
+5 /health headers: {'content-length': '33', 'content-type': 'application/json'}
+5 docs exposed: 200 200
+6 422 echoes input: True 422

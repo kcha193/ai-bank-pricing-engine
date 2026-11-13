@@ -1,0 +1,231 @@
+........................................................................ [  3%]
+........................................................................ [  6%]
+..........s............................................................. [  9%]
+........................................................................ [ 13%]
+........................................................................ [ 16%]
+........................................................................ [ 19%]
+................F....................................................... [ 23%]
+........................................................................ [ 26%]
+........................................................................ [ 29%]
+........................................................................ [ 33%]
+........................................................................ [ 36%]
+........................................................................ [ 39%]
+........................................................................ [ 42%]
+........................................................................ [ 46%]
+........................................................................ [ 49%]
+........................................................................ [ 52%]
+........................................................................ [ 56%]
+........................................................................ [ 59%]
+........................................................................ [ 62%]
+........................................................................ [ 66%]
+....................................................s................... [ 69%]
+........................................................................ [ 72%]
+........................................................................ [ 75%]
+........................................................................ [ 79%]
+........................................................................ [ 82%]
+........................................................................ [ 85%]
+........................................................................ [ 89%]
+........................................................................ [ 92%]
+........................................................................ [ 95%]
+........................................................................ [ 99%]
+....................                                                     [100%]
+=================================== FAILURES ===================================
+_____________ test_it_serves_on_localhost_only_on_the_default_port _____________
+
+repo = PosixPath('<tmp> with spaces')
+
+    def test_it_serves_on_localhost_only_on_the_default_port(repo):
+        found = facts(launch(repo / LAUNCHER.name))
+        assert found["address"] == "127.0.0.1"
+>       assert found["port"] == "8765"
+E       AssertionError: assert '8766' == '8765'
+E         
+E         - 8765
+E         ?    ^
+E         + 8766
+E         ?    ^
+
+tests/unit/test_dashboard_launcher.py:193: AssertionError
+=============================== warnings summary ===============================
+tests/unit/test_application_pricing_service.py: 7 warnings
+tests/unit/test_competitor_rate_apply.py: 14 warnings
+tests/unit/test_competitor_rate_cli.py: 3 warnings
+tests/unit/test_market.py: 2 warnings
+tests/unit/test_modelling_workflows.py: 1 warning
+tests/unit/test_multiperiod.py: 19 warnings
+tests/unit/test_optimizer.py: 1 warning
+tests/unit/test_pricing_intelligence_cli.py: 6 warnings
+tests/unit/test_pricing_intelligence_operational_e2e.py: 3 warnings
+tests/unit/test_pricing_scenario_trigger.py: 21 warnings
+tests/unit/test_reporting.py: 1 warning
+tests/unit/test_scenario_experiments.py: 2 warnings
+tests/unit/test_scheduled_collection_workflow.py: 10 warnings
+tests/unit/test_segmented_pricing.py: 2 warnings
+  <repo>/src/balance_pricing_engine/config.py:203: UserWarning: n_loan_customers or n_deposit_customers below 1000 may create high MC variance.
+    self._warn_for_business_sanity()
+
+tests/unit/test_competitor_rate_apply.py: 13 warnings
+tests/unit/test_competitor_rate_cli.py: 3 warnings
+  <repo>/src/balance_pricing_engine/config.py:202: UserWarning: configured home_loan_spread_bps band width is less than 50 bps; likely to expand past policy.
+    self._warn_if_spread_band_is_narrow()
+
+tests/unit/test_competitor_rate_apply.py: 14 warnings
+tests/unit/test_competitor_rate_cli.py: 3 warnings
+  <repo>/src/balance_pricing_engine/config.py:202: UserWarning: configured term_deposit_spread_bps band width is less than 50 bps; likely to expand past policy.
+    self._warn_if_spread_band_is_narrow()
+
+tests/unit/test_multiperiod.py::test_cash_rate_drift_propagates
+  <repo>/tests/unit/test_multiperiod.py:103: UserWarning: market_cash_rate_drift_bps is set but competitor rates are not drifted. Competitor gaps will shift mechanically, distorting elasticity calculations.
+    diagnostics = run_multiperiod_diagnostics(config, max_boundary_expansions=0)
+
+tests/unit/test_multiperiod.py::test_competitor_rates_drift_with_explicit_drift_bps
+  <repo>/tests/unit/test_multiperiod.py:500: UserWarning: market_cash_rate_drift_bps is set but competitor rates are not drifted. Competitor gaps will shift mechanically, distorting elasticity calculations.
+    diagnostics = run_multiperiod_diagnostics(config, max_boundary_expansions=0)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+______________ coverage: platform darwin, python 3.12.13-final-0 _______________
+
+Name                                                                 Stmts   Miss  Cover   Missing
+--------------------------------------------------------------------------------------------------
+src/balance_pricing_engine/__init__.py                                   2      0   100%
+src/balance_pricing_engine/api/__init__.py                               2      0   100%
+src/balance_pricing_engine/api/app.py                                  130      9    93%   110-111, 198, 215, 311, 314-315, 331, 334
+src/balance_pricing_engine/api/auth.py                                  26      0   100%
+src/balance_pricing_engine/api/schemas.py                               66      0   100%
+src/balance_pricing_engine/api/server.py                                21      5    76%   38-42, 51
+src/balance_pricing_engine/application/__init__.py                       3      0   100%
+src/balance_pricing_engine/application/contracts.py                     68      1    99%   25
+src/balance_pricing_engine/application/pricing_service.py              205      3    99%   177-178, 565
+src/balance_pricing_engine/competitor_rates/__init__.py                  2      0   100%
+src/balance_pricing_engine/competitor_rates/apply.py                    78      0   100%
+src/balance_pricing_engine/competitor_rates/cli.py                     175      9    95%   55-56, 132-133, 184, 226-228, 306
+src/balance_pricing_engine/competitor_rates/collection_config.py         9      0   100%
+src/balance_pricing_engine/competitor_rates/collectors/__init__.py      22      0   100%
+src/balance_pricing_engine/competitor_rates/collectors/anz.py           12      0   100%
+src/balance_pricing_engine/competitor_rates/collectors/asb.py           14      0   100%
+src/balance_pricing_engine/competitor_rates/collectors/base.py         212     13    94%   71-72, 148, 279-284, 440, 547, 619-621
+src/balance_pricing_engine/competitor_rates/collectors/bnz.py           22      0   100%
+src/balance_pricing_engine/competitor_rates/collectors/kiwibank.py      11      0   100%
+src/balance_pricing_engine/competitor_rates/collectors/westpac.py       12      0   100%
+src/balance_pricing_engine/competitor_rates/extractors.py              271     10    96%   129-131, 169-172, 254, 539, 620
+src/balance_pricing_engine/competitor_rates/interest_co_nz.py          158      7    96%   122, 169, 172, 260, 273-274, 385
+src/balance_pricing_engine/competitor_rates/models.py                  151      4    97%   142, 177, 277, 283
+src/balance_pricing_engine/competitor_rates/normalise.py               160     10    94%   91, 148, 248, 302, 357, 397, 431, 444, 451, 455
+src/balance_pricing_engine/competitor_rates/sources.py                   9      0   100%
+src/balance_pricing_engine/competitor_rates/store.py                    22      1    95%   30
+src/balance_pricing_engine/competitor_rates/validate.py                 71      6    92%   32, 34, 36, 38, 40, 54
+src/balance_pricing_engine/config.py                                   164      6    96%   25, 27, 232, 249, 253, 256
+src/balance_pricing_engine/dashboard/__init__.py                         0      0   100%
+src/balance_pricing_engine/dashboard/actions.py                        233      8    97%   140, 349-350, 378-380, 487-488
+src/balance_pricing_engine/dashboard/app.py                             21     21     0%   15-89
+src/balance_pricing_engine/dashboard/charts.py                         161      2    99%   359, 410
+src/balance_pricing_engine/dashboard/formatting.py                      55      2    96%   29-30
+src/balance_pricing_engine/dashboard/guard.py                           42      0   100%
+src/balance_pricing_engine/dashboard/insights.py                        45      1    98%   32
+src/balance_pricing_engine/dashboard/launcher_identity.py               62      2    97%   37, 121
+src/balance_pricing_engine/dashboard/models.py                         219      0   100%
+src/balance_pricing_engine/dashboard/products.py                        36      0   100%
+src/balance_pricing_engine/dashboard/results.py                         21      0   100%
+src/balance_pricing_engine/dashboard/run_worker.py                      28      1    96%   63
+src/balance_pricing_engine/dashboard/scenario_text.py                   40      1    98%   97
+src/balance_pricing_engine/dashboard/services.py                       362      9    98%   187-189, 321, 403, 540, 593-594, 754
+src/balance_pricing_engine/dashboard/settings.py                        43      0   100%
+src/balance_pricing_engine/dashboard/theme.py                           35      0   100%
+src/balance_pricing_engine/dashboard/ui.py                             143      5    97%   136, 221-223, 261
+src/balance_pricing_engine/dashboard/views/__init__.py                   0      0   100%
+src/balance_pricing_engine/dashboard/views/_common.py                  102      0   100%
+src/balance_pricing_engine/dashboard/views/market_watch.py              90      2    98%   111, 161
+src/balance_pricing_engine/dashboard/views/operations.py               126      3    98%   63, 70, 145
+src/balance_pricing_engine/dashboard/views/operations_trust.py          13      0   100%
+src/balance_pricing_engine/dashboard/views/overview.py                 145      4    97%   191, 202, 214, 252
+src/balance_pricing_engine/dashboard/views/rate_changes.py             110      3    97%   147, 182, 231
+src/balance_pricing_engine/dashboard/views/scenario_lab.py              67      7    90%   85, 99, 105-109
+src/balance_pricing_engine/dashboard/views/scenarios.py                251      4    98%   492-493, 508, 588
+src/balance_pricing_engine/dashboard/views/system_health.py            101      1    99%   140
+src/balance_pricing_engine/dashboard/views/trends.py                    61      2    97%   70, 110
+src/balance_pricing_engine/diagnostics.py                              245      6    98%   65, 341, 563, 665, 761, 815
+src/balance_pricing_engine/events/__init__.py                            3      0   100%
+src/balance_pricing_engine/events/models.py                             41      0   100%
+src/balance_pricing_engine/events/publisher.py                          63      1    98%   108
+src/balance_pricing_engine/features/__init__.py                          4      0   100%
+src/balance_pricing_engine/features/contracts.py                        41      0   100%
+src/balance_pricing_engine/features/definitions.py                      12      0   100%
+src/balance_pricing_engine/features/local_store.py                      46      5    89%   43, 66-77
+src/balance_pricing_engine/governance/__init__.py                        5      0   100%
+src/balance_pricing_engine/governance/decision_record.py                46      0   100%
+src/balance_pricing_engine/governance/gates.py                          88      1    99%   138
+src/balance_pricing_engine/governance/lineage.py                        28      0   100%
+src/balance_pricing_engine/governance/shadow.py                         58      4    93%   38, 102, 104, 106
+src/balance_pricing_engine/grid_utils.py                                12      0   100%
+src/balance_pricing_engine/llm/__init__.py                               6      0   100%
+src/balance_pricing_engine/llm/_client.py                               32      1    97%   60
+src/balance_pricing_engine/llm/anomaly.py                               60      4    93%   73, 96, 103, 124
+src/balance_pricing_engine/llm/model_validation.py                      72      0   100%
+src/balance_pricing_engine/llm/narrative.py                             72      0   100%
+src/balance_pricing_engine/llm/scenario_interface.py                   136     18    87%   85, 93, 96, 105, 111-119, 212-219
+src/balance_pricing_engine/market.py                                    32      1    97%   52
+src/balance_pricing_engine/modelling/__init__.py                         7      0   100%
+src/balance_pricing_engine/modelling/agentic.py                        658     81    88%   135, 167, 220, 247-248, 251, 302, 396, 399, 404, 441, 444, 449, 516, 526, 640, 702, 706, 710, 721, 828-835, 880-887, 903, 909-910, 959, 1072-1074, 1148, 1182-1184, 1199, 1203, 1225-1244, 1255-1268, 1276-1278, 1297, 1307, 1314, 1345-1348, 1355-1357, 1362, 1379, 1415-1416, 1514
+src/balance_pricing_engine/modelling/datasets.py                        72      4    94%   129, 133, 137, 221
+src/balance_pricing_engine/modelling/evaluation.py                     143      6    96%   140, 228, 258, 260, 319, 321
+src/balance_pricing_engine/modelling/models.py                          18      0   100%
+src/balance_pricing_engine/modelling/persistence.py                     10      0   100%
+src/balance_pricing_engine/modelling/reports.py                         85      4    95%   139, 147, 217, 231
+src/balance_pricing_engine/modelling/workflows.py                       30      0   100%
+src/balance_pricing_engine/observability/__init__.py                     2      0   100%
+src/balance_pricing_engine/observability/logging.py                     42      1    98%   68
+src/balance_pricing_engine/optimization/grid_search.py                 102      0   100%
+src/balance_pricing_engine/optimization/response_fn.py                  44      0   100%
+src/balance_pricing_engine/optimization/segmented.py                   120      3    98%   223, 279, 334
+src/balance_pricing_engine/plotting.py                                 459      9    98%   30-32, 36-37, 505, 639, 762, 767
+src/balance_pricing_engine/pricing/balance_sheet.py                     12      0   100%
+src/balance_pricing_engine/pricing/profit.py                            34      1    97%   15
+src/balance_pricing_engine/pricing_intelligence/__init__.py              3      0   100%
+src/balance_pricing_engine/pricing_intelligence/__main__.py              3      3     0%   3-6
+src/balance_pricing_engine/pricing_intelligence/alerts.py              210      4    98%   146-147, 404, 411
+src/balance_pricing_engine/pricing_intelligence/backup.py               38      0   100%
+src/balance_pricing_engine/pricing_intelligence/bps.py                  23      1    96%   32
+src/balance_pricing_engine/pricing_intelligence/briefing.py            102      0   100%
+src/balance_pricing_engine/pricing_intelligence/changes.py             152      1    99%   491
+src/balance_pricing_engine/pricing_intelligence/cli.py                 375      8    98%   149-150, 399, 476-479, 917
+src/balance_pricing_engine/pricing_intelligence/config.py               73      7    90%   49, 51, 84, 108, 146, 148, 150
+src/balance_pricing_engine/pricing_intelligence/dashboard_data.py       80      2    98%   116, 157
+src/balance_pricing_engine/pricing_intelligence/health.py              125      0   100%
+src/balance_pricing_engine/pricing_intelligence/locking.py              26      1    96%   44
+src/balance_pricing_engine/pricing_intelligence/market_state.py         53      1    98%   34
+src/balance_pricing_engine/pricing_intelligence/orchestration.py       322     12    96%   157-158, 540, 543, 640, 687, 832-833, 1085, 1100, 1339-1340
+src/balance_pricing_engine/pricing_intelligence/positioning.py          86      3    97%   133, 244-245
+src/balance_pricing_engine/pricing_intelligence/rbnz.py                128      3    98%   110, 152, 397
+src/balance_pricing_engine/pricing_intelligence/service.py             346      1    99%   1092
+src/balance_pricing_engine/pricing_intelligence/snapshot.py            178      3    98%   53, 182, 243
+src/balance_pricing_engine/pricing_intelligence/store.py               612     32    95%   517, 1517, 1846-1896, 2201, 2677, 2737, 2785, 2980-2981, 3109, 3132, 3189-3191
+src/balance_pricing_engine/pricing_intelligence/strategy.py            156      7    96%   76, 95, 197, 352, 370-371, 390
+src/balance_pricing_engine/pricing_intelligence/validation.py          158      2    99%   476, 480
+src/balance_pricing_engine/pricing_scenario_trigger.py                  61      2    97%   78, 182
+src/balance_pricing_engine/rate_grids.py                                12      1    92%   34
+src/balance_pricing_engine/reporting.py                                 80      0   100%
+src/balance_pricing_engine/run_ledger/__init__.py                        2      0   100%
+src/balance_pricing_engine/run_ledger/checklist.py                     103      2    98%   58, 308
+src/balance_pricing_engine/run_ledger/config_snapshot.py                 5      0   100%
+src/balance_pricing_engine/run_ledger/directory.py                      19      0   100%
+src/balance_pricing_engine/run_ledger/memo.py                           68      0   100%
+src/balance_pricing_engine/run_ledger/metadata.py                       47      4    91%   29-30, 39-40
+src/balance_pricing_engine/run_ledger/writer.py                         21      0   100%
+src/balance_pricing_engine/scenarios/experiments.py                      7      0   100%
+src/balance_pricing_engine/scenarios/multiperiod.py                     54      2    96%   27, 118
+src/balance_pricing_engine/scenarios/runner.py                         204      6    97%   184, 305, 368, 566, 570, 669
+src/balance_pricing_engine/secrets/__init__.py                           2      0   100%
+src/balance_pricing_engine/secrets/provider.py                          12      0   100%
+src/balance_pricing_engine/synthetic/customers.py                       17      0   100%
+src/balance_pricing_engine/synthetic/market.py                          13      0   100%
+src/balance_pricing_engine/synthetic/response.py                        16      0   100%
+src/balance_pricing_engine/utils/random.py                               4      0   100%
+--------------------------------------------------------------------------------------------------
+TOTAL                                                                11646    420    96%
+Required test coverage of 95% reached. Total coverage: 96.39%
+=========================== short test summary info ============================
+FAILED tests/unit/test_dashboard_launcher.py::test_it_serves_on_localhost_only_on_the_default_port
+1 failed, 2177 passed, 2 skipped, 127 warnings in 166.68s (0:02:46)
+.venv/bin/python -m pytest --cov=balance_pricing_engine  --cov-fail-under=95   227.80s user 178.79s system 241% cpu 2:48.28 total
+exit=1

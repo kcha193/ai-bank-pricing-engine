@@ -1,0 +1,8 @@
+tg_case_trailing_newline: leaked_secret_in_log=True
+   log: alert delivery failed for audit test: URL can't contain control characters. '/bot<FAKE-TOKEN>\n/sendMessage' (found at least '\n')
+tg_case_with_space: leaked_secret_in_log=True
+   log: alert delivery failed for audit test: URL can't contain control characters. '/bot<FAKE TOKEN>/sendMessage' (found at least ' ')
+tg_case_clean_network_down: leaked_secret_in_log=False
+   log: alert delivery failed for audit test: <urlopen error network blocked by audit harness>
+webhook_url_with_space: leaked_secret_in_log=True
+   log: alert delivery failed for audit test: URL can't contain control characters. '/services/T0/B0/SECRETWEBHOOK x' (found at least ' ')

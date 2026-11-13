@@ -1,0 +1,8 @@
+
+quarantined banks: ['ANZ'] | exclusions: ['BNZ'] | changes_7d: 0
+  - ASB is 4 bps above the 1Y mortgage market leader at 4.89% (rank #2 of 4).
+  - Westpac leads the 1Y mortgage market at 4.85% (lowest comparable rate); the median is 4.89% and the spread across 4 banks is 4 bps.
+  - No confirmed mortgage repricing events were recorded in the last 7 days.
+  - 1 bank is excluded from the 1Y mortgage comparison because the latest data is stale: BNZ.
+.
+1 passed in 1.31s

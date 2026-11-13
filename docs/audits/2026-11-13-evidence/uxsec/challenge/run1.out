@@ -1,0 +1,7 @@
+..2026-11-13 20:30:45.110 WARNING streamlit.runtime.caching.cache_data_api: No runtime found, using MemoryCacheStorageManager
+2026-11-13 20:30:45.111 WARNING streamlit.runtime.scriptrunner_utils.script_run_context: Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+.
+P4 HL leader scenario: selected optimum 0.0609 | 'Model optimum' marker/text 0.0615
+P4 TD leader scenario: selected optimum 0.042 | 'Model optimum' marker/text 0.0415
+.
+4 passed in 2.79s

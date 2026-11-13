@@ -1,0 +1,38 @@
+........................................................................ [  6%]
+...s.................................................................... [ 13%]
+........................................................................ [ 20%]
+........................................................................ [ 27%]
+........................................................................ [ 33%]
+........................................................................ [ 40%]
+...................................................s.................... [ 47%]
+........................................................................ [ 54%]
+........................................................................ [ 61%]
+........................................................................ [ 67%]
+........................................................................ [ 74%]
+........................................................................ [ 81%]
+........................................................................ [ 88%]
+........................................................................ [ 95%]
+...................................................                      [100%]
+=============================== warnings summary ===============================
+tests/unit/test_competitor_rate_apply.py: 13 warnings
+tests/unit/test_competitor_rate_cli.py: 3 warnings
+  <repo>/src/balance_pricing_engine/config.py:202: UserWarning: configured home_loan_spread_bps band width is less than 50 bps; likely to expand past policy.
+    self._warn_if_spread_band_is_narrow()
+
+tests/unit/test_competitor_rate_apply.py: 14 warnings
+tests/unit/test_competitor_rate_cli.py: 3 warnings
+  <repo>/src/balance_pricing_engine/config.py:202: UserWarning: configured term_deposit_spread_bps band width is less than 50 bps; likely to expand past policy.
+    self._warn_if_spread_band_is_narrow()
+
+tests/unit/test_competitor_rate_apply.py: 14 warnings
+tests/unit/test_competitor_rate_cli.py: 3 warnings
+tests/unit/test_pricing_intelligence_cli.py: 6 warnings
+tests/unit/test_pricing_intelligence_operational_e2e.py: 3 warnings
+tests/unit/test_pricing_scenario_trigger.py: 21 warnings
+tests/unit/test_scheduled_collection_workflow.py: 10 warnings
+  <repo>/src/balance_pricing_engine/config.py:203: UserWarning: n_loan_customers or n_deposit_customers below 1000 may create high MC variance.
+    self._warn_for_business_sanity()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1057 passed, 2 skipped, 90 warnings in 51.97s
+exit=0

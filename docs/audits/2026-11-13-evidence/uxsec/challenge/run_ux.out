@@ -1,0 +1,14 @@
+
+UX headline 'Optimal home-loan rate': 6.09%
+UX decision text model optimum: 6.15%
+UX rationale: ['Selected assumption: home loan MARKET_LEADER at 12 months. Rates below are modelled outputs.']
+.2026-11-13 20:31:09.367 No runtime found, using MemoryCacheStorageManager
+2026-11-13 20:31:09.368 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+
+UX before: 6.15% after input change (no rerun): 6.15% | caption: ['Inputs changed since this result; click Run scenario to refresh.'] | warning: []
+.2026-11-13 20:31:09.569 No runtime found, using MemoryCacheStorageManager
+2026-11-13 20:31:09.569 Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+
+UX deposit metrics: {'Optimal term-deposit rate': '4.15%', 'Competitor deposit assumption': '4.10%', 'Objective': '$5.6m', 'Expected deposit volume': '$332.9m', 'Deposit funding cost': '$13.8m', 'Funding shortfall': '$0'}
+.
+3 passed in 2.94s

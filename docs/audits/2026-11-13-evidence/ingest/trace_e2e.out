@@ -1,0 +1,31 @@
+home_loan code 0 SUCCESS accepted 32 inserted 32
+term_deposit code 0 SUCCESS accepted 255 inserted 255
+DB: {'bank': 'Kiwibank', 'product_type': 'home_loan', 'rate_category': 'special', 'term_months': 12, 'rate_pct': 4.89, 'interest_payment_frequency': 'unknown', 'min_balance': None, 'max_lvr': 0.8, 'min_equity': 0.2, 'lvr_condition': 'min_20_percent_equity', 'validation_status': 'unvalidated', 'first_observed_at': '2026-11-10T18:30:00+00:00', 'last_seen_at': '2026-11-10T18:30:00+00:00', 'content_hash': '9ff79f265e7b0113c7ae5180b1bff0a18bba3f6bc896ebc8cbbfe4b27cabd572', 'observation_key': 'Kiwibank|home_loan|special|12|unknown|fixed special|||min_20_percent_equity|0.8000|0.2000'}
+DB: {'bank': 'ASB', 'product_type': 'term_deposit', 'rate_category': 'term_deposit', 'term_months': 12, 'rate_pct': 4.0, 'interest_payment_frequency': 'unknown', 'min_balance': 5000.0, 'max_lvr': None, 'min_equity': None, 'lvr_condition': None, 'validation_status': 'unvalidated', 'first_observed_at': '2026-11-10T18:30:00+00:00', 'last_seen_at': '2026-11-10T18:30:00+00:00', 'content_hash': '5e9ab77d2c4adbd6069faa8e01fb7e3bef6827b5f642f065e93d7178f87528bc', 'observation_key': 'ASB|term_deposit|term_deposit|12|unknown|term deposit|5000.0000||||'}
+base config competitor_loan_rate 0.0499 competitor_deposit_rate 0.039 home_loan_reference_rate 0.0499 term_deposit_reference_rate 0.039 our_bank None
+HL 12m entries [('ANZ', 4.79, 1), ('BNZ', 4.85, 2), ('Westpac', 4.85, 2), ('ASB', 4.89, 4), ('Kiwibank', 4.89, 4)] median 4.85
+TD 12m entries [('BNZ', 4.05, 1), ('Kiwibank', 4.05, 1), ('ANZ', 4.0, 3), ('ASB', 4.0, 3), ('Westpac', 4.0, 3)] median 4.0 leader 4.05
+TD tracked terms present (6, 12, 18, 24, 36, 48, 60)
+MARKET_MEDIAN -> competitor_loan_rate 0.0485 home_loan_reference_rate 0.0485 competitor_deposit_rate 0.04 term_deposit_reference_rate 0.04
+MARKET_LEADER -> competitor_loan_rate 0.0479 home_loan_reference_rate 0.0479 competitor_deposit_rate 0.0405 term_deposit_reference_rate 0.0405
+MANUAL returns same object: True
+{'term_months': 12, 'best_rate': 4.05, 'median_rate': 4.0, 'highest_rate': 4.05, 'spread_bps': 5.0, 'market_leader': 'BNZ, Kiwibank', 'bank_count': 5}
+   Rank      Bank  Rate (%)       Product Max LVR
+0     1       BNZ      4.05  Term deposit    None
+1     1  Kiwibank      4.05  Term deposit    None
+2     3       ANZ      4.00  Term deposit    None
+3     3       ASB      4.00  Term deposit    None
+4     3   Westpac      4.00  Term deposit    None
+                 6M    1Y   18M    2Y    3Y     4Y     5Y
+Bank                                                     
+ANZ            3.60  4.00   4.2  4.30   4.4   4.60   4.70
+ASB            3.60  4.00   4.3  4.30   4.4   4.60   5.00
+BNZ            3.60  4.05   4.3  4.35   4.6   4.85   4.85
+Kiwibank       3.60  4.05   NaN  4.30   4.6   4.85   4.85
+Westpac        3.45  4.00   4.3  4.30   4.6   4.85   4.85
+Best           3.60  4.05   4.3  4.35   4.6   4.85   5.00
+Median         3.60  4.00   4.3  4.30   4.6   4.85   4.85
+Highest        3.60  4.05   4.3  4.35   4.6   4.85   5.00
+Spread (bps)  15.00  5.00  10.0  5.00  20.0  25.00  30.00
+                           Started   Status  Banks OK  Banks failed  Rates observed  Changes Market state                            Run id
+0 2026-11-13 07:29:39.036305+00:00  SUCCESS         5             0             255        0          LOW  6f4639bd67694d2297f7d5f21b81d5a7

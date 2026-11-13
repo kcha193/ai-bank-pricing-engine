@@ -1,0 +1,125 @@
+{
+  "gate_combinations": {
+    "clean_interior": "RECOMMENDED",
+    "negative_objective_loss_making": "RECOMMENDED",
+    "zero_loan_volume": "RECOMMENDED",
+    "roe_below_floor(0.01)": "RECOMMENDED",
+    "boundary_warning": "REVIEW_REQUIRED",
+    "policy_band_breach": "REVIEW_REQUIRED",
+    "funding_shortfall": "REVIEW_REQUIRED",
+    "objective_nan": "BLOCKED",
+    "objective_inf": "BLOCKED"
+  },
+  "gate_missing_lineage": "REVIEW_REQUIRED",
+  "infeasible_roe_floor_500pct": {
+    "rows_meeting_floor": 0,
+    "best_roe": 0.41759910954896734,
+    "max_roe_in_grid": 0.641095583472582,
+    "status": "REVIEW_REQUIRED",
+    "warn_gates": [
+      "POLICY_BAND_BREACH",
+      "FUNDING_SHORTFALL"
+    ],
+    "any_gate_mentions_roe": false
+  },
+  "publish_safely": {
+    "hung_deadline_0.2s_elapsed": 0.205,
+    "raising_elapsed": 0.002,
+    "after_cap_saturated_elapsed(deadline 1s)": 0.0,
+    "hung_publish_calls_started": 16
+  },
+  "pricing_service_hung_publisher": {
+    "noop_seconds": 0.02,
+    "hung_seconds": 2.03,
+    "overhead_seconds": 2.01,
+    "same_rates": true,
+    "same_status": true
+  },
+  "decision_record_additivity": {
+    "service_files": [
+      "cohort_attribution.csv",
+      "config_snapshot.yaml",
+      "counterfactuals.csv",
+      "decision_record.json",
+      "governance_checklist.json",
+      "governance_checklist.md",
+      "grid_results.csv",
+      "metadata.json",
+      "pricing_memo.md",
+      "summary.json",
+      "top_results.csv"
+    ],
+    "direct_files": [
+      "cohort_attribution.csv",
+      "config_snapshot.yaml",
+      "counterfactuals.csv",
+      "governance_checklist.json",
+      "governance_checklist.md",
+      "grid_results.csv",
+      "metadata.json",
+      "pricing_memo.md",
+      "summary.json",
+      "top_results.csv"
+    ],
+    "summary_equal": true,
+    "metadata_keys_equal": true,
+    "metadata_values_differ_only_in": [
+      "run_id",
+      "timestamp"
+    ]
+  },
+  "config_hash_fidelity": {
+    "priced_loan_elasticity": -60.0,
+    "priced_loan_rate": 0.0674,
+    "base_loan_rate": 0.0619,
+    "decision_record_config_hash_equals_sha256(base.yaml)": true,
+    "snapshot_contains_-60": false,
+    "snapshot_loan_rate_elasticity_line": [
+      "loan_rate_elasticity: -170.0"
+    ],
+    "decision_record_keys": [
+      "best_deposit_rate",
+      "best_loan_rate",
+      "boundary_warning_flag",
+      "config_hash",
+      "correlation_id",
+      "decision_id",
+      "decision_status",
+      "execution_duration_seconds",
+      "expansion_capped",
+      "expansion_rounds",
+      "expected_deposit_volume",
+      "expected_loan_volume",
+      "feature_lineage",
+      "funding_shortfall",
+      "git_commit",
+      "governance_gates",
+      "initial_boundary_warning_flag",
+      "model_lineage",
+      "objective_value",
+      "package_version",
+      "policy_band_breached",
+      "run_id",
+      "scenario_name",
+      "shadow_evaluation",
+      "stage_durations_seconds",
+      "timestamp",
+      "used_deterministic_response"
+    ]
+  },
+  "llm_patch_path": {
+    "diff_yaml_tagged": true,
+    "patched_loan_rate_elasticity": 170.0,
+    "config_validation_accepted_wrong_sign": true,
+    "resulting_loan_rate": 0.0849,
+    "boundary_warning": true,
+    "audit_log_entry": {
+      "timestamp_utc": "2026-11-13T07:33:04.788633+00:00",
+      "used_llm": true,
+      "model_used": "claude-sonnet-4-6",
+      "prompt_hash": "6238af31a0b8674b",
+      "n_patches": 3,
+      "error": null
+    }
+  }
+}

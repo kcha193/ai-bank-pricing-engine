@@ -1,0 +1,11 @@
+NAVY       #0B1F3A  light_bg #F8FAFC: 15.79  dark_bg #0B1220: 1.13  white: 16.52
+BLUE       #1E40AF  light_bg #F8FAFC: 8.34  dark_bg #0B1220: 2.15  white: 8.72
+CHART_BLUE #4C78A8  light_bg #F8FAFC: 4.40  dark_bg #0B1220: 4.06  white: 4.61
+TEAL       #0E8C8C  light_bg #F8FAFC: 3.90  dark_bg #0B1220: 4.59  white: 4.08
+SLATE      #7C8DA6  light_bg #F8FAFC: 3.23  dark_bg #0B1220: 5.54  white: 3.38
+MUTED      #A9B6C8  light_bg #F8FAFC: 1.97  dark_bg #0B1220: 9.10  white: 2.06
+AMBER      #C77C02  light_bg #F8FAFC: 3.18  dark_bg #0B1220: 5.63  white: 3.33
+RED        #C2410C  light_bg #F8FAFC: 4.95  dark_bg #0B1220: 3.62  white: 5.18
+GREEN      #2F855A  light_bg #F8FAFC: 4.34  dark_bg #0B1220: 4.12  white: 4.54
+CHART_INK  #607D9F  light_bg #F8FAFC: 4.07  dark_bg #0B1220: 4.40  white: 4.26
+DARK_TEXT  #E6ECF5  light_bg #F8FAFC: 1.14  dark_bg #0B1220: 15.76  white: 1.19
