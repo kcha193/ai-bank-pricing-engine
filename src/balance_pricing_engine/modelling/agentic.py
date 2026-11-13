@@ -17,6 +17,13 @@ import pandas as pd
 from sklearn.inspection import permutation_importance
 from sklearn.model_selection import train_test_split
 
+from balance_pricing_engine.modelling.champion_integrity import (
+    INTEGRITY_SCHEMA_VERSION,
+    ChampionValidationError,
+    load_and_validate_artifact,
+    validate_feature_contract,
+    validate_product,
+)
 from balance_pricing_engine.modelling.evaluation import (
     build_calibration_table,
     evaluate_probabilities,
@@ -27,7 +34,11 @@ from balance_pricing_engine.modelling.models import (
     fit_response_model,
     predict_response_probability,
 )
-from balance_pricing_engine.modelling.persistence import load_model, save_model
+from balance_pricing_engine.modelling.persistence import (
+    ArtifactIntegrityError,
+    load_model,
+    save_model,
+)
 
 __all__ = [
     "ElasticityBaselineModel",
@@ -346,6 +357,25 @@ class BootstrapEnsembleResponseModel:
     def fitted_model(self) -> Any:
         return self
 
+    @property
+    def feature_names_in_(self) -> np.ndarray:
+        """Shared ordered feature names of the fitted members (sklearn convention).
+
+        Raises AttributeError (so ``getattr(..., None)`` returns None) when the ensemble is
+        unfitted or its members disagree, which leaves the contract unverifiable.
+        """
+        contracts = {
+            tuple(str(name) for name in getattr(member, "feature_names_in_", ()))
+            for member in getattr(self, "_models", [])
+        }
+        if len(contracts) != 1 or not next(iter(contracts)):
+            raise AttributeError("feature_names_in_ is unavailable: no consistent fitted members")
+        return np.asarray(next(iter(contracts)), dtype=object)
+
+    @property
+    def n_features_in_(self) -> int:
+        return len(self.feature_names_in_)
+
     def __getstate__(self) -> dict[str, Any]:
         """Drop the base-estimator factory from persisted/pickled state.
 
@@ -594,8 +624,15 @@ class ModelRegistry:
         config_hash: str | None = None,
         feature_columns: list[str] | None = None,
         target_column: str | None = None,
+        product: str | None = None,
     ) -> None:
-        """Set governance_status='approved' on the latest matching model record."""
+        """Verify the latest matching record's artifact, then mark it approved.
+
+        Approval hashes the artifact, checks its prediction interface, feature contract and
+        rate-response probe, and records that evidence on the record. ``product`` ("loan" or
+        "deposit") is required unless the record already declares it. Raises
+        ``ChampionValidationError`` and leaves the registry unchanged if any check fails.
+        """
         payload = self.load()
         record = self._find_latest_record(
             payload,
@@ -607,7 +644,7 @@ class ModelRegistry:
             target_column=target_column,
         )
         if record is not None:
-            self._approve_record(record, approver)
+            self._approve_record(record, approver, product)
             self.registry_path.write_text(
                 json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
             )
@@ -624,8 +661,13 @@ class ModelRegistry:
         config_hash: str | None = None,
         feature_columns: list[str] | None = None,
         target_column: str | None = None,
+        product: str | None = None,
     ) -> None:
-        """Approve one matching model record and promote it within its champion scope."""
+        """Approve one matching model record and promote it within its champion scope.
+
+        Runs the same verified approval as ``approve_model`` first; nothing is promoted or
+        retired if the artifact fails validation.
+        """
         payload = self.load()
         target = self._find_latest_record(
             payload,
@@ -639,7 +681,7 @@ class ModelRegistry:
         if target is None:
             raise ValueError(f"No registry record found for model_name='{model_name}'")
 
-        self._approve_record(target, approver)
+        self._approve_record(target, approver, product)
         target_scope = self._champion_scope(target)
         for record in payload.get("models", []):
             if (
@@ -654,10 +696,70 @@ class ModelRegistry:
         )
 
     @staticmethod
-    def _approve_record(record: dict[str, Any], approver: str) -> None:
+    def _approve_record(record: dict[str, Any], approver: str, product: str | None) -> None:
+        """Validate the record's artifact, then write approval and integrity metadata.
+
+        All checks run before the record is mutated, so a failure leaves it untouched.
+        """
+        recorded_product = record.get("product")
+        if product is None:
+            if recorded_product is None:
+                raise ChampionValidationError(
+                    "product ('loan' or 'deposit') is required to approve a model; "
+                    "pass product=... explicitly"
+                )
+            product = recorded_product
+        elif recorded_product is not None and recorded_product != product:
+            raise ChampionValidationError(
+                f"product {product!r} conflicts with the recorded product {recorded_product!r}"
+            )
+        product = validate_product(product)
+        artifact_path = record.get("artifact_path")
+        if not artifact_path:
+            raise ChampionValidationError(
+                "record has no artifact_path; only a persisted artifact can be approved"
+            )
+        if record.get("feature_columns") is None:
+            raise ChampionValidationError(
+                "record has no feature_columns; the feature contract must be declared"
+            )
+        contract = validate_feature_contract(record.get("feature_columns"))
+        previous_sha = record.get("artifact_sha256")
+        try:
+            _, evidence = load_and_validate_artifact(
+                artifact_path,
+                contract,
+                product,
+                expected_sha256=None if previous_sha is None else str(previous_sha),
+            )
+        except ArtifactIntegrityError as exc:
+            raise ChampionValidationError(
+                "artifact changed since its recorded approval hash; register the new "
+                "artifact as a new model version instead of re-approving this record"
+            ) from exc
+
+        if record.get("approved_by") is not None or record.get("approved_at_utc") is not None:
+            record.setdefault("previous_approvals", []).append(
+                {
+                    "approved_by": record.get("approved_by"),
+                    "approved_at_utc": record.get("approved_at_utc"),
+                }
+            )
+        now = datetime.now(timezone.utc).isoformat()
         record["governance_status"] = "approved"
         record["approved_by"] = approver
-        record["approved_at_utc"] = datetime.now(timezone.utc).isoformat()
+        record["approved_at_utc"] = now
+        record["product"] = evidence.product
+        record["artifact_sha256"] = evidence.artifact_sha256
+        record["feature_names"] = list(evidence.feature_names)
+        record["n_features"] = evidence.n_features
+        record["prediction_interface"] = evidence.prediction_interface
+        record["integrity_validation"] = {
+            "status": "passed",
+            "schema_version": INTEGRITY_SCHEMA_VERSION,
+            "validated_at_utc": now,
+            "probe": evidence.probe,
+        }
 
     @classmethod
     def _find_latest_record(
@@ -1382,15 +1484,19 @@ class ModelScoringAgent:
         self,
         feature_columns: list[str],
         fallback: Any,
+        product: str | None = None,
     ) -> Any:
-        """Return MLResponseFnAdapter for the approved champion, or fallback.
+        """Return MLResponseFnAdapter for a verified approved champion, or fallback.
 
-        Falls back to the synthetic ``fallback`` when there is no approved champion
-        (no champion at all, or one that is not yet approved). However, when an
-        *approved* champion is selected but its artifact cannot be loaded, that is an
-        inconsistent governed state — the registry promises an approved model that
-        cannot actually drive prices — and we raise ``GovernanceError`` rather than
-        silently repricing on the synthetic fallback.
+        Falls back to the synthetic ``fallback`` only when there is no compatible champion,
+        or the selected champion is not approved. An *approved* champion that fails any
+        check raises ``GovernanceError`` instead: the registry promises an approved model
+        that cannot safely drive prices, and silently repricing on the synthetic fallback
+        would hide that. Checks: artifact present; integrity metadata recorded at approval
+        (legacy records must be re-approved); recorded product and feature contract match
+        the request; artifact SHA-256 matches *before* deserialisation; prediction
+        interface, feature names/order and the rate-response probe pass
+        (see ``modelling.champion_integrity``).
         """
         from balance_pricing_engine.optimization.response_fn import (
             GovernanceError,
@@ -1403,28 +1509,70 @@ class ModelScoringAgent:
         if champion.get("governance_status") != "approved":
             return fallback
         model_name = champion.get("model_name", "<unknown>")
+        model_version = champion.get("version")
         artifact_path = champion.get("artifact_path")
-        if artifact_path is None or not Path(str(artifact_path)).exists():
+        # Only the absent path is checked here. A missing or unreadable file is reported by
+        # load_and_validate_artifact below: Path.exists() can itself raise PermissionError,
+        # and the file can vanish after any check made here.
+        if artifact_path is None:
             raise GovernanceError(
                 f"Approved champion '{model_name}' has a missing artifact "
                 f"(artifact_path={artifact_path!r}); cannot load the governed model. "
                 "Repair the registry/artifact before pricing, or retire the champion."
             )
+
+        def _fail(reason: str) -> GovernanceError:
+            return GovernanceError(
+                f"Approved champion '{model_name}' (version={model_version!r}) failed "
+                f"validation: {reason}. It must not drive pricing; repair or re-approve it, "
+                "or retire the champion."
+            )
+
+        missing = [key for key in _REQUIRED_INTEGRITY_FIELDS if champion.get(key) is None]
+        if missing:
+            raise _fail(
+                f"missing required integrity metadata {missing} (legacy approval); "
+                "explicit re-approval is required: re-verify the artifact and call "
+                "ModelRegistry.approve_model(..., product=...)"
+            )
+        recorded_product = champion.get("product")
+        if recorded_product not in ("loan", "deposit"):
+            raise _fail(f"recorded product {recorded_product!r} is not 'loan' or 'deposit'")
+        if product is not None and recorded_product != product:
+            raise _fail(
+                f"recorded product {recorded_product!r} does not match requested {product!r}"
+            )
+        expected_sha = str(champion.get("artifact_sha256"))
+        if not _SHA256_PATTERN.fullmatch(expected_sha):
+            raise _fail("recorded artifact_sha256 is not a 64-character hex digest")
+        recorded_names = champion.get("feature_names")
+        if not isinstance(recorded_names, list) or recorded_names != list(feature_columns):
+            raise _fail("recorded feature_names do not match the requested feature contract")
+        if champion.get("n_features") != len(feature_columns):
+            raise _fail(
+                f"recorded n_features={champion.get('n_features')!r} does not match "
+                f"{len(feature_columns)} requested features"
+            )
         try:
-            model = load_model(str(artifact_path))
-        except Exception as exc:  # noqa: BLE001 - surface any load failure as governance error
-            raise GovernanceError(
-                f"Approved champion '{model_name}' artifact at {artifact_path!r} is "
-                f"present but could not be loaded: {exc}. Repair the artifact before pricing."
-            ) from exc
+            model, evidence = load_and_validate_artifact(
+                artifact_path, list(feature_columns), recorded_product, expected_sha256=expected_sha
+            )
+        except (ArtifactIntegrityError, ChampionValidationError) as exc:
+            raise _fail(str(exc)) from exc
         logging.info(
-            "Resolved approved champion response model: model_name=%s artifact_path=%s "
-            "governance_status=%s",
-            champion.get("model_name"),
-            artifact_path,
+            "Resolved approved champion response model: model_name=%s version=%s "
+            "product=%s artifact_sha256=%s governance_status=%s",
+            model_name,
+            model_version,
+            evidence.product,
+            evidence.artifact_sha256,
             champion.get("governance_status"),
         )
         return MLResponseFnAdapter(model=model, feature_columns=feature_columns)
+
+
+_REQUIRED_INTEGRITY_FIELDS = ("artifact_sha256", "feature_names", "n_features", "product")
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
 def _calibration_error(y_true: np.ndarray, y_probability: np.ndarray) -> float:

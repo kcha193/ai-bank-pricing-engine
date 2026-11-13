@@ -252,9 +252,11 @@ def run_baseline_diagnostics(
             competitor_gap_elasticity=config.response.deposit_competitor_gap_elasticity,
             coefficients=config.response.coefficients.deposit if config.response.coefficients else None,
         )
-        loan_response_fn = scoring_agent.resolve_response_fn(LOAN_FEATURE_COLUMNS, fallback=loan_fallback)
+        loan_response_fn = scoring_agent.resolve_response_fn(
+            LOAN_FEATURE_COLUMNS, fallback=loan_fallback, product="loan"
+        )
         deposit_response_fn = scoring_agent.resolve_response_fn(
-            DEPOSIT_FEATURE_COLUMNS, fallback=deposit_fallback
+            DEPOSIT_FEATURE_COLUMNS, fallback=deposit_fallback, product="deposit"
         )
 
     diagnostics = evaluate_adaptive_joint_rate_grid(

@@ -28,6 +28,12 @@ class ModelLineage:
     champion_status: str | None
     artifact_path: str | None
     used_fallback: bool
+    # Integrity evidence (additive, Phase 1b / GOV-001). None on the synthetic path.
+    artifact_sha256: str | None = None
+    feature_names: tuple[str, ...] | None = None
+    n_features: int | None = None
+    integrity_check: str | None = None  # "passed" when the artifact hash + contract verified
+    prediction_check: str | None = None  # "passed" when the probability/direction probe passed
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -39,6 +45,11 @@ class ModelLineage:
             "champion_status": self.champion_status,
             "artifact_path": self.artifact_path,
             "used_fallback": self.used_fallback,
+            "artifact_sha256": self.artifact_sha256,
+            "feature_names": None if self.feature_names is None else list(self.feature_names),
+            "n_features": self.n_features,
+            "integrity_check": self.integrity_check,
+            "prediction_check": self.prediction_check,
         }
 
 
@@ -72,9 +83,16 @@ def resolve_model_lineage(
         return synthetic_model_lineage(product)
 
     artifact_path = champion.get("artifact_path")
-    # If the artifact were missing, resolve_response_fn would already have raised
-    # GovernanceError before diagnostics completed, so this branch documents a
-    # successfully-loaded approved champion.
+    # If the artifact were missing or failed any integrity/probe check,
+    # resolve_response_fn would already have raised GovernanceError before diagnostics
+    # completed, so this branch documents a verified approved champion. The checks are
+    # reported as passed only when the record carries the full integrity metadata that
+    # resolution verified; otherwise they stay None and the artifact gate blocks.
+    feature_names = champion.get("feature_names")
+    verified = all(
+        champion.get(key) is not None
+        for key in ("artifact_sha256", "feature_names", "n_features", "product")
+    )
     return ModelLineage(
         product=product,
         response_source="approved_ml_champion",
@@ -84,6 +102,11 @@ def resolve_model_lineage(
         champion_status=champion.get("champion_status"),
         artifact_path=str(artifact_path) if artifact_path else None,
         used_fallback=False,
+        artifact_sha256=champion.get("artifact_sha256"),
+        feature_names=tuple(feature_names) if feature_names is not None else None,
+        n_features=champion.get("n_features"),
+        integrity_check="passed" if verified else None,
+        prediction_check="passed" if verified else None,
     )
 
 
