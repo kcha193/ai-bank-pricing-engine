@@ -1511,7 +1511,10 @@ class ModelScoringAgent:
         model_name = champion.get("model_name", "<unknown>")
         model_version = champion.get("version")
         artifact_path = champion.get("artifact_path")
-        if artifact_path is None or not Path(str(artifact_path)).exists():
+        # Only the absent path is checked here. A missing or unreadable file is reported by
+        # load_and_validate_artifact below: Path.exists() can itself raise PermissionError,
+        # and the file can vanish after any check made here.
+        if artifact_path is None:
             raise GovernanceError(
                 f"Approved champion '{model_name}' has a missing artifact "
                 f"(artifact_path={artifact_path!r}); cannot load the governed model. "

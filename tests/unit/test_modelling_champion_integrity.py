@@ -13,11 +13,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 
 import joblib
 import numpy as np
 import pytest
 
+from balance_pricing_engine.application.contracts import PricingScenarioRequest
+from balance_pricing_engine.application.pricing_service import PricingService
+from balance_pricing_engine.config import load_config
 from balance_pricing_engine.modelling import champion_integrity
 from balance_pricing_engine.modelling.agentic import (
     BootstrapEnsembleResponseModel,
@@ -795,3 +799,137 @@ def test_probe_is_deterministic_and_does_not_touch_global_random_state():
 def test_load_and_validate_rejects_unknown_product(tmp_path):
     with pytest.raises(ChampionValidationError, match="product"):
         load_and_validate_artifact(tmp_path / "x.joblib", LOAN_FEATURE_COLUMNS, "mortgage")
+
+
+# --------------------------------------------------------------------------- artifact I/O failures
+#
+# PR #66 review: an approved artifact that exists but cannot be read (permissions, an I/O
+# fault, or deletion between the existence check and the read) must fail closed with
+# GovernanceError, never leak a raw OSError past the governed-model contract. The read is
+# failed with a patched ``Path.read_bytes`` rather than chmod, which root and some CI
+# filesystems ignore.
+
+_READ_FAILURES = [
+    pytest.param(PermissionError(13, "Permission denied"), "could not be read", id="permission"),
+    pytest.param(FileNotFoundError(2, "No such file or directory"), "missing", id="vanished"),
+    pytest.param(OSError(5, "Input/output error"), "could not be read", id="io-error"),
+]
+
+
+def _fail_artifact_read(monkeypatch, artifact, exc: OSError) -> None:
+    original = Path.read_bytes
+    target = Path(artifact)
+
+    def read_bytes(self):
+        if self == target:
+            raise exc
+        return original(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+
+@pytest.mark.parametrize(("exc", "message"), _READ_FAILURES)
+def test_load_and_validate_wraps_artifact_read_failure(tmp_path, monkeypatch, exc, message):
+    artifact = tmp_path / "good.joblib"
+    save_model(_trained_loan_model(), artifact)
+    _fail_artifact_read(monkeypatch, artifact, exc)
+
+    with pytest.raises(ChampionValidationError, match=message) as info:
+        load_and_validate_artifact(artifact, LOAN_FEATURE_COLUMNS, "loan")
+    assert info.value.__cause__ is exc
+
+
+@pytest.mark.parametrize(("exc", "message"), _READ_FAILURES)
+def test_approved_champion_unreadable_artifact_raises_governance_error(
+    tmp_path, monkeypatch, exc, message
+):
+    artifact = tmp_path / "good.joblib"
+    save_model(_trained_loan_model(), artifact)
+    registry = ModelRegistry(tmp_path / "registry.json")
+    _force_approved(registry, artifact)
+    # The artifact really exists, so the existence pre-check passes and the read fails:
+    # for FileNotFoundError this is the file vanishing between the check and the read.
+    _fail_artifact_read(monkeypatch, artifact, exc)
+
+    with pytest.raises(GovernanceError, match=message) as info:
+        _resolve(registry)
+    assert isinstance(info.value.__cause__, ChampionValidationError)
+    assert info.value.__cause__.__cause__ is exc
+
+
+@pytest.mark.parametrize(("exc", "message"), _READ_FAILURES)
+def test_approval_refuses_unreadable_artifact_and_leaves_registry_unchanged(
+    tmp_path, monkeypatch, exc, message
+):
+    artifact = tmp_path / "good.joblib"
+    save_model(_trained_loan_model(), artifact)
+    registry = ModelRegistry(tmp_path / "registry.json")
+    _register_pending(registry, artifact, product_features=LOAN_FEATURE_COLUMNS)
+    before = registry.registry_path.read_text(encoding="utf-8")
+    _fail_artifact_read(monkeypatch, artifact, exc)
+
+    with pytest.raises(ChampionValidationError, match=message):
+        registry.promote_champion("Cand", approver="validator", product="loan")
+
+    assert registry.registry_path.read_text(encoding="utf-8") == before
+
+
+def test_pricing_service_propagates_governance_error_for_unreadable_champion(
+    tmp_path, monkeypatch
+):
+    artifact = tmp_path / "good.joblib"
+    save_model(_trained_loan_model(), artifact)
+    registry = ModelRegistry(tmp_path / "registry.json")
+    _force_approved(registry, artifact)
+    _fail_artifact_read(monkeypatch, artifact, PermissionError(13, "Permission denied"))
+    config = load_config("configs/base.yaml")
+    simulation = config.simulation.model_copy(
+        update={"n_loan_customers": 200, "n_deposit_customers": 200}
+    )
+    config = config.model_copy(update={"simulation": simulation})
+
+    with pytest.raises(GovernanceError, match="could not be read"):
+        PricingService().run_scenario(PricingScenarioRequest(config=config, registry=registry))
+
+
+def test_approved_champion_unstattable_artifact_raises_governance_error(tmp_path, monkeypatch):
+    """An unsearchable parent directory fails ``stat`` as well as the read with EACCES.
+
+    ``Path.exists()`` re-raises that PermissionError, so no existence pre-check may sit
+    in front of the loader's error translation.
+    """
+    artifact = tmp_path / "good.joblib"
+    save_model(_trained_loan_model(), artifact)
+    registry = ModelRegistry(tmp_path / "registry.json")
+    _force_approved(registry, artifact)
+    exc = PermissionError(13, "Permission denied")
+    _fail_artifact_read(monkeypatch, artifact, exc)
+    original_stat = Path.stat
+    target = Path(artifact)
+
+    def stat(self, *args, **kwargs):
+        if self == target:
+            raise exc
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+
+    with pytest.raises(GovernanceError, match="could not be read") as info:
+        _resolve(registry)
+    assert info.value.__cause__.__cause__ is exc
+
+
+def test_approved_champion_without_artifact_path_raises_governance_error(tmp_path):
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.register(
+        {
+            "model_name": "Champion",
+            "champion_status": "champion",
+            "governance_status": "approved",
+            "artifact_path": None,
+            "feature_columns": list(LOAN_FEATURE_COLUMNS),
+        }
+    )
+
+    with pytest.raises(GovernanceError, match="missing artifact"):
+        _resolve(registry)

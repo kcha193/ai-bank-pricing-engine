@@ -284,9 +284,19 @@ def load_and_validate_artifact(
     product = validate_product(product)
     contract = validate_feature_contract(feature_columns)
     path = Path(artifact_path)
-    if not path.is_file():
-        raise ChampionValidationError(f"artifact is missing (artifact_path={str(path)!r})")
-    data = path.read_bytes()
+    # Read without a separate existence check, so a file removed after any caller's own
+    # check is reported here too. Filesystem failures become validation failures; other
+    # exceptions are programming errors and propagate unchanged.
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError as exc:
+        raise ChampionValidationError(
+            f"artifact is missing (artifact_path={str(path)!r})"
+        ) from exc
+    except OSError as exc:
+        raise ChampionValidationError(
+            f"artifact could not be read ({type(exc).__name__}; artifact_path={str(path)!r})"
+        ) from exc
     digest = (
         verify_artifact_bytes(data, expected_sha256)
         if expected_sha256 is not None

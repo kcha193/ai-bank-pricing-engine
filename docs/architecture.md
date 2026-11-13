@@ -138,7 +138,8 @@ The approved-champion ML path is an optional extension seam. The baseline runner
 `ModelScoringAgent` to resolve response functions from a registry, but only an approved compatible
 champion with a loadable artifact is adapted into the optimizer. When no approved compatible
 champion exists, the runner falls back to the deterministic synthetic response functions. An
-approved champion whose artifact is missing or unloadable instead raises `GovernanceError` — that
+approved champion whose artifact is missing, unreadable (any filesystem `OSError`, including a
+file removed mid-resolution) or unloadable instead raises `GovernanceError` — that
 inconsistent governed state must fail loud rather than silently reprice on synthetic.
 
 `PricingDecision` is the application-level output contract for a *decision*, layered on top
