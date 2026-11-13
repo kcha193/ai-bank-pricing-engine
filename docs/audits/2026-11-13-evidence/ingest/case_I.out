@@ -1,0 +1,92 @@
+
+### I-a fresh DB, every TD page has no rate table
+ exit code: 1 FAILED | rates_accepted 0 | rejected 0 | banks_failed ['ANZ', 'ASB', 'Westpac', 'BNZ', 'Kiwibank']
+ failure types: [('ANZ', 'ParserError'), ('ASB', 'ParserError'), ('BNZ', 'ParserError'), ('Kiwibank', 'ParserError'), ('Westpac', 'ParserError')]
+ run_record: FAILED collection_run_id None
+ collection_runs rows (TD): 0 | operational_runs rows (TD): (1, 'FAILED')
+ collector_health: [('ANZ', 1, 'page fetched but no rates were confidently extracted'), ('ASB', 1, 'page fetched but no rates were confidently extracted'), ('BNZ', 1, 'page fetched but no rates were confidently extracted'), ('Kiwibank', 1, 'page fetched but no rates were confidently extracted'), ('Westpac', 1, 'page fetched but no rates were confidently extracted')]
+ snapshot 12m: None
+ strategy MARKET_MEDIAN deposit -> MarketStrategyError: MARKET_MEDIAN requires advertised rates at 12 months; snapshot covers []
+ health: latest_run FAILED snapshot_valid False fresh_bank_count 0 [('ANZ', 'DEGRADED', 'FAILING', 'UNKNOWN'), ('ASB', 'DEGRADED', 'FAILING', 'UNKNOWN'), ('Westpac', 'DEGRADED', 'FAILING', 'UNKNOWN'), ('BNZ', 'DEGRADED', 'FAILING', 'UNKNOWN'), ('Kiwibank', 'DEGRADED', 'FAILING', 'UNKNOWN')]
+ freshness frame:
+         Oldest confirmation (UTC) Age (hours)   Status
+Bank                                                   
+ANZ                           None        None  Missing
+ASB                           None        None  Missing
+BNZ                           None        None  Missing
+Westpac                       None        None  Missing
+Kiwibank                      None        None  Missing
+
+### I-b seeded, all TD fetches fail (outage) @T0+1d
+ exit code: 1 FAILED | rates_accepted 0 | rejected 0 | banks_failed ['ANZ', 'ASB', 'BNZ', 'Westpac', 'Kiwibank']
+ failure types: [('ANZ', 'ConnectionError'), ('ASB', 'ConnectionError'), ('BNZ', 'ConnectionError'), ('Kiwibank', 'ConnectionError'), ('Westpac', 'ConnectionError')]
+ run_record: FAILED collection_run_id None
+ collection_runs rows (TD): 1 | operational_runs rows (TD): (2, 'SUCCESS,FAILED')
+ collector_health: [('ANZ', 1, 'simulated outage for https://www.anz.co.nz/rates-fees-agreem'), ('ASB', 1, 'simulated outage for https://www.asb.co.nz/term-investments/'), ('BNZ', 1, 'simulated outage for https://www.bnz.co.nz/personal-banking/'), ('Kiwibank', 1, 'simulated outage for https://www.kiwibank.co.nz/personal-ban'), ('Westpac', 1, 'simulated outage for https://www.westpac.co.nz/kiwisaver-inv')]
+ snapshot 12m: [('BNZ', 4.05, '2026-11-10T18:30:00+00:00'), ('Kiwibank', 4.05, '2026-11-10T18:30:00+00:00'), ('ANZ', 4.0, '2026-11-10T18:30:00+00:00'), ('ASB', 4.0, '2026-11-10T18:30:00+00:00'), ('Westpac', 4.0, '2026-11-10T18:30:00+00:00')]
+ strategy MARKET_MEDIAN deposit -> 0.04 (config default 0.039)
+ health: latest_run FAILED snapshot_valid True fresh_bank_count 5 [('ANZ', 'DEGRADED', 'FAILING', 'FRESH'), ('ASB', 'DEGRADED', 'FAILING', 'FRESH'), ('Westpac', 'DEGRADED', 'FAILING', 'FRESH'), ('BNZ', 'DEGRADED', 'FAILING', 'FRESH'), ('Kiwibank', 'DEGRADED', 'FAILING', 'FRESH')]
+ freshness frame:
+         Oldest confirmation (UTC)  Age (hours) Status
+Bank                                                  
+ANZ      2026-11-10 18:30:00+00:00         25.0  Fresh
+ASB      2026-11-10 18:30:00+00:00         25.0  Fresh
+BNZ      2026-11-10 18:30:00+00:00         25.0  Fresh
+Westpac  2026-11-10 18:30:00+00:00         25.0  Fresh
+Kiwibank 2026-11-10 18:30:00+00:00         25.0  Fresh
+
+### I-b seeded, all TD fetches fail (outage) @T0+8d (7 consecutive failures)
+ exit code: 1 FAILED | rates_accepted 0 | rejected 0 | banks_failed ['ANZ', 'ASB', 'BNZ', 'Westpac', 'Kiwibank']
+ failure types: [('ANZ', 'ConnectionError'), ('ASB', 'ConnectionError'), ('BNZ', 'ConnectionError'), ('Kiwibank', 'ConnectionError'), ('Westpac', 'ConnectionError')]
+ run_record: FAILED collection_run_id None
+ collection_runs rows (TD): 1 | operational_runs rows (TD): (9, 'SUCCESS,FAILED,FAILED,FAILED,FAILED,FAILED,FAILED,FAILED,FAILED')
+ collector_health: [('ANZ', 8, 'simulated outage for https://www.anz.co.nz/rates-fees-agreem'), ('ASB', 8, 'simulated outage for https://www.asb.co.nz/term-investments/'), ('BNZ', 8, 'simulated outage for https://www.bnz.co.nz/personal-banking/'), ('Kiwibank', 8, 'simulated outage for https://www.kiwibank.co.nz/personal-ban'), ('Westpac', 8, 'simulated outage for https://www.westpac.co.nz/kiwisaver-inv')]
+ snapshot 12m: None
+ strategy MARKET_MEDIAN deposit -> MarketStrategyError: MARKET_MEDIAN requires advertised rates at 12 months; snapshot covers []
+ health: latest_run FAILED snapshot_valid False fresh_bank_count 0 [('ANZ', 'DEGRADED', 'FAILING', 'STALE'), ('ASB', 'DEGRADED', 'FAILING', 'STALE'), ('Westpac', 'DEGRADED', 'FAILING', 'STALE'), ('BNZ', 'DEGRADED', 'FAILING', 'STALE'), ('Kiwibank', 'DEGRADED', 'FAILING', 'STALE')]
+ freshness frame:
+         Oldest confirmation (UTC)  Age (hours) Status
+Bank                                                  
+ANZ      2026-11-10 18:30:00+00:00        193.0  Stale
+ASB      2026-11-10 18:30:00+00:00        193.0  Stale
+BNZ      2026-11-10 18:30:00+00:00        193.0  Stale
+Westpac  2026-11-10 18:30:00+00:00        193.0  Stale
+Kiwibank 2026-11-10 18:30:00+00:00        193.0  Stale
+
+### I-c seeded, every TD table labelled 'Special rate' @T0+1d
+ exit code: 1 FAILED | rates_accepted 15 | rejected 0 | banks_failed ['ANZ', 'ASB', 'BNZ', 'Kiwibank', 'Westpac']
+ failure types: [('ANZ', 'low_coverage'), ('ANZ', 'no_comparable_rates'), ('ASB', 'low_coverage'), ('ASB', 'no_comparable_rates'), ('BNZ', 'low_coverage'), ('BNZ', 'no_comparable_rates'), ('Kiwibank', 'low_coverage'), ('Kiwibank', 'no_comparable_rates'), ('Westpac', 'low_coverage'), ('Westpac', 'no_comparable_rates')]
+ run_record: FAILED collection_run_id 92ff14e54abf45ccafa505ffd84bac5d
+ collection_runs rows (TD): 2 | operational_runs rows (TD): (2, 'SUCCESS,FAILED')
+ collector_health: [('ANZ', 1, 'no accepted row in the default comparison category (term_dep'), ('ASB', 1, 'no accepted row in the default comparison category (term_dep'), ('BNZ', 1, 'no accepted row in the default comparison category (term_dep'), ('Kiwibank', 1, 'no accepted row in the default comparison category (term_dep'), ('Westpac', 1, 'no accepted row in the default comparison category (term_dep')]
+ snapshot 12m: [('BNZ', 4.05, '2026-11-10T18:30:00+00:00'), ('Kiwibank', 4.05, '2026-11-10T18:30:00+00:00'), ('ANZ', 4.0, '2026-11-10T18:30:00+00:00'), ('ASB', 4.0, '2026-11-10T18:30:00+00:00'), ('Westpac', 4.0, '2026-11-10T18:30:00+00:00')]
+ strategy MARKET_MEDIAN deposit -> 0.04 (config default 0.039)
+ health: latest_run FAILED snapshot_valid True fresh_bank_count 5 [('ANZ', 'DEGRADED', 'FAILING', 'FRESH'), ('ASB', 'DEGRADED', 'FAILING', 'FRESH'), ('Westpac', 'DEGRADED', 'FAILING', 'FRESH'), ('BNZ', 'DEGRADED', 'FAILING', 'FRESH'), ('Kiwibank', 'DEGRADED', 'FAILING', 'FRESH')]
+ freshness frame:
+         Oldest confirmation (UTC)  Age (hours)                                           Status
+Bank                                                                                            
+ANZ      2026-11-10 18:30:00+00:00         25.0  Fresh; not fully confirmed in latest stored run
+ASB      2026-11-10 18:30:00+00:00         25.0  Fresh; not fully confirmed in latest stored run
+BNZ      2026-11-10 18:30:00+00:00         25.0  Fresh; not fully confirmed in latest stored run
+Westpac  2026-11-10 18:30:00+00:00         25.0  Fresh; not fully confirmed in latest stored run
+Kiwibank 2026-11-10 18:30:00+00:00         25.0  Fresh; not fully confirmed in latest stored run
+ I-c stored 'special' TD rows: [('ANZ', 6, 3.7), ('ANZ', 12, 4.1), ('ANZ', 24, 4.35), ('ASB', 6, 3.7), ('ASB', 12, 4.1), ('ASB', 24, 4.35)]
+ I-c special-category TD snapshot 12m: [('ANZ', 4.1), ('ASB', 4.1), ('BNZ', 4.1), ('Kiwibank', 4.1), ('Westpac', 4.1)]
+
+### I-d seeded, two tier tables per bank distinguished only by <h3> @T0+1d
+ exit code: 1 FAILED | rates_accepted 0 | rejected 20 | banks_failed ['ANZ', 'ASB', 'BNZ', 'Kiwibank', 'Westpac']
+ failure types: [('ANZ', 'validation_rejected'), ('ASB', 'validation_rejected'), ('BNZ', 'validation_rejected'), ('Kiwibank', 'validation_rejected'), ('Westpac', 'validation_rejected')]
+ run_record: FAILED collection_run_id None
+ collection_runs rows (TD): 1 | operational_runs rows (TD): (2, 'SUCCESS,FAILED')
+ collector_health: [('ANZ', 1, 'every row was rejected by validation (conflicting_observatio'), ('ASB', 1, 'every row was rejected by validation (conflicting_observatio'), ('BNZ', 1, 'every row was rejected by validation (conflicting_observatio'), ('Kiwibank', 1, 'every row was rejected by validation (conflicting_observatio'), ('Westpac', 1, 'every row was rejected by validation (conflicting_observatio')]
+ snapshot 12m: [('BNZ', 4.05, '2026-11-10T18:30:00+00:00'), ('Kiwibank', 4.05, '2026-11-10T18:30:00+00:00'), ('ANZ', 4.0, '2026-11-10T18:30:00+00:00'), ('ASB', 4.0, '2026-11-10T18:30:00+00:00'), ('Westpac', 4.0, '2026-11-10T18:30:00+00:00')]
+ strategy MARKET_MEDIAN deposit -> 0.04 (config default 0.039)
+ health: latest_run FAILED snapshot_valid True fresh_bank_count 5 [('ANZ', 'DEGRADED', 'FAILING', 'FRESH'), ('ASB', 'DEGRADED', 'FAILING', 'FRESH'), ('Westpac', 'DEGRADED', 'FAILING', 'FRESH'), ('BNZ', 'DEGRADED', 'FAILING', 'FRESH'), ('Kiwibank', 'DEGRADED', 'FAILING', 'FRESH')]
+ freshness frame:
+         Oldest confirmation (UTC)  Age (hours) Status
+Bank                                                  
+ANZ      2026-11-10 18:30:00+00:00         25.0  Fresh
+ASB      2026-11-10 18:30:00+00:00         25.0  Fresh
+BNZ      2026-11-10 18:30:00+00:00         25.0  Fresh
+Westpac  2026-11-10 18:30:00+00:00         25.0  Fresh
+Kiwibank 2026-11-10 18:30:00+00:00         25.0  Fresh

@@ -1,0 +1,41 @@
+term           '6 months' -> months=6 days=None special=None
+term             '1 year' -> months=12 days=None special=None
+term          '18 months' -> months=18 days=None special=None
+term            '2 years' -> months=24 days=None special=None
+term         'SIX MONTHS' -> months=6 days=None special=None
+term            '-1 year' -> months=None days=None special=None
+term          '1.5 years' -> months=None days=None special=None
+term             '0 days' -> months=None days=None special=None
+term             '7 days' -> months=None days=7 special=None
+term            '30 days' -> months=1 days=30 special=None
+term            '90 days' -> months=3 days=90 special=None
+term           '100 days' -> months=None days=100 special=None
+term           '200 days' -> months=None days=200 special=None
+term           '210 days' -> months=7 days=210 special=None
+term           '365 days' -> months=12 days=365 special=None
+term    '1 year 6 months' -> months=6 days=None special=None
+term         '6-9 months' -> months=9 days=None special=None
+term       '6 - 9 months' -> months=9 days=None special=None
+term  '12 Months Special' -> months=12 days=None special=None
+term           'Floating' -> months=None days=None special=floating
+lvr                   'less than 20% equity' -> values=(None, None) condition=low_equity_margin_applies
+lvr       'Special rates require 20% equity' -> values=(0.8, 0.2) condition=min_20_percent_equity
+lvr                        '80% LVR or less' -> values=(0.8, 0.2) condition=standard
+lvr        'LVR above 80% attracts a margin' -> values=(None, None) condition=low_equity_margin_applies
+lvr        'Not available for LVR above 80%' -> values=(None, None) condition=standard
+freq  'Interest paid at maturity' -> at_maturity
+freq     'Monthly or at maturity' -> at_maturity+monthly
+freq       'Annual interest rate' -> unknown
+freq              'Paid annually' -> annually
+freq                   '6 months' -> monthly
+balance                                     '$5,000+' -> (5000.0, None)
+balance                          '$10,000 - $499,999' -> (10000.0, 499999.0)
+balance   'Minimum $1,000 | Balance $5,000 to $9,999' -> (1000.0, None)
+balance                                      '$500k+' -> (500.0, None)
+bps 4.99->4.79 -20.0 | 0.1+0.2 style 20.0 | spread 10.0 | -5bps->pct -0.05
+our_bank=        None -> median 4.8 from ('ASB', 'ANZ', 'BNZ')
+our_bank=       'ASB' -> median 4.85 from ('ANZ', 'BNZ')
+our_bank=     ' asb ' -> median 4.85 from ('ANZ', 'BNZ')
+our_bank=  'ASB Bank' -> median 4.8 from ('ASB', 'ANZ', 'BNZ')
+offset nan rejected
+offset inf rejected

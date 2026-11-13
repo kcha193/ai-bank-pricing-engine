@@ -1,0 +1,3 @@
+raised OperationalError: database is locked after 5.2s -- run_collection() only catches ChronologicalOrderError, so the workflow would exit via an uncaught traceback (Python exit 1) without writing --summary-file or a RunRecord
+operational_runs after: [('SUCCESS',)]
+connect() timeout used by ObservationStore: default (5.0 s); journal_mode: delete

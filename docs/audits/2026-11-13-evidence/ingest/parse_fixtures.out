@@ -1,0 +1,341 @@
+
+== ANZ home_loan anz_home_loans.html: 10 recs, skipped=0, accepted=10 rejected=0 cats={'special': 7, 'standard': 2, 'floating': 1}
+   special          term=    '6 months'->6 d=None  5.29 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   special          term=      '1 year'->12 d=None  4.79 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   special          term=   '18 months'->18 d=None  4.89 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   special          term=     '2 years'->24 d=None  4.95 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   special          term=     '3 years'->36 d=None  5.19 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   special          term=     '4 years'->48 d=None  5.59 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   special          term=     '5 years'->60 d=None  5.69 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   standard         term=      '1 year'->12 d=None  5.39 freq=unknown min=None max=None lvr=standard maxlvr=None name='Fixed Standard' cb=None pkg=None eff=None
+   standard         term=     '2 years'->24 d=None  5.55 freq=unknown min=None max=None lvr=standard maxlvr=None name='Fixed Standard' cb=None pkg=None eff=None
+   floating         term=    'Floating'->None d=None  6.49 freq=unknown min=None max=None lvr=standard maxlvr=None name='Floating' cb=None pkg=None eff=None
+
+== ANZ term_deposit anz_term_deposits.html: 6 recs, skipped=0, accepted=6 rejected=0 cats={'term_deposit': 3, 'non_comparable': 3}
+   term_deposit     term=    '6 months'->6 d=None  3.55 freq=at_maturity min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=      '1 year'->12 d=None  3.90 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=      '1 year'->12 d=None  4.01 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=      '1 year'->12 d=None  4.19 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=      '1 year'->12 d=None  4.60 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '2 years'->24 d=None  4.30 freq=at_maturity min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+
+== ANZ term_deposit term_deposits_2026-10-30/anz_term_deposits.html: 75 recs, skipped=0, accepted=75 rejected=0 cats={'term_deposit': 15, 'pie_term_deposit': 15, 'non_comparable': 45}
+   term_deposit     term=     '30 days'->1 d=30  1.80 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '60 days'->2 d=60  1.90 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '90 days'->3 d=90  2.90 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '120 days'->4 d=120  3.00 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '150 days'->5 d=150  3.20 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '180 days'->6 d=180  3.60 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '210 days'->7 d=210  3.55 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '240 days'->8 d=240  3.55 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '270 days'->9 d=270  3.65 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=      '1 year'->12 d=None  4.00 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=   '18 months'->18 d=None  4.20 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '2 years'->24 d=None  4.30 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '3 years'->36 d=None  4.40 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '4 years'->48 d=None  4.60 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '5 years'->60 d=None  4.70 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '30 days'->1 d=30  1.80 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '30 days'->1 d=30  1.85 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '30 days'->1 d=30  1.93 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '30 days'->1 d=30  2.12 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '60 days'->2 d=60  1.90 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '60 days'->2 d=60  1.95 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '60 days'->2 d=60  2.04 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '60 days'->2 d=60  2.24 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '90 days'->3 d=90  2.90 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '90 days'->3 d=90  2.98 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '90 days'->3 d=90  3.12 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '90 days'->3 d=90  3.42 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '120 days'->4 d=120  3.00 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '120 days'->4 d=120  3.09 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '120 days'->4 d=120  3.22 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '120 days'->4 d=120  3.54 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '150 days'->5 d=150  3.20 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '150 days'->5 d=150  3.29 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '150 days'->5 d=150  3.44 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '150 days'->5 d=150  3.78 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '180 days'->6 d=180  3.60 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '180 days'->6 d=180  3.70 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '180 days'->6 d=180  3.87 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '180 days'->6 d=180  4.25 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '210 days'->7 d=210  3.55 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '210 days'->7 d=210  3.65 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '210 days'->7 d=210  3.81 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '210 days'->7 d=210  4.19 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '240 days'->8 d=240  3.55 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '240 days'->8 d=240  3.65 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '240 days'->8 d=240  3.81 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '240 days'->8 d=240  4.19 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '270 days'->9 d=270  3.65 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '270 days'->9 d=270  3.75 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '270 days'->9 d=270  3.92 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '270 days'->9 d=270  4.31 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=      '1 year'->12 d=None  4.00 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=      '1 year'->12 d=None  4.11 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=      '1 year'->12 d=None  4.30 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=      '1 year'->12 d=None  4.72 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=   '18 months'->18 d=None  4.20 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=   '18 months'->18 d=None  4.32 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=   '18 months'->18 d=None  4.51 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=   '18 months'->18 d=None  4.96 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '2 years'->24 d=None  4.30 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '2 years'->24 d=None  4.42 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '2 years'->24 d=None  4.62 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '2 years'->24 d=None  5.08 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '3 years'->36 d=None  4.40 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '3 years'->36 d=None  4.53 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '3 years'->36 d=None  4.73 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '3 years'->36 d=None  5.19 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '4 years'->48 d=None  4.60 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '4 years'->48 d=None  4.73 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '4 years'->48 d=None  4.94 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '4 years'->48 d=None  5.43 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '5 years'->60 d=None  4.70 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '5 years'->60 d=None  4.83 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '5 years'->60 d=None  5.05 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '5 years'->60 d=None  5.55 freq=annually+at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+
+== ASB home_loan asb_home_loans.html: 7 recs, skipped=0, accepted=7 rejected=0 cats={'special': 6, 'standard': 1}
+   special          term=    '6 months'->6 d=None  5.35 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   special          term=      '1 year'->12 d=None  4.89 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   special          term=   '18 months'->18 d=None  4.95 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   special          term=     '2 years'->24 d=None  5.05 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   special          term=     '3 years'->36 d=None  5.29 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   special          term=     '5 years'->60 d=None  5.75 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   standard         term=      '1 year'->12 d=None  5.49 freq=unknown min=None max=None lvr=standard maxlvr=None name='Fixed Standard' cb=None pkg=None eff=None
+
+== ASB home_loan asb_home_loans_unmarked.html: 5 recs, skipped=0, accepted=5 rejected=0 cats={'special': 3, 'non_comparable': 2}
+   special          term=     '6 month'->6 d=None  4.79 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='6 month' cb=None pkg=None eff=None
+   special          term=    '12 month'->12 d=None  4.99 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='12 month' cb=None pkg=None eff=None
+   special          term=    '18 month'->18 d=None  5.35 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='18 month' cb=None pkg=None eff=None
+   non_comparable   term='1.00% p.a. Fixed for 36 months'->36 d=None  1.00 freq=unknown min=None max=None lvr=standard maxlvr=None name='ASB Better Homes Top Up (Eligibility criteria apply)' cb=None pkg=None eff=None
+   non_comparable   term='Back My Build Variable (closed to new applications)'->None d=None  3.34 freq=unknown min=None max=None lvr=standard maxlvr=None name='Back My Build Variable (closed to new applications)' cb=None pkg=None eff=None
+
+== ASB term_deposit term_deposits_2026-10-30/asb_term_deposits.html: 13 recs, skipped=0, accepted=13 rejected=0 cats={'term_deposit': 13}
+   term_deposit     term=     '30 Days'->1 d=30  1.80 freq=unknown min=5000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '60 Days'->2 d=60  2.00 freq=unknown min=5000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '90 Days'->3 d=90  3.00 freq=unknown min=5000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '4 Months'->4 d=None  3.00 freq=unknown min=5000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '5 Months'->5 d=None  3.20 freq=unknown min=5000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '6 Months'->6 d=None  3.60 freq=unknown min=5000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '9 Months'->9 d=None  3.70 freq=unknown min=5000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=   '12 Months'->12 d=None  4.00 freq=unknown min=5000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=   '18 Months'->18 d=None  4.30 freq=unknown min=5000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '2 Years'->24 d=None  4.30 freq=unknown min=5000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '3 Years'->36 d=None  4.40 freq=unknown min=5000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '4 Years'->48 d=None  4.60 freq=unknown min=5000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '5 Years'->60 d=None  5.00 freq=unknown min=5000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+
+== BNZ home_loan bnz_home_loans.html: 6 recs, skipped=0, accepted=6 rejected=0 cats={'special': 5, 'standard': 1}
+   special          term=    '6 months'->6 d=None  5.39 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Classic' cb=None pkg=None eff=None
+   special          term=      '1 year'->12 d=None  4.85 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Classic' cb=None pkg=None eff=None
+   special          term=   '18 months'->18 d=None  4.92 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Classic' cb=None pkg=None eff=None
+   special          term=     '2 years'->24 d=None  4.99 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Classic' cb=None pkg=None eff=None
+   special          term=     '3 years'->36 d=None  5.25 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Classic' cb=None pkg=None eff=None
+   standard         term=      '1 year'->12 d=None  5.45 freq=unknown min=None max=None lvr=standard maxlvr=None name='Standard' cb=None pkg=None eff=None
+
+== BNZ term_deposit bnz_term_deposits.html: 6 recs, skipped=0, accepted=6 rejected=0 cats={'term_deposit': 3, 'non_comparable': 3}
+   term_deposit     term=    '6 months'->6 d=None  3.55 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=      '1 year'->12 d=None  4.05 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '2 years'->24 d=None  4.20 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=      '1 year'->12 d=None 12.47 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=      '1 year'->12 d=None  9.76 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term='3 years (per annum)'->36 d=None  8.12 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+
+== BNZ term_deposit term_deposits_2026-10-30/bnz_term_deposits.html: 63 recs, skipped=0, accepted=63 rejected=0 cats={'term_deposit': 16, 'pie_term_deposit': 15, 'non_comparable': 32}
+   term_deposit     term=      '7 days'->None d=7  1.70 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '30 days'->1 d=30  1.85 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '60 days'->2 d=60  1.95 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '90 days'->3 d=90  2.90 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '120 days'->4 d=120  3.05 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '150 days'->5 d=150  3.20 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '180 days'->6 d=180  3.60 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '210 days'->7 d=210  3.55 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '240 days'->8 d=240  3.60 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '270 days'->9 d=270  3.70 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=      '1 year'->12 d=None  4.05 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=   '18 months'->18 d=None  4.30 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '2 years'->24 d=None  4.35 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '3 years'->36 d=None  4.60 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '4 years'->48 d=None  4.85 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '5 years'->60 d=None  4.85 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '30 days'->1 d=30  1.85 freq=unknown min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '60 days'->2 d=60  1.95 freq=unknown min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '90 days'->3 d=90  2.90 freq=unknown min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '120 days'->4 d=120  3.05 freq=unknown min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '150 days'->5 d=150  3.20 freq=unknown min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '180 days'->6 d=180  3.60 freq=unknown min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '210 days'->7 d=210  3.55 freq=unknown min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '240 days'->8 d=240  3.60 freq=unknown min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '270 days'->9 d=270  3.70 freq=unknown min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=      '1 year'->12 d=None  4.05 freq=unknown min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=   '18 months'->18 d=None  4.30 freq=unknown min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '2 years'->24 d=None  4.35 freq=unknown min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '3 years'->36 d=None  4.60 freq=unknown min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '4 years'->48 d=None  4.85 freq=unknown min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '5 years'->60 d=None  4.85 freq=unknown min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '1 month'->1 d=None  0.84 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '1 month'->1 d=None  0.59 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '1 month'->1 d=None  0.33 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '1 month'->1 d=None  0.02 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '1 month'->1 d=None  0.53 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '3 months'->3 d=None  1.19 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '3 months'->3 d=None  0.68 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '3 months'->3 d=None  0.12 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '3 months'->3 d=None  0.60 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '3 months'->3 d=None  1.52 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '6 months'->6 d=None  2.31 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '6 months'->6 d=None  5.20 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '6 months'->6 d=None  8.12 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '6 months'->6 d=None 11.17 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '6 months'->6 d=None 14.49 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=      '1 year'->12 d=None  1.83 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=      '1 year'->12 d=None  4.22 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=      '1 year'->12 d=None  6.61 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=      '1 year'->12 d=None  9.27 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term=      '1 year'->12 d=None 12.21 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term='3 years (per annum)'->36 d=None  6.62 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term='3 years (per annum)'->36 d=None  9.29 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term='3 years (per annum)'->36 d=None 11.90 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term='3 years (per annum)'->36 d=None 14.43 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term='5 years (per annum)'->60 d=None  2.71 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term='5 years (per annum)'->60 d=None  4.27 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term='5 years (per annum)'->60 d=None  5.71 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term='5 years (per annum)'->60 d=None  7.37 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term='7 years (per annum)'->84 d=None  2.87 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term='7 years (per annum)'->84 d=None  4.70 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term='7 years (per annum)'->84 d=None  6.39 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term='7 years (per annum)'->84 d=None  8.42 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+
+== Westpac home_loan westpac_home_loans.html: 5 recs, skipped=0, accepted=5 rejected=0 cats={'special': 5}
+   special          term=    '6 months'->6 d=None  5.40 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   special          term=      '1 year'->12 d=None  4.85 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   special          term=   '18 months'->18 d=None  4.94 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   special          term=     '2 years'->24 d=None  5.09 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   special          term=     '3 years'->36 d=None  5.30 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+
+== Westpac home_loan westpac_home_loans_marked.html: 4 recs, skipped=0, accepted=4 rejected=0 cats={'special': 2, 'standard': 2}
+   special          term='6 months - special *'->6 d=None  4.75 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='6 months - special *' cb=None pkg=None eff=None
+   special          term='1 year - special *'->12 d=None  4.99 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='1 year - special *' cb=None pkg=None eff=None
+   standard         term=    '6 months'->6 d=None  5.35 freq=unknown min=None max=None lvr=standard maxlvr=None name='6 months' cb=None pkg=None eff=None
+   standard         term=      '1 year'->12 d=None  5.59 freq=unknown min=None max=None lvr=standard maxlvr=None name='1 year' cb=None pkg=None eff=None
+
+== Westpac term_deposit term_deposits_2026-10-30/westpac_term_deposits.html: 70 recs, skipped=0, accepted=70 rejected=0 cats={'term_deposit': 14, 'pie_term_deposit': 14, 'non_comparable': 42}
+   term_deposit     term=     '30 days'->1 d=30  1.80 freq=at_maturity min=5000.0 max=5000000.0 lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '60 days'->2 d=60  1.90 freq=at_maturity min=5000.0 max=5000000.0 lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '3 months'->3 d=None  2.85 freq=at_maturity min=5000.0 max=5000000.0 lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '4 months'->4 d=None  3.10 freq=at_maturity min=5000.0 max=5000000.0 lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '5 months'->5 d=None  3.20 freq=at_maturity min=5000.0 max=5000000.0 lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '6 months'->6 d=None  3.45 freq=at_maturity+monthly min=5000.0 max=5000000.0 lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '8 months'->8 d=None  3.60 freq=at_maturity+monthly min=5000.0 max=5000000.0 lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '9 months'->9 d=None  3.70 freq=at_maturity+monthly min=5000.0 max=5000000.0 lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=   '12 months'->12 d=None  4.00 freq=at_maturity+monthly min=5000.0 max=5000000.0 lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=   '18 months'->18 d=None  4.30 freq=at_maturity+monthly min=5000.0 max=5000000.0 lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '2 years'->24 d=None  4.30 freq=at_maturity+monthly min=5000.0 max=5000000.0 lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '3 years'->36 d=None  4.60 freq=at_maturity+monthly min=5000.0 max=5000000.0 lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '4 years'->48 d=None  4.85 freq=at_maturity+monthly min=5000.0 max=5000000.0 lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '5 years'->60 d=None  4.85 freq=at_maturity+monthly min=5000.0 max=5000000.0 lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '30 days'->1 d=30  1.80 freq=at_maturity min=5000.0 max=5000000.0 lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '30 days'->1 d=30  1.85 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '30 days'->1 d=30  1.93 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '30 days'->1 d=30  2.12 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '60 days'->2 d=60  1.90 freq=at_maturity min=5000.0 max=5000000.0 lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '60 days'->2 d=60  1.95 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '60 days'->2 d=60  2.04 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '60 days'->2 d=60  2.24 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '3 months'->3 d=None  2.85 freq=at_maturity min=5000.0 max=5000000.0 lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '3 months'->3 d=None  2.93 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '3 months'->3 d=None  3.06 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '3 months'->3 d=None  3.36 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '4 months'->4 d=None  3.10 freq=at_maturity min=5000.0 max=5000000.0 lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '4 months'->4 d=None  3.19 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '4 months'->4 d=None  3.33 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '4 months'->4 d=None  3.66 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '5 months'->5 d=None  3.20 freq=at_maturity min=5000.0 max=5000000.0 lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '5 months'->5 d=None  3.29 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '5 months'->5 d=None  3.44 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '5 months'->5 d=None  3.78 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '6 months'->6 d=None  3.45 freq=at_maturity+monthly min=5000.0 max=5000000.0 lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '6 months'->6 d=None  3.55 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '6 months'->6 d=None  3.71 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '6 months'->6 d=None  4.07 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '8 months'->8 d=None  3.60 freq=at_maturity+monthly min=5000.0 max=5000000.0 lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '8 months'->8 d=None  3.70 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '8 months'->8 d=None  3.87 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '8 months'->8 d=None  4.25 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '9 months'->9 d=None  3.70 freq=at_maturity+monthly min=5000.0 max=5000000.0 lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '9 months'->9 d=None  3.81 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '9 months'->9 d=None  3.98 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '9 months'->9 d=None  4.37 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=   '12 months'->12 d=None  4.00 freq=at_maturity+monthly min=5000.0 max=5000000.0 lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=   '12 months'->12 d=None  4.11 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=   '12 months'->12 d=None  4.30 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=   '12 months'->12 d=None  4.72 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=   '18 months'->18 d=None  4.30 freq=at_maturity+monthly min=5000.0 max=5000000.0 lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=   '18 months'->18 d=None  4.42 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=   '18 months'->18 d=None  4.62 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=   '18 months'->18 d=None  5.08 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '2 years'->24 d=None  4.30 freq=at_maturity+monthly min=5000.0 max=5000000.0 lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '2 years'->24 d=None  4.42 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '2 years'->24 d=None  4.62 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '2 years'->24 d=None  5.08 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '3 years'->36 d=None  4.60 freq=at_maturity+monthly min=5000.0 max=5000000.0 lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '3 years'->36 d=None  4.73 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '3 years'->36 d=None  4.94 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '3 years'->36 d=None  5.43 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '4 years'->48 d=None  4.85 freq=at_maturity+monthly min=5000.0 max=5000000.0 lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '4 years'->48 d=None  4.99 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '4 years'->48 d=None  5.21 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '4 years'->48 d=None  5.72 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '5 years'->60 d=None  4.85 freq=at_maturity+monthly min=5000.0 max=5000000.0 lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '5 years'->60 d=None  4.99 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '5 years'->60 d=None  5.21 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '5 years'->60 d=None  5.72 freq=at_maturity+monthly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+
+== Kiwibank home_loan kiwibank_home_loans.html: 4 recs, skipped=0, accepted=4 rejected=0 cats={'special': 4}
+   special          term=    '6 months'->6 d=None  5.45 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   special          term=      '1 year'->12 d=None  4.89 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   special          term=     '2 years'->24 d=None  5.15 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+   special          term=     '3 years'->36 d=None  5.35 freq=unknown min=None max=None lvr=min_20_percent_equity maxlvr=0.8 name='Fixed Special' cb=None pkg=None eff=None
+
+== Kiwibank term_deposit kiwibank_term_deposits.html: 3 recs, skipped=0, accepted=3 rejected=0 cats={'term_deposit': 3}
+   term_deposit     term='30 days ^Minimum balance $5,000'->1 d=30  1.90 freq=at_maturity min=5000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '6 months'->6 d=None  3.50 freq=at_maturity min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=      '1 year'->12 d=None  4.00 freq=at_maturity min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+
+== Kiwibank term_deposit term_deposits_2026-10-30/kiwibank_term_deposits.html: 34 recs, skipped=0, accepted=34 rejected=0 cats={'term_deposit': 14, 'pie_term_deposit': 8, 'non_comparable': 12}
+   term_deposit     term='30 days ^Minimum balance $5,000'->1 d=30  1.90 freq=at_maturity min=5000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term='60 days ^Minimum balance $5,000'->2 d=60  2.00 freq=at_maturity min=5000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '90 days'->3 d=90  3.05 freq=at_maturity min=1000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=     '90 days'->3 d=90  3.05 freq=at_maturity min=10000.0 max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=     '90 days'->3 d=90  3.60 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '100 days'->None d=100  3.05 freq=at_maturity min=1000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '100 days'->None d=100  3.05 freq=at_maturity min=10000.0 max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '100 days'->None d=100  3.60 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '120 days'->4 d=120  3.10 freq=at_maturity min=1000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '120 days'->4 d=120  3.10 freq=at_maturity min=10000.0 max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '120 days'->4 d=120  3.66 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '150 days'->5 d=150  3.25 freq=at_maturity min=1000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '150 days'->5 d=150  3.25 freq=at_maturity min=10000.0 max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '150 days'->5 d=150  3.84 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '6 months'->6 d=None  3.60 freq=at_maturity min=1000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '6 months'->6 d=None  3.60 freq=at_maturity min=10000.0 max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '6 months'->6 d=None  4.25 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '200 days'->None d=200  3.50 freq=at_maturity min=1000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '200 days'->None d=200  3.50 freq=at_maturity min=10000.0 max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '200 days'->None d=200  4.13 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   term_deposit     term=    '9 months'->9 d=None  3.70 freq=at_maturity min=1000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=    '9 months'->9 d=None  3.70 freq=at_maturity min=10000.0 max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=    '9 months'->9 d=None  4.37 freq=at_maturity min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   term_deposit     term=      '1 year'->12 d=None  4.05 freq=at_maturity+monthly+quarterly min=1000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   pie_term_deposit term=      '1 year'->12 d=None  4.05 freq=at_maturity+monthly+quarterly min=10000.0 max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term=      '1 year'->12 d=None  4.78 freq=at_maturity+monthly+quarterly min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '2 years'->24 d=None  4.30 freq=annually+at_maturity+monthly+quarterly min=1000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '3 years'->36 d=None  4.60 freq=annually+at_maturity+monthly+quarterly min=1000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '4 years'->48 d=None  4.85 freq=annually+at_maturity+monthly+quarterly min=1000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   term_deposit     term=     '5 years'->60 d=None  4.85 freq=annually+at_maturity+monthly+quarterly min=1000.0 max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term='2.20 % p.a. for 32 days notice period 2.75 % p.a. for 90 days notice period'->1 d=32  2.75 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term='2.20 % p.a. for 32 days notice period 2.75 % p.a. for 90 days notice period'->1 d=32  1.90 freq=unknown min=None max=None lvr=None maxlvr=None name='Term deposit' cb=None pkg=None eff=None
+   non_comparable   term='2.20 % p.a. for 32 days notice period 2.75 % p.a. for 90 days notice period'->1 d=32  1.90 freq=unknown min=None max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None
+   non_comparable   term="You can't break your PIE Term Deposit within the first 30 days. After the first 30 days, if we agree to break the PIE Term Deposit: The amount you can withdraw must be at least $500; and You must either maintain a minimum balance of $10,000 or withdraw all of your balance. If you break a PIE Term Deposit, an early termination charge may apply. The charge is a reduction to the return payable to you on the amount you want to withdraw early. The rate of return that'll be applied to the amount of money you want to withdraw will be your original rate of return less 2%, while the return payable to you will be calculated using the following formula: Reduced return to be paid = amount to be withdrawn × (days invested ÷ 365) × (original rate of return − 2%) where the original rate of return is the rate of return we agreed when you invested. Visit our breaking a term deposit early page for more details."->1 d=30  2.00 freq=unknown min=500.0 max=None lvr=None maxlvr=None name='PIE term deposit' cb=None pkg=None eff=None

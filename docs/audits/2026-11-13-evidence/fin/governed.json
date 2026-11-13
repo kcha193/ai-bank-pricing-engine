@@ -1,0 +1,86 @@
+{
+ "baseline": {
+  "status": "REVIEW_REQUIRED",
+  "loan": 0.0619,
+  "dep": 0.0405,
+  "obj": 5920859,
+  "gates": {
+   "CONFIG_VALID": "PASS",
+   "COMPETITOR_RATE_FRESHNESS": "PASS",
+   "MODEL_APPROVAL_STATUS[loan]": "PASS",
+   "MODEL_ARTIFACT_AVAILABLE[loan]": "PASS",
+   "MODEL_APPROVAL_STATUS[deposit]": "PASS",
+   "MODEL_ARTIFACT_AVAILABLE[deposit]": "PASS",
+   "MODEL_FEATURE_COMPATIBILITY[loan]": "PASS",
+   "MODEL_FEATURE_COMPATIBILITY[deposit]": "PASS",
+   "BOUNDARY_WARNING": "PASS",
+   "EXPANSION_CAPPED": "PASS",
+   "POLICY_BAND_BREACH": "WARN",
+   "FUNDING_SHORTFALL": "WARN",
+   "LINEAGE_COMPLETE": "PASS",
+   "OBJECTIVE_FINITE": "PASS"
+  },
+  "review_reasons": [
+   "Recommended rate falls outside the originally configured policy band.",
+   "Recommended rates leave a funding shortfall of $2,591,286."
+  ]
+ },
+ "roe_floor_1000pct": {
+  "status": "REVIEW_REQUIRED",
+  "loan": 0.0619,
+  "dep": 0.0405,
+  "obj": 5920859,
+  "gates": {
+   "CONFIG_VALID": "PASS",
+   "COMPETITOR_RATE_FRESHNESS": "PASS",
+   "MODEL_APPROVAL_STATUS[loan]": "PASS",
+   "MODEL_ARTIFACT_AVAILABLE[loan]": "PASS",
+   "MODEL_APPROVAL_STATUS[deposit]": "PASS",
+   "MODEL_ARTIFACT_AVAILABLE[deposit]": "PASS",
+   "MODEL_FEATURE_COMPATIBILITY[loan]": "PASS",
+   "MODEL_FEATURE_COMPATIBILITY[deposit]": "PASS",
+   "BOUNDARY_WARNING": "PASS",
+   "EXPANSION_CAPPED": "PASS",
+   "POLICY_BAND_BREACH": "WARN",
+   "FUNDING_SHORTFALL": "WARN",
+   "LINEAGE_COMPLETE": "PASS",
+   "OBJECTIVE_FINITE": "PASS"
+  },
+  "review_reasons": [
+   "Recommended rate falls outside the originally configured policy band.",
+   "Recommended rates leave a funding shortfall of $2,591,286."
+  ]
+ },
+ "nan_competitor_error": "ValueError: cannot convert float NaN to integer",
+ "segmented_wide_single_tier": {
+  "status": "REVIEW_REQUIRED",
+  "loan": 0.0565,
+  "dep": 0.042,
+  "obj": -269144,
+  "gates": {
+   "CONFIG_VALID": "PASS",
+   "COMPETITOR_RATE_FRESHNESS": "PASS",
+   "MODEL_APPROVAL_STATUS[loan]": "PASS",
+   "MODEL_ARTIFACT_AVAILABLE[loan]": "PASS",
+   "MODEL_APPROVAL_STATUS[deposit]": "PASS",
+   "MODEL_ARTIFACT_AVAILABLE[deposit]": "PASS",
+   "MODEL_FEATURE_COMPATIBILITY[loan]": "PASS",
+   "MODEL_FEATURE_COMPATIBILITY[deposit]": "PASS",
+   "BOUNDARY_WARNING": "PASS",
+   "EXPANSION_CAPPED": "PASS",
+   "POLICY_BAND_BREACH": "PASS",
+   "FUNDING_SHORTFALL": "WARN",
+   "LINEAGE_COMPLETE": "PASS",
+   "OBJECTIVE_FINITE": "PASS"
+  },
+  "review_reasons": [
+   "Recommended rates leave a funding shortfall of $552,407,254."
+  ]
+ },
+ "baseline_no_expansion": {
+  "status": "REVIEW_REQUIRED",
+  "loan": 0.0549,
+  "obj": -4508279
+ }
+}
+tmp <tmp>

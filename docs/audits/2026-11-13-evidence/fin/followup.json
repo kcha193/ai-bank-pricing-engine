@@ -1,0 +1,92 @@
+{
+ "n_deposit_customers_5000": {
+  "loan": 0.0619,
+  "dep": 0.0405,
+  "obj": 5920859,
+  "L": 509991692,
+  "D": 328903314,
+  "short": 2591286,
+  "bw": false,
+  "pb": true
+ },
+ "n_deposit_customers_10000": {
+  "loan": 0.0599,
+  "dep": 0.0385,
+  "obj": 8575316,
+  "L": 792389411,
+  "D": 520997629,
+  "short": 0,
+  "bw": false,
+  "pb": true
+ },
+ "n_deposit_customers_25000": {
+  "loan": 0.0579,
+  "dep": 0.035,
+  "obj": 12581380,
+  "L": 1150898096,
+  "D": 752237652,
+  "short": 0,
+  "bw": false,
+  "pb": true
+ },
+ "required_ratio_0": {
+  "loan": 0.0564,
+  "dep": 0.032,
+  "obj": 11976303,
+  "L": 1449888206,
+  "D": 82747313,
+  "short": 0,
+  "bw": false,
+  "pb": true
+ },
+ "mean_expected_loss_rate": 0.007878386772855912,
+ "balance_weighted_expected_loss_rate": 0.007983321131449254,
+ "loss_rate_pctiles": [
+  0.0037511064406776126,
+  0.0077079627152425705,
+  0.012634921559941555
+ ],
+ "wide_single_tier": {
+  "segmented": {
+   "loan": 0.0565,
+   "dep": 0.042,
+   "obj": -269144,
+   "L": 1429643304,
+   "D": 376860894,
+   "short": 552407254,
+   "bw": false,
+   "pb": false
+  },
+  "joint": {
+   "loan": 0.0615,
+   "dep": 0.0415,
+   "obj": 5904280,
+   "L": 559671315,
+   "D": 361422865,
+   "short": 2363489,
+   "bw": false,
+   "pb": false
+  },
+  "objective_gap": 6173423.621704562
+ },
+ "wide_two_deposit_tiers": {
+  "loan": 0.0565,
+  "dep": 0.042,
+  "obj": -269144,
+  "L": 1429643304,
+  "D": 376860894,
+  "short": 552407254,
+  "bw": false,
+  "pb": false
+ },
+ "wide_two_deposit_tiers_tiers": {
+  "loan_tiers": {
+   "all": 0.0565
+  },
+  "deposit_tiers": {
+   "small": 0.042,
+   "large": 0.042
+  }
+ },
+ "segmented_returns_before_registry": true
+}

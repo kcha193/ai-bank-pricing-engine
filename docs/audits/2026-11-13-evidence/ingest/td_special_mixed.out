@@ -1,0 +1,4 @@
+exit 0 SUCCESS failures []
+ASB 12m accepted rows: [('term_deposit', '12 Months', 4.0), ('special', '12 Months Special', 4.5)]
+default TD snapshot 12m: [('BNZ', 4.05, 1), ('Kiwibank', 4.05, 1), ('ANZ', 4.0, 3), ('ASB', 4.0, 3), ('Westpac', 4.0, 3)]
+MARKET_LEADER deposit benchmark: 4.05 market-leading advertised rate (BNZ, Kiwibank) -- the advertised 4.50% ASB special is not considered

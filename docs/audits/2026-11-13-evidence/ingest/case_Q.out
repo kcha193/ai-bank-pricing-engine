@@ -1,0 +1,33 @@
+Q1 baseline + idempotent re-run of the same run_id
+  [after run-A] observations=255 collection_run_products=1 operational_runs=1 rate_changes=0 ASB12 rows=[(4.0, 'unvalidated', '2026-11-10T18:30:00+00:00', '2026-11-10T18:30:00+00:00', 1)]
+  retry same run_id: already_recorded= True code 0 changes 0
+  [after run-A retry] observations=255 collection_run_products=1 operational_runs=1 rate_changes=0 ASB12 rows=[(4.0, 'unvalidated', '2026-11-10T18:30:00+00:00', '2026-11-10T18:30:00+00:00', 1)]
+Q2 identical re-collection with a new run_id (T0+1d)
+  inserted 0 unchanged 255 changes 0
+  [after run-B] observations=255 collection_run_products=2 operational_runs=2 rate_changes=0 ASB12 rows=[(4.0, 'unvalidated', '2026-11-10T18:30:00+00:00', '2026-11-11T18:30:00+00:00', 2)]
+Q3 duplicate row on page (same term, same rate) and conflicting duplicate (same term, different rate)
+  exact dup: code 0 rejected 0 changes []
+  conflict: code 2 rejected [('ASB', '12 Months', 4.0), ('ASB', '12 Months', 4.4)] changes [] ASB12 in snapshot (4.0, '2026-11-12T18:30:00+00:00', False)
+  [after run-D] observations=255 collection_run_products=4 operational_runs=4 rate_changes=0 ASB12 rows=[(4.0, 'unvalidated', '2026-11-10T18:30:00+00:00', '2026-11-12T18:30:00+00:00', 3)]
+Q4 failed run (total outage) then recovery with a genuine -10bps move
+  outage: code 1 changes 0 write_result None
+  [after failed run-E] observations=255 collection_run_products=4 operational_runs=5 rate_changes=0 ASB12 rows=[(4.0, 'unvalidated', '2026-11-10T18:30:00+00:00', '2026-11-12T18:30:00+00:00', 3)]
+  recovery: code 0 changes ['ASB 12m term_deposit: 4.00% -> 3.90% (-10 bps)']
+  [after run-F] observations=256 collection_run_products=5 operational_runs=6 rate_changes=1 ASB12 rows=[(4.0, 'unvalidated', '2026-11-10T18:30:00+00:00', '2026-11-12T18:30:00+00:00', 3), (3.9, 'unvalidated', '2026-11-15T18:30:00+00:00', '2026-11-15T18:30:00+00:00', 1)]
+Q5 out-of-order (backdated) collection
+  backdated run rejected: collections must be written in chronological order per product (this run 2026-11-15 06:30:00+00:00, latest sto
+  equal-timestamp second run accepted: code 0 changes 0
+Q6 plausible-but-wrong reading (+60bps, under the 75bps quarantine threshold) and its correction
+  accepted unflagged; changes [('ASB 12m term_deposit: 3.90% -> 4.50% (+60 bps)', False)] ASB12 (4.5, '2026-11-16T18:30:00+00:00', False) MARKET_LEADER 4.5
+  correction next day: changes ['ASB 12m term_deposit: 4.50% -> 3.90% (-60 bps)']
+  rate_changes ASB 12m history: [('RATE_DECREASE', 4.0, 3.9, -10.0, 0, 'run-F'), ('RATE_INCREASE', 3.9, 4.5, 60.0, 0, 'run-G'), ('RATE_DECREASE', 4.5, 3.9, -60.0, 0, 'run-H')]
+Q7 genuine large reprice (+100bps) re-observed every day: is it ever admitted?
+  day 8: code 0 suspicious_keys=1 ASB12 in snapshot=(3.9, '2026-11-17T18:30:00+00:00', True) MARKET_LEADER=4.05
+  day 9: code 0 suspicious_keys=1 ASB12 in snapshot=(3.9, '2026-11-17T18:30:00+00:00', True) MARKET_LEADER=4.05
+  day 10: code 0 suspicious_keys=1 ASB12 in snapshot=(3.9, '2026-11-17T18:30:00+00:00', True) MARKET_LEADER=4.05
+  day 11: code 0 suspicious_keys=1 ASB12 in snapshot=(3.9, '2026-11-17T18:30:00+00:00', True) MARKET_LEADER=4.05
+  day 12: code 0 suspicious_keys=1 ASB12 in snapshot=(3.9, '2026-11-17T18:30:00+00:00', True) MARKET_LEADER=4.05
+  day 13: code 0 suspicious_keys=1 ASB12 in snapshot=(3.9, '2026-11-17T18:30:00+00:00', True) MARKET_LEADER=4.05
+  day 14: code 0 suspicious_keys=1 ASB12 in snapshot=None MARKET_LEADER=4.05
+  day 15: code 0 suspicious_keys=1 ASB12 in snapshot=None MARKET_LEADER=4.05
+  day 16: code 0 suspicious_keys=1 ASB12 in snapshot=None MARKET_LEADER=4.05

@@ -980,16 +980,22 @@ def test_webhook_text_field_is_threaded_through_the_cli(
 
 
 @pytest.mark.parametrize("collection_exit", [0, 1, 2, 3])
-def test_canary_health_status_exposes_partial_collection_failures(collection_exit):
+@pytest.mark.parametrize("product", ["home_loan", "term_deposit"])
+def test_canary_health_status_exposes_partial_collection_failures(collection_exit, product):
     """Run the actual health-report shell step after GitHub resolves its output."""
     workflow = yaml.safe_load(Path(".github/workflows/collector-canary.yml").read_text())
     steps = next(iter(workflow["jobs"].values()))["steps"]
     report_step = next(step for step in steps if step.get("name") == "Report collector health")
     script = report_step["run"].replace(
         "${{ steps.collect.outputs.exit_code }}", str(collection_exit)
-    )
+    ).replace("${{ matrix.product }}", product)
     result = subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True, check=False)
-    assert (result.returncode == 0) is (collection_exit == 0), result.stdout
+    assert result.stderr == ""
+    assert result.returncode == (0 if collection_exit == 0 else 1), result.stdout
+    if collection_exit == 0:
+        assert product in result.stdout
+    else:
+        assert "::error::" in result.stdout
 
 
 def test_a_backwards_clock_is_a_classified_failure_not_a_traceback(

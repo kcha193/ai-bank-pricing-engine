@@ -1,0 +1,23 @@
+
+===== home_loan
+ day 1: exit 2; 12m entries: [('ANZ', 4.79, 1), ('BNZ', 4.85, 25), ('Westpac', 4.85, 25), ('ASB', 4.89, 25), ('Kiwibank', 4.89, 25)]
+   MARKET_MEDIAN -> 4.850% as_of=2026-11-11T18:30:00+00:00 (oldest input 25h old) rationale='median advertised rate across 5 banks'
+ day 6: exit 2; 12m entries: [('ANZ', 4.79, 1), ('BNZ', 4.85, 145), ('Westpac', 4.85, 145), ('ASB', 4.89, 145), ('Kiwibank', 4.89, 145)]
+   MARKET_MEDIAN -> 4.850% as_of=2026-11-16T18:30:00+00:00 (oldest input 145h old) rationale='median advertised rate across 5 banks'
+ day 8: exit 2; 12m entries: [('ANZ', 4.79, 1)]
+   MARKET_MEDIAN -> 4.790% as_of=2026-11-18T18:30:00+00:00 (oldest input 1h old) rationale='median advertised rate across 1 banks'
+ day 30 (all stale): MARKET_MEDIAN requires advertised rates at 12 months; snapshot covers []
+
+===== term_deposit
+ day 1: exit 2; 12m entries: [('BNZ', 4.05, 25), ('Kiwibank', 4.05, 25), ('ANZ', 4.0, 1), ('ASB', 4.0, 25), ('Westpac', 4.0, 25)]
+   MARKET_MEDIAN -> 4.000% as_of=2026-11-11T18:30:00+00:00 (oldest input 25h old) rationale='median advertised rate across 5 banks'
+ day 6: exit 2; 12m entries: [('BNZ', 4.05, 145), ('Kiwibank', 4.05, 145), ('ANZ', 4.0, 1), ('ASB', 4.0, 145), ('Westpac', 4.0, 145)]
+   MARKET_MEDIAN -> 4.000% as_of=2026-11-16T18:30:00+00:00 (oldest input 145h old) rationale='median advertised rate across 5 banks'
+ day 8: exit 2; 12m entries: [('ANZ', 4.0, 1)]
+   MARKET_MEDIAN -> 4.000% as_of=2026-11-18T18:30:00+00:00 (oldest input 1h old) rationale='median advertised rate across 1 banks'
+ day 30 (all stale): MARKET_MEDIAN requires advertised rates at 12 months; snapshot covers []
+
+===== legacy competitor_rates: fixture captured_at 2026-04-27 00:00:00+00:00 status valid
+ strict=True: CompetitorRateResolutionError: Competitor-rate file is stale: 4807.5 hours old (max 48)
+ strict=False: resolved mortgage 0.057 deposit 0.043; warnings=['Competitor-rate file is stale: 4807.5 hours old (max 48)']
+   apply_competitor_rates_to_config -> competitor_loan_rate 0.057; returned object carries no warning/age field: []

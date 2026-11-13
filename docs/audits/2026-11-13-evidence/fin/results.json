@@ -1,0 +1,593 @@
+{
+ "hand_example": {
+  "hand": {
+   "loan_vol": 100000.0,
+   "dep_vol": 80000,
+   "income": 6000.0,
+   "ecl": 1500.0,
+   "dep_cost": 3200.0,
+   "wholesale": 800.0,
+   "excess": 0.0,
+   "capital": 420.0,
+   "shortfall": 10000.0,
+   "penalty": 200.0
+  },
+  "engine": {
+   "loan_vol": 100000.0,
+   "dep_vol": 80000.0,
+   "income": 6000.0,
+   "ecl": 1500.0,
+   "dep_cost": 3200.0,
+   "wholesale": 800.0,
+   "excess": 0.0,
+   "capital": 420.0,
+   "shortfall": 10000.0,
+   "penalty": 200.0
+  },
+  "hand_objective": -120.0,
+  "engine_objective": -120.0,
+  "match": true,
+  "note": "Below required ratio a marginal deposit $ saves wholesale+penalty = 4%+2%; between ratio and 100% it saves wholesale 4%; above 100% it earns cash 3%."
+ },
+ "reference_optimiser": {
+  "grid_points": 357,
+  "max_abs_objective_diff_vs_reference": 2.9802322387695312e-08,
+  "reference_best": {
+   "obj": -4508278.788019592,
+   "loan": 0.0549,
+   "dep": 0.042
+  },
+  "engine_best_initial_grid": {
+   "obj": -4508278.788019592,
+   "loan": 0.0549,
+   "dep": 0.042
+  },
+  "run_baseline_diagnostics": {
+   "loan_rate": 0.0619,
+   "deposit_rate": 0.0405,
+   "objective": 5920859.37,
+   "loan_vol": 509991692.0,
+   "dep_vol": 328903314.0,
+   "shortfall": 2591286.0,
+   "boundary_warning": false,
+   "initial_boundary_warning": true,
+   "expansion_rounds": 1,
+   "expansion_capped": false,
+   "policy_band_breached": true
+  },
+  "objective_gap_best_vs_second": 3714.6943571660668,
+  "objective_rel_gap": 0.0008239717488274205,
+  "best_row_roe": 0.04641421715439403,
+  "best_row_components": {
+   "loan_interest_income": 96099504.89701739,
+   "expected_credit_loss": 12908363.116101963,
+   "capital_charge": 7351874.6915751,
+   "deposit_interest_cost": 15828157.53445831,
+   "wholesale_funding_cost": 50822662.07399596,
+   "excess_deposit_income": 0.0,
+   "funding_shortfall_penalty": 13696726.268905649,
+   "expected_loan_volume": 1750446355.1369288,
+   "expected_deposit_volume": 376860893.6775788,
+   "funding_shortfall": 760929237.161425
+  }
+ },
+ "A_loan_rate_up": {
+  "loan_volume_strictly_decreasing": true,
+  "ecl_strictly_decreasing": true,
+  "wholesale_cost_nonincreasing": true,
+  "deposit_cost_constant": true,
+  "loan_income_monotone": "non-monotone",
+  "volume_at_min_max": [
+   2827638246.990526,
+   1750446355.1369288
+  ],
+  "verdict": "PASS"
+ },
+ "B_deposit_rate_up": {
+  "deposit_volume_strictly_increasing": true,
+  "deposit_cost_strictly_increasing": true,
+  "loan_side_constant": true,
+  "shortfall_nonincreasing": true,
+  "verdict": "PASS"
+ },
+ "prob_bounds": {
+  "all_finite": true,
+  "loan_take_up_at_market_pct": 0.85763576079296,
+  "deposit_take_up_at_market_pct": 0.4989168966723004,
+  "total_applied_loan_balance": 2936644188.9837227,
+  "total_prospect_deposit_balance": 556487049.0173755
+ },
+ "perturbations": {
+  "baseline": {
+   "loan_rate": 0.0619,
+   "deposit_rate": 0.0405,
+   "objective": 5920859.37,
+   "loan_vol": 509991692.0,
+   "dep_vol": 328903314.0,
+   "shortfall": 2591286.0,
+   "boundary_warning": false,
+   "initial_boundary_warning": true,
+   "expansion_rounds": 1,
+   "expansion_capped": false,
+   "policy_band_breached": true
+  },
+  "C_competitor_loan_minus_100bp": {
+   "loan_rate": 0.0584,
+   "deposit_rate": 0.039,
+   "objective": 3830377.16,
+   "loan_vol": 417322741.0,
+   "dep_vol": 277640792.0,
+   "shortfall": 0.0,
+   "boundary_warning": false,
+   "initial_boundary_warning": true,
+   "expansion_rounds": 1,
+   "expansion_capped": false,
+   "policy_band_breached": true,
+   "config_warnings": []
+  },
+  "D_competitor_deposit_plus_100bp": {
+   "loan_rate": 0.0624,
+   "deposit_rate": 0.0435,
+   "objective": 4495357.03,
+   "loan_vol": 452660374.0,
+   "dep_vol": 281095924.0,
+   "shortfall": 13133319.0,
+   "boundary_warning": false,
+   "initial_boundary_warning": true,
+   "expansion_rounds": 1,
+   "expansion_capped": false,
+   "policy_band_breached": true,
+   "config_warnings": []
+  },
+  "F_wholesale_spread_plus_200bp": {
+   "loan_rate": 0.0639,
+   "deposit_rate": 0.04,
+   "objective": 4044185.12,
+   "loan_vol": 310834636.0,
+   "dep_vol": 312027364.0,
+   "shortfall": 0.0,
+   "boundary_warning": false,
+   "initial_boundary_warning": true,
+   "expansion_rounds": 1,
+   "expansion_capped": false,
+   "policy_band_breached": true,
+   "config_warnings": []
+  },
+  "G_ocr_plus_100bp": {
+   "loan_rate": 0.0624,
+   "deposit_rate": 0.0395,
+   "objective": 4244006.31,
+   "loan_vol": 452660374.0,
+   "dep_vol": 294897303.0,
+   "shortfall": 0.0,
+   "boundary_warning": false,
+   "initial_boundary_warning": true,
+   "expansion_rounds": 1,
+   "expansion_capped": false,
+   "policy_band_breached": true,
+   "config_warnings": []
+  },
+  "G_ocr_minus_100bp": {
+   "loan_rate": 0.0574,
+   "deposit_rate": 0.038,
+   "objective": 10914050.81,
+   "loan_vol": 1248931213.0,
+   "dep_vol": 243273986.0,
+   "shortfall": 568531303.0,
+   "boundary_warning": false,
+   "initial_boundary_warning": true,
+   "expansion_rounds": 1,
+   "expansion_capped": false,
+   "policy_band_breached": true,
+   "config_warnings": []
+  },
+  "E_required_ratio_1.0": {
+   "loan_rate": 0.0639,
+   "deposit_rate": 0.04,
+   "objective": 4044185.12,
+   "loan_vol": 310834636.0,
+   "dep_vol": 312027364.0,
+   "shortfall": 0.0,
+   "boundary_warning": false,
+   "initial_boundary_warning": true,
+   "expansion_rounds": 1,
+   "expansion_capped": false,
+   "policy_band_breached": true,
+   "config_warnings": []
+  },
+  "E_required_ratio_1.0_penalty_x5": {
+   "loan_rate": 0.0639,
+   "deposit_rate": 0.04,
+   "objective": 4044185.12,
+   "loan_vol": 310834636.0,
+   "dep_vol": 312027364.0,
+   "shortfall": 0.0,
+   "boundary_warning": false,
+   "initial_boundary_warning": true,
+   "expansion_rounds": 1,
+   "expansion_capped": false,
+   "policy_band_breached": true,
+   "config_warnings": []
+  }
+ },
+ "K_boundary": {
+  "narrow_grid_above_optimum_max_exp_0": {
+   "loan_rate": 0.0549,
+   "deposit_rate": 0.042,
+   "objective": -4508278.79,
+   "loan_vol": 1750446355.0,
+   "dep_vol": 376860894.0,
+   "shortfall": 760929237.0,
+   "boundary_warning": true,
+   "initial_boundary_warning": true,
+   "expansion_rounds": 0,
+   "expansion_capped": true,
+   "policy_band_breached": false
+  },
+  "narrow_grid_above_optimum_max_exp_1": {
+   "loan_rate": 0.0579,
+   "deposit_rate": 0.042,
+   "objective": 2510588.93,
+   "loan_vol": 1150898096.0,
+   "dep_vol": 376860894.0,
+   "shortfall": 371222869.0,
+   "boundary_warning": true,
+   "initial_boundary_warning": true,
+   "expansion_rounds": 1,
+   "expansion_capped": true,
+   "policy_band_breached": true
+  },
+  "narrow_grid_above_optimum_max_exp_2": {
+   "loan_rate": 0.0579,
+   "deposit_rate": 0.042,
+   "objective": 2510588.93,
+   "loan_vol": 1150898096.0,
+   "dep_vol": 376860894.0,
+   "shortfall": 371222869.0,
+   "boundary_warning": true,
+   "initial_boundary_warning": true,
+   "expansion_rounds": 2,
+   "expansion_capped": true,
+   "policy_band_breached": true
+  },
+  "narrow_grid_above_optimum_max_exp_4": {
+   "loan_rate": 0.0619,
+   "deposit_rate": 0.0405,
+   "objective": 5920859.37,
+   "loan_vol": 509991692.0,
+   "dep_vol": 328903314.0,
+   "shortfall": 2591286.0,
+   "boundary_warning": false,
+   "initial_boundary_warning": true,
+   "expansion_rounds": 4,
+   "expansion_capped": false,
+   "policy_band_breached": true
+  },
+  "wrong_sign_loan_elasticity_accepted_by_config": true,
+  "wrong_sign_loan_elasticity": {
+   "loan_rate": 0.0849,
+   "deposit_rate": 0.042,
+   "objective": 75427314.61,
+   "loan_vol": 2936630010.0,
+   "dep_vol": 376860894.0,
+   "shortfall": 1531948613.0,
+   "boundary_warning": true,
+   "initial_boundary_warning": true,
+   "expansion_rounds": 2,
+   "expansion_capped": true,
+   "policy_band_breached": true
+  }
+ },
+ "L_roe": {
+  "max_roe_in_grid": 0.6382290921644342,
+  "roe_of_unconstrained_best": 0.45170620878100226,
+  "floor_0.15": {
+   "loan_rate": 0.0619,
+   "deposit_rate": 0.0405,
+   "objective": 5920859.37,
+   "loan_vol": 509991692.0,
+   "dep_vol": 328903314.0,
+   "shortfall": 2591286.0,
+   "boundary_warning": false,
+   "initial_boundary_warning": true,
+   "expansion_rounds": 1,
+   "expansion_capped": false,
+   "policy_band_breached": true,
+   "selected_roe": 0.45170620878100226,
+   "n_qualifying": 256,
+   "any_warning_mentions_roe": false,
+   "same_as_unconstrained": true
+  },
+  "floor_1.0": {
+   "loan_rate": 0.0619,
+   "deposit_rate": 0.0405,
+   "objective": 5920859.37,
+   "loan_vol": 509991692.0,
+   "dep_vol": 328903314.0,
+   "shortfall": 2591286.0,
+   "boundary_warning": false,
+   "initial_boundary_warning": true,
+   "expansion_rounds": 1,
+   "expansion_capped": false,
+   "policy_band_breached": true,
+   "selected_roe": 0.45170620878100226,
+   "n_qualifying": 0,
+   "any_warning_mentions_roe": false,
+   "same_as_unconstrained": true
+  },
+  "floor_10.0": {
+   "loan_rate": 0.0619,
+   "deposit_rate": 0.0405,
+   "objective": 5920859.37,
+   "loan_vol": 509991692.0,
+   "dep_vol": 328903314.0,
+   "shortfall": 2591286.0,
+   "boundary_warning": false,
+   "initial_boundary_warning": true,
+   "expansion_rounds": 1,
+   "expansion_capped": false,
+   "policy_band_breached": true,
+   "selected_roe": 0.45170620878100226,
+   "n_qualifying": 0,
+   "any_warning_mentions_roe": false,
+   "same_as_unconstrained": true
+  },
+  "pricing_service_signature": "(self, feature_store: 'LocalFeatureStore | None' = None)"
+ },
+ "M_nonfinite": {
+  "competitor_loan_rate_nan": {
+   "config_accepted": true,
+   "warnings": [],
+   "run": {
+    "loan_rate": 0.0499,
+    "deposit_rate": 0.039,
+    "objective": NaN,
+    "loan_vol": NaN,
+    "dep_vol": 277640792.0,
+    "shortfall": NaN,
+    "boundary_warning": false,
+    "initial_boundary_warning": false,
+    "expansion_rounds": 0,
+    "expansion_capped": false,
+    "policy_band_breached": false,
+    "objective_is_finite": false,
+    "grid_rows_nonfinite_objective": 357
+   }
+  },
+  "cash_rate_inf": {
+   "config_accepted": true,
+   "warnings": [],
+   "run": {
+    "loan_rate": 0.0624,
+    "deposit_rate": 0.0395,
+    "objective": NaN,
+    "loan_vol": 452660374.0,
+    "dep_vol": 294897303.0,
+    "shortfall": 0.0,
+    "boundary_warning": false,
+    "initial_boundary_warning": true,
+    "expansion_rounds": 1,
+    "expansion_capped": false,
+    "policy_band_breached": true,
+    "objective_is_finite": false,
+    "grid_rows_nonfinite_objective": 1353
+   }
+  },
+  "cash_rate_negative_-0.5pct": {
+   "config_accepted": true,
+   "warnings": [],
+   "run": {
+    "loan_rate": 0.0509,
+    "deposit_rate": 0.021,
+    "objective": 48846562.66,
+    "loan_vol": 2405271886.0,
+    "dep_vol": 6168778.0,
+    "shortfall": 1557257948.0,
+    "boundary_warning": false,
+    "initial_boundary_warning": true,
+    "expansion_rounds": 2,
+    "expansion_capped": false,
+    "policy_band_breached": true,
+    "objective_is_finite": true,
+    "grid_rows_nonfinite_objective": 0
+   }
+  },
+  "wholesale_spread_negative": {
+   "config_accepted": true,
+   "warnings": [
+    "negative wholesale_funding_spread may imply below-cash wholesale funding."
+   ],
+   "run": {
+    "loan_rate": 0.0474,
+    "deposit_rate": 0.011,
+    "objective": 132181743.62,
+    "loan_vol": 2718009599.0,
+    "dep_vol": 511718.0,
+    "shortfall": 1766194522.0,
+    "boundary_warning": true,
+    "initial_boundary_warning": true,
+    "expansion_rounds": 2,
+    "expansion_capped": true,
+    "policy_band_breached": true,
+    "objective_is_finite": true,
+    "grid_rows_nonfinite_objective": 0
+   }
+  },
+  "loan_rate_elasticity_nan": {
+   "config_accepted": true,
+   "warnings": [],
+   "run": {
+    "loan_rate": 0.0499,
+    "deposit_rate": 0.039,
+    "objective": NaN,
+    "loan_vol": NaN,
+    "dep_vol": 277640792.0,
+    "shortfall": NaN,
+    "boundary_warning": false,
+    "initial_boundary_warning": false,
+    "expansion_rounds": 0,
+    "expansion_capped": false,
+    "policy_band_breached": false,
+    "objective_is_finite": false,
+    "grid_rows_nonfinite_objective": 357
+   }
+  }
+ },
+ "N_determinism": {
+  "hashes": [
+   "18090edb303d7d363d14c460e68ba271cdcdece24d139e90ca82e31a618ca9a7",
+   "18090edb303d7d363d14c460e68ba271cdcdece24d139e90ca82e31a618ca9a7"
+  ],
+  "identical": true
+ },
+ "O_multiperiod": {
+  "period_objectives": [
+   5920859.368621694,
+   5920859.368621694
+  ],
+  "period_contribs": [
+   5920859.368621694,
+   5350067.449321352
+  ],
+  "implied_back_book_income_p1": -570791.919300342,
+  "engine_back_book_formula_p1": -570791.919300342,
+  "consistent_back_book_if_book_kept_same_economics": 5920859.368621694,
+  "same_customers_each_period": true,
+  "drift_100bp_per_period": [
+   {
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "objective": 5920859.37,
+    "loan_vol": 509991692.0,
+    "dep_vol": 328903314.0,
+    "shortfall": 2591286.0,
+    "boundary_warning": false,
+    "initial_boundary_warning": true,
+    "expansion_rounds": 1,
+    "expansion_capped": false,
+    "policy_band_breached": true
+   },
+   {
+    "loan_rate": 0.0664,
+    "deposit_rate": 0.0445,
+    "objective": 4882144.34,
+    "loan_vol": 490297061.0,
+    "dep_vol": 315426859.0,
+    "shortfall": 3266231.0,
+    "boundary_warning": false,
+    "initial_boundary_warning": true,
+    "expansion_rounds": 2,
+    "expansion_capped": false,
+    "policy_band_breached": true
+   },
+   {
+    "loan_rate": 0.0719,
+    "deposit_rate": 0.0485,
+    "objective": 4052345.45,
+    "loan_vol": 368500232.0,
+    "dep_vol": 301771777.0,
+    "shortfall": 0.0,
+    "boundary_warning": false,
+    "initial_boundary_warning": true,
+    "expansion_rounds": 2,
+    "expansion_capped": false,
+    "policy_band_breached": true
+   }
+  ]
+ },
+ "segmented_vs_joint_single_tier": {
+  "baseline": {
+   "segmented": {
+    "loan_rate": 0.0549,
+    "deposit_rate": 0.042,
+    "objective": -4508278.79,
+    "loan_vol": 1750446355.0,
+    "dep_vol": 376860894.0,
+    "shortfall": 760929237.0,
+    "boundary_warning": true,
+    "initial_boundary_warning": true,
+    "expansion_rounds": 0,
+    "expansion_capped": true,
+    "policy_band_breached": false
+   },
+   "joint": {
+    "loan_rate": 0.0549,
+    "deposit_rate": 0.042,
+    "objective": -4508278.79,
+    "loan_vol": 1750446355.0,
+    "dep_vol": 376860894.0,
+    "shortfall": 760929237.0,
+    "boundary_warning": true,
+    "initial_boundary_warning": true,
+    "expansion_rounds": 0,
+    "expansion_capped": true,
+    "policy_band_breached": false
+   },
+   "objective_shortfall_of_segmented": 0.0
+  },
+  "stressed_funding": {
+   "segmented": {
+    "loan_rate": 0.0549,
+    "deposit_rate": 0.043,
+    "objective": -58599203.77,
+    "loan_vol": 1750446355.0,
+    "dep_vol": 405690046.0,
+    "shortfall": 1344756309.0,
+    "boundary_warning": true,
+    "initial_boundary_warning": true,
+    "expansion_rounds": 0,
+    "expansion_capped": true,
+    "policy_band_breached": false
+   },
+   "joint": {
+    "loan_rate": 0.0549,
+    "deposit_rate": 0.043,
+    "objective": -58599203.77,
+    "loan_vol": 1750446355.0,
+    "dep_vol": 405690046.0,
+    "shortfall": 1344756309.0,
+    "boundary_warning": true,
+    "initial_boundary_warning": true,
+    "expansion_rounds": 0,
+    "expansion_capped": true,
+    "policy_band_breached": false
+   },
+   "objective_shortfall_of_segmented": 0.0
+  }
+ },
+ "perf": [
+  {
+   "n_customers": 1000,
+   "grid_rows": 697,
+   "seconds": 0.018
+  },
+  {
+   "n_customers": 5000,
+   "grid_rows": 697,
+   "seconds": 0.045
+  },
+  {
+   "n_customers": 20000,
+   "grid_rows": 697,
+   "seconds": 0.048
+  },
+  {
+   "step_bps": 5,
+   "grid_rows": 697,
+   "seconds": 0.025,
+   "best": [
+    0.0619,
+    0.0405
+   ]
+  },
+  {
+   "step_bps": 1,
+   "grid_rows": 16281,
+   "seconds": 0.432,
+   "best": [
+    0.0618,
+    0.0408
+   ]
+  }
+ ]
+}

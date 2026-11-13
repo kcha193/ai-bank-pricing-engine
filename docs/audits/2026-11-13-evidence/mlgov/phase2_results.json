@@ -1,0 +1,216 @@
+{
+  "bounds": {
+    "rate_range": [
+      -0.02,
+      0.2
+    ],
+    "min_p": 4.248354255291589e-18,
+    "max_p": 1.0,
+    "nan_count": 0
+  },
+  "monotonicity_own_rate": {
+    "loan_mean_strictly_decreasing": true,
+    "deposit_mean_strictly_increasing": true,
+    "loan_per_customer_violations": 0,
+    "deposit_per_customer_violations": 0,
+    "loan_mean_at_market(4.99%)": 0.8584284926188038,
+    "deposit_mean_at_market(3.90%)": 0.4986885845924512
+  },
+  "competitor_move_own_fixed": {
+    "loan_mean_comp-50bps": 0.1018865436489585,
+    "loan_mean_comp": 0.17447039268645634,
+    "loan_mean_comp+50bps": 0.2802209500053508,
+    "deposit_mean_comp-50bps": 0.7138397151836443,
+    "deposit_mean_comp": 0.5908115271290689,
+    "deposit_mean_comp+50bps": 0.4553462728983472
+  },
+  "identifiability": {
+    "note": "(a,b)=(-170,-130) vs (a+b,0)=(-300,0) with intercept shifted by b*(anchor-competitor)",
+    "max_abs_prob_diff_over_own_grid": 2.220446049250313e-16,
+    "own_rate_total_slope_loan": -300.0,
+    "own_rate_total_slope_deposit": 250.0,
+    "competitor_slope_loan(-b)": 130.0,
+    "competitor_slope_deposit(-b)": -110.0
+  },
+  "training_collinearity": {
+    "competitor_rate_std": 1.3878250423872314e-17,
+    "corr_offered_vs_gap": 0.9999999999999997,
+    "rank_of_[offered,competitor,gap]": 2,
+    "n_unique_offered_rates": 21
+  },
+  "logistic_raw_coefficients_rate_terms": {
+    "offered_rate": -146.75,
+    "competitor_rate": -0.0,
+    "rate_gap_to_competitor": -146.75
+  },
+  "competitor_sensitivity_table": [
+    {
+      "model": "truth",
+      "competitor_shift_bps": -50,
+      "mean_p": 0.1019
+    },
+    {
+      "model": "truth",
+      "competitor_shift_bps": 0,
+      "mean_p": 0.1745
+    },
+    {
+      "model": "truth",
+      "competitor_shift_bps": 50,
+      "mean_p": 0.2802
+    },
+    {
+      "model": "logistic",
+      "competitor_shift_bps": -50,
+      "mean_p": 0.1026
+    },
+    {
+      "model": "logistic",
+      "competitor_shift_bps": 0,
+      "mean_p": 0.1869
+    },
+    {
+      "model": "logistic",
+      "competitor_shift_bps": 50,
+      "mean_p": 0.3128
+    },
+    {
+      "model": "hist_gbm",
+      "competitor_shift_bps": -50,
+      "mean_p": 0.6454
+    },
+    {
+      "model": "hist_gbm",
+      "competitor_shift_bps": 0,
+      "mean_p": 0.6454
+    },
+    {
+      "model": "hist_gbm",
+      "competitor_shift_bps": 50,
+      "mean_p": 0.6454
+    }
+  ],
+  "own_rate_curve_truth_vs_ml": [
+    {
+      "offered_rate": 0.04,
+      "truth": 0.9912,
+      "logistic": 0.9904,
+      "hist_gbm": 0.9489
+    },
+    {
+      "offered_rate": 0.0499,
+      "truth": 0.8584,
+      "logistic": 0.8565,
+      "hist_gbm": 0.8475
+    },
+    {
+      "offered_rate": 0.0619,
+      "truth": 0.1745,
+      "logistic": 0.1869,
+      "hist_gbm": 0.6454
+    },
+    {
+      "offered_rate": 0.075,
+      "truth": 0.0044,
+      "logistic": 0.0053,
+      "hist_gbm": 0.6454
+    },
+    {
+      "offered_rate": 0.09,
+      "truth": 0.0,
+      "logistic": 0.0001,
+      "hist_gbm": 0.6454
+    },
+    {
+      "offered_rate": 0.11,
+      "truth": 0.0,
+      "logistic": 0.0,
+      "hist_gbm": 0.6454
+    }
+  ],
+  "training_offered_rate_range": [
+    0.0449,
+    0.0549
+  ],
+  "leakage": {
+    "share_test_rows_whose_customer_in_train": 0.874,
+    "scoring_population_equals_training_population": "workflow + optimiser both call make_rng(config.random_seed) then generate_loan_customers -> identical customers (see check below)",
+    "workflow_training_customers_subset_of_optimiser_customers": true
+  },
+  "workflow_reports": {
+    "loan": {
+      "metrics": {
+        "auc": 0.7687,
+        "log_loss": 0.3896,
+        "brier_score": 0.1218
+      },
+      "rate_check": true,
+      "lift_monotone": false
+    },
+    "deposit": {
+      "metrics": {
+        "auc": 0.6864,
+        "log_loss": 0.6399,
+        "brier_score": 0.2242
+      },
+      "rate_check": true,
+      "lift_monotone": false
+    }
+  },
+  "reproducibility_workflow_metrics_equal": true,
+  "generator_coefficient_mismatch": {
+    "config_loan_intercept": 0.5,
+    "dataset_ground_truth_mean_first200": 0.8421248589279299,
+    "optimiser_synthetic_truth_mean_first200": 0.5368571318894066,
+    "max_abs_diff": 0.4402079945016293
+  },
+  "training_agent": {
+    "models": [
+      {
+        "name": "elasticity_baseline",
+        "log_loss": 0.39646,
+        "auc": 0.759,
+        "cal_mae": 0.0244
+      },
+      {
+        "name": "logistic",
+        "log_loss": 0.39674,
+        "auc": 0.7588,
+        "cal_mae": 0.032
+      },
+      {
+        "name": "hist_gbm",
+        "log_loss": 0.40487,
+        "auc": 0.7469,
+        "cal_mae": 0.0561
+      }
+    ],
+    "recommended": "elasticity_baseline",
+    "test_rows_reported": 3000,
+    "test_metrics_present_in_report": false,
+    "champion_status_values": [
+      "challenger_candidate",
+      "recommended_challenger"
+    ],
+    "registry_config_hash_inputs": "features+target+seed only (agentic.py _stable_hash call in train())"
+  },
+  "elasticity_baseline_scored_via_adapter": {
+    "rates": [
+      0.04,
+      0.06,
+      0.08
+    ],
+    "mean_p": [
+      0.5,
+      0.5,
+      0.5
+    ]
+  },
+  "approval_controls": {
+    "promote_failed_model_with_empty_approver": {
+      "governance_status": "approved",
+      "champion_status": "champion",
+      "approved_by": ""
+    }
+  }
+}
