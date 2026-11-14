@@ -1,5 +1,16 @@
 # Modelling Assumptions
 
+## API execution boundary (Phase 1e)
+
+API requests are synthetic-data decision support and carry delivery-specific customer,
+grid, adaptive-expansion and sensitivity budgets before computation. The budgets bound
+worst-case work; they do not truncate a grid, lower expansion rounds, change a recommendation
+or recalibrate the model. Requests that exceed a budget receive HTTP 422. Trusted local CLI
+capacity remains unchanged. See [deployment.md](deployment.md#api-request-limits) for defaults
+and operator overrides. Existing economics, response elasticities, governance gates and ledger
+provenance remain unchanged. Engineering controls grant no real banking pricing approval and
+authorise no automatic pricing action.
+
 ## Current milestone
 
 - Home loan demand decreases as the offered loan rate increases.

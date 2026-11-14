@@ -1,6 +1,7 @@
 """Pricing Watch dashboard entry point.
 
-Launch: ``PYTHONPATH=src streamlit run src/balance_pricing_engine/dashboard/app.py``
+Launch: ``PYTHONPATH=src streamlit run src/balance_pricing_engine/dashboard/app.py
+--server.address 127.0.0.1``
 (``pip install -e ".[dashboard]"`` makes the PYTHONPATH prefix unnecessary).
 
 Six destinations in a top navigation bar. Every pre-redesign URL (``/overview``,

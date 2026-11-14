@@ -25,7 +25,11 @@ class PricingScenarioRequestV1(BaseModel):
 
     config_yaml: str = Field(
         ...,
-        description="Full EngineConfig YAML document (same shape as configs/base.yaml).",
+        description=(
+            "Full EngineConfig YAML document (same shape as configs/base.yaml). "
+            "API byte/nesting/customer/grid/workload limits apply; YAML aliases and "
+            "local file path overrides are forbidden. See docs/deployment.md."
+        ),
         examples=[_EXAMPLE_CONFIG_YAML],
     )
     scenario_name: str = Field(
@@ -125,7 +129,7 @@ class PricingDecisionResponseV1(BaseModel):
     feature_lineage: dict[str, FeatureLineageSchema]
     execution_duration_seconds: float
     run_id: str | None = None
-    run_dir: str | None = None
+    run_dir: str | None = Field(default=None, description="Relative run-ledger reference.")
     sensitivity: list[dict[str, Any]] | None = Field(
         default=None,
         description=(

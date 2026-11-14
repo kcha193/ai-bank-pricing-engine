@@ -45,6 +45,23 @@ def test_dockerfile_installs_api_extra_and_runs_the_api_server_launcher():
     assert "balance_pricing_engine.api.server" in dockerfile
 
 
+def test_docker_binding_requires_runtime_authentication():
+    import pytest
+
+    from balance_pricing_engine.api.server import resolve_server_kwargs
+
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    host = re.search(r"PRICING_ENGINE_API_HOST=(\S+)", dockerfile).group(1)
+    assert host == "0.0.0.0"
+    with pytest.raises(ValueError, match="authentication"):
+        resolve_server_kwargs({"PRICING_ENGINE_API_HOST": host})
+    settings = resolve_server_kwargs({
+        "PRICING_ENGINE_API_HOST": host, "PRICING_ENGINE_API_KEYS": "synthetic-runtime-key",
+    })
+    assert settings["host"] == "0.0.0.0"
+    assert settings["limit_concurrency"] == 4
+
+
 def test_api_server_launcher_runs_uvicorn_against_the_app():
     server_module = (
         REPO_ROOT / "src" / "balance_pricing_engine" / "api" / "server.py"

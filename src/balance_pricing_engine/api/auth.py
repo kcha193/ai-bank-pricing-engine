@@ -1,6 +1,6 @@
-"""Opt-in API-key auth for compute-triggering routes.
+"""API-key auth for compute-triggering routes.
 
-Disabled by default (today's behaviour is unchanged) — set PRICING_ENGINE_API_KEYS
+Optional for loopback serving — set PRICING_ENGINE_API_KEYS
 (comma-separated for basic key rotation) to enable. This is a defense-in-depth layer for
 deployments with no fronting proxy; the recommended production default is still an API
 gateway, mTLS, or auth proxy in front of the container — see docs/deployment.md.
@@ -28,7 +28,15 @@ def _configured_keys(secrets_provider: SecretsProvider) -> list[str] | None:
     raw = secrets_provider.get_secret(_API_KEYS_SECRET_NAME)
     if raw is None:
         return None
-    return [key.strip() for key in raw.split(",") if key.strip()]
+    # Spaces around comma-separated entries support existing rotation configuration.
+    # Empty entries, control characters and non-ASCII keys are configuration errors,
+    # not entries to silently discard. compare_digest(str, str) requires ASCII.
+    if any(character in raw for character in "\r\n\t"):
+        return []
+    keys = [key.strip(" ") for key in raw.split(",")]
+    if any(not key or any(not 33 <= ord(char) <= 126 for char in key) for key in keys):
+        return []
+    return keys
 
 
 def require_api_key(
@@ -53,12 +61,15 @@ def require_api_key(
             status_code=500,
             detail={
                 "error_code": "AUTH_CONFIG_INVALID",
-                "message": "PRICING_ENGINE_API_KEYS is set but contains no valid keys.",
+                "message": "PRICING_ENGINE_API_KEYS is malformed.",
                 "correlation_id": correlation_id,
             },
         )
     presented = request.headers.get(API_KEY_HEADER)
-    if presented is None or not any(hmac.compare_digest(presented, key) for key in configured):
+    if presented is None or not any(
+        hmac.compare_digest(presented.encode("utf-8"), key.encode("ascii"))
+        for key in configured
+    ):
         # This dependency runs before the route body is parsed, so there's no request-body
         # correlation_id to consult -- only the header-or-generate half of the documented
         # resolution order (see PricingScenarioRequestV1.correlation_id). Set directly via

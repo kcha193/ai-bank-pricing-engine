@@ -41,11 +41,12 @@ python3 examples/train_response_models.py
 
 # Optional FastAPI serving layer (requires the `api` extra):
 python3 -m pip install -e ".[api]"
-uvicorn balance_pricing_engine.api.app:app --reload   # POST /run-scenario, /v1/pricing/scenarios, /health, /ready
+python3 -m balance_pricing_engine.api.server   # loopback default; both pricing POST routes + probes
 
 # Docker (see docs/deployment.md):
 docker build -t ai-bank-pricing-engine .
-docker run --rm -p 8000:8000 ai-bank-pricing-engine
+export PRICING_ENGINE_API_KEYS="$(openssl rand -hex 32)"
+docker run --rm -p 127.0.0.1:8000:8000 -e PRICING_ENGINE_API_KEYS ai-bank-pricing-engine
 
 # NZ pricing-intelligence CLI:
 python3 -m balance_pricing_engine.pricing_intelligence collect --render-javascript
@@ -107,6 +108,7 @@ The boundary fields distinguish "needed expansion" from "still hitting boundary 
 
 ## When making changes
 
+- Supported API serving goes through `api.server`: numeric loopback by default; every other binding requires valid `PRICING_ENGINE_API_KEYS`. Raw uvicorn launches bypass launcher policy and are unsupported. Keep both POST routes behind the same key, body/YAML, customer, grid/expansion/sensitivity and path-override boundaries in `api/limits.py`; these are delivery limits, not changes to trusted CLI capacity or pricing mathematics. Preserve exclusive private temporary files and cleanup for both API inputs and effective competitor overlays. API errors must not reflect raw YAML, exception text or absolute server paths.
 - Honour the synthetic-data-only invariant. Do not add real customer or counterparty data paths.
 - Keep portfolio-level scope unless the user explicitly opens up personalised pricing.
 - The LLM layer (`llm/`) is decision-support only: every response is tagged `[DECISION-SUPPORT: requires human review]`; never wire its output into automated pricing decisions.
@@ -137,6 +139,7 @@ The boundary fields distinguish "needed expansion" from "still hitting boundary 
 - Scenario reporting preserves each run's own policy, initial/final boundary, expansion, ROE-relaxation, shortfall and volume evidence. `ScenarioComparison.median_reference` refers to Match median, never a fifth strategy; `model_optimum` is a legacy alias. Selected model-best and median reference outputs must stay explicitly distinct. Missing evidence requires review; diagnostic summaries never grant approval or replace full governance gates. Product-aware strategy labels come from `scenario_reporting.py` (deposits: highest/second-highest).
 - Dashboard pages **render only**: no freshness, ranking, bps, market-state or scenario economics in `dashboard/views/` — read them from `DashboardServices` (which calls `pricing_intelligence/health.py`, the service and `strategy`). `pricing_intelligence/health.py` is the single owner of freshness/health semantics; don't re-derive a threshold in the CLI, a frame or a page. `pricing_intelligence` must never import `dashboard`.
 - Reading never collects: only `dashboard/views/operations.py` may import `dashboard/actions.py` (and only the `views/operations_trust.py` composer may import that page), and only an explicit button click (an `on_click` callback) may start a collection — a rerender or page navigation must not. Don't weaken the Operations controls: the optional `PRICING_WATCH_OPS_TOKEN` gate (minimum 16 characters, fails closed, process-wide unlock limiter), the single-flight runner and 60 s cooldown, the 10-minute backup limit (backups are pruned to the newest 30) and the Telegram cooldown.
+- Token-free Operations require an effective numeric loopback Streamlit binding. Every administrative callback must recheck authorisation. Non-loopback, hostname or unknown bindings require a valid Operations token and session unlock; the token does not authenticate read-only pages. Preserve `.streamlit/config.toml` and supported launch commands binding to `127.0.0.1`. Remote dashboards need independently authenticated ingress covering all pages.
 - Dashboard page modules live in `dashboard/views/`, never `dashboard/pages/`: a `pages/` folder beside `app.py` puts Streamlit into legacy multipage mode until `st.navigation` first runs, which breaks deep links (`tests/unit/test_dashboard_redesign.py` guards this). Shared components (`ui.py`) are scanned like pages for untrusted text; design tokens (`theme.py`) and the Command Centre sentences (`insights.py`) are Streamlit-free and template backend values only — no causes, forecasts or recommendations.
 - The dashboard is dual-product. Every `DashboardServices` market read takes `product_type` and must pass it to **every** backend call it makes (snapshot, exclusions, quarantine, activity, changes, history incl. `term_market_from_rates`, health); pages pass it positionally through `cached` so it keys the cache. Never derive ranking direction or leaders in the UI (deposits rank highest-first in the backend), never show a rate without naming its product (`dashboard/products.py`), and never substitute one product's data for the other's missing data. Pricing Studio's term-deposit and joint scenarios go through the same seams as the home-loan one; each scenario type keeps its own stored result.
 - Untrusted text (bank-page strings, error messages, `last_error`) is shown only in dataframe cells or passed to `st.link_button` as a validated URL — never through `st.markdown`/`st.write`/`st.info`/`st.warning`/etc. `tests/unit/test_dashboard_boundaries.py` enforces this.

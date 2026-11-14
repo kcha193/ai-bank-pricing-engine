@@ -6,15 +6,16 @@ Watch" and "Dry Run" contact live bank websites, and start only from an explicit
 A process-wide single-flight runner with a cooldown keeps a second click, a second browser tab,
 or a burst of clicks from starting more than one collection.
 
-Access: Streamlit has no built-in authentication. Set ``PRICING_WATCH_OPS_TOKEN`` to require a
-shared secret before any operation is offered; otherwise the page says plainly that it is
-unprotected. Every callback re-checks authorisation, so a locked session cannot act even if a
-widget callback were invoked out of band.
+Access: token-free Operations require an explicitly numeric loopback binding. Any other or
+unknown effective Streamlit binding requires ``PRICING_WATCH_OPS_TOKEN`` and session unlock.
+Every callback re-checks authorisation. The shared secret protects Operations only, not reads.
 """
 
 from __future__ import annotations
 
 import hmac
+import ipaddress
+import logging
 from pathlib import Path
 
 import streamlit as st
@@ -36,6 +37,7 @@ CACHE_CLEARED_KEY = "ops_cache_cleared_for"
 UNLOCKED_KEY = "ops_unlocked"
 TOKEN_INPUT_KEY = "ops_token_input"
 MARKETS_KEY = "ops_markets"
+logger = logging.getLogger(__name__)
 
 #: Which markets a run covers. Both by default: a collection that silently skips term deposits
 #: leaves the deposit market to go stale while the page reports success.
@@ -58,10 +60,31 @@ def _token_too_short(settings: DashboardSettings) -> bool:
     return settings.ops_token is not None and len(settings.ops_token) < MIN_OPS_TOKEN_LENGTH
 
 
+def _loopback_binding() -> bool:
+    """Trust only an explicit loopback IP in Streamlit's effective server configuration.
+
+    Read at render/click time: command-line flags and environment variables override TOML.
+    Hostnames require a token rather than trusting DNS or an assumed localhost resolution.
+    """
+    try:
+        address = st.get_option("server.address")
+    except Exception:  # noqa: BLE001 - unknown binding must fail closed without breaking reads
+        logger.warning("Dashboard binding unavailable; Operations require a token.")
+        return False
+    if not isinstance(address, str):
+        return False
+    try:
+        return ipaddress.ip_address(address).is_loopback
+    except (ValueError, TypeError):
+        return False
+
+
 def _authorised(settings: DashboardSettings) -> bool:
     if _token_too_short(settings):
         return False  # fail closed: a guessable token is no gate at all
-    return settings.ops_token is None or st.session_state.get(UNLOCKED_KEY) is True
+    if settings.ops_token is None:
+        return _loopback_binding()
+    return st.session_state.get(UNLOCKED_KEY) is True
 
 
 def _try_unlock(settings: DashboardSettings) -> None:
@@ -148,10 +171,19 @@ def _watch_for_completion(runner: actions.JobRunner) -> None:
 def _gate(settings: DashboardSettings) -> bool:
     """Render the access gate. True when operations may be offered to this session."""
     if settings.ops_token is None:
+        if not _loopback_binding():
+            st.error(
+                "Operations are disabled: a non-loopback or unknown server binding requires "
+                f"`{OPS_TOKEN_ENV_VAR}` with at least {MIN_OPS_TOKEN_LENGTH} characters. "
+                "For private local use, launch with `--server.address 127.0.0.1`. "
+                "Read-only pages remain available."
+            )
+            return False
         st.info(
-            "Operations are not access-protected: anyone who can open this dashboard can start "
-            "collections. Run Streamlit with `--server.address localhost`, or set "
-            f"`{OPS_TOKEN_ENV_VAR}` to require a token."
+            "Operations are not access-protected on this loopback-bound dashboard: anyone "
+            "who can reach it can start collections. Keep `--server.address 127.0.0.1`, or set "
+            f"`{OPS_TOKEN_ENV_VAR}` to require a token. The token protects Operations only; "
+            "it does not authenticate read-only pages."
         )
         return True
     if _token_too_short(settings):
