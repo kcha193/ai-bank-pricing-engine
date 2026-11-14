@@ -21,6 +21,7 @@ own stored result, so a mortgage result is never shown under a deposit heading.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Optional
 
 import pandas as pd
 import streamlit as st
@@ -31,6 +32,12 @@ from balance_pricing_engine.dashboard.charts import (
     objective_curve,
     scenario_objectives,
     scenario_rates,
+)
+from balance_pricing_engine.dashboard.freshness import (
+    ResultFreshness,
+    assess_result,
+    stored_computed_at,
+    stored_request,
 )
 from balance_pricing_engine.dashboard.formatting import (
     fmt_bps,
@@ -52,6 +59,7 @@ from balance_pricing_engine.dashboard.views._common import cached, live_term_sel
 from balance_pricing_engine.dashboard.scenario_text import (
     DISCLAIMER,
     DISPLAY_LABELS,
+    benchmark_provenance,
     build_decision_text,
     scenario_differences,
 )
@@ -116,6 +124,22 @@ LIMITATIONS = """
 - Sensitivity analysis and the full profit surface are in **Advanced: Scenario Lab**.
 - Every output requires human review. Nothing here changes a price.
 """
+
+
+PROVENANCE_NOTE = (
+    "Model-best rates, volumes and objectives are modelled outputs from "
+    "synthetic customers: they are not observed bank prices or realised profit."
+)
+
+
+def _render_provenance(request: Optional[ScenarioRequest]) -> None:
+    for source in benchmark_provenance(request):
+        with st.container(horizontal=True, gap="small", vertical_alignment="center"):
+            if source.observed:
+                ui.observed_badge()
+            else:
+                st.badge("ASSUMPTION · user-entered", icon=":material/edit:", color="orange")
+            st.caption(source.text)
 
 
 def _key(mode: str, name: str) -> str:
@@ -203,7 +227,7 @@ def _home_loan_metrics(view: ScenarioView) -> None:
         "Competitor mortgage assumption",
         fmt_rate_fraction(selected.competitor_rate),
         border=True,
-        help="The competitor home-loan rate the optimiser was given (benchmark plus offset).",
+        help="The selected competitor home-loan input; its source is explained above.",
     )
     cols[2].metric(
         "Objective",
@@ -229,7 +253,7 @@ def _deposit_metrics(view: ScenarioView) -> None:
         "Competitor deposit assumption",
         fmt_rate_fraction(selected.competitor_rate),
         border=True,
-        help="The competitor term-deposit rate the optimiser was given (benchmark plus offset).",
+        help="The selected competitor term-deposit input; its source is explained above.",
     )
     cols[2].metric(
         "Objective",
@@ -294,6 +318,13 @@ def _comparison(view: ScenarioView) -> None:
     ui.section(
         f"{info.market} scenario comparison",
         f"Each scenario re-runs the optimiser under a different competitor {info.noun} assumption.",
+    )
+    ui.modelled_badge()
+    st.caption(
+        "The comparison uses separate competitor assumptions: No-change keeps the configured "
+        "rate; Match median and Match leader derive from observed market rates; Leader -5bps "
+        "applies a hypothetical offset. These inputs do not inherit the selected scenario's "
+        "manual rate or offset."
     )
     rate_tab, value_tab = st.tabs(["Modelled rates", "Modelled financial value"])
     with rate_tab:
@@ -361,12 +392,17 @@ def _trade_offs(view: ScenarioView) -> None:
 
 
 def _render_result(view: ScenarioView) -> None:
-    st.badge("Human review required", icon=":material/person_check:", color="orange")
+    with st.container(horizontal=True, gap="small"):
+        ui.modelled_badge()
+        st.badge("Human review required", icon=":material/person_check:", color="orange")
     selected = view.selected
     ui.section(
         "2 · Results",
-        f"Selected assumption: {selected.rationale}. Rates below are modelled outputs.",
+        f"Selected assumption: {selected.rationale}. Model-best rates and financial outputs "
+        "below are modelled.",
     )
+    _render_provenance(view.request)
+    st.caption(PROVENANCE_NOTE)
     _governance(view)
     if view.mode == SCENARIO_JOINT:
         _joint_metrics(view)
@@ -452,6 +488,7 @@ def _define(services: DashboardServices, mode: str):
             request = _define_joint(services)
         else:
             request = _define_single(services, mode)
+        _render_provenance(request)
         with st.expander("What do these inputs mean?"):
             st.markdown(INPUT_GUIDE)
     return request
@@ -479,7 +516,7 @@ def _define_single(services: DashboardServices, mode: str):
         "The optimiser does not read it. Leave at 0 if unknown.",
     )
     second[1].caption(
-        f"Benchmark source: fresh comparable {fmt_term(term)} {info.tier}. "
+        f"Market comparison data: fresh comparable {fmt_term(term)} {info.tier}. "
         "Model-derived rates are labelled as such in the results."
     )
     return ScenarioRequest(
@@ -566,12 +603,9 @@ def _scenarios_tab(services: DashboardServices) -> None:
         ui.product_banner(_side_product(mode))
 
     request = _define(services, mode)
-    if request is None:
-        return
-
     state_key = _state_key(mode)
     run_col, note_col = st.columns([1, 4], vertical_alignment="center")
-    if run_col.button(
+    if request is not None and run_col.button(
         "Run scenario", type="primary", key=_key(mode, "run"), icon=":material/play_arrow:"
     ):
         with st.spinner("Running the optimiser…"):
@@ -585,33 +619,32 @@ def _scenarios_tab(services: DashboardServices) -> None:
 
     stored = st.session_state.get(state_key)
     if stored is None:
-        note_col.caption("Choose assumptions and click **Run scenario**.")
+        if request is not None:
+            note_col.caption("Choose assumptions and click **Run scenario**.")
         return
-    # Sessions created before configuration provenance was added must be rerun as well.
-    stored_request, result, stored_stamp, computed_at = stored[:4]
-    stored_config = stored[4] if len(stored) > 4 else None
-    note_col.caption(f"Computed {fmt_nz_datetime(computed_at)} (Pacific/Auckland).")
-    if stored_request.mode != mode:  # defensive: a result never renders under another type
+    original = stored_request(stored)
+    freshness = assess_result(
+        stored,
+        mode=mode,
+        request=request,
+        db_stamp=services.db_stamp(),
+        config_fingerprint=services.config_fingerprint(),
+        terms_available=original is None or _still_available(services, original),
+    )
+    computed_at = stored_computed_at(stored)
+    if not freshness.is_current:
+        # Never render a recommendation that no longer matches the inputs, data or engine.
+        if computed_at is not None:
+            note_col.caption(
+                f"Hidden result was computed {fmt_nz_datetime(computed_at)} (Pacific/Auckland); "
+                "it is no longer current."
+            )
+        notify = st.info if freshness.status is ResultFreshness.INPUTS_CHANGED else st.warning
+        notify(freshness.message)
         return
-    if stored_request != request:
-        st.caption("Inputs changed since this result; click Run scenario to refresh.")
-    if stored_stamp != services.db_stamp():
-        st.caption(
-            "Market data has changed since this result was computed; click Run scenario to refresh."
-        )
-    if stored_config != services.config_fingerprint():
-        st.warning(
-            "Engine configuration has changed since this result was computed. "
-            "The previous recommendation is hidden; click Run scenario to refresh."
-        )
-        return
-    if not _still_available(services, stored_request):
-        st.warning(
-            "The result's market term is no longer available. "
-            "The previous recommendation is hidden; click Run scenario to refresh."
-        )
-        return
-    view = unwrap(result)
+    if computed_at is not None:
+        note_col.caption(f"Computed {fmt_nz_datetime(computed_at)} (Pacific/Auckland).")
+    view = unwrap(stored[1])
     if view is not None and view.mode == mode:
         _render_result(view)
 

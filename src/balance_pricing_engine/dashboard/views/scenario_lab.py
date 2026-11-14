@@ -11,6 +11,7 @@ import yaml
 from pydantic import ValidationError
 
 from balance_pricing_engine.config import EngineConfig
+from balance_pricing_engine.dashboard import ui
 from balance_pricing_engine.dashboard.services import DashboardServices
 from balance_pricing_engine.diagnostics import run_sensitivity_analysis
 from balance_pricing_engine.plotting import (
@@ -71,6 +72,7 @@ def render(services: DashboardServices) -> None:
     )
 
     with tab_summary:
+        ui.modelled_badge()
         col1, col2, col3 = st.columns(3)
         col1.metric("Best loan rate", fmt_rate(best.loan_rate), border=True)
         col2.metric("Best deposit rate", fmt_rate(best.deposit_rate), border=True)

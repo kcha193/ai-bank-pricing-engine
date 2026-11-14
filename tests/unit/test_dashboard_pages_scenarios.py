@@ -2,11 +2,15 @@ from unittest.mock import patch
 
 import pytest
 
-from dashboard_harness import make_services, run_page
+from dashboard_harness import badge_labels, make_services, run_page
 
 import balance_pricing_engine.dashboard.services as services_module
 from balance_pricing_engine.dashboard.formatting import fmt_money_m, fmt_rate_fraction
-from balance_pricing_engine.dashboard.models import ScenarioRequest
+from balance_pricing_engine.dashboard.models import (
+    SCENARIO_HOME_LOAN,
+    SCENARIO_TERM_DEPOSIT,
+    ScenarioRequest,
+)
 from balance_pricing_engine.pricing_scenario_trigger import run_triggered_scenarios
 
 LABELS = [
@@ -75,6 +79,79 @@ def test_manual_strategy_needs_and_uses_a_manual_rate(market_factory):
     assert metrics["Competitor mortgage assumption"] == "5.09%"
 
 
+@pytest.mark.parametrize("mode", [SCENARIO_HOME_LOAN, SCENARIO_TERM_DEPOSIT])
+def test_switching_input_provenance_hides_old_result_without_recomputing(dual_market_factory, mode):
+    market = dual_market_factory()
+    suffix = "_term_deposit" if mode == SCENARIO_TERM_DEPOSIT else ""
+    state_key = f"scenario_result{suffix}"
+    assumption = "ASSUMPTION · user-entered"
+    observed = "OBSERVED · market rates"
+    with patch.object(
+        services_module, "run_triggered_scenarios", wraps=run_triggered_scenarios
+    ) as optimiser:
+        app = run_page("scenarios", market.database, market.now)
+        app.segmented_control(key="scenario_mode").set_value(mode).run()
+        app.selectbox(key=f"scenario_strategy{suffix}").select("MANUAL").run()
+        app.number_input(key=f"scenario_manual_rate{suffix}").set_value(5.09)
+        app.button(key=f"scenario_run{suffix}").click().run()
+        original = app.session_state[state_key]
+        assert original[0].strategy == "MANUAL"
+        assert badge_labels(app).count(assumption) == 2
+        app.selectbox(key=f"scenario_strategy{suffix}").select("MARKET_MEDIAN").run()
+        assert observed in badge_labels(app) and assumption not in badge_labels(app)
+        assert not app.metric and not app.dataframe
+        assert any("inputs have changed" in i.value for i in app.info)
+        assert app.session_state[state_key] == original and optimiser.call_count == 1
+        # Returning to the stored request restores its own provenance without another run.
+        app.selectbox(key=f"scenario_strategy{suffix}").select("MANUAL").run()
+        # Streamlit discards the manual widget while a market strategy is selected.
+        app.number_input(key=f"scenario_manual_rate{suffix}").set_value(5.09).run()
+        assert app.metric and badge_labels(app).count(assumption) == 2
+        assert observed not in badge_labels(app) and optimiser.call_count == 1
+        # Only explicit execution replaces the stored provenance.
+        app.selectbox(key=f"scenario_strategy{suffix}").select("MARKET_MEAN").run()
+        app.number_input(key=f"scenario_offset{suffix}").set_value(10.0).run()
+        assert not app.metric and optimiser.call_count == 1
+        app.button(key=f"scenario_run{suffix}").click().run()
+        assert app.metric and optimiser.call_count == 2
+        assert app.session_state[state_key][0].strategy == "MARKET_MEAN"
+        assert badge_labels(app).count(observed) == 2 and assumption not in badge_labels(app)
+
+
+@pytest.mark.parametrize("mode", [SCENARIO_HOME_LOAN, SCENARIO_TERM_DEPOSIT])
+@pytest.mark.parametrize("strategy", ["MANUAL", "MARKET_MEAN"])
+def test_provenance_preserves_selected_and_comparison_numbers(dual_market_factory, mode, strategy):
+    market = dual_market_factory()
+    suffix = "_term_deposit" if mode == SCENARIO_TERM_DEPOSIT else ""
+    app = run_page("scenarios", market.database, market.now)
+    app.segmented_control(key="scenario_mode").set_value(mode).run()
+    app.selectbox(key=f"scenario_strategy{suffix}").select(strategy).run()
+    if strategy == "MANUAL":
+        app.number_input(key=f"scenario_manual_rate{suffix}").set_value(5.09)
+    else:
+        app.number_input(key=f"scenario_offset{suffix}").set_value(12.5)
+    app.button(key=f"scenario_run{suffix}").click().run()
+    assert not app.exception
+    request = ScenarioRequest(
+        12, strategy, 5.09 if strategy == "MANUAL" else None,
+        0.0 if strategy == "MANUAL" else 12.5, None, mode=mode,
+    )
+    truth = make_services(market).scenarios(request).value
+    table = app.dataframe[0].value
+    assert list(table["Model-best rate"]) == [fmt_rate_fraction(r.our_rate) for r in truth.rows]
+    assert list(table["Competitor"]) == [fmt_rate_fraction(r.competitor_rate) for r in truth.rows]
+    assert list(table["Objective"]) == [fmt_money_m(r.objective) for r in truth.rows]
+    metrics = {m.label: m.value for m in app.metric}
+    competitor = "Competitor deposit assumption" if suffix else "Competitor mortgage assumption"
+    volume = "Expected deposit volume" if suffix else "Expected loan volume"
+    expected_volume = (
+        truth.selected.expected_deposit_volume if suffix else truth.selected.expected_loan_volume
+    )
+    assert metrics[competitor] == fmt_rate_fraction(truth.selected.competitor_rate)
+    assert metrics["Objective"] == fmt_money_m(truth.selected.objective)
+    assert metrics[volume] == fmt_money_m(expected_volume)
+
+
 def test_a_scenario_error_is_an_operational_message(market_factory):
     market = market_factory()
     with patch.object(
@@ -94,12 +171,14 @@ def test_stale_banks_are_called_out_next_to_the_results(market_factory):
     assert any("Westpac excluded from the mortgage benchmark" in w.value for w in app.warning)
 
 
-def test_changed_inputs_are_flagged_instead_of_silently_mixing_results(market_factory):
+def test_changed_inputs_hide_the_result_instead_of_silently_mixing_results(market_factory):
     market = market_factory()
     app = run_page("scenarios", market.database, market.now)
     app.button(key="scenario_run").click().run()
+    assert app.dataframe and app.metric
     app.selectbox(key="scenario_strategy").select("MARKET_LEADER").run()
-    assert any("Inputs changed" in c.value for c in app.caption)
+    assert any("Scenario inputs have changed" in i.value for i in app.info)
+    assert not app.dataframe and not app.metric
 
 
 def test_no_data_degrades_to_guidance(tmp_path):
@@ -119,19 +198,21 @@ def test_a_result_says_when_it_was_computed(market_factory):
     )
 
 
-def test_a_result_is_flagged_when_the_market_data_changes_underneath_it(market_factory):
-    """Review finding: after a new collection the old result kept rendering, and the 'inputs
-    changed' notice did not fire because the inputs were unchanged."""
+def test_a_result_is_hidden_when_the_market_data_changes_underneath_it(market_factory):
+    """Review finding: after a new collection the old result kept rendering. Phase 1f (UX-002):
+    it is now hidden until an explicit rerun, not merely captioned."""
     import os
 
     market = market_factory()
     app = run_page("scenarios", market.database, market.now)
     app.button(key="scenario_run").click().run()
-    assert not any("Market data has changed" in c.value for c in app.caption)
+    assert not any("Market data has changed" in w.value for w in app.warning)
+    assert app.dataframe and app.metric
     stat = market.database.stat()
     os.utime(market.database, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
     app.run()
-    assert any("Market data has changed since this result" in c.value for c in app.caption)
+    assert any("Market data has changed since this result" in w.value for w in app.warning)
+    assert not app.dataframe and not app.metric  # the old recommendation is hidden, not captioned
 
 
 @pytest.mark.parametrize("changed", ["assumption", "invalid", "missing"])
@@ -229,5 +310,5 @@ def test_legacy_result_without_config_provenance_requires_explicit_run(market_fa
     app.button(key="scenario_run").click().run()
     app.session_state["scenario_result"] = app.session_state["scenario_result"][:4]
     app.run()
-    assert not app.dataframe
-    assert any("Engine configuration has changed" in w.value for w in app.warning)
+    assert not app.dataframe and not app.metric
+    assert any("no record of the engine configuration" in w.value for w in app.warning)

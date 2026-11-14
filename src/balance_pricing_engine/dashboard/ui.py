@@ -138,6 +138,30 @@ def market_state_badge(state: Optional[str]) -> None:
     st.badge(meaning, icon=":material/insights:", color=colour)
 
 
+#: Data provenance. The words carry the meaning; colour and icon only reinforce them.
+MODELLED_LABEL = "MODELLED · synthetic"
+OBSERVED_LABEL = "OBSERVED · market rates"
+_MODELLED_HELP = (
+    "Optimiser output computed from synthetic customers under the stated assumptions. It is "
+    "not observed bank pricing, a forecast or a realised profit."
+)
+_OBSERVED_HELP = (
+    "Bank-advertised rates collected from public pages. Stale banks are excluded from market "
+    "statistics. A quarantined reading is not shown as the current price: the last confirmed "
+    "rate is shown and marked quarantined."
+)
+
+
+def modelled_badge() -> None:
+    """Marks synthetic-model output (optimiser rates, volumes, objectives)."""
+    st.badge(MODELLED_LABEL, icon=":material/model_training:", color="violet", help=_MODELLED_HELP)
+
+
+def observed_badge() -> None:
+    """Marks bank-advertised rates collected from public sources."""
+    st.badge(OBSERVED_LABEL, icon=":material/visibility:", color="blue", help=_OBSERVED_HELP)
+
+
 def coverage_badge(fresh: int, configured: int) -> None:
     if configured and fresh == configured:
         st.badge(f"All {configured} banks fresh", icon=":material/check_circle:", color="green")

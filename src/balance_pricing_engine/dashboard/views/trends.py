@@ -41,6 +41,7 @@ def render(services: DashboardServices) -> None:
             "dispersion and the sequence of repricing — for one term at a time.",
         )
     ui.product_banner(product)
+    ui.observed_badge()
     overview = unwrap(cached(services, "overview", product))
     if overview is None:
         return

@@ -10,16 +10,86 @@ the product's own: lowest for mortgages, highest for deposits.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from math import isfinite
+from typing import Optional
+
+from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.dashboard.formatting import fmt_money_m, fmt_rate_fraction
 from balance_pricing_engine.dashboard.models import (
+    SCENARIO_HOME_LOAN,
     SCENARIO_JOINT,
     SCENARIO_TERM_DEPOSIT,
+    ScenarioRequest,
     ScenarioView,
 )
+from balance_pricing_engine.dashboard.products import profile
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
-from balance_pricing_engine.scenario_reporting import MEDIAN_REFERENCE_LABEL
+from balance_pricing_engine.scenario_reporting import (
+    MEDIAN_REFERENCE_LABEL,
+    STRATEGY_LABELS,
+    strategy_label,
+)
 
 DISCLAIMER = "Decision support only — this dashboard never changes a bank price."
+
+
+@dataclass(frozen=True)
+class BenchmarkProvenance:
+    """Source of one product's selected competitor input, never an optimiser output."""
+
+    observed: bool
+    text: str
+
+
+def benchmark_provenance(request: Optional[ScenarioRequest]) -> tuple[BenchmarkProvenance, ...]:
+    """Describe actual request sources without deriving rates or changing backend validation.
+
+    No claim is made for unavailable/invalid inputs. MANUAL ignores offset, just as the backend
+    does. Joint inputs remain separate and use the backend's deposit-strategy fallback.
+    """
+    if request is None or request.mode not in (
+        SCENARIO_HOME_LOAN, SCENARIO_TERM_DEPOSIT, SCENARIO_JOINT
+    ):
+        return ()
+    product = (
+        ProductType.TERM_DEPOSIT if request.mode == SCENARIO_TERM_DEPOSIT else ProductType.HOME_LOAN
+    )
+    sides = [(product, request.term_months, request.strategy, request.offset_bps)]
+    if request.mode == SCENARIO_JOINT:
+        sides.append((
+            ProductType.TERM_DEPOSIT, request.deposit_term_months,
+            request.deposit_strategy or request.strategy, request.deposit_offset_bps,
+        ))
+    entries = []
+    for product, term, strategy, offset in sides:
+        if term is None or term <= 0 or strategy not in STRATEGY_LABELS:
+            return ()
+        side = "Term-deposit" if product is ProductType.TERM_DEPOSIT else "Home-loan"
+        prefix = f"{side} competitor input: "
+        if strategy == "MANUAL":
+            rate = request.manual_rate_pct
+            if request.mode == SCENARIO_JOINT or rate is None or not isfinite(rate) or rate < 0:
+                return ()
+            entries.append(BenchmarkProvenance(
+                False,
+                f"{prefix}user-entered assumption ({rate:g}%); hypothetical input, "
+                "not an observed bank quote.",
+            ))
+        else:
+            if not isfinite(offset):
+                return ()
+            adjustment = (
+                f" With your {offset:+g} bps offset, the effective assumption is hypothetical."
+                if offset else ""
+            )
+            entries.append(BenchmarkProvenance(
+                True,
+                f"{prefix}{strategy_label(strategy, product)} reference derived from observed "
+                f"market rates ({term} months, {profile(product).tier}).{adjustment} "
+                "The effective competitor assumption is a scenario input, not an observed bank quote.",
+            ))
+    return tuple(entries)
 
 
 def _gap(bps: float, reference: str) -> str:

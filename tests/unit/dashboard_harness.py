@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -55,3 +56,24 @@ def frame_with(app, column: str):
 def chart_count(app) -> int:
     # Streamlit 1.51 uses the older Arrow element name for the same chart.
     return sum(len(app.get(kind)) for kind in ("vega_lite_chart", "arrow_vega_lite_chart"))
+
+
+_BADGE = re.compile(r"^:(?P<colour>\w+)-badge\[(?::material/\w+: )?(?P<label>.*)\]$")
+
+
+def badges(app) -> list[tuple[str, str]]:
+    """``(label, help)`` for every ``st.badge`` on the page.
+
+    AppTest has no badge element type: Streamlit renders a badge as a markdown element whose body
+    is ``:<colour>-badge[:material/<icon>: <label>]``.
+    """
+    found = []
+    for element in app.markdown:
+        match = _BADGE.match(element.proto.body)
+        if match:
+            found.append((match["label"], element.proto.help))
+    return found
+
+
+def badge_labels(app) -> list[str]:
+    return [label for label, _ in badges(app)]
