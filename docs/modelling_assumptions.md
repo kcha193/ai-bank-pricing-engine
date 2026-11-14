@@ -1,5 +1,15 @@
 # Modelling Assumptions
 
+## Dashboard competitor assumptions
+
+Pricing Studio MANUAL competitor rates are user-entered hypothetical assumptions, applied
+directly without an offset. Market strategies derive a reference from observed comparable rates;
+any user offset adjusts that reference into a hypothetical input, not an observed bank quote.
+Joint scenarios use separate market strategies and offsets for home loans and term deposits.
+Comparison runs retain their own assumptions. Model-best rates, expected volumes and objectives
+remain synthetic model outputs. These provenance labels change no response, pricing or financial
+calculation and grant no pricing approval.
+
 ## API execution boundary (Phase 1e)
 
 API requests are synthetic-data decision support and carry delivery-specific customer,

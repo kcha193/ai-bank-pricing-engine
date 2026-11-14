@@ -357,10 +357,20 @@ colour and icon only reinforce them):
   and comparison, Scenario Lab summary. Not observed pricing, a forecast or realised profit.
 - **OBSERVED · market rates** - bank-advertised rates collected from public pages: Command
   Centre panels and detail, Market Explorer, Rate Movements, Market Trends, and the Pricing
-  Studio benchmark inputs.
+  Studio market-derived benchmark sources. The label describes the source data, not the
+  effective scenario assumption or a model output.
+- **ASSUMPTION · user-entered** - Pricing Studio's MANUAL competitor input, used directly
+  without a benchmark offset. It is hypothetical, not an observed or verified bank quote.
 
-Neighbouring categories stay distinct. *Reference* rates (market median/leader, the competitor
-assumption) are derived from observed rates. *Stale* observations are excluded from market
+The request-based `scenario_text.benchmark_provenance()` helper supplies the same product-specific
+explanation to inputs and the stored result. Market median/mean/leader/second-best references
+derive from observed rates; a user offset makes the effective assumption hypothetical. Neither
+an aggregate nor an adjusted assumption is labelled as an observed bank quote. Joint scenarios
+explain each product's strategy, term and offset separately; they offer no manual override.
+Comparison rows use their own configured or market-derived assumptions, independent of the
+selected manual rate or offset. Model-best rates, expected volumes and objectives stay MODELLED.
+
+Neighbouring categories stay distinct. *Stale* observations are excluded from market
 statistics and listed as exclusions. *Quarantined* readings are suspect new observations kept
 out of trusted benchmarks: the last confirmed rate is shown and marked quarantined, never as a
 newly observed price. The labels change no number, ranking or warning.

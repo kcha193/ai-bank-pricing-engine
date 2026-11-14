@@ -322,6 +322,11 @@ database stamp, config fingerprint and market terms still match (`dashboard/fres
 otherwise it is hidden until an explicit rerun, and modelled output is labelled
 `MODELLED · synthetic` against `OBSERVED · market rates` on the market pages. See
 [dashboard_redesign.md → Dual-product extension](dashboard_redesign.md#10-dual-product-extension-2026-10-24).
+Pricing Studio input provenance is presented by the pure, request-based
+`scenario_text.benchmark_provenance()` helper. MANUAL inputs are user-entered assumptions;
+market-derived inputs identify observed source data separately from hypothetical offsets.
+Joint inputs keep separate product provenance. Result explanations use the stored view's request
+after freshness checks, without recalculating rates or changing comparison inputs.
 
 ### Pricing-intelligence audit boundary (2026-09-06)
 

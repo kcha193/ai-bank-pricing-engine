@@ -21,6 +21,7 @@ own stored result, so a mortgage result is never shown under a deposit heading.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Optional
 
 import pandas as pd
 import streamlit as st
@@ -58,6 +59,7 @@ from balance_pricing_engine.dashboard.views._common import cached, live_term_sel
 from balance_pricing_engine.dashboard.scenario_text import (
     DISCLAIMER,
     DISPLAY_LABELS,
+    benchmark_provenance,
     build_decision_text,
     scenario_differences,
 )
@@ -125,10 +127,19 @@ LIMITATIONS = """
 
 
 PROVENANCE_NOTE = (
-    "Competitor assumptions are reference rates derived from observed market rates (plus any "
-    "offset you set). Model-best rates, volumes and objectives are modelled outputs from "
+    "Model-best rates, volumes and objectives are modelled outputs from "
     "synthetic customers: they are not observed bank prices or realised profit."
 )
+
+
+def _render_provenance(request: Optional[ScenarioRequest]) -> None:
+    for source in benchmark_provenance(request):
+        with st.container(horizontal=True, gap="small", vertical_alignment="center"):
+            if source.observed:
+                ui.observed_badge()
+            else:
+                st.badge("ASSUMPTION · user-entered", icon=":material/edit:", color="orange")
+            st.caption(source.text)
 
 
 def _key(mode: str, name: str) -> str:
@@ -216,7 +227,7 @@ def _home_loan_metrics(view: ScenarioView) -> None:
         "Competitor mortgage assumption",
         fmt_rate_fraction(selected.competitor_rate),
         border=True,
-        help="The competitor home-loan rate the optimiser was given (benchmark plus offset).",
+        help="The selected competitor home-loan input; its source is explained above.",
     )
     cols[2].metric(
         "Objective",
@@ -242,7 +253,7 @@ def _deposit_metrics(view: ScenarioView) -> None:
         "Competitor deposit assumption",
         fmt_rate_fraction(selected.competitor_rate),
         border=True,
-        help="The competitor term-deposit rate the optimiser was given (benchmark plus offset).",
+        help="The selected competitor term-deposit input; its source is explained above.",
     )
     cols[2].metric(
         "Objective",
@@ -309,6 +320,12 @@ def _comparison(view: ScenarioView) -> None:
         f"Each scenario re-runs the optimiser under a different competitor {info.noun} assumption.",
     )
     ui.modelled_badge()
+    st.caption(
+        "The comparison uses separate competitor assumptions: No-change keeps the configured "
+        "rate; Match median and Match leader derive from observed market rates; Leader -5bps "
+        "applies a hypothetical offset. These inputs do not inherit the selected scenario's "
+        "manual rate or offset."
+    )
     rate_tab, value_tab = st.tabs(["Modelled rates", "Modelled financial value"])
     with rate_tab:
         ui.render_chart(scenario_rates(view.rows, DISPLAY_LABELS))
@@ -381,8 +398,10 @@ def _render_result(view: ScenarioView) -> None:
     selected = view.selected
     ui.section(
         "2 · Results",
-        f"Selected assumption: {selected.rationale}. Rates below are modelled outputs.",
+        f"Selected assumption: {selected.rationale}. Model-best rates and financial outputs "
+        "below are modelled.",
     )
+    _render_provenance(view.request)
     st.caption(PROVENANCE_NOTE)
     _governance(view)
     if view.mode == SCENARIO_JOINT:
@@ -464,14 +483,12 @@ def _define(services: DashboardServices, mode: str):
     """Step 1. Returns the request, or None when a required market has no live term."""
     ui.section("1 · Define the scenario")
     st.caption(MODE_NOTES[mode])
-    with st.container(horizontal=True, gap="small", vertical_alignment="center"):
-        ui.observed_badge()
-        st.caption("Competitor benchmarks are read from observed market rates.")
     with st.container(border=True):
         if mode == SCENARIO_JOINT:
             request = _define_joint(services)
         else:
             request = _define_single(services, mode)
+        _render_provenance(request)
         with st.expander("What do these inputs mean?"):
             st.markdown(INPUT_GUIDE)
     return request
@@ -499,7 +516,7 @@ def _define_single(services: DashboardServices, mode: str):
         "The optimiser does not read it. Leave at 0 if unknown.",
     )
     second[1].caption(
-        f"Benchmark source: fresh comparable {fmt_term(term)} {info.tier}. "
+        f"Market comparison data: fresh comparable {fmt_term(term)} {info.tier}. "
         "Model-derived rates are labelled as such in the results."
     )
     return ScenarioRequest(
