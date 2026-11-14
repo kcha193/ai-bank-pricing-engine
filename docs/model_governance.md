@@ -3,6 +3,56 @@
 This project is a synthetic retail bank balance-sheet pricing prototype. It is not a production
 pricing approval system.
 
+## Financial inputs and LLM scenario patches (OPT-003, GOV-007)
+
+Economic configuration rejects NaN and both infinities, including rates, response coefficients,
+funding parameters, grids, tier bounds and multi-period assumptions. Loan own-rate and
+competitor-gap elasticities must be ≤ 0; deposit elasticities must be ≥ 0. Zero is permitted.
+Existing bounds remain; a finite negative wholesale spread still produces its existing warning.
+Economic `model_copy(update=...)` calls revalidate. Direct and governed scenario entry points
+also validate existing instances before pricing.
+
+`llm.scenario_interface.ALLOWED_PATCH_PATHS` is the explicit allow-list:
+
+- `random_seed` (a non-negative integer).
+- `market.cash_rate`, `wholesale_funding_spread`, `competitor_loan_rate`,
+  `competitor_deposit_rate`, `home_loan_reference_rate`, `term_deposit_reference_rate`.
+- `balance_sheet.required_deposit_funding_ratio`, `funding_shortfall_penalty_rate`.
+- Existing `multiperiod.loan_runoff_rate`, `deposit_runoff_rate`, `discount_rate`,
+  `market_cash_rate_drift_bps`, `competitor_loan_rate_drift_bps`,
+  `competitor_deposit_rate_drift_bps`, `reinvestment_spread_bps`, `loan_tenor_years`.
+
+Every patch value must be a finite JSON number. Strings, booleans, nested objects, unknown or
+malformed paths, duplicate paths and whole-section replacement are rejected. LLM patches cannot
+change any elasticity or response coefficient, the ROE floor, model registry/approval/governance,
+paths, secrets, collection settings, grids, cohort sizes or execution controls. An absent
+multi-period section must be configured manually before its assumptions can be patched.
+The whole batch must pass `EngineConfig` validation before review and again before application.
+Application modifies a detached in-memory document; any failure returns no modified config.
+
+All three application methods (`apply`, `apply_to`, `apply_patches`) now require a `PatchApproval`
+alongside the existing affirmative boolean. A boolean alone is intentionally no longer sufficient.
+After human review, `NLScenarioResult.approve(approver_id=...)` creates an immutable record with a
+non-empty identifier, UTC approval timestamp, SHA-256 proposal hash and exact approved patches.
+The immutable proposal and approval content must match at application; replacing reviewed content
+invalidates approval. No code in this interface automatically approves a proposal.
+
+When `audit_log_path` is configured, JSONL records separate `proposal_generated`,
+`proposal_rejected`, `approval`, `application_succeeded` and `application_failed` events.
+Application records carry the model, prompt/proposal hashes, approved paths/values, approver,
+approval timestamp, validation outcome and error category. Success includes the resulting config
+SHA-256. Approval is recorded when an application attempt presents a matching review record.
+Each successful call emits one application-success event, only after full validation. Raw prompts,
+raw provider/validation exceptions, credentials and environment dumps are not recorded; rejected
+unsafe payloads are omitted. Approved values are numeric only.
+
+Limits: this is caller-attested approval, not authentication or a digital signature. The host must
+identify the human and protect the optional local audit file. Hashes bind patch content, not a
+particular base config; application revalidates the supplied base. This is not a durable transaction
+or replay-prevention system. Finite, correctly signed inputs can still be economically implausible;
+the existing warnings and governance gates remain necessary. Pricing maths and run-ledger schemas
+are unchanged. See [LLM usage](usage_guide.md#human-reviewed-llm-scenarios).
+
 ## Governance Control Plane (`governance/`)
 
 The primitives below (registry approval, fail-loud artifact checks, boundary/policy-band

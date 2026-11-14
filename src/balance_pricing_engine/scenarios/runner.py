@@ -208,6 +208,7 @@ def run_baseline_diagnostics(
     registry: object | None = None,
 ) -> ScenarioDiagnostics:
     """Run the baseline scenario and keep all evaluated pricing candidates."""
+    config = EngineConfig.model_validate(config.model_dump())
     rng = make_rng(config.random_seed)
     loan_customers = generate_loan_customers(config.simulation.n_loan_customers, rng)
     deposit_customers = generate_deposit_customers(config.simulation.n_deposit_customers, rng)

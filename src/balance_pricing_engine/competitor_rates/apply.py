@@ -34,20 +34,20 @@ def apply_competitor_rates_to_config(config):
     # home_loan_reference_rate and term_deposit_reference_rate are set to the competitor
     # averages here, so home_loan_spread_bps measures spread-to-competitor rather than
     # spread-to-independent-benchmark after this call.
-    updated_market = config.market.model_copy(
-        update={
+    return revalidate_config(
+        config, market_updates={
             "competitor_loan_rate": resolved.mortgage_reference_rate,
             "competitor_deposit_rate": resolved.term_deposit_reference_rate,
             "home_loan_reference_rate": resolved.mortgage_reference_rate,
             "term_deposit_reference_rate": resolved.term_deposit_reference_rate,
         }
     )
-    updated_config = config.model_copy(update={"market": updated_market})
-    return _revalidate(updated_config)
 
 
-def revalidate_config(config, context: str = "competitor-rate overlay"):
-    """Re-run EngineConfig's ``model_validator``s that ``model_copy(update=...)`` skips.
+def revalidate_config(
+    config, context: str = "competitor-rate overlay", *, market_updates: dict | None = None
+):
+    """Validate an overlay and preserve its domain-specific error contract.
 
     An overlay can push a previously-valid config outside its constraints
     (e.g. a competitor reference rate that drives the spread floor negative). Without
@@ -58,7 +58,10 @@ def revalidate_config(config, context: str = "competitor-rate overlay"):
     same failure mode; ``context`` names the overlay in the raised error.
     """
     try:
-        return type(config).model_validate(config.model_dump())
+        data = config.model_dump()
+        if market_updates is not None:
+            data["market"].update(market_updates)
+        return type(config).model_validate(data)
     except ValidationError as exc:
         raise CompetitorRateResolutionError(
             f"{context} produced an invalid configuration: {exc}"

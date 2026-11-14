@@ -187,10 +187,11 @@ def test_missing_streamlit_explains_how_to_install_it(repo, tmp_path):
 # --- private by default: localhost, a predictable port, no second server --------------------------
 
 
-def test_it_serves_on_localhost_only_on_the_default_port(repo):
+def test_it_serves_on_localhost_only_with_the_default_port_or_fallback(repo):
     found = facts(launch(repo / LAUNCHER.name))
     assert found["address"] == "127.0.0.1"
-    assert found["port"] == "8765"
+    # Another local app may own 8765; the launcher searches the next 19 ports too.
+    assert 8765 <= int(found["port"]) <= 8784
     assert found["already_running"] == "0"
     assert "--server.address 127.0.0.1" in found["command"]
     assert "--server.headless true" in found["command"]

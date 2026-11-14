@@ -883,6 +883,34 @@ python3 examples/run_baseline.py
 python3 -m pytest -q
 ```
 
+### Human-reviewed LLM scenarios
+
+`NLScenarioInterface` proposes numeric market, funding and existing multi-period assumptions.
+It cannot change elasticities, coefficients, grids, governance, files or execution settings.
+See the [exact allow-list and audit contract](model_governance.md#financial-inputs-and-llm-scenario-patches-opt-003-gov-007).
+All economic numbers must be finite. Loan elasticities must be non-positive; deposit elasticities
+must be non-negative. Negative wholesale spreads retain their existing warning.
+
+```python
+from balance_pricing_engine.llm.scenario_interface import NLScenarioInterface
+
+interface = NLScenarioInterface(audit_log_path="data/outputs/nl_scenario_audit.jsonl")
+proposal = interface.propose(config, "set the cash rate to 0.0275")
+print(proposal.diff_yaml)
+# Stop here for human review. Only after that human explicitly approves:
+approval = proposal.approve(approver_id=human_identifier)
+updated_config = interface.apply(config, proposal, approve=True, approval=approval)
+```
+
+The host supplies the actual human identifier; never infer it from `True` or approve automatically.
+`approve=True` alone no longer works. `proposal.apply_to(..., approved=True, approval=approval)`
+and `apply_patches(..., approved=True, approval=approval)` enforce the same review-content checks.
+For low-level application, `PatchApproval` also accepts an explicitly supplied timezone-aware
+approval timestamp, proposal hash and exact patch tuple. Protect that record and the audit file;
+caller identity is attested, not authenticated by this library. Configure `audit_log_path` for
+durable JSONL events. No modified configuration is returned if any patch or final validation fails.
+The example calls the external provider only when explicitly run; unit tests use mock responses.
+
 ## 9. Model Risk Review Checklist
 
 Before relying on a result, review:

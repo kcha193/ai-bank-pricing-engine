@@ -77,6 +77,8 @@ python3 -m balance_pricing_engine.competitor_rates.cli report   --source-file <p
 - Choose **one**: `pricing_strategy.{home_loan,term_deposit}_spread_bps` (market-relative, default) **or** `products.{loan,deposit}_rate_grid` (absolute).
 - `competitor_rates.enabled: false` by default — when true, reads from `data/processed/competitor_rates/latest.json` with staleness + strict-mode checks.
 - `balance_sheet.required_deposit_funding_ratio` and `funding_shortfall_penalty_rate` drive the funding penalty.
+- Economic models reject NaN/±infinity, including `model_copy(update=...)`. Both loan elasticities must be ≤ 0; both deposit elasticities must be ≥ 0. Keep finite negative wholesale spreads warning-only. Scenario entry points revalidate existing instances before pricing.
+- LLM scenario patches use the explicit numeric `ALLOWED_PATCH_PATHS` allow-list; elasticities, coefficients, governance, paths and execution controls are forbidden. All application methods require affirmative approval plus a named, timestamped `PatchApproval` bound to exact patch content. Preserve atomic full-config validation and separate JSONL proposal/rejection/approval/application outcomes. See [docs/model_governance.md](docs/model_governance.md#financial-inputs-and-llm-scenario-patches-opt-003-gov-007).
 
 ## Conventions (observed)
 

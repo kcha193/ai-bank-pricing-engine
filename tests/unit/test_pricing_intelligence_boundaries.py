@@ -48,7 +48,9 @@ def test_strategy_is_the_only_module_touching_engine_config():
     touching = [
         path.name
         for path in python_files("pricing_intelligence")
-        if "config.market.model_copy" in path.read_text(encoding="utf-8")
+        if any(marker in path.read_text(encoding="utf-8") for marker in (
+            "config.market.model_copy", "revalidate_config(",
+        ))
     ]
 
     assert touching == ["strategy.py"]

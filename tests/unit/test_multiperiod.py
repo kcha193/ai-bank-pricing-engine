@@ -520,9 +520,10 @@ def test_no_distortion_warning_when_competitor_rates_also_drifted():
 
     import warnings as _warnings
 
-    with _warnings.catch_warnings():
-        _warnings.simplefilter("error", UserWarning)
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always", UserWarning)
         run_multiperiod_diagnostics(config, max_boundary_expansions=0)
+    assert not any("Competitor gaps will shift mechanically" in str(w.message) for w in caught)
 
 
 def test_distortion_warning_still_fires_when_only_cash_rate_drifts():
