@@ -63,6 +63,14 @@ for comparison and labelled in percent; dispersion and movement remain on separa
 Deposit market leadership means the highest comparable deposit rate, not the best bank margin.
 Each product's health summary reflects its own backend freshness and collector state.
 
+The selected scenario's **model-best** candidate maximises the existing objective under
+its stated assumptions. The **Median-benchmark optimum (reference)** is the existing median
+comparison run, not an additional strategy or the selected assumption's answer. Policy-band,
+boundary, expansion, ROE-relaxation and funding-shortfall evidence is displayed per run. Clear
+diagnostic flags do not imply approval; incomplete evidence requires review. No compliant
+alternative is inferred from a warning flag, and no candidate is silently substituted.
+Phase 1d changes presentation only; rates, objectives, response models and artifacts are unchanged.
+
 ## Response calibration (2026-08-26)
 
 The home-loan response coefficients were recalibrated against the live-verified

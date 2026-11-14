@@ -371,3 +371,22 @@ Last verified against `src/balance_pricing_engine/` on 2026-09-26. Moved here fr
 - [grid_utils.py](../src/balance_pricing_engine/grid_utils.py) — `build_inclusive_numeric_grid`: shared helper for inclusive numeric grids used by the optimiser.
 - [reporting.py](../src/balance_pricing_engine/reporting.py), [plotting.py](../src/balance_pricing_engine/plotting.py) — output formatting.
 - [utils/random.py](../src/balance_pricing_engine/utils/random.py) — `make_rng` for reproducible RNGs.
+
+
+### Pricing scenario reporting evidence (Phase 1d)
+
+`scenario_reporting.py` supplies pure diagnostic metadata and presentation helpers to
+`pricing_scenario_trigger.py` and dashboard view models. Each `ScenarioRow` carries its own
+policy, initial/final boundary, expansion, ROE-relaxation, shortfall and volume evidence.
+`as_dicts()` persists that evidence additively in existing scenario JSON storage.
+`DashboardServices` copies it into `ScenarioRowView` and the selected run into `SelectedScenario`;
+views render these summaries without reimplementing financial or governance calculations.
+
+`ScenarioComparison.median_reference` points at Match median; legacy `model_optimum` remains
+an alias. Four unique comparison rows are retained. `ScenarioView.median_reference_rate` gives
+the explicit presentation name while preserving the `model_optimum_rate` constructor field.
+Alerts and Pricing Studio distinguish this median reference from the selected model-best result.
+Diagnostic summaries are not full `evaluate_gates()` decisions and cannot grant approval.
+They retain the existing `OBJECTIVE_FINITE` BLOCK severity for known non-finite objectives;
+ordinary diagnostic warnings remain review conditions. The scheduled and dashboard scenario
+seams remain unchanged and never persist pricing decisions.

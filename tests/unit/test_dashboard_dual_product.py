@@ -439,23 +439,35 @@ def test_pricing_studio_never_shows_a_mortgage_result_under_a_deposit_heading(
     market = dual_market_factory()
     app = run_page("scenarios", market.database, market.now)
     app.button(key="scenario_run").click().run()
-    assert "Optimal home-loan rate" in metrics(app)
+    assert "Home-loan · Model-best — outside policy band (review)" in metrics(app)
     app.segmented_control(key="scenario_mode").set_value(SCENARIO_TERM_DEPOSIT).run()
     assert not app.exception
     labels = metrics(app)
-    assert "Optimal home-loan rate" not in labels and "Optimal term-deposit rate" not in labels
+    assert (
+        "Home-loan · Model-best — outside policy band (review)" not in labels
+        and "Term-deposit · Model-best — outside policy band (review)" not in labels
+    )
     app.button(key="scenario_run_term_deposit").click().run()
     assert not app.exception
     labels = metrics(app)
     assert labels["Competitor deposit assumption"] == "4.10%"  # deposit median
-    assert "Optimal term-deposit rate" in labels and "Expected deposit volume" in labels
-    assert "Optimal home-loan rate" not in labels and "Expected loan volume" not in labels
+    assert (
+        "Term-deposit · Model-best — outside policy band (review)" in labels
+        and "Expected deposit volume" in labels
+    )
+    assert (
+        "Home-loan · Model-best — outside policy band (review)" not in labels
+        and "Expected loan volume" not in labels
+    )
     table = frame_with(app, "Scenario")
     assert table.loc[table["Scenario"] == "Match leader", "Competitor"].item() == "4.25%"
     text = markdown(app)
     assert "term-deposit rate" in text and "funding cost" in text
     app.segmented_control(key="scenario_mode").set_value("home_loan").run()
-    assert "Optimal home-loan rate" in metrics(app)  # the mortgage result is still its own
+    # the mortgage result is still its own
+    assert (
+        "Home-loan · Model-best — outside policy band (review)" in metrics(app)
+    )
 
 
 def test_pricing_studio_joint_mode_runs_both_sides(dual_market_factory):
@@ -473,7 +485,10 @@ def test_pricing_studio_joint_mode_runs_both_sides(dual_market_factory):
     app.button(key="scenario_run_joint").click().run()
     assert not app.exception
     labels = metrics(app)
-    assert "⌂ Optimal home-loan rate" in labels and "◎ Optimal term-deposit rate" in labels
+    assert (
+        "⌂ Home-loan · Model-best — outside policy band (review)" in labels
+        and "◎ Term-deposit · Model-best — outside policy band (review)" in labels
+    )
     assert "◎ Expected deposit volume" in labels and "Funding shortfall" in labels
     assert chart_count(app) == 2  # one objective curve per side, no comparison chart
 

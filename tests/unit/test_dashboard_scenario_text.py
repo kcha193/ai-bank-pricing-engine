@@ -30,7 +30,7 @@ def test_text_states_gaps_optimum_and_the_disclaimer():
     assert "10 bps above the market leader" in text
     assert "4 bps above the market median" in text
     assert "rank #4 of 5" in text
-    assert "model optimum home-loan rate is 4.84%" in text
+    assert "Median-benchmark optimum (reference) home-loan rate: 4.84%" in text
     assert "-$1.7m" in text  # leader vs median modelled objective, from backend rows
     assert text.rstrip().endswith(
         "Decision support only — this dashboard never changes a bank price."

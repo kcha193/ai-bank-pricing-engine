@@ -25,7 +25,7 @@ via ``orchestration.run_operational_cycle``'s injectable
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.config import EngineConfig
@@ -35,12 +35,17 @@ from balance_pricing_engine.pricing_intelligence.strategy import (
     apply_market_strategy_to_config,
 )
 from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
+from balance_pricing_engine.scenario_reporting import (
+    MEDIAN_REFERENCE_LABEL,
+    decision_quality_summary,
+    diagnostic_metadata,
+    strategy_label,
+)
 
-#: (label, strategy, offset_bps). "Model optimum" is not a fifth strategy --
-#: it is MARKET_MEDIAN's own result, relabelled: under a median competitor
-#: assumption, the optimiser's recommended rate *is* the model's answer to
-#: "what should we price". Matches the "Scenario E ... is Scenario B's
-#: recommended rate" note in examples/run_market_intelligence_scenarios.py.
+#: (label, strategy, offset_bps). The median-benchmark optimum is a reference
+#: to MARKET_MEDIAN's own result, never a fifth optimisation strategy.
+#: Matches the "Scenario E ... is Scenario B's recommended rate" note in
+#: examples/run_market_intelligence_scenarios.py.
 _SCENARIOS: tuple[tuple[str, CompetitorRateStrategy, float], ...] = (
     ("No change", CompetitorRateStrategy.MANUAL, 0.0),
     ("Match median", CompetitorRateStrategy.MARKET_MEDIAN, 0.0),
@@ -60,6 +65,20 @@ class ScenarioRow:
     competitor_rate: float
     our_rate: float
     objective: float
+    # None preserves missing legacy evidence rather than implying a clean diagnostic.
+    policy_band_breached: bool | None = None
+    boundary_warning: bool | None = None
+    initial_boundary_warning: bool | None = None
+    expansion_capped: bool | None = None
+    expansion_rounds: int | None = None
+    funding_shortfall: float | None = None
+    roe_constraint_relaxed: bool | None = None
+    expected_loan_volume: float | None = None
+    expected_deposit_volume: float | None = None
+
+    @property
+    def decision_quality_summary(self) -> str:
+        return decision_quality_summary(self)
 
 
 @dataclass(frozen=True)
@@ -69,9 +88,18 @@ class ScenarioComparison:
     term_months: int
     rows: tuple[ScenarioRow, ...] = field(default_factory=tuple)
 
+    product_type: ProductType = ProductType.HOME_LOAN
+
+    @property
+    def median_reference(self) -> "ScenarioRow | None":
+        return next((row for row in self.rows if row.label == "Match median"), None)
+
     @property
     def model_optimum(self) -> "ScenarioRow | None":
-        return next((row for row in self.rows if row.label == "Model optimum"), None)
+        # Backward-compatible accessor, including comparisons loaded from older storage.
+        return self.median_reference or next(
+            (row for row in self.rows if row.label == "Model optimum"), None
+        )
 
     @property
     def current(self) -> "ScenarioRow | None":
@@ -79,13 +107,7 @@ class ScenarioComparison:
 
     def as_dicts(self) -> list[dict]:
         return [
-            {
-                "label": row.label,
-                "strategy": row.strategy,
-                "competitor_rate": row.competitor_rate,
-                "our_rate": row.our_rate,
-                "objective": row.objective,
-            }
+            {**asdict(row), "decision_quality_summary": row.decision_quality_summary}
             for row in self.rows
         ]
 
@@ -113,7 +135,6 @@ def run_triggered_scenarios(
     """
     is_deposit = ProductType(snapshot.product_type) is ProductType.TERM_DEPOSIT
     rows: list[ScenarioRow] = []
-    model_optimum_source: ScenarioRow | None = None
     for label, strategy, offset_bps in _SCENARIOS:
         if is_deposit:
             scenario_config = apply_market_strategy_to_config(
@@ -147,45 +168,38 @@ def run_triggered_scenarios(
             competitor_rate=competitor_rate,
             our_rate=our_rate,
             objective=best.total_objective,
+            **diagnostic_metadata(diagnostics),
         )
         rows.append(row)
-        if strategy is CompetitorRateStrategy.MARKET_MEDIAN and offset_bps == 0.0:
-            model_optimum_source = row
-
-    if model_optimum_source is not None:
-        rows.append(
-            ScenarioRow(
-                label="Model optimum",
-                strategy="MODEL_OPTIMUM",
-                competitor_rate=model_optimum_source.competitor_rate,
-                our_rate=model_optimum_source.our_rate,
-                objective=model_optimum_source.objective,
-            )
-        )
-
-    return ScenarioComparison(term_months=term_months, rows=tuple(rows))
+    return ScenarioComparison(
+        term_months=term_months, rows=tuple(rows), product_type=ProductType(snapshot.product_type)
+    )
 
 
 def format_scenario_block(comparison: ScenarioComparison) -> str:
-    """Compact enrichment block for a Telegram/webhook alert.
-
-    Deliberately terse -- current/match-median/match-leader/model-optimum
-    only, no full grid -- per "do not send large modelling tables through
-    Telegram"; the full comparison is available via ``get_scenario_runs()``/
-    the dashboard for anyone who wants it.
-    """
-    by_label = {row.label: row for row in comparison.rows}
-    lines = ["PRICING ENGINE", ""]
-    for label in ("No change", "Match median", "Match leader", "Model optimum"):
-        row = by_label.get(label)
-        if row is None:
+    """Compact, product-explicit diagnostic summaries; never an approval or pricing action."""
+    product = comparison.product_type
+    title = "TERM DEPOSITS" if product == ProductType.TERM_DEPOSIT else "HOME LOANS"
+    lines = [f"PRICING ENGINE — {title}", f"Term: {comparison.term_months} months", ""]
+    for row in comparison.rows:
+        if row.label in ("Model optimum", "Leader -5bps"):
             continue
         # "No change" is the optimiser's recommendation under an *unchanged*
         # competitor assumption -- it is not the bank's actual currently
         # advertised rate, which this module never reads. Labelling it
         # "Current rate" would present a recommendation as an existing price.
-        display_label = "No-change optimum" if label == "No change" else label
-        lines.append(f"{display_label + ':':<18}{row.our_rate:.2%}")
-    lines.append("")
-    lines.append("Decision support only -- no automatic pricing action taken.")
+        label = "No-change assumption" if row.label == "No change" else row.label
+        lines.append(f"{label} ({strategy_label(row.strategy, product)})")
+        lines.append(f"Model-best rate: {row.our_rate:.2%}")
+        lines.append(f"Status: {row.decision_quality_summary}")
+    reference = comparison.model_optimum
+    if reference is not None:
+        lines.extend(
+            [
+                "",
+                f"{MEDIAN_REFERENCE_LABEL}: {reference.our_rate:.2%}",
+                "Reference is the Match median run, not another strategy.",
+            ]
+        )
+    lines.extend(["", "Synthetic decision support only.", "No automatic pricing action."])
     return "\n".join(lines)

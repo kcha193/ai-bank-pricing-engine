@@ -1172,7 +1172,8 @@ def test_a_reprice_auto_triggers_pricing_scenarios_end_to_end(
     assert code == workflow.EXIT_OK
     assert len(captured) == 1
     assert "PRICING ENGINE" in captured[0]["text"]
-    assert "Decision support only" in captured[0]["text"]
+    assert "Synthetic decision support only" in captured[0]["text"]
+    assert "Status: REVIEW REQUIRED" in captured[0]["text"]
 
     with ObservationStore(custom_db) as store:
         latest = store.get_latest_run_record()

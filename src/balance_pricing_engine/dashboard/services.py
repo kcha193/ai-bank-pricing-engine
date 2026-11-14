@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import sqlite3
+from dataclasses import asdict
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -82,6 +83,7 @@ from balance_pricing_engine.pricing_intelligence.strategy import (
     apply_market_strategy_to_config,
 )
 from balance_pricing_engine.pricing_scenario_trigger import run_triggered_scenarios
+from balance_pricing_engine.scenario_reporting import diagnostic_metadata, strategy_label
 from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
 
 logger = logging.getLogger(__name__)
@@ -601,7 +603,7 @@ class DashboardServices:
                         pos.market_median,
                         pos.bank_count,
                     )
-            optimum = comparison.model_optimum if comparison else None
+            optimum = comparison.median_reference if comparison else None
             market = selected_config.market
             loan_exclusions = deposit_exclusions = ()
             if loan_snapshot is not None:
@@ -622,28 +624,22 @@ class DashboardServices:
                 ScenarioView(
                     request=request,
                     rows=tuple(
-                        ScenarioRowView(
-                            r.label, r.strategy, r.competitor_rate, r.our_rate, r.objective
-                        )
+                        ScenarioRowView(**asdict(r))
                         for r in (comparison.rows if comparison else ())
                     ),
                     selected=SelectedScenario(
                         our_rate=best.deposit_rate if is_deposit else best.loan_rate,
                         objective=best.total_objective,
-                        expected_loan_volume=best.expected_loan_volume,
-                        funding_shortfall=best.funding_shortfall,
                         competitor_rate=(
                             market.competitor_deposit_rate
                             if is_deposit
                             else market.competitor_loan_rate
                         ),
                         rationale=_rationale(strategy, request),
-                        boundary_warning=diagnostics.boundary_diagnostics.has_warning,
-                        policy_band_breached=bool(diagnostics.policy_band_breached),
+                        **diagnostic_metadata(diagnostics),
                         mode=mode,
                         loan_rate=best.loan_rate,
                         deposit_rate=best.deposit_rate,
-                        expected_deposit_volume=best.expected_deposit_volume,
                         deposit_interest_cost=best.deposit_interest_cost,
                         loan_competitor_rate=market.competitor_loan_rate,
                         deposit_competitor_rate=market.competitor_deposit_rate,
@@ -875,9 +871,16 @@ def _rationale(strategy: CompetitorRateStrategy, request: ScenarioRequest) -> st
     if strategy is CompetitorRateStrategy.MANUAL:
         return f"{side} manual competitor rate {request.manual_rate_pct:.2f}%"
     offset = f", offset {request.offset_bps:+.0f} bps" if request.offset_bps else ""
-    text = f"{side} {strategy.value} at {request.term_months} months{offset}"
+    product = (
+        ProductType.TERM_DEPOSIT if request.mode == SCENARIO_TERM_DEPOSIT else ProductType.HOME_LOAN
+    )
+    text = (
+        f"{side} {strategy_label(strategy.value, product)} at {request.term_months} months{offset}"
+    )
     if request.mode == SCENARIO_JOINT:
-        deposit = request.deposit_strategy or strategy.value
+        deposit = strategy_label(
+            request.deposit_strategy or strategy.value, ProductType.TERM_DEPOSIT
+        )
         deposit_offset = (
             f", offset {request.deposit_offset_bps:+.0f} bps" if request.deposit_offset_bps else ""
         )

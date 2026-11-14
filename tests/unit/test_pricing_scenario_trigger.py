@@ -91,7 +91,7 @@ def test_run_triggered_scenarios_returns_the_documented_rows():
     assert isinstance(result, ScenarioComparison)
     assert result.term_months == 12
     labels = [row.label for row in result.rows]
-    assert labels == ["No change", "Match median", "Match leader", "Leader -5bps", "Model optimum"]
+    assert labels == ["No change", "Match median", "Match leader", "Leader -5bps"]
 
 
 def test_model_optimum_matches_the_match_median_scenario():
@@ -100,13 +100,8 @@ def test_model_optimum_matches_the_match_median_scenario():
     )
 
     match_median = next(row for row in result.rows if row.label == "Match median")
-    assert result.model_optimum == match_median.__class__(
-        label="Model optimum",
-        strategy="MODEL_OPTIMUM",
-        competitor_rate=match_median.competitor_rate,
-        our_rate=match_median.our_rate,
-        objective=match_median.objective,
-    )
+    assert result.model_optimum is match_median
+    assert result.median_reference is match_median
 
 
 def test_match_leader_uses_the_lowest_advertised_rate():
@@ -150,15 +145,16 @@ def test_format_scenario_block_is_compact_and_carries_the_disclaimer():
     assert "PRICING ENGINE" in block
     # Not "Current rate" -- this is the optimiser's recommendation under an
     # unchanged competitor assumption, not the bank's actual current rate.
-    assert "No-change optimum:" in block
+    assert "No-change assumption (Manual competitor rate)" in block
     assert "Current rate" not in block
-    assert "Match median:" in block
-    assert "Match leader:" in block
-    assert "Model optimum:" in block
-    assert "Decision support only -- no automatic pricing action taken." in block
+    assert "Match median (Market median)" in block
+    assert "Match leader (Market leader (lowest rate))" in block
+    assert "Median-benchmark optimum (reference):" in block
+    assert "Synthetic decision support only." in block
+    assert "No automatic pricing action." in block
     # Deliberately terse: no full grid, no Leader -5bps row in the alert block.
     assert "Leader -5bps" not in block
-    assert len(block.splitlines()) < 12
+    assert len(block.splitlines()) < 20
 
 
 def test_a_term_deposit_snapshot_overlays_the_deposit_side_not_the_loan_side():
@@ -172,7 +168,7 @@ def test_a_term_deposit_snapshot_overlays_the_deposit_side_not_the_loan_side():
 
     assert isinstance(result, ScenarioComparison)
     labels = [row.label for row in result.rows]
-    assert labels == ["No change", "Match median", "Match leader", "Leader -5bps", "Model optimum"]
+    assert labels == ["No change", "Match median", "Match leader", "Leader -5bps"]
 
     match_leader = next(row for row in result.rows if row.label == "Match leader")
     # Deposits rank highest-first -- ASB/Kiwibank's 4.35% leads, not ANZ's 4.20%.
