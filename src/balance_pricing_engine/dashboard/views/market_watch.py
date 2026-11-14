@@ -129,6 +129,7 @@ def render(services: DashboardServices) -> None:
             "leader and median, the full bank × term matrix and the term structure.",
         )
     ui.product_banner(product)
+    ui.observed_badge()
     overview = unwrap(cached(services, "overview", product))
     if overview is None:
         return

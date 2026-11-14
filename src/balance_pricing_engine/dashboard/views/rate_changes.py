@@ -201,6 +201,7 @@ def render(services: DashboardServices) -> None:
             "moved and what it did to the ranking.",
         )
     ui.product_banner(product)
+    ui.observed_badge()
     st.caption(
         f"Rises and cuts are not labelled good or bad: a {info.rate_noun} cut is "
         f"{'better for borrowers' if info.best_word == 'lowest' else 'worse for depositors'}"

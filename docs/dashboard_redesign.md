@@ -326,3 +326,42 @@ alternative is inferred or substituted. Synthetic before/after examples and aler
 [pricing_intelligence.md](pricing_intelligence.md#phase-1d-beforeafter-examples).
 Verification uses Streamlit AppTest for all three scenario modes and offline alert formatting;
 no live collection, alert send or deployment is needed.
+
+
+## 13. Result freshness and data provenance (Phase 1f)
+
+**When a stored Pricing Studio result is hidden.** A result is kept in session state with the
+request, database stamp, engine-config fingerprint and computed-at time it came from. It is
+shown only while all of them still match (`dashboard/freshness.py`, one rule, evaluated most
+specific cause first):
+
+| Condition | Message names |
+|---|---|
+| Stored entry has no config fingerprint (pre-provenance session) | no record of the engine configuration |
+| Engine config text changed or became unreadable | engine configuration has changed |
+| A market term the result used is no longer live | the market term is no longer available |
+| Market database changed (new collection) | market data has changed |
+| Current inputs cannot form a valid request | assumptions or market data have changed |
+| Any input differs (term, benchmark, offset, manual rate, current rate) | scenario inputs have changed |
+
+Hidden means absent: no metrics, charts, tables, rationale or decision text. A caption says
+when the hidden result was computed. The optimiser is never rerun on an input change; click
+**Run scenario** to calculate a new result, which replaces the stored one. A hidden result is
+not discarded: if the inputs return to what was run, the same result is current again. Each
+scenario type keeps its own result, and one is never rendered under another type.
+
+**Provenance labels** (`ui.modelled_badge`, `ui.observed_badge`; the words carry the meaning,
+colour and icon only reinforce them):
+
+- **MODELLED · synthetic** - optimiser output from synthetic customers: Pricing Studio results
+  and comparison, Scenario Lab summary. Not observed pricing, a forecast or realised profit.
+- **OBSERVED · market rates** - bank-advertised rates collected from public pages: Command
+  Centre panels and detail, Market Explorer, Rate Movements, Market Trends, and the Pricing
+  Studio benchmark inputs.
+
+Neighbouring categories stay distinct. *Reference* rates (market median/leader, the competitor
+assumption) are derived from observed rates. *Stale* observations are excluded from market
+statistics and listed as exclusions. *Quarantined* readings are suspect new observations kept
+out of trusted benchmarks: the last confirmed rate is shown and marked quarantined, never as a
+newly observed price. The labels change no number, ranking or warning.
+

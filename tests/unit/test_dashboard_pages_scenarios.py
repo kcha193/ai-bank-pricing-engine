@@ -94,12 +94,14 @@ def test_stale_banks_are_called_out_next_to_the_results(market_factory):
     assert any("Westpac excluded from the mortgage benchmark" in w.value for w in app.warning)
 
 
-def test_changed_inputs_are_flagged_instead_of_silently_mixing_results(market_factory):
+def test_changed_inputs_hide_the_result_instead_of_silently_mixing_results(market_factory):
     market = market_factory()
     app = run_page("scenarios", market.database, market.now)
     app.button(key="scenario_run").click().run()
+    assert app.dataframe and app.metric
     app.selectbox(key="scenario_strategy").select("MARKET_LEADER").run()
-    assert any("Inputs changed" in c.value for c in app.caption)
+    assert any("Scenario inputs have changed" in i.value for i in app.info)
+    assert not app.dataframe and not app.metric
 
 
 def test_no_data_degrades_to_guidance(tmp_path):
@@ -119,19 +121,21 @@ def test_a_result_says_when_it_was_computed(market_factory):
     )
 
 
-def test_a_result_is_flagged_when_the_market_data_changes_underneath_it(market_factory):
-    """Review finding: after a new collection the old result kept rendering, and the 'inputs
-    changed' notice did not fire because the inputs were unchanged."""
+def test_a_result_is_hidden_when_the_market_data_changes_underneath_it(market_factory):
+    """Review finding: after a new collection the old result kept rendering. Phase 1f (UX-002):
+    it is now hidden until an explicit rerun, not merely captioned."""
     import os
 
     market = market_factory()
     app = run_page("scenarios", market.database, market.now)
     app.button(key="scenario_run").click().run()
-    assert not any("Market data has changed" in c.value for c in app.caption)
+    assert not any("Market data has changed" in w.value for w in app.warning)
+    assert app.dataframe and app.metric
     stat = market.database.stat()
     os.utime(market.database, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
     app.run()
-    assert any("Market data has changed since this result" in c.value for c in app.caption)
+    assert any("Market data has changed since this result" in w.value for w in app.warning)
+    assert not app.dataframe and not app.metric  # the old recommendation is hidden, not captioned
 
 
 @pytest.mark.parametrize("changed", ["assumption", "invalid", "missing"])
@@ -229,5 +233,5 @@ def test_legacy_result_without_config_provenance_requires_explicit_run(market_fa
     app.button(key="scenario_run").click().run()
     app.session_state["scenario_result"] = app.session_state["scenario_result"][:4]
     app.run()
-    assert not app.dataframe
-    assert any("Engine configuration has changed" in w.value for w in app.warning)
+    assert not app.dataframe and not app.metric
+    assert any("no record of the engine configuration" in w.value for w in app.warning)

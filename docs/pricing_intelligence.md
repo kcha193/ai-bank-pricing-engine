@@ -584,9 +584,11 @@ different competitor assumptions?". Two tabs:
   **Median-benchmark optimum (reference)** markers,
   scenario-to-scenario differences against Match median, a deterministic decision-support
   summary (templated text, no LLM, no volume claims) and a limitations note. The result is
-  kept for the session, stamped with when it was computed, flagged when inputs or stored
-  market data change, and hidden until an explicit rerun when the engine config changes or
-  the term stops being live.
+  kept for the session, stamped with when it was computed, and hidden (not just captioned)
+  until an explicit rerun when any input, the stored market data, the engine config or the
+  term's availability changes. Results are labelled **MODELLED · synthetic**; the market
+  pages are labelled **OBSERVED · market rates**
+  ([dashboard_redesign.md §13](dashboard_redesign.md#13-result-freshness-and-data-provenance-phase-1f)).
 - *Advanced: Scenario Lab*: the original YAML profit-surface runner. It runs the optimiser
   on pasted `EngineConfig` YAML (default: the `PRICING_WATCH_CONFIG` file) and shows
   summary metrics including loan and deposit volume, the profit surface and an optional

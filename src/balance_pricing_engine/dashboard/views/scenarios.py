@@ -32,6 +32,12 @@ from balance_pricing_engine.dashboard.charts import (
     scenario_objectives,
     scenario_rates,
 )
+from balance_pricing_engine.dashboard.freshness import (
+    ResultFreshness,
+    assess_result,
+    stored_computed_at,
+    stored_request,
+)
 from balance_pricing_engine.dashboard.formatting import (
     fmt_bps,
     fmt_money_m,
@@ -116,6 +122,13 @@ LIMITATIONS = """
 - Sensitivity analysis and the full profit surface are in **Advanced: Scenario Lab**.
 - Every output requires human review. Nothing here changes a price.
 """
+
+
+PROVENANCE_NOTE = (
+    "Competitor assumptions are reference rates derived from observed market rates (plus any "
+    "offset you set). Model-best rates, volumes and objectives are modelled outputs from "
+    "synthetic customers: they are not observed bank prices or realised profit."
+)
 
 
 def _key(mode: str, name: str) -> str:
@@ -295,6 +308,7 @@ def _comparison(view: ScenarioView) -> None:
         f"{info.market} scenario comparison",
         f"Each scenario re-runs the optimiser under a different competitor {info.noun} assumption.",
     )
+    ui.modelled_badge()
     rate_tab, value_tab = st.tabs(["Modelled rates", "Modelled financial value"])
     with rate_tab:
         ui.render_chart(scenario_rates(view.rows, DISPLAY_LABELS))
@@ -361,12 +375,15 @@ def _trade_offs(view: ScenarioView) -> None:
 
 
 def _render_result(view: ScenarioView) -> None:
-    st.badge("Human review required", icon=":material/person_check:", color="orange")
+    with st.container(horizontal=True, gap="small"):
+        ui.modelled_badge()
+        st.badge("Human review required", icon=":material/person_check:", color="orange")
     selected = view.selected
     ui.section(
         "2 · Results",
         f"Selected assumption: {selected.rationale}. Rates below are modelled outputs.",
     )
+    st.caption(PROVENANCE_NOTE)
     _governance(view)
     if view.mode == SCENARIO_JOINT:
         _joint_metrics(view)
@@ -447,6 +464,9 @@ def _define(services: DashboardServices, mode: str):
     """Step 1. Returns the request, or None when a required market has no live term."""
     ui.section("1 · Define the scenario")
     st.caption(MODE_NOTES[mode])
+    with st.container(horizontal=True, gap="small", vertical_alignment="center"):
+        ui.observed_badge()
+        st.caption("Competitor benchmarks are read from observed market rates.")
     with st.container(border=True):
         if mode == SCENARIO_JOINT:
             request = _define_joint(services)
@@ -566,12 +586,9 @@ def _scenarios_tab(services: DashboardServices) -> None:
         ui.product_banner(_side_product(mode))
 
     request = _define(services, mode)
-    if request is None:
-        return
-
     state_key = _state_key(mode)
     run_col, note_col = st.columns([1, 4], vertical_alignment="center")
-    if run_col.button(
+    if request is not None and run_col.button(
         "Run scenario", type="primary", key=_key(mode, "run"), icon=":material/play_arrow:"
     ):
         with st.spinner("Running the optimiser…"):
@@ -585,33 +602,32 @@ def _scenarios_tab(services: DashboardServices) -> None:
 
     stored = st.session_state.get(state_key)
     if stored is None:
-        note_col.caption("Choose assumptions and click **Run scenario**.")
+        if request is not None:
+            note_col.caption("Choose assumptions and click **Run scenario**.")
         return
-    # Sessions created before configuration provenance was added must be rerun as well.
-    stored_request, result, stored_stamp, computed_at = stored[:4]
-    stored_config = stored[4] if len(stored) > 4 else None
-    note_col.caption(f"Computed {fmt_nz_datetime(computed_at)} (Pacific/Auckland).")
-    if stored_request.mode != mode:  # defensive: a result never renders under another type
+    original = stored_request(stored)
+    freshness = assess_result(
+        stored,
+        mode=mode,
+        request=request,
+        db_stamp=services.db_stamp(),
+        config_fingerprint=services.config_fingerprint(),
+        terms_available=original is None or _still_available(services, original),
+    )
+    computed_at = stored_computed_at(stored)
+    if not freshness.is_current:
+        # Never render a recommendation that no longer matches the inputs, data or engine.
+        if computed_at is not None:
+            note_col.caption(
+                f"Hidden result was computed {fmt_nz_datetime(computed_at)} (Pacific/Auckland); "
+                "it is no longer current."
+            )
+        notify = st.info if freshness.status is ResultFreshness.INPUTS_CHANGED else st.warning
+        notify(freshness.message)
         return
-    if stored_request != request:
-        st.caption("Inputs changed since this result; click Run scenario to refresh.")
-    if stored_stamp != services.db_stamp():
-        st.caption(
-            "Market data has changed since this result was computed; click Run scenario to refresh."
-        )
-    if stored_config != services.config_fingerprint():
-        st.warning(
-            "Engine configuration has changed since this result was computed. "
-            "The previous recommendation is hidden; click Run scenario to refresh."
-        )
-        return
-    if not _still_available(services, stored_request):
-        st.warning(
-            "The result's market term is no longer available. "
-            "The previous recommendation is hidden; click Run scenario to refresh."
-        )
-        return
-    view = unwrap(result)
+    if computed_at is not None:
+        note_col.caption(f"Computed {fmt_nz_datetime(computed_at)} (Pacific/Auckland).")
+    view = unwrap(stored[1])
     if view is not None and view.mode == mode:
         _render_result(view)
 

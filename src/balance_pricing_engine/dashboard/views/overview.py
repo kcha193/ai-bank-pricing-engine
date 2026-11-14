@@ -119,6 +119,7 @@ def _market_panel(services: DashboardServices, product: ProductType) -> None:
     with st.container(border=True, key=f"pw-panel-{product.value}"):
         st.subheader(f"{info.icon} {info.market} market", anchor=False)
         st.caption(f"{info.symbol} {info.side} · {info.ranking_rule}")
+        ui.observed_badge()
         result = cached(services, "overview", product)
         overview = result.value
         if overview is None:
@@ -310,4 +311,5 @@ def render(services: DashboardServices) -> None:
     )
     product = ui.product_selector("overview_product")
     ui.product_banner(product)
+    ui.observed_badge()
     _detail(services, product)
