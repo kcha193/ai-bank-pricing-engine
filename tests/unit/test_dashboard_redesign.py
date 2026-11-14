@@ -224,8 +224,9 @@ def test_governance_flags_from_the_optimiser_are_shown_next_to_results(market_fa
         app = run_page("scenarios", market.database, market.now)
         app.button(key="scenario_run").click().run()
     assert not app.exception
-    assert any("edge of its rate grid" in w.value for w in app.warning)
-    assert any("outside the original policy band" in e.value for e in app.error)
+    assert any("Grid-boundary warning" in w.value for w in app.warning)
+    assert any("Outside policy band" in w.value for w in app.warning)
+    assert not app.error  # a policy-band WARN is not a governance BLOCK
 
 
 def test_scenario_view_carries_the_optimiser_governance_flags(market_factory):
@@ -249,9 +250,10 @@ def test_scenario_differences_compare_to_match_median_and_say_model_optimum_is_t
         .value
     )
     rows = {r["Scenario"]: r for r in scenario_differences(view)}
-    assert rows["Match median"]["Objective vs Match median"] == "same"
-    assert rows["Model optimum"]["Rate vs Match median"] == "same"  # an alias, not a strategy
-    assert "No-change optimum" in rows
+    median = rows["Match median — Median-benchmark optimum (reference)"]
+    assert median["Objective vs Match median"] == "same"
+    assert len(rows) == 4  # median reference is not a fifth strategy
+    assert "No-change assumption" in rows
 
 
 def test_pricing_studio_explains_that_the_model_optimum_is_an_alias(market_factory):
@@ -259,7 +261,10 @@ def test_pricing_studio_explains_that_the_model_optimum_is_an_alias(market_facto
     app = run_page("scenarios", market.database, market.now)
     app.button(key="scenario_run").click().run()
     text = " ".join(c.value for c in app.caption) + " ".join(m.value for m in app.markdown)
-    assert "Model optimum is the Match median row, not a separate strategy" in text
+    assert (
+        "Median-benchmark optimum (reference) is the Match median row, not a separate strategy"
+        in text
+    )
     assert "not your bank's advertised rate" in text
 
 

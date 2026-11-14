@@ -109,12 +109,11 @@ def test_flow_c_scenario_decision_support_equals_direct_backend_calls(market_fac
     by_label = {r.label: r for r in truth.rows}
     shown = {row["Scenario"]: row for _, row in table.iterrows()}
     for label, display in (
-        ("No change", "No-change optimum"),
-        ("Match median", "Match median"),
+        ("No change", "No-change assumption"),
+        ("Match median", "Match median — Median-benchmark optimum (reference)"),
         ("Match leader", "Match leader"),
-        ("Model optimum", "Model optimum"),
     ):
-        assert shown[display]["Our rate"] == fmt_rate_fraction(by_label[label].our_rate)
+        assert shown[display]["Model-best rate"] == fmt_rate_fraction(by_label[label].our_rate)
         assert shown[display]["Objective"] == fmt_money_m(by_label[label].objective)
     assert services.scenarios(ScenarioRequest(12, "MARKET_MEDIAN", None, 0.0, 4.89)).value.rows
     assert any("Decision support only" in w.value for w in app.warning)

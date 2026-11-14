@@ -186,7 +186,7 @@ def test_objective_curve_plots_the_curve_in_percent_and_annotates_each_marker_on
 
     spec = objective_curve(
         [CurvePoint(0.047, -3.0), CurvePoint(0.048, -2.0)],
-        {"Current": 4.89, "Market median": 4.85, "Model optimum": 4.84},
+        {"Current": 4.89, "Market median": 4.85, "Median-benchmark optimum (reference)": 4.84},
     ).to_dict()
     rows = [row for dataset in spec["datasets"].values() for row in dataset]
     curve = [r for r in rows if "objective" in r]
@@ -194,7 +194,7 @@ def test_objective_curve_plots_the_curve_in_percent_and_annotates_each_marker_on
     assert {r["marker"] for r in rows if "marker" in r} == {
         "Current",
         "Market median",
-        "Model optimum",
+        "Median-benchmark optimum (reference)",
     }
 
 

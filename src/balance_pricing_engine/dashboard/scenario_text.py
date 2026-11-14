@@ -17,6 +17,7 @@ from balance_pricing_engine.dashboard.models import (
     ScenarioView,
 )
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
+from balance_pricing_engine.scenario_reporting import MEDIAN_REFERENCE_LABEL
 
 DISCLAIMER = "Decision support only — this dashboard never changes a bank price."
 
@@ -31,7 +32,7 @@ def _gap(bps: float, reference: str) -> str:
 def _joint_text(view: ScenarioView) -> list[str]:
     selected = view.selected
     return [
-        "Under the joint competitor assumption, the optimiser's home-loan rate is "
+        "Under the selected joint competitor assumption, the home-loan model-best rate is "
         f"{fmt_rate_fraction(selected.loan_rate)} and its term-deposit rate is "
         f"{fmt_rate_fraction(selected.deposit_rate)}, for a modelled objective of "
         f"{fmt_money_m(selected.objective)}.",
@@ -44,7 +45,7 @@ def _joint_text(view: ScenarioView) -> list[str]:
 
 def build_decision_text(view: ScenarioView) -> str:
     if view.mode == SCENARIO_JOINT:
-        return "\n\n".join([*_joint_text(view), DISCLAIMER])
+        return "\n\n".join([*_joint_text(view), view.selected.decision_quality_summary, DISCLAIMER])
     is_deposit = view.mode == SCENARIO_TERM_DEPOSIT
     side = "term-deposit" if is_deposit else "home-loan"
     leader_name = f"market leader ({'highest' if is_deposit else 'lowest'} rate)"
@@ -52,7 +53,7 @@ def build_decision_text(view: ScenarioView) -> str:
     position = view.position
     if position is not None:
         paragraphs.append(
-            f"Current {side} pricing is {_gap(position.bps_vs_best, leader_name)} and "
+            f"Entered advertised {side} rate is {_gap(position.bps_vs_best, leader_name)} and "
             f"{_gap(position.bps_vs_median, 'market median')} "
             f"(rank #{position.rank} of {position.bank_count})."
         )
@@ -66,10 +67,15 @@ def build_decision_text(view: ScenarioView) -> str:
             f"optimiser's {side} rate moves from {fmt_rate_fraction(median.our_rate)} to "
             f"{fmt_rate_fraction(leader.our_rate)}."
         )
-    if view.model_optimum_rate is not None:
+    paragraphs.append(
+        f"Selected scenario {side} model-best rate: {fmt_rate_fraction(view.selected.our_rate)}. "
+        f"{view.selected.decision_quality_summary}."
+    )
+    if view.median_reference_rate is not None:
         paragraphs.append(
-            f"Under current assumptions, the model optimum {side} rate is "
-            f"{fmt_rate_fraction(view.model_optimum_rate)}."
+            f"{MEDIAN_REFERENCE_LABEL} {side} rate: "
+            f"{fmt_rate_fraction(view.median_reference_rate)}. "
+            "This is the Match median run, not a separate strategy."
         )
     if is_deposit:
         paragraphs.append(
@@ -82,7 +88,11 @@ def build_decision_text(view: ScenarioView) -> str:
 
 #: Backend row label -> what the console calls it. "No change" is the optimiser's answer under
 #: an unchanged competitor assumption, not the bank's advertised rate (which it never reads).
-DISPLAY_LABELS = {"No change": "No-change optimum"}
+DISPLAY_LABELS = {
+    "No change": "No-change assumption",
+    "Match median": f"Match median — {MEDIAN_REFERENCE_LABEL}",
+    "Model optimum": MEDIAN_REFERENCE_LABEL,  # legacy stored comparisons only
+}
 BASELINE_LABEL = "Match median"
 
 
@@ -98,7 +108,8 @@ def scenario_differences(view: ScenarioView) -> list[dict[str, str]]:
     return [
         {
             "Scenario": DISPLAY_LABELS.get(row.label, row.label),
-            "Our rate": fmt_rate_fraction(row.our_rate),
+            "Model-best rate": fmt_rate_fraction(row.our_rate),
+            "Diagnostic status": row.decision_quality_summary,
             "Rate vs Match median": (
                 f"{rate_change_bps(baseline.our_rate * 100, row.our_rate * 100):+.0f} bps"
                 if row.our_rate != baseline.our_rate

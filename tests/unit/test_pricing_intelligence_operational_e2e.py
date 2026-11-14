@@ -134,7 +134,7 @@ def test_a_meaningful_reprice_flows_through_the_full_operational_pipeline(
     assert len(scenario_runs) == 1
     assert scenario_runs[0]["term_months"] == 12
     labels = [row["label"] for row in scenario_runs[0]["scenarios"]]
-    assert labels == ["No change", "Match median", "Match leader", "Leader -5bps", "Model optimum"]
+    assert labels == ["No change", "Match median", "Match leader", "Leader -5bps"]
 
     # -- Telegram alert formatted with the scenario enrichment --------------
     assert len(sink.alerts) == 1
@@ -143,7 +143,11 @@ def test_a_meaningful_reprice_flows_through_the_full_operational_pipeline(
     assert "ANZ" in alert.body
     assert "4.79% → 4.59%" in alert.body
     assert "PRICING ENGINE" in alert.body
-    assert "Decision support only -- no automatic pricing action taken." in alert.body
+    assert "Synthetic decision support only." in alert.body
+    assert "No automatic pricing action." in alert.body
+    assert "Status: REVIEW REQUIRED" in alert.body
+    assert "Median-benchmark optimum (reference)" in alert.body
+    assert all("policy_band_breached" in row for row in scenario_runs[0]["scenarios"])
 
     # -- operational run result persisted ------------------------------------
     assert result.status == "SUCCESS"

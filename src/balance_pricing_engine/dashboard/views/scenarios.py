@@ -56,23 +56,15 @@ from balance_pricing_engine.dashboard.scenario_text import (
     scenario_differences,
 )
 from balance_pricing_engine.dashboard.services import DashboardServices
+from balance_pricing_engine.scenario_reporting import (
+    MEDIAN_REFERENCE_LABEL,
+    STRATEGY_LABELS,
+    DEPOSIT_STRATEGY_LABELS,
+)
 
 STRATEGIES = ["MARKET_MEDIAN", "MARKET_LEADER", "MARKET_SECOND_LOWEST", "MARKET_MEAN", "MANUAL"]
 #: The joint scenario overlays a market benchmark on both sides; there is no manual input.
 JOINT_STRATEGIES = STRATEGIES[:-1]
-STRATEGY_LABELS = {
-    "MARKET_MEDIAN": "Market median",
-    "MARKET_LEADER": "Market leader (lowest rate)",
-    "MARKET_SECOND_LOWEST": "Second-lowest rate",
-    "MARKET_MEAN": "Market mean",
-    "MANUAL": "Manual competitor rate",
-}
-#: The backend's leader and second-best follow the product direction: highest for deposits.
-DEPOSIT_STRATEGY_LABELS = {
-    **STRATEGY_LABELS,
-    "MARKET_LEADER": "Market leader (highest rate)",
-    "MARKET_SECOND_LOWEST": "Second-highest rate",
-}
 STATE_KEY = "scenario_result"  # home-loan results; other modes append their mode
 
 MODES = {
@@ -115,10 +107,10 @@ LIMITATIONS = """
 - Pricing is **portfolio-level** (one home-loan rate and one term-deposit rate), not personalised.
 - The optimiser always solves both rates together. A single-side scenario changes only that
   side's competitor assumption; the other side's assumption stays as configured.
-- **No-change optimum** is the optimiser's answer with the competitor assumption unchanged — it is
+- **No-change assumption** is the optimiser's answer with the competitor assumption unchanged — it is
   not your bank's advertised rate.
-- **Model optimum** is the same optimiser run as **Match median** (the model's reference
-  benchmark), shown for orientation; it is not a separately calculated strategy.
+- **Median-benchmark optimum (reference)** is the **Match median** run. It is a comparison
+  under the median competitor assumption, never an independent strategy or an approved price.
 - A higher deposit rate attracts depositors but increases funding cost; the deposit market leader
   is not the best rate for bank margin.
 - Sensitivity analysis and the full profit surface are in **Advanced: Scenario Lab**.
@@ -155,8 +147,9 @@ def _markers(view: ScenarioView) -> dict[str, float]:
         markers[f"Market leader ({info.best_word})"] = (
             by_label["Match leader"].competitor_rate * 100
         )
-    if view.model_optimum_rate is not None:
-        markers["Model optimum"] = view.model_optimum_rate * 100
+    markers["Selected scenario model-best"] = view.selected.our_rate * 100
+    if view.median_reference_rate is not None:
+        markers[MEDIAN_REFERENCE_LABEL] = view.median_reference_rate * 100
     return markers
 
 
@@ -176,15 +169,21 @@ def _governance(view: ScenarioView) -> None:
         _exclusion_warnings(view.deposit_excluded_banks, ProductType.TERM_DEPOSIT)
     else:
         _exclusion_warnings(view.excluded_banks, _side_product(view.mode))
-    if view.selected.boundary_warning:
-        st.warning(
-            "Governance: the optimiser's best rate sits on the edge of its rate grid. The true "
-            "optimum may lie outside the searched range; review before relying on it."
-        )
-    if view.selected.policy_band_breached:
-        st.error(
-            "Governance: the winning rate is outside the original policy band. "
-            "It requires explicit review."
+    if view.selected.diagnostic_blocked:
+        st.error(f"Diagnostic status: {view.selected.decision_quality_summary}")
+    elif view.selected.diagnostic_warnings:
+        st.warning(f"Diagnostic status: {view.selected.decision_quality_summary}")
+    else:
+        st.info(view.selected.decision_quality_summary)
+    st.caption(
+        "Diagnostic checks are not a full governance decision or pricing approval. "
+        "Policy-band and boundary flags cover the jointly solved loan and deposit rates."
+    )
+    if view.selected.initial_boundary_warning is not None:
+        st.caption(
+            f"Initial grid-boundary warning: {view.selected.initial_boundary_warning}; "
+            f"expansion rounds: {view.selected.expansion_rounds}. "
+            "The grid-boundary warning above describes the final grid."
         )
 
 
@@ -195,7 +194,7 @@ def _home_loan_metrics(view: ScenarioView) -> None:
     selected = view.selected
     cols = ui.metric_columns(5, key="scenario-home-loan")
     cols[0].metric(
-        "Optimal home-loan rate",
+        f"Home-loan · {selected.headline_label}",
         fmt_rate_fraction(selected.our_rate),
         border=True,
         help="The optimiser's best home-loan rate under the selected competitor assumption.",
@@ -220,7 +219,7 @@ def _deposit_metrics(view: ScenarioView) -> None:
     selected = view.selected
     cols = ui.metric_columns(3, key="scenario-deposit-rates")
     cols[0].metric(
-        "Optimal term-deposit rate",
+        f"Term-deposit · {selected.headline_label}",
         fmt_rate_fraction(selected.our_rate),
         border=True,
         help="The optimiser's best term-deposit rate under the selected deposit competitor "
@@ -246,7 +245,7 @@ def _deposit_metrics(view: ScenarioView) -> None:
         "Deposit funding cost",
         fmt_money_m(selected.deposit_interest_cost),
         border=True,
-        help="Modelled interest the bank pays on the expected deposits at the optimal rate.",
+        help="Modelled interest the bank pays on the expected deposits at the model-best rate.",
     )
     cols[2].metric("Funding shortfall", fmt_money_m(selected.funding_shortfall), border=True)
     st.caption(
@@ -259,9 +258,15 @@ def _deposit_metrics(view: ScenarioView) -> None:
 def _joint_metrics(view: ScenarioView) -> None:
     selected = view.selected
     cols = ui.metric_columns(3, key="scenario-joint-rates")
-    cols[0].metric("⌂ Optimal home-loan rate", fmt_rate_fraction(selected.loan_rate), border=True)
+    cols[0].metric(
+        f"⌂ Home-loan · {selected.headline_label}",
+        fmt_rate_fraction(selected.loan_rate),
+        border=True,
+    )
     cols[1].metric(
-        "◎ Optimal term-deposit rate", fmt_rate_fraction(selected.deposit_rate), border=True
+        f"◎ Term-deposit · {selected.headline_label}",
+        fmt_rate_fraction(selected.deposit_rate),
+        border=True,
     )
     cols[2].metric(
         "Objective",
@@ -304,7 +309,9 @@ def _comparison(view: ScenarioView) -> None:
                 {
                     "Scenario": DISPLAY_LABELS.get(row.label, row.label),
                     "Competitor": fmt_rate_fraction(row.competitor_rate),
-                    "Our rate": fmt_rate_fraction(row.our_rate),
+                    "Strategy": _strategy_labels(_side_product(view.mode)).get(row.strategy),
+                    "Model-best rate": fmt_rate_fraction(row.our_rate),
+                    "Diagnostic status": row.decision_quality_summary,
                     "Objective": fmt_money_m(row.objective),
                 }
                 for row in view.rows
@@ -314,9 +321,9 @@ def _comparison(view: ScenarioView) -> None:
         width="stretch",
     )
     st.caption(
-        f"Rates are {info.rate_noun}s. Our rate is the optimiser's recommendation under each "
-        "competitor assumption; Objective is the modelled risk-adjusted value. Model optimum is "
-        "the Match median row, not a separate strategy."
+        f"Rates are {info.rate_noun}s. Model-best is the modelled best candidate under each "
+        "competitor assumption; Objective is the modelled risk-adjusted value. "
+        f"{MEDIAN_REFERENCE_LABEL} is the Match median row, not a separate strategy."
     )
 
 
@@ -355,12 +362,12 @@ def _trade_offs(view: ScenarioView) -> None:
 
 def _render_result(view: ScenarioView) -> None:
     st.badge("Human review required", icon=":material/person_check:", color="orange")
-    _governance(view)
     selected = view.selected
     ui.section(
         "2 · Results",
         f"Selected assumption: {selected.rationale}. Rates below are modelled outputs.",
     )
+    _governance(view)
     if view.mode == SCENARIO_JOINT:
         _joint_metrics(view)
     elif view.mode == SCENARIO_TERM_DEPOSIT:

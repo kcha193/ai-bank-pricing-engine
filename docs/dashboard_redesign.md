@@ -302,3 +302,27 @@ Review evidence and limitations are recorded in
 [`dashboard_visual_review_2026-10-31.md`](dashboard_visual_review_2026-10-31.md).
 This is functional and visual QA in Chromium, not a formal WCAG conformance assessment or
 cross-browser certification. Native wide tables scroll within their own region on mobile.
+
+
+## 12. Pricing recommendation transparency (Phase 1d)
+
+Pricing Studio retains the existing layout and run controls. The pricing headline now says
+**Model-best rate (within policy band)** or **Model-best — outside policy band (review)**,
+with an explicit home-loan or term-deposit prefix. Diagnostic status sits beside the headline:
+policy-band breach, unresolved final boundary, capped expansion, relaxed ROE floor and funding
+shortfall. Initial boundary warnings and expansion rounds remain distinct from the final grid.
+These are warning-level diagnostic summaries, not a full governance decision or pricing approval.
+Known non-finite objectives retain the existing `OBJECTIVE_FINITE` BLOCK severity.
+Missing legacy evidence requires review rather than a false clear result.
+
+The selected scenario's rates, objective and evidence come from its own diagnostics.
+**Median-benchmark optimum (reference)** identifies the existing Match median comparison row
+and curve marker; the former duplicate fifth row is removed. Comparison tables include each
+run's diagnostic status. Rationales and selectors use the same product-aware strategy labels:
+second-lowest for home loans, second-highest for deposits, including joint scenarios.
+
+No optimiser, economics, market ranking, artifact or delivery behaviour changes. No in-policy
+alternative is inferred or substituted. Synthetic before/after examples and alert wording:
+[pricing_intelligence.md](pricing_intelligence.md#phase-1d-beforeafter-examples).
+Verification uses Streamlit AppTest for all three scenario modes and offline alert formatting;
+no live collection, alert send or deployment is needed.

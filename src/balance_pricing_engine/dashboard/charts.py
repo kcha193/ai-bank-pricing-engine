@@ -508,7 +508,7 @@ def scenario_rates(rows: Sequence[ScenarioRowView], labels: Mapping[str, str]):
         value_name="rate",
     )
     long["kind"] = long["kind"].map(
-        {"competitor": "Competitor assumption", "ours": "Modelled optimal rate"}
+        {"competitor": "Competitor assumption", "ours": "Model-best rate"}
     )
     order = list(frame["scenario"])
     y = alt.Y(
@@ -523,7 +523,7 @@ def scenario_rates(rows: Sequence[ScenarioRowView], labels: Mapping[str, str]):
             x2="ours:Q",
         )
     )
-    kinds = ["Competitor assumption", "Modelled optimal rate"]
+    kinds = ["Competitor assumption", "Model-best rate"]
     dots = (
         alt.Chart(long)
         .mark_circle(size=200, opacity=1)
@@ -556,7 +556,8 @@ def objective_curve(
     """Modelled objective across our candidate rates, with reference rates marked.
 
     ``curve`` rates are fractions (as the optimiser reports) and are plotted in percent;
-    ``markers`` are already percent (current rate, market median/leader, model optimum).
+    ``markers`` are already percent (entered rate, observed market median/leader,
+    selected model-best and median reference).
     ``rate_title`` names the side the curve is drawn along (loan or deposit rate).
     """
     frame = pd.DataFrame([{"rate": p.rate * 100, "objective": p.objective} for p in curve])
@@ -629,7 +630,7 @@ def scenario_objectives(rows: Sequence[ScenarioRowView], labels: Mapping[str, st
             tooltip=[
                 alt.Tooltip("scenario:N", title="Scenario"),
                 alt.Tooltip("objective:Q", title="Modelled value ($)", format=",.0f"),
-                alt.Tooltip("rate:Q", title="Modelled optimal rate (%)", format=".2f"),
+                alt.Tooltip("rate:Q", title="Model-best rate (%)", format=".2f"),
             ],
         )
     )

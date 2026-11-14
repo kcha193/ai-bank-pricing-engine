@@ -1,4 +1,4 @@
-"""Frozen view models returned by DashboardServices. No behaviour, no Streamlit."""
+"""Frozen dashboard view models with pure presentation properties; no Streamlit."""
 
 from __future__ import annotations
 
@@ -7,6 +7,12 @@ from datetime import date, datetime
 from typing import Literal, Mapping, Optional
 
 from balance_pricing_engine.competitor_rates.models import ProductType
+from balance_pricing_engine.scenario_reporting import (
+    decision_quality_summary,
+    diagnostic_warnings,
+    diagnostic_blocked,
+    model_best_label,
+)
 from balance_pricing_engine.pricing_intelligence.health import FreshnessState, MarketExclusion
 
 #: Pricing Studio modes. A single-side scenario overlays one competitor benchmark; the joint mode
@@ -206,6 +212,21 @@ class ScenarioRowView:
     our_rate: float
     objective: float
 
+    # Additive evidence from this row's own optimisation run.
+    policy_band_breached: Optional[bool] = None
+    boundary_warning: Optional[bool] = None
+    initial_boundary_warning: Optional[bool] = None
+    expansion_capped: Optional[bool] = None
+    expansion_rounds: Optional[int] = None
+    funding_shortfall: Optional[float] = None
+    roe_constraint_relaxed: Optional[bool] = None
+    expected_loan_volume: Optional[float] = None
+    expected_deposit_volume: Optional[float] = None
+
+    @property
+    def decision_quality_summary(self) -> str:
+        return decision_quality_summary(self)
+
 
 @dataclass(frozen=True)
 class CurvePoint:
@@ -222,8 +243,8 @@ class SelectedScenario:
     competitor_rate: float
     rationale: str
     #: The optimiser's own grid-edge and policy-band flags (additive; default for old callers).
-    boundary_warning: bool = False
-    policy_band_breached: bool = False
+    boundary_warning: Optional[bool] = None
+    policy_band_breached: Optional[bool] = None
     #: ``our_rate``/``competitor_rate`` are the scenario's own side; these name both sides of
     #: the optimiser's joint answer so a deposit result is never read off a loan field.
     mode: str = SCENARIO_HOME_LOAN
@@ -233,6 +254,27 @@ class SelectedScenario:
     deposit_interest_cost: Optional[float] = None
     loan_competitor_rate: Optional[float] = None
     deposit_competitor_rate: Optional[float] = None
+
+    initial_boundary_warning: Optional[bool] = None
+    expansion_capped: Optional[bool] = None
+    expansion_rounds: Optional[int] = None
+    roe_constraint_relaxed: Optional[bool] = None
+
+    @property
+    def decision_quality_summary(self) -> str:
+        return decision_quality_summary(self)
+
+    @property
+    def diagnostic_warnings(self) -> tuple[str, ...]:
+        return diagnostic_warnings(self)
+
+    @property
+    def diagnostic_blocked(self) -> bool:
+        return diagnostic_blocked(self)
+
+    @property
+    def headline_label(self) -> str:
+        return model_best_label(self)
 
 
 @dataclass(frozen=True)
@@ -259,6 +301,11 @@ class ScenarioView:
     deposit_curve: tuple[CurvePoint, ...] = ()
     #: Joint mode only: stale deposit-side banks (``excluded_banks`` holds the loan side).
     deposit_excluded_banks: tuple[MarketExclusion, ...] = ()
+
+    @property
+    def median_reference_rate(self) -> Optional[float]:
+        """Explicit name; model_optimum_rate remains a legacy constructor field."""
+        return self.model_optimum_rate
 
 
 @dataclass(frozen=True)

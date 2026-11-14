@@ -387,8 +387,8 @@ C  Leader assumption              4.95%      6.15%      $5,826,903    $-93,956
 D  Leader -5 assumption           4.90%      6.15%      $5,718,761   $-202,099
 ```
 
-Scenario E -- the economically optimal price -- is the `Our rate` column: the
-existing optimiser's own recommendation under each competitor assumption. The
+The `Our rate` column contains the model-best candidate under each stated
+competitor assumption; it is synthetic decision support, not an approved price. The
 script calls `run_baseline_diagnostics` once per scenario and reimplements no
 pricing logic.
 
@@ -568,12 +568,14 @@ different competitor assumptions?". Two tabs:
 - *Guided scenario*, in three steps. **1 · Define**: a mortgage term, a competitor
   benchmark (market median, leader, second-lowest, mean — with an offset in bps — or a
   manual rate) and optionally your current advertised rate; an expander explains each
-  input. **2 · Results**, after an explicit **Run scenario** click: modelled optimal rate,
+  input. **2 · Results**, after an explicit **Run scenario** click: model-best rate,
   competitor assumption, objective, expected loan volume and funding shortfall; the
-  optimiser's own governance flags (grid-edge boundary warning, policy-band breach) when
-  raised; stale-bank exclusions; and a scenario comparison (dumbbell chart of competitor
+  optimiser's own diagnostic warnings (policy-band breach, final grid boundary, expansion
+  cap, ROE relaxation and funding shortfall); initial boundary/expansion evidence; stale-bank
+  exclusions; and a scenario comparison (dumbbell chart of competitor
   versus modelled rate, plus the table). **3 · Trade-offs**: the objective-by-rate curve
-  with current (entered), market median/leader and model-optimum markers,
+  with entered rate, observed market median/leader, selected model-best and
+  **Median-benchmark optimum (reference)** markers,
   scenario-to-scenario differences against Match median, a deterministic decision-support
   summary (templated text, no LLM, no volume claims) and a limitations note. The result is
   kept for the session, stamped with when it was computed, flagged when inputs or stored
@@ -599,11 +601,26 @@ scheduler, so no page claims it is active.
 
 #### Scenario semantics
 
-- **No-change optimum** is the optimiser's recommendation under an *unchanged*
+- **No-change assumption** uses the optimiser's recommendation under an *unchanged*
   competitor assumption. It is **not** the bank's actual advertised rate; the
   backend never reads that.
-- **Model optimum** is the Match median row (`MARKET_MEDIAN`), relabelled; it is not
-  a separate strategy.
+- **Selected scenario model-best** is the optimiser's result under the operator's selected
+  competitor assumptions, including any offset. It retains that run's own diagnostics.
+- **Median-benchmark optimum (reference)** is the Match median run (`MARKET_MEDIAN`, zero
+  offset). It may differ from the selected scenario. It is marked on the comparison row and
+  chart, never added as a fifth strategy. The legacy `model_optimum`/`model_optimum_rate`
+  Python accessors remain available.
+- **Model-best — outside policy band (review)** labels an out-of-band result. An in-band
+  result says **Model-best rate (within policy band)**. Both require human review. Policy
+  flags describe the jointly solved loan/deposit candidate, not necessarily both individual
+  rates breaching their bands.
+- **Review required** describes unresolved diagnostic warnings. These summaries do not run
+  the full application governance gates or grant approval. Warning-level conditions are not
+  presented as hard BLOCKs. A known non-finite objective retains the existing
+  `OBJECTIVE_FINITE` BLOCK severity and is shown as BLOCKED/unusable. An incomplete
+  legacy record requires review; absent evidence is never treated as clear. A resolved initial boundary warning alone is historical information.
+- No in-policy alternative is inferred from these flags. This presentation change preserves
+  the selected candidate and does not perform a second, constrained optimisation.
 - **Your current rate** is optional and used only to position you in the market
   (rank, bps versus leader and median). The optimiser does not read it. Leave it at 0
   if unknown.
@@ -1307,7 +1324,6 @@ duplicated):
 | Match median | `MARKET_MEDIAN` |
 | Match leader | `MARKET_LEADER` |
 | Leader -5bps | `MARKET_LEADER`, offset -5bps |
-| Model optimum | Match median's own optimiser answer, relabelled |
 
 Results are persisted to the `scenario_runs` table (keyed by `run_id` +
 `term_months`, queryable via `ObservationStore.get_scenario_runs`/
@@ -1315,20 +1331,52 @@ Results are persisted to the `scenario_runs` table (keyed by `run_id` +
 section) and a compact block is appended to the triggering rate-move alert:
 
 ```text
-PRICING ENGINE
+PRICING ENGINE — HOME LOANS
+Term: 12 months
 
-No-change optimum:4.89%
-Match median:     4.85%
-Match leader:     4.79%
-Model optimum:    4.84%
+Match median (Market median)
+Model-best rate: 6.19%
+Status: REVIEW REQUIRED — Outside policy band; Funding shortfall: $2,591,286
 
-Decision support only -- no automatic pricing action taken.
+Median-benchmark optimum (reference): 6.19%
+Reference is the Match median run, not another strategy.
+
+Synthetic decision support only.
+No automatic pricing action.
 ```
 
-"No-change optimum" -- not "current rate" -- because this module never reads
-the bank's actual currently advertised rate; it is the optimiser's own
-recommendation under an *unchanged* competitor assumption, and labelling a
-recommendation as an existing price would be misleading.
+The block above shows one row for brevity. Normal alerts compactly report No-change,
+Match median and Match leader, with each row's own diagnostic status. The -5 bps row remains
+in the stored comparison. Product and term are explicit; deposit leader means highest, and
+second-best means second-highest. Repeated warnings stay on one compact status line per row.
+The reference points to the existing median result; it is not an additional optimisation.
+
+Scenario storage carries additive policy-band, initial/final boundary, expansion-cap/round,
+ROE-relaxation, funding-shortfall and loan/deposit-volume evidence, plus a diagnostic summary.
+Existing records without that evidence are incomplete, not clear. Delivery failures retain the
+existing best-effort behaviour; formatting does not contact a bank or send an alert.
+
+#### Phase 1d before/after examples
+
+These are synthetic baseline calculations, not current market prices. The unchanged canonical
+config produces a 6.19% home-loan rate, a 4.05% term-deposit rate and a $2,591,286 funding
+shortfall (rounded for display). A policy flag covers the joint candidate.
+
+| Case | Before | After |
+| --- | --- | --- |
+| Within policy | Optimal home-loan rate: 6.19% | Home-loan · Model-best rate (within policy band): 6.19%; REVIEW REQUIRED — Funding shortfall: $2,591,286 |
+| Outside policy | Optimal home-loan rate: 6.19% | Home-loan · Model-best — outside policy band (review): 6.19%; Outside policy band; Funding shortfall: $2,591,286 |
+| ROE relaxed | Optimal home-loan rate: 6.19%; ROE relaxation omitted | Same model-best rate, with REVIEW REQUIRED — Outside policy band; ROE floor relaxed; Funding shortfall: $2,591,286 |
+| Selected leader versus median | Headline shows selected rate; text calls median the optimum under current assumptions | Selected scenario home-loan model-best rate and Median-benchmark optimum (reference) home-loan rate are labelled separately |
+| Home-loan alert | Model optimum: 6.19%; no diagnostic status | PRICING ENGINE — HOME LOANS; Model-best rate: 6.19%; REVIEW REQUIRED — Outside policy band; Funding shortfall: $2,591,286 |
+| Term-deposit alert | Model optimum: 4.05%; no diagnostic status | PRICING ENGINE — TERM DEPOSITS; Model-best rate: 4.05%; REVIEW REQUIRED — Outside policy band; Funding shortfall: $2,591,286 |
+
+Reproduce the within-policy illustration by explicitly widening only the home-loan spread
+maximum to 200 bps in a copy of the canonical config; both selected rates remain unchanged.
+Reproduce the ROE-relaxed illustration by setting `balance_sheet.min_return_on_equity=10.0`
+in a config copy. Neither illustrative override changes `configs/base.yaml`. A run with no
+warnings instead says **Checked diagnostic flags clear — human review still required**.
+All examples retain **Synthetic decision support only. No automatic pricing action.**
 
 This is decision support only. Nothing here writes a price -- see
 `pricing_scenario_trigger.py`'s own docstring for why this deliberately lives

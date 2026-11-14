@@ -9,7 +9,12 @@ from balance_pricing_engine.dashboard.formatting import fmt_money_m, fmt_rate_fr
 from balance_pricing_engine.dashboard.models import ScenarioRequest
 from balance_pricing_engine.pricing_scenario_trigger import run_triggered_scenarios
 
-LABELS = ["No-change optimum", "Match median", "Match leader", "Leader -5bps", "Model optimum"]
+LABELS = [
+    "No-change assumption",
+    "Match median — Median-benchmark optimum (reference)",
+    "Match leader",
+    "Leader -5bps",
+]
 
 
 def test_page_warns_that_this_is_decision_support_only(market_factory):
@@ -44,13 +49,15 @@ def test_displayed_numbers_equal_the_backend_result(market_factory):
     request = ScenarioRequest(12, "MARKET_MEDIAN", None, 0.0, 4.89)
     truth = make_services(market).scenarios(request).value
     assert list(table["Scenario"]) == LABELS
-    assert list(table["Our rate"]) == [fmt_rate_fraction(r.our_rate) for r in truth.rows]
+    assert list(table["Model-best rate"]) == [fmt_rate_fraction(r.our_rate) for r in truth.rows]
     assert list(table["Competitor"]) == [fmt_rate_fraction(r.competitor_rate) for r in truth.rows]
     assert list(table["Objective"]) == [fmt_money_m(r.objective) for r in truth.rows]
     metrics = {m.label: m.value for m in app.metric}
     assert metrics["Expected loan volume"] == fmt_money_m(truth.selected.expected_loan_volume)
     assert metrics["Funding shortfall"] == fmt_money_m(truth.selected.funding_shortfall)
-    assert metrics["Optimal home-loan rate"] == fmt_rate_fraction(truth.selected.our_rate)
+    assert metrics[f"Home-loan · {truth.selected.headline_label}"] == fmt_rate_fraction(
+        truth.selected.our_rate
+    )
     text = " ".join(m.value for m in app.markdown)
     assert "10 bps above the market leader" in text and "Decision support only" in text
     # Rate comparison, financial value comparison and the objective curve.
