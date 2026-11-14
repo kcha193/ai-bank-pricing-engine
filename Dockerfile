@@ -10,7 +10,8 @@ FROM python:3.11-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PRICING_ENGINE_CONFIG_PATH=/app/configs/base.yaml
+    PRICING_ENGINE_CONFIG_PATH=/app/configs/base.yaml \
+    PRICING_ENGINE_API_HOST=0.0.0.0
 
 WORKDIR /app
 

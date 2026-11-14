@@ -95,7 +95,9 @@ The project also includes:
 - A FastAPI serving layer (`api/`) with the original `POST /run-scenario` endpoint (stable,
   backward-compatible) and a versioned `POST /v1/pricing/scenarios` endpoint backed by
   `PricingService`, plus `GET /health` and `GET /ready`. Both `POST` routes accept an optional
-  `X-API-Key` header, enforced only when `PRICING_ENGINE_API_KEYS` is set.
+  `X-API-Key` header, enforced when `PRICING_ENGINE_API_KEYS` is set. The supported
+  `python3 -m balance_pricing_engine.api.server` launcher defaults to `127.0.0.1` and requires
+  keys for every other binding. Both POST routes enforce resource and filesystem limits.
 - A **pricing-intelligence operations layer** (`pricing_intelligence/`) that turns NZ public-market
   observation into a daily operating workflow, entirely separate from pricing itself: scheduled
   collection (`scripts/collect_market_rates_workflow.py`, launchd/cron examples under
@@ -115,9 +117,10 @@ dependencies. See [docs/run_ledger_guide.md](docs/run_ledger_guide.md).
 A minimal, secure local Docker deployment path exists (see
 [docs/deployment.md](docs/deployment.md)). The Pricing Watch Streamlit console is an optional
 `dashboard` extra, launched by double-clicking `Pricing Watch.command` (macOS) or with
-`streamlit run src/balance_pricing_engine/dashboard/app.py --server.address localhost` (setup, pages and Operations safety:
+`python3 -m streamlit run src/balance_pricing_engine/dashboard/app.py --server.address 127.0.0.1` (setup, pages and Operations safety:
 [docs/pricing_intelligence.md → Dashboard](docs/pricing_intelligence.md#dashboard)); it is decision
-support only and has no built-in authentication beyond an optional Operations token. Full
+support only. Operations requires a shared token for external/unknown bindings; the token
+does not authenticate read-only pages. Full
 production deployment (authentication, TLS, durable event/feature/model stores, autoscaling,
 enterprise monitoring) is out of scope — see the production-boundaries list in
 [docs/deployment.md](docs/deployment.md).

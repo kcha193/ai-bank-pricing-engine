@@ -473,11 +473,28 @@ def dispatch_alerts(alerts: Sequence[Alert], sink: AlertSink) -> int:
 DEFAULT_ALERT_DISPATCH_DEADLINE_SECONDS = 30.0
 
 
-def _alert_log_label(alert: Alert) -> str:
-    """Identify an alert in a log line, whether or not it carries a change."""
-    if alert.change is None:
-        return alert.title
-    return f"{alert.change.bank} {alert.change.change_type.value}"
+def _safe_exception_class(exc: Exception) -> str:
+    """Return a trusted class label without inspecting exception text or attributes."""
+    for exception_class in (
+        HTTPError,
+        TimeoutError,
+        ConnectionError,
+        OSError,
+        ValueError,
+        RuntimeError,
+    ):
+        if isinstance(exc, exception_class):
+            return exception_class.__name__
+    return "Exception"
+
+
+def _destination_category(sink: AlertSink) -> str:
+    """Use fixed destination labels; URLs, titles and class names may carry secrets."""
+    if isinstance(sink, TelegramAlertSink):
+        return "telegram"
+    if isinstance(sink, WebhookAlertSink):
+        return "webhook"
+    return "other"
 
 
 def dispatch_alerts_safely(
@@ -535,13 +552,15 @@ def dispatch_alerts_safely_detailed(
     """
     sent: list[Alert] = []
     deadline = time.monotonic() + deadline_seconds
-    for alert in alerts:
+    destination = _destination_category(sink)
+    for alert_number, alert in enumerate(alerts, start=1):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             logger.warning(
-                "alert delivery skipped for %s: dispatch deadline of %.0fs exceeded",
-                _alert_log_label(alert),
-                deadline_seconds,
+                "alert delivery skipped: category=dispatch_deadline_exceeded "
+                "destination=%s alert=%d",
+                destination,
+                alert_number,
             )
             continue
 
@@ -552,32 +571,38 @@ def dispatch_alerts_safely_detailed(
                 sink.send(alert)
                 outcome["ok"] = True
             except Exception as exc:  # noqa: BLE001 - reported on the calling thread
-                outcome["error"] = exc
+                # Discard the exception here: its message, URL, traceback and
+                # arbitrary class name can contain destination credentials.
+                outcome["error"] = _safe_exception_class(exc)
 
         worker = threading.Thread(target=_send, daemon=True)
         try:
             worker.start()
         except Exception as exc:  # noqa: BLE001 - e.g. RuntimeError: can't start new thread
             logger.warning(
-                "alert delivery failed for %s: could not start delivery thread: %s",
-                _alert_log_label(alert),
-                exc,
+                "alert delivery failed: category=thread_start_failed "
+                "exception=%s destination=%s alert=%d",
+                _safe_exception_class(exc),
+                destination,
+                alert_number,
             )
             continue
         worker.join(remaining)
 
         if worker.is_alive():
             logger.warning(
-                "alert delivery timed out for %s: exceeded dispatch deadline of %.0fs",
-                _alert_log_label(alert),
-                deadline_seconds,
+                "alert delivery timed out: category=send_timeout destination=%s alert=%d",
+                destination,
+                alert_number,
             )
         elif outcome.get("ok"):
             sent.append(alert)
         else:
             logger.warning(
-                "alert delivery failed for %s: %s",
-                _alert_log_label(alert),
-                outcome.get("error"),
+                "alert delivery failed: category=send_failed "
+                "exception=%s destination=%s alert=%d",
+                outcome.get("error", "Exception"),
+                destination,
+                alert_number,
             )
     return sent

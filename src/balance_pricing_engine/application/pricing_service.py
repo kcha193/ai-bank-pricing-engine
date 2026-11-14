@@ -501,13 +501,17 @@ def _materialize_effective_config(
     competitor_rates = config.competitor_rates
     if competitor_rates is None or not competitor_rates.enabled:
         return None
-    tmp_dir = Path(tempfile.gettempdir()) / "bank_pricing_effective_configs"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_path = tmp_dir / f"{uuid.uuid4().hex}.yaml"
-    tmp_path.write_text(
-        yaml.safe_dump(config.model_dump(mode="json"), sort_keys=False),
-        encoding="utf-8",
-    )
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", prefix="pricing-effective-", suffix=".yaml", delete=False
+        ) as handle:
+            tmp_path = Path(handle.name)
+            handle.write(yaml.safe_dump(config.model_dump(mode="json"), sort_keys=False))
+    except BaseException:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        raise
     return tmp_path
 
 

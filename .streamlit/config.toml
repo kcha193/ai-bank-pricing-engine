@@ -2,6 +2,9 @@
 # root (as "Pricing Watch.command" does). Users can still switch light/dark in the app menu.
 # Design tokens for charts and CSS live in src/balance_pricing_engine/dashboard/theme.py.
 
+[server]
+address = "127.0.0.1"
+
 [client]
 toolbarMode = "viewer"
 

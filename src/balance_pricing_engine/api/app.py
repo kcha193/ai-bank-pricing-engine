@@ -9,13 +9,16 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ValidationError
-import yaml
+from pydantic import BaseModel
 
 from balance_pricing_engine.api.auth import require_api_key
+from balance_pricing_engine.api.limits import (
+    APIConfigError,
+    RequestSizeLimitMiddleware,
+    load_api_config,
+)
 from balance_pricing_engine.api.schemas import (
     ErrorResponse,
     FeatureLineageSchema,
@@ -31,7 +34,7 @@ from balance_pricing_engine.application.contracts import (
 )
 from balance_pricing_engine.application.pricing_service import PricingService
 from balance_pricing_engine.competitor_rates.apply import CompetitorRateResolutionError
-from balance_pricing_engine.config import EngineConfig, load_config
+from balance_pricing_engine.config import load_config
 from balance_pricing_engine.diagnostics import run_sensitivity_analysis
 from balance_pricing_engine.optimization.grid_search import GRID_RESULT_COLUMNS
 from balance_pricing_engine.optimization.response_fn import GovernanceError
@@ -53,10 +56,12 @@ app = FastAPI(
         "original, stable endpoint. POST /v1/pricing/scenarios is the versioned, "
         "governed endpoint backed by the application PricingService — prefer it for new "
         "integrations. Both require an X-API-Key header only when PRICING_ENGINE_API_KEYS "
-        "is set (opt-in; unset by default) — an API gateway/auth proxy in front of the "
-        "service is still the recommended primary control; see docs/deployment.md."
+        "is set. The supported launcher binds loopback by default and requires keys "
+        "for non-loopback binding. Request resource limits apply to both POST routes; "
+        "see docs/deployment.md."
     ),
 )
+app.add_middleware(RequestSizeLimitMiddleware)
 _pricing_service = PricingService()
 
 
@@ -93,9 +98,13 @@ async def _validation_error_handler(
     for 422; other routes (the legacy /run-scenario) keep FastAPI's default
     ``{"detail": [...]}`` shape."""
     if request.url.path != "/v1/pricing/scenarios":
-        return await request_validation_exception_handler(request, exc)
+        # Preserve the legacy list shape, excluding reflected input/exception context.
+        return JSONResponse(status_code=422, content={"detail": [
+            {"type": error["type"], "loc": error["loc"], "msg": "Invalid request field."}
+            for error in exc.errors()
+        ]})
     correlation_id = request.headers.get(CORRELATION_ID_HEADER) or str(uuid.uuid4())
-    detail = _error_detail("VALIDATION_ERROR", str(exc), correlation_id)
+    detail = _error_detail("VALIDATION_ERROR", "Invalid request fields or JSON body.", correlation_id)
     return JSONResponse(
         status_code=422,
         content=detail,
@@ -129,9 +138,10 @@ def ready() -> ReadyResponse:
     except Exception as exc:
         raise HTTPException(
             status_code=503,
-            detail=_error_detail("CONFIG_UNAVAILABLE", str(exc), correlation_id=None),
+            detail=_error_detail("CONFIG_UNAVAILABLE", "Default config is unavailable or invalid.",
+                                 correlation_id=None),
         ) from exc
-    return ReadyResponse(status="ready", config_path=config_path)
+    return ReadyResponse(status="ready", config_path=Path(config_path).name)
 
 
 @app.post(
@@ -167,15 +177,24 @@ def create_pricing_scenario(
     response.headers[CORRELATION_ID_HEADER] = correlation_id
 
     try:
-        raw_config = yaml.safe_load(scenario_request.config_yaml)
-        config = EngineConfig(**raw_config)
-    except (TypeError, ValidationError, yaml.YAMLError) as exc:
+        config = load_api_config(scenario_request.config_yaml,
+                                 include_sensitivity=scenario_request.include_sensitivity)
+    except APIConfigError as exc:
         raise HTTPException(
             status_code=422,
-            detail=_error_detail("VALIDATION_ERROR", str(exc), correlation_id),
+            detail=_error_detail(exc.code, str(exc), correlation_id),
         ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=_error_detail(
+            "INTERNAL_ERROR", "API resource limits are misconfigured.", correlation_id
+        )) from exc
 
-    config_path = _materialize_config_yaml(scenario_request.config_yaml)
+    try:
+        config_path = _materialize_config_yaml(scenario_request.config_yaml)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=_error_detail(
+            "INTERNAL_ERROR", "Unable to prepare scenario configuration.", correlation_id
+        )) from exc
     try:
         service_request = ApplicationPricingScenarioRequest(
             config=config,
@@ -192,12 +211,15 @@ def create_pricing_scenario(
         except GovernanceError as exc:
             raise HTTPException(
                 status_code=503,
-                detail=_error_detail("MODEL_ARTIFACT_UNAVAILABLE", str(exc), correlation_id),
+                detail=_error_detail("MODEL_ARTIFACT_UNAVAILABLE",
+                                     "Governed model artifact is unavailable or invalid.",
+                                     correlation_id),
             ) from exc
         except NotImplementedError as exc:
             raise HTTPException(
                 status_code=422,
-                detail=_error_detail("UNSUPPORTED_SCENARIO", str(exc), correlation_id),
+                detail=_error_detail("UNSUPPORTED_SCENARIO", "Unsupported scenario configuration.",
+                                     correlation_id),
             ) from exc
         except (CompetitorRateResolutionError, FileNotFoundError) as exc:
             # PricingService.run_scenario applies competitor rates before optimisation;
@@ -209,7 +231,9 @@ def create_pricing_scenario(
             # failure -- they fall through to the generic 500 handler below instead.
             raise HTTPException(
                 status_code=422,
-                detail=_error_detail("COMPETITOR_RATE_VALIDATION_ERROR", str(exc), correlation_id),
+                detail=_error_detail("COMPETITOR_RATE_VALIDATION_ERROR",
+                                     "Configured competitor-rate data is unavailable or invalid.",
+                                     correlation_id),
             ) from exc
         except HTTPException:
             raise
@@ -231,10 +255,18 @@ def _error_detail(error_code: str, message: str, correlation_id: str | None) -> 
 
 
 def _materialize_config_yaml(config_yaml: str) -> Path:
-    tmp_dir = Path(tempfile.gettempdir()) / "bank_pricing_api_configs"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_path = tmp_dir / f"{uuid.uuid4().hex}.yaml"
-    tmp_path.write_text(config_yaml, encoding="utf-8")
+    descriptor, name = tempfile.mkstemp(prefix="pricing-config-", suffix=".yaml")
+    tmp_path = Path(name)
+    try:
+        try:
+            # Keep descriptor ownership here even if fdopen or writing fails.
+            with os.fdopen(descriptor, "w", encoding="utf-8", closefd=False) as handle:
+                handle.write(config_yaml)
+        finally:
+            os.close(descriptor)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
     return tmp_path
 
 
@@ -266,7 +298,8 @@ def _decision_to_response(decision: PricingDecision) -> PricingDecisionResponseV
         },
         execution_duration_seconds=decision.execution_duration_seconds,
         run_id=decision.run_id,
-        run_dir=str(decision.run_dir) if decision.run_dir else None,
+        run_dir=(str(Path("data/outputs/runs") / decision.run_dir.name)
+                 if decision.run_dir else None),
         sensitivity=(
             decision.sensitivity.to_dict(orient="records")
             if decision.sensitivity is not None
@@ -278,10 +311,11 @@ def _decision_to_response(decision: PricingDecision) -> PricingDecisionResponseV
 @app.post("/run-scenario", dependencies=[Depends(require_api_key)])
 def run_scenario(request: RunScenarioRequest) -> dict[str, Any]:
     try:
-        raw_config = yaml.safe_load(request.config_yaml)
-        config = EngineConfig(**raw_config)
-    except (TypeError, ValidationError, yaml.YAMLError) as exc:
+        config = load_api_config(request.config_yaml, include_sensitivity=request.include_sensitivity)
+    except APIConfigError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail="API resource limits are misconfigured.") from exc
 
     try:
         diagnostics = run_baseline_diagnostics(config)
@@ -310,7 +344,7 @@ def run_scenario(request: RunScenarioRequest) -> dict[str, Any]:
     except HTTPException:
         raise
     except NotImplementedError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail="Unsupported scenario configuration.") from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail="Unexpected scenario execution error") from exc
 

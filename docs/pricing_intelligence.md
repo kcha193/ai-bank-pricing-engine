@@ -426,7 +426,7 @@ Streamlit reads when launched from the repository root (as the launcher does). S
 
 ```bash
 python3 -m pip install -e ".[dashboard]"
-streamlit run src/balance_pricing_engine/dashboard/app.py --server.address localhost
+streamlit run src/balance_pricing_engine/dashboard/app.py --server.address 127.0.0.1
 ```
 
 - **Double-click launcher (macOS):** open `Pricing Watch.command` in the repository root.
@@ -441,10 +441,16 @@ streamlit run src/balance_pricing_engine/dashboard/app.py --server.address local
   free port is used if busy), `PRICING_WATCH_PYTHON`, `PRICING_WATCH_NO_BROWSER=1`. If
   macOS refuses a downloaded copy, right-click → Open once; if you see "permission
   denied", run `chmod +x "Pricing Watch.command"`.
-- Streamlit binds all network interfaces by default and has no built-in
-  authentication. Pass `--server.address localhost` unless you have put the app
-  behind something that authenticates, and set `PRICING_WATCH_OPS_TOKEN` (below)
-  if anyone else can reach it.
+- The repository's Streamlit config defaults to `127.0.0.1`; the launcher and command
+  above pin that same address. Streamlit command-line flags override environment variables
+  (including `STREAMLIT_SERVER_ADDRESS`), which override the config file. Operations checks
+  the effective binding again in each callback. Token-free Operations require an explicit
+  numeric loopback IP (`127.0.0.1` or `::1`, for example); external, wildcard, hostname or
+  unknown bindings require a valid `PRICING_WATCH_OPS_TOKEN` and session unlock.
+- **The shared Operations token does not authenticate read-only pages.** Before exposing
+  the dashboard externally, put the whole application behind authenticated ingress with
+  TLS. Until that exists, keep it bound to loopback; read-only pages remain available even
+  when Operations is locked or disabled.
 - From a git worktree, prefix `PYTHONPATH=src`: the editable install points at the
   main checkout, so without it the app imports that checkout's code instead of the
   worktree's.
@@ -458,7 +464,7 @@ streamlit run src/balance_pricing_engine/dashboard/app.py --server.address local
 | --- | --- | --- |
 | `PRICING_INTELLIGENCE_DB_PATH` | `data/processed/pricing_intelligence/observations.db` | Observation database. Same override as the CLI and workflow, so all three read one database. An explicit `pricing_intelligence.database_path` in the engine YAML wins over it. |
 | `PRICING_WATCH_CONFIG` | `configs/base.yaml` | Engine YAML used for `pricing_intelligence` settings (banks, terms, `max_observation_age_hours`), for scenarios, and as the default text in Scenario Lab. |
-| `PRICING_WATCH_OPS_TOKEN` | unset | Optional shared secret (at least 16 characters) that gates the Operations page. Never displayed or logged. |
+| `PRICING_WATCH_OPS_TOKEN` | unset | Shared secret (at least 16 characters) for collection and maintenance controls. Optional on an explicit numeric loopback binding; required on all other or unknown bindings. Never displayed or logged. Does not authenticate read-only pages. |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | unset | Telegram alerts from live runs, and the Operations "Send Test Notification" button. |
 
 All timestamps display in `Pacific/Auckland`.
@@ -662,15 +668,19 @@ used.
 - **Confirmation**: **Run Pricing Watch** stays disabled until you tick "I understand
   this contacts live bank websites". Dry Run needs no tick but also contacts the
   banks, and shares the single-flight guard.
-- **Token gate** (optional): with `PRICING_WATCH_OPS_TOKEN` set, nothing on the page
+- **Token gate**: with `PRICING_WATCH_OPS_TOKEN` set, nothing on the page
   except Refresh Dashboard is offered until you enter the token (constant-time
   compare; the input is cleared after each attempt). A token shorter than 16
   characters is refused: Operations stay disabled and the page says so. Each
   attempt is counted before the comparison, and five attempts without a success
   across the whole server process lock unlocking for 300 s **for everyone**,
   deliberately, so opening a new tab or sending parallel guesses does not reset or
-  outrun the count. A correct token clears the count. Without a token the page says
-  it is not access-protected.
+  outrun the count. A correct token clears the count. Without a token, controls are
+  available only on an explicitly numeric loopback binding and the page says they are
+  not access-protected. All other and unknown bindings disable controls until a valid token
+  is configured and entered. Both collection-job and maintenance callbacks recheck this
+  policy at click time; a hidden widget or stale unlock flag cannot bypass a missing or
+  short token on an external binding. Read-only pages are outside this token gate.
 - **Single flight**: one collection job at a time per server process, across browser
   tabs, with a 60 s cooldown after a run finishes before another can start.
 - **Create Backup** copies the database to `data/processed/pricing_intelligence/backups`

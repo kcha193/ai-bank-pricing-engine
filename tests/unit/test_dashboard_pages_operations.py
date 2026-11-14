@@ -329,7 +329,7 @@ def test_without_a_token_the_page_says_operations_are_unprotected(market_factory
     app = run_page("operations", market.database, market.now)
     text = " ".join(i.value for i in app.info)
     assert "not access-protected" in text and "PRICING_WATCH_OPS_TOKEN" in text
-    assert "localhost" in text
+    assert "--server.address 127.0.0.1" in text
 
 
 def test_a_locked_session_cannot_start_a_job_even_by_calling_the_callback(
@@ -397,3 +397,122 @@ def test_a_short_token_fails_closed_instead_of_offering_a_guessable_gate(market_
         with pytest.raises(KeyError):
             app.button(key=key)  # nothing can be unlocked or run until the token is fixed
     assert all("short" not in e.value for e in app.error)  # the value itself is never echoed
+
+
+@pytest.fixture
+def streamlit_address():
+    """Override Streamlit's effective binding without starting a server."""
+    import streamlit as st
+
+    original = st.config.get_option("server.address")
+
+    def set_address(address):
+        st.config.set_option("server.address", address)
+
+    yield set_address
+    st.config.set_option("server.address", original)
+
+
+@pytest.mark.parametrize(
+    "address", [None, "", "0.0.0.0", "::", "192.0.2.1", "localhost", "bad", 2130706433]
+)
+def test_unsafe_or_unknown_bind_cannot_offer_token_free_operations(
+    market_factory, streamlit_address, address
+):
+    streamlit_address(address)
+    market = market_factory()
+    app = run_page("operations", market.database, market.now)
+    assert not app.exception
+    assert app.button(key="refresh_dashboard") is not None
+    for key in ("run_live", "run_dry", "create_backup", "telegram_test", "ops_unlock"):
+        with pytest.raises(KeyError):
+            app.button(key=key)
+    assert any("PRICING_WATCH_OPS_TOKEN" in e.value for e in app.error)
+
+
+@pytest.mark.parametrize("address", ["127.0.0.1", "127.0.0.2", "::1"])
+def test_numeric_loopback_allows_local_operations_without_a_token(
+    market_factory, streamlit_address, address
+):
+    streamlit_address(address)
+    market = market_factory()
+    app = run_page("operations", market.database, market.now)
+    assert not app.exception
+    assert app.button(key="run_dry") is not None
+
+
+@pytest.mark.parametrize("action", ["run_live", "run_dry", "create_backup", "send_test_notification"])
+def test_external_callbacks_refuse_missing_token_even_with_stale_unlocked_state(
+    market_factory, clean_runner, streamlit_address, action
+):
+    from streamlit.testing.v1 import AppTest
+
+    streamlit_address("0.0.0.0")
+    market = market_factory()
+    callback = (
+        f'operations._start_job("live", {action!r}, settings)'
+        if action in ("run_live", "run_dry")
+        else f'operations._run_quick({action!r}, settings)'
+    )
+    script = f"""
+import streamlit as st
+from balance_pricing_engine.dashboard.views import operations
+from balance_pricing_engine.dashboard.settings import load_settings
+st.config.set_option("server.address", "127.0.0.1")
+settings = load_settings({{}}, database_path={str(market.database)!r})
+st.config.set_option("server.address", "0.0.0.0")
+st.session_state[operations.UNLOCKED_KEY] = True
+{callback}
+"""
+    with patch.object(actions, action, return_value=ok(action)) as operation:
+        app = AppTest.from_string(script).run()
+        clean_runner.wait()
+    assert not app.exception
+    assert operation.call_count == 0
+    assert clean_runner.state().result is None
+    assert "ops_quick_result" not in app.session_state
+
+
+@pytest.mark.parametrize("address", ["0.0.0.0", None])
+def test_external_and_unknown_bind_allow_actions_only_after_valid_unlock(
+    market_factory, clean_runner, streamlit_address, address
+):
+    streamlit_address(address)
+    market = market_factory()
+    with patch.object(actions, "run_dry", return_value=ok("dry_run")) as dry:
+        app = run_page("operations", market.database, market.now, env=TOKEN_ENV)
+        with pytest.raises(KeyError):
+            app.button(key="run_dry")
+        app.text_input(key="ops_token_input").set_value(TOKEN_ENV["PRICING_WATCH_OPS_TOKEN"]).run()
+        app.button(key="ops_unlock").click().run()
+        app.button(key="run_dry").click().run()
+        clean_runner.wait()
+    assert not app.exception
+    assert dry.call_count == 1
+    assert clean_runner.state().result.status == "SUCCESS"
+
+
+def test_binding_lookup_failure_denies_token_free_callbacks_without_logging_details(caplog):
+    from balance_pricing_engine.dashboard.settings import load_settings
+    from balance_pricing_engine.dashboard.views import operations
+
+    settings = load_settings({})
+    with patch.object(operations.st, "get_option", side_effect=RuntimeError("private detail")):
+        assert operations._authorised(settings) is False
+    assert "binding unavailable" in caplog.text
+    assert "private detail" not in caplog.text
+
+
+@pytest.mark.parametrize("page", ["overview", "operations_trust"])
+@pytest.mark.parametrize("env", [{}, {"PRICING_WATCH_OPS_TOKEN": "short"}])
+def test_external_binding_keeps_read_only_pages_available(
+    market_factory, streamlit_address, page, env
+):
+    streamlit_address("0.0.0.0")
+    market = market_factory()
+    app = run_page(page, market.database, market.now, env=env)
+    assert not app.exception
+    assert len(app.dataframe) > 0
+    for key in ("run_live", "run_dry", "create_backup", "telegram_test"):
+        with pytest.raises(KeyError):
+            app.button(key=key)
