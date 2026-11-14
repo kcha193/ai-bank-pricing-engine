@@ -3,18 +3,38 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Mapping, Optional, TypeVar
 import warnings
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRatesConfig
 from balance_pricing_engine.market import bps_to_rate
 from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
 
 
-class GridConfig(BaseModel):
+_EconomicConfigT = TypeVar("_EconomicConfigT", bound="EconomicConfig")
+
+
+class EconomicConfig(BaseModel):
+    """Finite economic inputs, including nested instances and copy updates."""
+
+    model_config = ConfigDict(allow_inf_nan=False, revalidate_instances="always")
+
+    def model_copy(
+        self: _EconomicConfigT,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> _EconomicConfigT:
+        # Pydantic's default model_copy trusts updates and skips all validation.
+        data = super().model_copy(deep=deep).model_dump()
+        data.update(update or {})
+        return type(self).model_validate(data)
+
+
+class GridConfig(EconomicConfig):
     start: float
     stop: float
     step: float
@@ -28,7 +48,7 @@ class GridConfig(BaseModel):
         return self
 
 
-class SpreadGridConfigModel(BaseModel):
+class SpreadGridConfigModel(EconomicConfig):
     min: float
     max: float
     step: float
@@ -42,12 +62,12 @@ class SpreadGridConfigModel(BaseModel):
         return self
 
 
-class SimulationConfig(BaseModel):
+class SimulationConfig(EconomicConfig):
     n_loan_customers: int = Field(gt=0)
     n_deposit_customers: int = Field(gt=0)
 
 
-class MarketConfig(BaseModel):
+class MarketConfig(EconomicConfig):
     cash_rate: float
     wholesale_funding_spread: float
     competitor_loan_rate: float
@@ -56,24 +76,24 @@ class MarketConfig(BaseModel):
     term_deposit_reference_rate: Optional[float] = Field(default=None, ge=0)
 
 
-class ProductConfig(BaseModel):
+class ProductConfig(EconomicConfig):
     loan_rate_grid: GridConfig
     deposit_rate_grid: GridConfig
 
 
-class LoanTierConfig(BaseModel):
+class LoanTierConfig(EconomicConfig):
     name: str
     lvr_max: Optional[float] = None
     rate_grid: GridConfig
 
 
-class DepositTierConfig(BaseModel):
+class DepositTierConfig(EconomicConfig):
     name: str
     balance_max: Optional[float] = None
     rate_grid: GridConfig
 
 
-class SegmentedPricingConfig(BaseModel):
+class SegmentedPricingConfig(EconomicConfig):
     loan_tiers: list[LoanTierConfig] = Field(min_length=1)
     deposit_tiers: list[DepositTierConfig] = Field(min_length=1)
 
@@ -90,12 +110,12 @@ class SegmentedPricingConfig(BaseModel):
         return self
 
 
-class PricingStrategyConfig(BaseModel):
+class PricingStrategyConfig(EconomicConfig):
     home_loan_spread_bps: SpreadGridConfigModel
     term_deposit_spread_bps: SpreadGridConfigModel
 
 
-class BalanceSheetConfig(BaseModel):
+class BalanceSheetConfig(EconomicConfig):
     required_deposit_funding_ratio: float = Field(ge=0, le=1)
     funding_shortfall_penalty_rate: float = Field(ge=0)
     loan_rwa_weight: float = Field(default=0.35, ge=0, le=2.5)
@@ -104,7 +124,7 @@ class BalanceSheetConfig(BaseModel):
     min_return_on_equity: Optional[float] = Field(default=None, ge=0)
 
 
-class MultiPeriodConfig(BaseModel):
+class MultiPeriodConfig(EconomicConfig):
     n_periods: int = Field(default=2, ge=2)
     loan_runoff_rate: float = Field(default=0.30, ge=0, le=1)
     deposit_runoff_rate: float = Field(default=0.50, ge=0, le=1)
@@ -116,7 +136,7 @@ class MultiPeriodConfig(BaseModel):
     loan_tenor_years: Optional[float] = Field(default=None, gt=0)
 
 
-class LoanResponseCoefficientsConfig(BaseModel):
+class LoanResponseCoefficientsConfig(EconomicConfig):
     # Recalibrated 2026-08-26 against the live-verified NZ market (1y median
     # 4.99%). rate_anchor is the reference price at which the own-rate term
     # vanishes, so it must track the market being priced into: left at 6.5% it
@@ -129,7 +149,7 @@ class LoanResponseCoefficientsConfig(BaseModel):
     lvr_coef: float = -0.25
 
 
-class DepositResponseCoefficientsConfig(BaseModel):
+class DepositResponseCoefficientsConfig(EconomicConfig):
     # Recalibrated 2026-09-02 against the live-verified NZ term-deposit market
     # (1y median 3.90%). Same reasoning as the loan side: rate_anchor is the
     # reference price at which the own-rate term vanishes, so leaving it at
@@ -143,22 +163,22 @@ class DepositResponseCoefficientsConfig(BaseModel):
     digital_coef: float = -0.20
 
 
-class ResponseCoefficientsConfig(BaseModel):
+class ResponseCoefficientsConfig(EconomicConfig):
     loan: LoanResponseCoefficientsConfig = Field(default_factory=LoanResponseCoefficientsConfig)
     deposit: DepositResponseCoefficientsConfig = Field(
         default_factory=DepositResponseCoefficientsConfig
     )
 
 
-class ResponseConfig(BaseModel):
-    loan_rate_elasticity: float
-    loan_competitor_gap_elasticity: float
-    deposit_rate_elasticity: float
-    deposit_competitor_gap_elasticity: float
+class ResponseConfig(EconomicConfig):
+    loan_rate_elasticity: float = Field(le=0)
+    loan_competitor_gap_elasticity: float = Field(le=0)
+    deposit_rate_elasticity: float = Field(ge=0)
+    deposit_competitor_gap_elasticity: float = Field(ge=0)
     coefficients: ResponseCoefficientsConfig = Field(default_factory=ResponseCoefficientsConfig)
 
 
-class EngineConfig(BaseModel):
+class EngineConfig(EconomicConfig):
     random_seed: int
     simulation: SimulationConfig
     market: MarketConfig

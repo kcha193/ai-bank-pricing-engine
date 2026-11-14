@@ -294,10 +294,7 @@ def apply_market_strategy_to_config(
     if not updates:
         return config
 
-    updated_config = config.model_copy(
-        update={"market": config.market.model_copy(update=updates)}
-    )
-    return revalidate_config(updated_config, context="market-intelligence overlay")
+    return revalidate_config(config, context="market-intelligence overlay", market_updates=updates)
 
 
 def apply_manual_competitor_rate_to_config(
@@ -325,10 +322,7 @@ def apply_manual_competitor_rate_to_config(
     updates: dict = {rate_field: rate_fraction}
     if set_reference_rate and getattr(config.market, reference_field) is not None:
         updates[reference_field] = rate_fraction
-    updated_config = config.model_copy(
-        update={"market": config.market.model_copy(update=updates)}
-    )
-    return revalidate_config(updated_config, context="manual competitor-rate override")
+    return revalidate_config(config, context="manual competitor-rate override", market_updates=updates)
 
 
 class CashRateStrategy(str, Enum):
@@ -462,7 +456,6 @@ def apply_cash_rate_strategy_to_config(
     if resolved.strategy is CashRateStrategy.MANUAL:
         return config
 
-    updated_config = config.model_copy(
-        update={"market": config.market.model_copy(update={"cash_rate": resolved.cash_rate})}
+    return revalidate_config(
+        config, context="RBNZ OCR overlay", market_updates={"cash_rate": resolved.cash_rate}
     )
-    return revalidate_config(updated_config, context="RBNZ OCR overlay")

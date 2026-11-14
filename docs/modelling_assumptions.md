@@ -36,6 +36,14 @@
 
 ## Deliberate simplifications
 
+Economic inputs must be finite: NaN and ±infinity are rejected in YAML, direct models, copy
+updates, API/dashboard configuration and LLM patches. This covers market/reference rates, funding
+parameters, coefficients, grids, tier bounds and multi-period assumptions. Both loan elasticities
+must be ≤ 0; both deposit elasticities must be ≥ 0; zero is valid. These checks do not recalibrate
+responses or change documented bounds. Finite negative wholesale spreads remain supported with
+a warning. LLM patches cannot alter elasticities or coefficients; see
+[patch governance](model_governance.md#financial-inputs-and-llm-scenario-patches-opt-003-gov-007).
+
 - No personalized pricing yet.
 - Trained ML response models do not feed the optimizer by default. They can feed the optimizer only
   through the explicit approved-champion registry path in `run_baseline_diagnostics(registry=...)`,

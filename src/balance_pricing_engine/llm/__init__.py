@@ -6,7 +6,11 @@ from balance_pricing_engine.llm.model_validation import (
     ValidationReportResult,
 )
 from balance_pricing_engine.llm.narrative import ScenarioNarrativeAgent
-from balance_pricing_engine.llm.scenario_interface import NLScenarioInterface, apply_patches
+from balance_pricing_engine.llm.scenario_interface import (
+    NLScenarioInterface,
+    PatchApproval,
+    apply_patches,
+)
 
 __all__ = [
     "AnomalyReport",
@@ -15,6 +19,7 @@ __all__ = [
     "ValidationReportResult",
     "ScenarioNarrativeAgent",
     "NLScenarioInterface",
+    "PatchApproval",
     "apply_patches",
     "build_client",
     "is_llm_available",
