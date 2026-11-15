@@ -667,11 +667,10 @@ def _brief(service: PricingIntelligenceService, args: argparse.Namespace) -> int
     lookback_days = service.config.market_state.lookback_days
 
     if args.weekly:
-        week_changes = service.get_changes(
+        week_changes = service.get_market_changes(
             days=lookback_days,
             product_type=product,
             rate_category=category,
-            scope_to_market=True,
         )
         cutoff = now - timedelta(days=lookback_days)
         run_records = [
@@ -696,11 +695,10 @@ def _brief(service: PricingIntelligenceService, args: argparse.Namespace) -> int
         nz_midnight = now.astimezone(_NZ_TIMEZONE).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
-        today_changes = service.get_changes(
+        today_changes = service.get_market_changes(
             since=nz_midnight.astimezone(timezone.utc),
             product_type=product,
             rate_category=category,
-            scope_to_market=True,
         )
         health = service.store.get_collector_health(product_type=product)
         # Same NZ-midnight window as today_changes above: a scenario run

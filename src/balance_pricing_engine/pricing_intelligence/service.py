@@ -1081,6 +1081,91 @@ class PricingIntelligenceService:
             quarantined_keys,
         )
 
+    def _resolved_observations_as_of_run(
+        self,
+        run_id: str,
+        product_type: ProductType | str,
+        quarantined_keys: Optional[set[str]] = None,
+    ) -> tuple[Optional[datetime], list[CompetitorRateRecord]]:
+        """``(run start, records)``: the state as of ``run_id``, suspicious readings resolved.
+
+        ``(None, [])`` when the run is unknown.
+        """
+        as_of = self.store.get_run_started_at(run_id)
+        if as_of is None:
+            return None, []
+        # before_run_id=run_id anchors the reconstruction to this specific
+        # run's own (started_at, rowid) position, not just its timestamp --
+        # two runs for the same product can share started_at, and without
+        # this a later same-timestamp run's state would still win the per-key
+        # selection even when this run_id explicitly names the earlier one.
+        # See ObservationStore._as_of_cutoff()'s docstring.
+        records = self.store.get_observations_as_of(
+            as_of=as_of, product_type=product_type, before_run_id=run_id
+        )
+        return as_of, _resolve_suspicious_if_present(
+            records,
+            lambda: self.store.get_confirmed_observations_as_of(
+                as_of=as_of, product_type=product_type, before_run_id=run_id
+            ),
+            quarantined_keys,
+        )
+
+    def get_market_changes(
+        self,
+        *,
+        product_type: ProductType | str,
+        rate_category: Optional[str],
+        now: Optional[datetime] = None,
+        **filters: object,
+    ) -> list[RateChange]:
+        """Changes that move the ``rate_category`` view, scoped to the configured market.
+
+        ``filters`` are :meth:`get_changes` arguments (``days``, ``since``, ``bank``,
+        ``term_months``). Every activity figure (market activity and state, the dashboard's
+        per-term and per-bank moves, the briefs) reads this one set, so they cannot disagree.
+
+        For the ordinary term-deposit view that includes a comparable special's rate moves,
+        since an admitted special moves the benchmark (:meth:`admitted_special_keys`). Each
+        move keeps the admission it had in the run that recorded it, so a later loss of public
+        availability neither rewrites earlier activity nor lets a restricted, uncertain or
+        never-admitted special's move count. Suspicious moves stay out downstream
+        (:func:`~.positioning.compute_market_activity`).
+        """
+        admits = _admits_specials(product_type, rate_category)
+        changes = self.get_changes(
+            now=now,
+            scope_to_market=True,
+            product_type=product_type,
+            rate_category=None if admits else rate_category,
+            **filters,  # type: ignore[arg-type]
+        )
+        if not admits:
+            return changes
+        admitted_by_run: dict[str, set[str]] = {}
+
+        def admitted(change: RateChange) -> bool:
+            if change.run_id is None:
+                return False
+            if change.run_id not in admitted_by_run:
+                _, records = self._resolved_observations_as_of_run(change.run_id, product_type)
+                trusted = _exclude_suspicious(records)
+                admitted_by_run[change.run_id] = (
+                    self.admitted_special_keys(trusted, product_type, rate_category) or set()
+                )
+            return change.observation_key in admitted_by_run[change.run_id]
+
+        return [
+            change
+            for change in changes
+            if change.rate_category == rate_category
+            or (
+                change.rate_category == SPECIAL_CATEGORY
+                and change.is_rate_move
+                and admitted(change)
+            )
+        ]
+
     def get_market_snapshot(
         self,
         product_type: ProductType | str = ProductType.HOME_LOAN,
@@ -1122,27 +1207,9 @@ class PricingIntelligenceService:
         as_of: Optional[datetime] = None
         quarantined_keys: set[str] = set()
         if as_of_run_id is not None:
-            as_of = self.store.get_run_started_at(as_of_run_id)
-            if as_of is None:
-                records = []
-            else:
-                # before_run_id=as_of_run_id anchors the reconstruction to
-                # this specific run's own (started_at, rowid) position, not
-                # just its timestamp -- two runs for the same product can
-                # share started_at, and without this a later same-timestamp
-                # run's state would still win the per-key selection even when
-                # this run_id explicitly names the earlier one. See
-                # ObservationStore._as_of_cutoff()'s docstring.
-                records = self.store.get_observations_as_of(
-                    as_of=as_of, product_type=product_type, before_run_id=as_of_run_id
-                )
-                records = _resolve_suspicious_if_present(
-                    records,
-                    lambda: self.store.get_confirmed_observations_as_of(
-                        as_of=as_of, product_type=product_type, before_run_id=as_of_run_id
-                    ),
-                    quarantined_keys,
-                )
+            as_of, records = self._resolved_observations_as_of_run(
+                as_of_run_id, product_type, quarantined_keys
+            )
         else:
             records = self.get_resolved_current_observations(
                 product_type=product_type, quarantined_keys=quarantined_keys
@@ -1456,12 +1523,8 @@ class PricingIntelligenceService:
             days = days or self.config.market_state.lookback_days
             window = {"days": days}
         return compute_market_activity(
-            self.get_changes(
-                now=now,
-                scope_to_market=True,
-                product_type=product_type,
-                rate_category=rate_category,
-                **window,
+            self.get_market_changes(
+                product_type=product_type, rate_category=rate_category, now=now, **window
             ),
             lookback_days=days,
             now=now,
@@ -1485,12 +1548,11 @@ class PricingIntelligenceService:
         already scoped to those same settings.
         """
         rate_category = _resolve_rate_category(product_type, rate_category)
-        changes = self.get_changes(
-            days=self.config.market_state.lookback_days,
-            now=now,
-            scope_to_market=True,
+        changes = self.get_market_changes(
             product_type=product_type,
             rate_category=rate_category,
+            now=now,
+            days=self.config.market_state.lookback_days,
         )
         return classify_market_state(
             changes, thresholds=self.config.market_state, now=now

@@ -1039,7 +1039,12 @@ particular bank's special is public. Stale, quarantined, rejected and voided spe
 reach the assessment, because it runs on the same trusted records the snapshot ranks. Each
 bank appears once per term. On an exact tie the ordinary rate is preferred. Health freshness
 and stale-rate exclusions use the same admissions (`service.admitted_special_keys`), so a
-bank whose only benchmark rate is an admitted special is judged on that special.
+bank whose only benchmark rate is an admitted special is judged on that special. Market
+activity and market state, the dashboard's per-term and per-bank move counts and the daily
+and weekly briefs all read `service.get_market_changes`. It adds an admitted special's rate
+moves to the ordinary changes, judging each move by the special's admission in the run
+that recorded it. A special that later loses public availability keeps its earlier moves,
+and an uncertain, restricted or suspicious special's move never counts.
 
 **Historical views.** `get_market_snapshot(as_of_run_id=...)`,
 `get_previous_market_snapshot()` and `get_rate_history_series()` reassess specials from the

@@ -161,6 +161,17 @@ Codex re-review of `dd84704` raised one more:
     Any other qualifier is `uncertain` (`scoped_availability`), so the special is excluded
     and the run exits 2. "New and existing" and "our" leave the audience unrestricted.
 
+Codex re-review of `6ac3cb8` raised one more:
+
+16. **Admitted-special repricing was not market activity (P2).** The snapshot moved when an
+    admitted special repriced, but `get_market_activity()` and `get_market_state()` queried
+    changes for the exact `term_deposit` category, so activity showed zero and the state
+    said no rate changes. The dashboard's per-term and per-bank move counts and the briefs
+    had the same gap. Fix: `service.get_market_changes` is the single change set for those
+    views. It adds a special's rate move when that special was admitted as of the run that
+    recorded the move, reconstructed as `get_market_snapshot(as_of_run_id=...)` does. A move
+    whose run cannot be reconstructed is not counted.
+
 Not changed, by design: health and exclusions assess admission before the staleness
 filter, because they exist to report stale specials (documented on
 `admitted_special_keys`).

@@ -1225,3 +1225,65 @@ def test_new_customer_only_special_never_drives_the_benchmark(tmp_path):
     assert result.code == EXIT_OK
     assert specials_in(result)[4.45][0] == SpecialComparability.NOT_COMPARABLE.value
     assert market.asb12(market.when(0, 1)) == (4.00, "term_deposit")
+
+
+# ---------------- admitted-special repricing counts as market activity (PR #73 review, P2)
+
+_PUBLIC_SPECIAL = fixture("c_special_separate_table.html")
+
+
+def _activity_and_state(market: Market, day: int):
+    now = market.when(day, 1)
+    return (
+        market.service.get_market_activity(product_type=TD, now=now).changes,
+        market.service.get_market_state(product_type=TD, now=now).activity.changes,
+    )
+
+
+def test_admitted_special_repricing_counts_as_market_activity(tmp_path):
+    market = Market(tmp_path, _PUBLIC_SPECIAL)
+    market.run(0)
+    market.set_asb(_PUBLIC_SPECIAL.replace("4.45% p.a.", "4.55% p.a."))
+    assert market.run(1).code == EXIT_OK
+    assert market.asb12(market.when(1, 1)) == (4.55, "special")
+    assert _activity_and_state(market, 1) == (1, 1)
+
+
+@pytest.mark.parametrize(
+    "availability",
+    ["", "Available to all new customers"],  # uncertain, restricted
+)
+def test_excluded_special_repricing_is_not_market_activity(tmp_path, availability):
+    page = _PUBLIC_SPECIAL.replace("Available to all new and existing customers", availability)
+    market = Market(tmp_path, page)
+    market.run(0)
+    market.set_asb(page.replace("4.45% p.a.", "4.55% p.a."))
+    market.run(1)
+    assert _activity_and_state(market, 1) == (0, 0)
+
+
+def test_special_repricing_keeps_the_admission_it_had_when_it_moved(tmp_path):
+    market = Market(tmp_path, _PUBLIC_SPECIAL)
+    market.run(0)
+    repriced = _PUBLIC_SPECIAL.replace("4.45% p.a.", "4.55% p.a.")
+    market.set_asb(repriced)
+    market.run(1)
+    market.set_asb(repriced.replace("all new and existing customers", "all new customers"))
+    market.run(2)
+    assert _activity_and_state(market, 2) == (1, 1)
+
+
+@pytest.mark.parametrize("run_id", [None, "run-never-recorded"])
+def test_special_move_whose_run_cannot_be_reconstructed_is_not_counted(tmp_path, monkeypatch, run_id):
+    from dataclasses import replace
+
+    market = Market(tmp_path, _PUBLIC_SPECIAL)
+    market.run(0)
+    market.set_asb(_PUBLIC_SPECIAL.replace("4.45% p.a.", "4.55% p.a."))
+    market.run(1)
+    real = market.service.get_changes
+    monkeypatch.setattr(
+        market.service, "get_changes",
+        lambda **kwargs: [replace(c, run_id=run_id) for c in real(**kwargs)],
+    )  # fmt: skip
+    assert _activity_and_state(market, 1) == (0, 0)
