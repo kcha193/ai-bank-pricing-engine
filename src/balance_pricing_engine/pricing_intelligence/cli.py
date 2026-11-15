@@ -13,6 +13,9 @@ Mirrors the argparse subcommand style already used by
     python3 -m balance_pricing_engine.pricing_intelligence position --rate 4.95 --term 12
     python3 -m balance_pricing_engine.pricing_intelligence strategy --strategy MARKET_MEDIAN
     python3 -m balance_pricing_engine.pricing_intelligence health
+    python3 -m balance_pricing_engine.pricing_intelligence review list --status PENDING
+    python3 -m balance_pricing_engine.pricing_intelligence review approve --event-id 7 \\
+        --reason "Verified against rate card" --evidence https://example.test/ratecard.pdf
     python3 -m balance_pricing_engine.pricing_intelligence telegram-test
     python3 -m balance_pricing_engine.pricing_intelligence backup --destination ~/pi-backups
 """
@@ -55,6 +58,7 @@ from balance_pricing_engine.pricing_intelligence.orchestration import (
 from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 from balance_pricing_engine.pricing_intelligence.rbnz import fetch_ocr_series
+from balance_pricing_engine.pricing_intelligence.review_cli import add_review_parser, run_review
 from balance_pricing_engine.pricing_intelligence.strategy import (
     CashRateStrategy,
     CompetitorRateStrategy,
@@ -143,6 +147,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "health": _health,
                 "position": _position,
                 "strategy": _strategy,
+                "review": lambda service, args: run_review(service, args, _product(args)),
             }
             handler = handlers.get(args.command)
             if handler is None:
@@ -328,6 +333,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Database, collector, and alert-channel status for troubleshooting",
     )
 
+    add_review_parser(subparsers, _positive_int)
+
     subparsers.add_parser(
         "telegram-test",
         help="Send a fixed test message to the configured Telegram bot/chat",
@@ -480,6 +487,13 @@ def _run(
     print()
     print(f"Status:      {result.status}")
     print(f"Alerts sent: {result.alerts_sent}")
+    if result.quarantine is not None and result.quarantine.pending_count:
+        status = result.quarantine
+        print(
+            f"Quarantine:  {status.pending_count} reading(s) awaiting review"
+            + (f", {len(status.escalated)} ESCALATED" if status.escalated else "")
+            + " -- see 'review list'"
+        )
     if result.run_record is not None:
         print(f"Run id:      {result.run_record.run_id}")
     if args.dry_run:
@@ -864,6 +878,24 @@ def _health(service: PricingIntelligenceService, args: argparse.Namespace) -> in
             health.last_success_at.strftime("%d %b %H:%M") if health.last_success_at else "never"
         )
         print(f"  {bank:<12}{status:<16}last seen {last_seen}")
+    print()
+
+    quarantine = service.get_quarantine_status(product_type=product)
+    if quarantine.pending_count == 0:
+        print("Quarantine: no readings awaiting review")
+    else:
+        oldest = quarantine.oldest_age_hours or 0.0
+        state = (
+            f"ESCALATED ({len(quarantine.escalated)} at or beyond "
+            f"{quarantine.escalation_after_runs} runs)"
+            if quarantine.escalated
+            else "pending"
+        )
+        print(
+            f"Quarantine: {quarantine.pending_count} reading(s) awaiting review -- {state}; "
+            f"banks: {', '.join(quarantine.affected_banks)}; oldest {oldest / 24:.1f} days"
+        )
+        print("  Resolve with: review list --status PENDING")
     print()
 
     telegram_configured = build_telegram_sink_from_env() is not None

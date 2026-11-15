@@ -19,6 +19,12 @@ from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord,
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
 from balance_pricing_engine.pricing_intelligence.changes import resolve_pairing
 from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
+from balance_pricing_engine.pricing_intelligence.peer_plausibility import (
+    STATUS_FLAGGED,
+    PeerAssessment,
+    PeerEntry,
+    assess_peers,
+)
 
 #: Matches any percentage token (e.g. "4.01%") in raw_text_context. Used two
 #: ways by _disambiguate_non_comparable_identities() and its helpers
@@ -80,6 +86,14 @@ def _strip_advertised_rate_token(raw_text_context: str, advertised_rate_pct: flo
     return raw_text_context[: last_match.start()] + raw_text_context[last_match.end() :]
 
 
+#: Issue codes that quarantine a reading (accepted for audit, kept out of trusted market data
+#: until an operator decides): a movement over the threshold, a peer-market outlier
+#: (DATA-016), and repeats of unresolved, rejected or voided readings.
+QUARANTINE_CODES = frozenset({
+    "suspicious_movement", "peer_outlier", "reviewed_untrusted_reading", "pending_quarantine"
+})
+
+
 @dataclass(frozen=True)
 class ObservationIssue:
     """One validation finding against a single observation."""
@@ -101,6 +115,13 @@ class ValidationOutcome:
     accepted: list[CompetitorRateRecord] = field(default_factory=list)
     rejected: list[CompetitorRateRecord] = field(default_factory=list)
     issues: list[ObservationIssue] = field(default_factory=list)
+    #: Peer-market findings for each moving reading (DATA-016), including where the check
+    #: abstained for lack of comparable peers.
+    peer_assessments: list[PeerAssessment] = field(default_factory=list)
+
+    @property
+    def peer_insufficient_evidence(self) -> list[PeerAssessment]:
+        return [a for a in self.peer_assessments if a.status == "insufficient_evidence"]
 
     @property
     def errors(self) -> list[ObservationIssue]:
@@ -112,10 +133,9 @@ class ValidationOutcome:
 
     @property
     def suspicious_keys(self) -> set:
+        """Keys to quarantine: flagged for operator review rather than rejected."""
         return {
-            issue.observation_key
-            for issue in self.issues
-            if issue.code == "suspicious_movement"
+            issue.observation_key for issue in self.issues if issue.code in QUARANTINE_CODES
         }
 
     def summary(self) -> str:
@@ -191,6 +211,7 @@ def validate_observations(
     conflicting_rates_by_key = _conflicting_rates_within_batch(records)
 
     outcome = ValidationOutcome()
+    peer_entries: list[PeerEntry] = []
 
     for record in records:
         key = record.observation_key()
@@ -234,10 +255,44 @@ def validate_observations(
             issues.append(movement_issue)
 
         outcome.issues.extend(issues)
-        if any(issue.severity == "error" for issue in issues):
+        rejected = any(issue.severity == "error" for issue in issues)
+        if rejected:
             outcome.rejected.append(record)
         else:
             outcome.accepted.append(record)
+
+        # A reading may act as a peer only when nothing else has already doubted it, and may
+        # be assessed against peers only when it moved but the movement rule stayed quiet.
+        quiet = not rejected and movement_issue is None
+        peer_entries.append(
+            PeerEntry(
+                record=record,
+                baseline=baseline,
+                trusted=quiet and record.rate_category != "non_comparable",
+                candidate=(
+                    quiet
+                    and record.rate_category != "non_comparable"
+                    and baseline is not None
+                    and baseline.advertised_rate_pct != record.advertised_rate_pct
+                ),
+            )
+        )
+
+    outcome.peer_assessments = assess_peers(peer_entries, previous, thresholds.peer)
+    for assessment in outcome.peer_assessments:
+        if assessment.status == STATUS_FLAGGED:
+            outcome.issues.append(
+                ObservationIssue(
+                    severity="warning",
+                    code="peer_outlier",
+                    message=(
+                        f"{assessment.detail}; a peer-market review signal, not proof of error "
+                        "-- verify the source page before treating this as a genuine reprice"
+                    ),
+                    bank=assessment.bank,
+                    observation_key=assessment.observation_key,
+                )
+            )
 
     return outcome
 

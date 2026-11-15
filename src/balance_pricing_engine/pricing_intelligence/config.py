@@ -24,6 +24,52 @@ DEFAULT_TRACKED_TERMS_MONTHS: tuple[int, ...] = (6, 12, 18, 24, 36, 48, 60)
 DATABASE_PATH_SECRET_NAME = "PRICING_INTELLIGENCE_DB_PATH"
 
 
+class PeerPlausibilityThresholds(BaseModel):
+    """Peer-market sanity signal for a moving rate (DATA-016).
+
+    A movement under ``suspicious_change_bps`` can still be a misread (a +60 bps
+    special/standard mix-up). This compares the candidate with *comparable peers*
+    -- other banks with the same product, term, rate category, balance tier and
+    eligibility, observed recently enough -- and raises a **review** signal when it
+    both sits far from the peer median **and** moved far more than the peers did.
+    It never rejects or approves a rate on its own.
+
+    "Leader side" is the direction that wins the market ranking when wrong: above
+    peers for a term deposit (highest rate leads), below peers for a home loan
+    (lowest rate leads). Those are the dangerous misreads, so they get the tighter
+    bound; the opposite side uses ``other_side_deviation_bps``.
+    """
+
+    enabled: bool = True
+    # Fewer comparable peers than this is "insufficient evidence": no median is
+    # fabricated and the check abstains.
+    min_peers: int = Field(default=3, ge=2)
+    # Peers older than this relative to the candidate's observation are ignored.
+    max_peer_age_hours: float = Field(default=168.0, gt=0)
+    # Balance tiers are compared by *band of the advertised minimum*, not exact equality: banks
+    # quote different retail minimums (none, $1,000, $5,000) for what is the same everyday
+    # tier, and demanding an exact match leaves a real market with no comparable peer at all.
+    # A minimum below the first edge is the retail tier; each further edge starts a larger-
+    # balance tier ($500k+ specials are not comparable to retail). Maximums are not banded.
+    balance_tier_edges: tuple[float, ...] = (10_000.0, 100_000.0)
+    leader_side_deviation_bps: float = Field(default=40.0, gt=0)
+    other_side_deviation_bps: float = Field(default=75.0, gt=0)
+    # The candidate must also have moved this much more than the peer median move.
+    movement_excess_bps: float = Field(default=40.0, gt=0)
+    # Dispersion guard: in a market whose peers already disagree widely, a deviation
+    # must also exceed this many median-absolute-deviations (floored) to count.
+    dispersion_multiple: float = Field(default=4.0, ge=0)
+    dispersion_floor_bps: float = Field(default=5.0, ge=0)
+
+
+    @model_validator(mode="after")
+    def validate_tier_edges(self) -> "PeerPlausibilityThresholds":
+        edges = list(self.balance_tier_edges)
+        if any(edge <= 0 for edge in edges) or edges != sorted(set(edges)):
+            raise ValueError("balance_tier_edges must be positive and strictly ascending")
+        return self
+
+
 class ValidationThresholds(BaseModel):
     """Plausibility bounds applied to every parsed advertised rate."""
 
@@ -42,6 +88,7 @@ class ValidationThresholds(BaseModel):
     # reliably collected for withdrawal detection -- the same treatment as an
     # outright fetch failure.
     min_bank_coverage_ratio: float = Field(default=0.5, gt=0, le=1.0)
+    peer: PeerPlausibilityThresholds = Field(default_factory=PeerPlausibilityThresholds)
 
     @model_validator(mode="after")
     def validate_bounds(self) -> "ValidationThresholds":
@@ -109,6 +156,19 @@ class HealthThresholds(BaseModel):
         return self
 
 
+class QuarantinePolicy(BaseModel):
+    """Operational escalation for readings left in quarantine.
+
+    A quarantined reading is invisible to the market view by design, so one that
+    nobody resolves must not stay quiet. ``escalation_after_runs`` counts distinct
+    collection runs (a retry of one run_id never counts twice) in which the same
+    reading identity was observed and still unreviewed. At or above it the run is
+    degraded (exit code 2), health reports an escalation and one alert is raised.
+    """
+
+    escalation_after_runs: int = Field(default=3, ge=1)
+
+
 class PricingIntelligenceConfig(BaseModel):
     """Top-level pricing-intelligence settings."""
 
@@ -139,6 +199,7 @@ class PricingIntelligenceConfig(BaseModel):
     validation: ValidationThresholds = Field(default_factory=ValidationThresholds)
     market_state: MarketStateThresholds = Field(default_factory=MarketStateThresholds)
     health: HealthThresholds = Field(default_factory=HealthThresholds)
+    quarantine: QuarantinePolicy = Field(default_factory=QuarantinePolicy)
 
     @model_validator(mode="after")
     def validate_terms(self) -> "PricingIntelligenceConfig":

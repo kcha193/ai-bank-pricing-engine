@@ -53,6 +53,14 @@ from balance_pricing_engine.pricing_intelligence.snapshot import (
     MarketSnapshot,
     build_market_snapshot,
 )
+from balance_pricing_engine.pricing_intelligence.quarantine import (
+    QuarantineStatus,
+    ReviewAction,
+    ReviewCase,
+    ReviewEvent,
+    ReviewOutcome,
+    ReviewState,
+)
 from balance_pricing_engine.pricing_intelligence.store import (
     ChronologicalOrderError,
     ObservationStore,
@@ -64,6 +72,7 @@ from balance_pricing_engine.pricing_intelligence.strategy import (
     resolve_competitor_rate,
 )
 from balance_pricing_engine.pricing_intelligence.validation import (
+    QUARANTINE_CODES,
     ObservationIssue,
     ValidationOutcome,
     validate_observations,
@@ -721,6 +730,25 @@ class PricingIntelligenceService:
                     observation_key=key,
                     message="unverified eligibility/category change remains quarantined",
                 ))
+        # A reading an operator already rejected or voided must not re-enter the trusted
+        # market just because the same source text keeps appearing.
+        for record in validation.accepted:
+            if record.observation_key() not in validation.suspicious_keys and (
+                self.store.repeats_reviewed_untrusted(record)
+            ):
+                validation.issues.append(ObservationIssue(
+                    severity="warning", code="reviewed_untrusted_reading", bank=record.bank,
+                    observation_key=record.observation_key(),
+                    message="repeats a reading an operator rejected or voided; remains untrusted",
+                ))
+            elif record.observation_key() not in validation.suspicious_keys and (
+                self.store.repeats_reviewed_untrusted(record, include_pending=True)
+            ):
+                validation.issues.append(ObservationIssue(
+                    severity="warning", code="pending_quarantine", bank=record.bank,
+                    observation_key=record.observation_key(),
+                    message="repeats an unresolved reading; requires an operator decision",
+                ))
         for issue in validation.issues:
             logger.warning("validation: %s", issue)
 
@@ -767,8 +795,20 @@ class PricingIntelligenceService:
         # source page -- a parser fault must not feed an unverified rate
         # straight into the optimiser.
         suspicious_keys = validation.suspicious_keys
+        signals_by_key: dict[str, list[str]] = {}
+        for issue in validation.issues:
+            if issue.code in QUARANTINE_CODES:
+                signals_by_key.setdefault(issue.observation_key, []).append(
+                    f"{issue.code}: {issue.message}"
+                )
         accepted = [
-            record.model_copy(update={"validation_status": "warning"})
+            record.model_copy(
+                update={
+                    "validation_status": "warning",
+                    # The findings travel with the stored reading so a reviewer sees why.
+                    "validation_warnings": signals_by_key.get(record.observation_key(), []),
+                }
+            )
             if record.observation_key() in suspicious_keys
             else record
             for record in validation.accepted
@@ -1249,6 +1289,63 @@ class PricingIntelligenceService:
             rates = {entry.bank: entry.rate_pct for entry in market.entries} if market else {}
             series.append((day, rates))
         return series
+
+    # ------------------------------------------------------ quarantine review
+
+    def list_review_cases(
+        self,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        statuses: Optional[Sequence[ReviewState]] = None,
+        now: Optional[datetime] = None,
+    ) -> list[ReviewCase]:
+        """Rate-change events awaiting (or carrying) an operator decision, oldest first.
+
+        PENDING only unless ``statuses`` is given; ACCEPTED lists every accepted rate move
+        (the events a VOID may target).
+        """
+        return self.store.list_review_cases(product_type, statuses, now)
+
+    def get_review_case(self, event_id: int, now: Optional[datetime] = None) -> ReviewCase:
+        return self.store.get_review_case(event_id, now)
+
+    def get_review_history(self, event_id: int) -> list[ReviewEvent]:
+        return self.store.get_review_history(event_id)
+
+    def review(
+        self,
+        event_id: int,
+        action: ReviewAction,
+        *,
+        reviewer: Optional[str],
+        reason: Optional[str],
+        evidence_ref: Optional[str] = None,
+        reviewed_at: Optional[datetime] = None,
+        dry_run: bool = False,
+    ) -> ReviewOutcome:
+        """Apply an operator decision. ``reviewer`` must already be an authenticated identity
+        (see :mod:`.review_auth`); this layer records it, it does not authenticate.
+
+        Never called by collection: nothing is approved, rejected or voided automatically.
+        """
+        return self.store.apply_review(
+            event_id,
+            action,
+            reviewer=reviewer,
+            reason=reason,
+            evidence_ref=evidence_ref,
+            reviewed_at=reviewed_at,
+            dry_run=dry_run,
+        )
+
+    def get_quarantine_status(
+        self,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        now: Optional[datetime] = None,
+    ) -> QuarantineStatus:
+        """Pending quarantines, and those at or beyond ``quarantine.escalation_after_runs``."""
+        return self.store.get_quarantine_status(
+            product_type, self.config.quarantine.escalation_after_runs, now
+        )
 
     def get_market_activity(
         self,

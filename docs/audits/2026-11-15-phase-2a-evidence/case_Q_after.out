@@ -1,0 +1,21 @@
+Q6 plausible-but-wrong +60 bps (3.90 -> 4.50), peer check ON (default)
+  changes [('ASB 12m term_deposit: 3.90% -> 4.50% (+60 bps)', 'suspicious')] code 0
+  peer assessments [('ASB', 'flagged', 4, 4.025, 47.5, 60.0)]
+  ASB12 in trusted snapshot (rate, quarantined): (3.9, True)  MARKET_LEADER 4.05
+  review queue: (2, 'ASB', 3.9, 4.5, 'PENDING', ['peer_outlier: 4.50% vs peer median 4.025% across 4 banks (+48 bps, leader side); moved +60 bps while peers moved +0 bps (+60 bps relative); a peer-market review signal, not proof of error -- verify the source page before treating this as a genuine reprice'])
+Q6b the same +60 bps reading with the peer signal OFF (the audit's unfixed acceptance), then VOID
+  accepted unflagged; changes [('ASB 12m term_deposit: 3.90% -> 4.50% (+60 bps)', False)] MARKET_LEADER 4.5
+  void recorded: VOID ACCEPTED -> VOIDED
+  after void: ASB12 (3.9, True) MARKET_LEADER 4.05 activity 1 (only the genuine -10 bps remains)
+Q7 genuine +100 bps (3.90 -> 4.90), re-observed daily, UNAPPROVED (threshold 3 runs)
+  day 2: code 0 status SUCCESS ASB12=(3.9, True) MARKET_LEADER=4.05 pending=1 escalated=0 runs_pending=1
+  day 3: code 0 status SUCCESS ASB12=(3.9, True) MARKET_LEADER=4.05 pending=1 escalated=0 runs_pending=2
+  day 4: code 2 status PARTIAL_SUCCESS ASB12=(3.9, True) MARKET_LEADER=4.05 pending=1 escalated=1 runs_pending=3
+  day 5: code 2 status PARTIAL_SUCCESS ASB12=(3.9, True) MARKET_LEADER=4.05 pending=1 escalated=1 runs_pending=4
+  day 6: code 2 status PARTIAL_SUCCESS ASB12=(3.9, True) MARKET_LEADER=4.05 pending=1 escalated=1 runs_pending=5
+  day 7: code 2 status PARTIAL_SUCCESS ASB12=(3.9, True) MARKET_LEADER=4.05 pending=1 escalated=1 runs_pending=6
+  day 8: code 2 status PARTIAL_SUCCESS ASB12=None MARKET_LEADER=4.05 pending=1 escalated=1 runs_pending=7
+Q7b the same, APPROVED on day 3 with evidence
+  approved: APPROVE PENDING -> APPROVED | ASB12 (4.9, False) MARKET_LEADER 4.9
+  next run: code 0 new changes 0 pending 0
+  rate-change history (ASB 12m): [(3.9, 4.9, 'trusted'), (4.0, 3.9, 'trusted')]

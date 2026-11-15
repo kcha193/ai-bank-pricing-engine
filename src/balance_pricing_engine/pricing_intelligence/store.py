@@ -40,6 +40,15 @@ from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord,
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange
 from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
+from balance_pricing_engine.pricing_intelligence import quarantine_store
+from balance_pricing_engine.pricing_intelligence.quarantine import (
+    QuarantineStatus,
+    ReviewAction,
+    ReviewCase,
+    ReviewEvent,
+    ReviewOutcome,
+    ReviewState,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -289,7 +298,7 @@ CREATE TABLE IF NOT EXISTS scenario_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_scenario_runs_run_id ON scenario_runs (run_id);
-""" + _RATE_CHANGES_SCHEMA
+""" + _RATE_CHANGES_SCHEMA + quarantine_store.REVIEW_SCHEMA
 
 # Fields whose movement makes an observation a genuinely new advertised state.
 # Provenance fields (hashes, page titles, raw text) are deliberately excluded:
@@ -367,6 +376,39 @@ def _run_ordered_after(
     )
 
 
+#: Characters an ISO-8601 timestamp may contain. Review cut-offs are embedded as SQL
+#: literals (the as-of queries already juggle many positional parameters), so anything
+#: else is refused rather than quoted.
+_ISO_LITERAL = re.compile(r"^[0-9T:.+\-]+$")
+
+#: Statuses that keep a stored reading out of every trusted view.
+_UNTRUSTED_SQL = "('warning', 'voided')"
+
+
+def _effective_observations(review_cutoff: Optional[str] = None) -> str:
+    """SQL derived table: every observation plus ``eff_status``, its *effective* status.
+
+    The stored ``validation_status`` is overlaid with the latest ``quarantine_reviews``
+    decision: APPROVED reads ``valid`` (trusted), REJECTED reads ``warning`` (still
+    untrusted) and VOIDED reads ``voided``. ``review_cutoff`` (an ISO timestamp) limits the
+    overlay to decisions made at or before it, so a historical view never shows a reading
+    as approved (or voided) before that actually happened. Observation rows themselves are
+    never rewritten.
+    """
+    bound = ""
+    if review_cutoff is not None:
+        if not _ISO_LITERAL.match(review_cutoff):
+            raise ValueError(f"unsafe review cut-off: {review_cutoff!r}")
+        bound = f" AND r.reviewed_at <= '{review_cutoff}'"
+    return (
+        "(SELECT obs.*, CASE (SELECT r.new_state FROM quarantine_reviews r "
+        f"WHERE r.observation_id = obs.id{bound} ORDER BY r.review_seq DESC LIMIT 1) "
+        "WHEN 'APPROVED' THEN 'valid' WHEN 'REJECTED' THEN 'warning' "
+        "WHEN 'VOIDED' THEN 'voided' ELSE obs.validation_status END AS eff_status "
+        "FROM observations obs)"
+    )
+
+
 # Excludes row `o` when another key `o3` in the same eligibility group (same
 # bank/term/category/frequency/product_name/balance tier, i.e. the same
 # product under a different eligibility condition -- see
@@ -384,7 +426,7 @@ def _run_ordered_after(
 # point does not apply.
 _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY = (
     "AND NOT EXISTS ("
-    "  SELECT 1 FROM observations o3 WHERE o3.observation_key <> o.observation_key "
+    "  SELECT 1 FROM {o3_src} o3 WHERE o3.observation_key <> o.observation_key "
     "  AND o3.bank = o.bank AND o3.product_type = o.product_type "
     "  AND o3.rate_category = o.rate_category AND " + _SAME_TERM_IDENTITY + " "
     "  AND o3.interest_payment_frequency = o.interest_payment_frequency "
@@ -502,6 +544,8 @@ class _AsOfCutoff(NamedTuple):
     withdrawal: str
     observation_params: tuple
     withdrawal_params: tuple
+    #: ISO timestamp bounding which review decisions apply to this reconstruction.
+    review_cutoff: str = ""
 
 
 def _iso(value: datetime) -> str:
@@ -645,6 +689,27 @@ class ObservationStore:
         self._transaction_depth += 1
         try:
             with self._connection:
+                yield self._connection
+        finally:
+            self._transaction_depth -= 1
+
+    @contextmanager
+    def _write_transaction(self) -> Iterator[sqlite3.Connection]:
+        """Like :meth:`_transaction`, but takes the write lock up front (``BEGIN IMMEDIATE``).
+
+        For read-then-write decisions (the review ledger) that must not interleave with
+        another writer between the read and the write. Nested inside an existing
+        transaction it simply joins it.
+        """
+        if self._transaction_depth > 0:
+            with self._transaction() as connection:
+                yield connection
+            return
+        self._transaction_depth += 1
+        try:
+            with self._connection:
+                if not self._connection.in_transaction:
+                    self._connection.execute("BEGIN IMMEDIATE")
                 yield self._connection
         finally:
             self._transaction_depth -= 1
@@ -1658,25 +1723,15 @@ class ObservationStore:
             and self._returned_after_an_eligibility_transition(connection, payload, current)
         )
 
-        # A repeated suspicious value that is no longer independently flagged
-        # this run (0 bps movement against its own warning-tagged baseline)
-        # is a confirmation, not a continuation: touching validation_status
-        # on the existing row in place would let today's confirmation
-        # retroactively rewrite what get_market_snapshot(as_of_run_id=...)
-        # or get_previous_market_snapshot() reconstruct for the run when it
-        # was still unverified. A fresh row leaves that historical row's
-        # "warning" status frozen, exactly like the checks above.
-        confirming_a_suspicious_state = (
-            current is not None
-            and current["validation_status"] == "warning"
-            and payload["validation_status"] != "warning"
-        )
+        # Collection cannot confirm a pending reading. Even if this run's peer check
+        # abstains, materially unchanged content keeps the stored warning and case ID.
+        # Operator approval is applied through the ledger overlay; a rejected or voided
+        # reading also stays on its existing row when the same content repeats.
 
         if (
             current is not None
             and not returned_after_a_withdrawal
             and not returned_after_an_eligibility_transition
-            and not confirming_a_suspicious_state
             and _is_unchanged(current, payload)
         ):
             # A materially unchanged reading still touches its provenance:
@@ -1785,17 +1840,16 @@ class ObservationStore:
         confirmations: Mapping[
             str, tuple[Optional[CompetitorRateRecord], CompetitorRateRecord]
         ],
+        target_change_ids: Optional[Mapping[str, int]] = None,
     ) -> None:
-        """Clear the suspicious flag on the most recent change event for each
+        """Legacy compatibility API: clear the suspicious flag on the selected event for each
         key (and every companion event from the same run), rebasing the rate
         event onto the last verified predecessor where one is known.
 
-        A suspicious-but-accepted movement stays permanently excluded from
-        market activity / market-state (both default to skipping suspicious
-        changes) even after the same value repeats on a later, clean
-        collection -- strong evidence it was a genuine reprice, not a parser
-        fault. Called once ``_upsert_observation``'s own confirmation check
-        (a repeated value no longer flagged this run) identifies the key.
+        Collection never calls this method: repetition cannot confirm a quarantined
+        reading. Operator reviews now append ledger decisions and project effective
+        changes at read time through ``quarantine_store.effective_changes``. This
+        mutating API remains for compatibility with older callers and legacy data tests.
 
         An over-threshold rate change that also modifies eligibility or
         promotion data produces companion ``ELIGIBILITY_CHANGE``/
@@ -1842,17 +1896,32 @@ class ObservationStore:
         the true 5.00 -> 5.50 movement, that event describes a hop the
         market never took as a standalone move and is deleted so the same
         reprice is not double-counted as two events.
+
+        ``target_change_ids`` pins the event to confirm per key (the review workflow always
+        supplies it), replacing the "most recent suspicious event" selection -- ambiguous
+        when a key has several -- with the exact event an operator approved. Companion events
+        are then those of the *same run*.
         """
         rate_types = (ChangeType.RATE_INCREASE.value, ChangeType.RATE_DECREASE.value)
         with self._transaction() as connection:
             for key, (last_verified, current) in confirmations.items():
-                row = connection.execute(
-                    "SELECT id, current_rate_pct, previous_rate_pct, detected_at, change_type "
-                    "FROM rate_changes WHERE observation_key = ? AND suspicious = 1 ORDER BY "
-                    "CASE WHEN change_type IN (?, ?) THEN 0 ELSE 1 END, "
-                    "detected_at DESC, id DESC LIMIT 1",
-                    (key, *rate_types),
-                ).fetchone()
+                target_id = (target_change_ids or {}).get(key)
+                if target_id is not None:
+                    row = connection.execute(
+                        "SELECT id, current_rate_pct, previous_rate_pct, detected_at, "
+                        "change_type, run_id FROM rate_changes "
+                        "WHERE id = ? AND observation_key = ? AND suspicious = 1",
+                        (target_id, key),
+                    ).fetchone()
+                else:
+                    row = connection.execute(
+                        "SELECT id, current_rate_pct, previous_rate_pct, detected_at, "
+                        "change_type, run_id FROM rate_changes "
+                        "WHERE observation_key = ? AND suspicious = 1 ORDER BY "
+                        "CASE WHEN change_type IN (?, ?) THEN 0 ELSE 1 END, "
+                        "detected_at DESC, id DESC LIMIT 1",
+                        (key, *rate_types),
+                    ).fetchone()
                 if row is None:
                     continue
                 is_rate_row = row["change_type"] in rate_types
@@ -1868,8 +1937,9 @@ class ObservationStore:
                 else:
                     connection.execute(
                         "UPDATE rate_changes SET suspicious = 0 WHERE observation_key = ? "
-                        "AND suspicious = 1 AND detected_at = ?",
-                        (key, row["detected_at"]),
+                        "AND suspicious = 1 AND detected_at = ? "
+                        "AND (? IS NULL OR run_id = ?)",
+                        (key, row["detected_at"], target_id, row["run_id"]),
                     )
                 if last_verified is None or not is_rate_row:
                     continue
@@ -1899,6 +1969,90 @@ class ObservationStore:
                         "AND current_rate_pct = ?",
                         (key, *rate_types, stale_current_rate_pct, current.advertised_rate_pct),
                     )
+
+    # ------------------------------------------------------- quarantine review
+
+    def apply_review(
+        self,
+        event_id: int,
+        action: ReviewAction,
+        *,
+        reviewer: Optional[str],
+        reason: Optional[str],
+        evidence_ref: Optional[str] = None,
+        reviewed_at: Optional[datetime] = None,
+        dry_run: bool = False,
+    ) -> ReviewOutcome:
+        """Record one APPROVE / REJECT / VOID decision on a rate-change event.
+
+        See :mod:`.quarantine_store`: transactional, idempotent, append-only.
+        """
+        return quarantine_store.apply_review(
+            self,
+            event_id,
+            action,
+            reviewer=reviewer,
+            reason=reason,
+            evidence_ref=evidence_ref,
+            reviewed_at=reviewed_at,
+            dry_run=dry_run,
+        )
+
+    def list_review_cases(
+        self,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        statuses: Optional[Iterable[ReviewState]] = None,
+        now: Optional[datetime] = None,
+    ) -> list[ReviewCase]:
+        return quarantine_store.list_review_cases(self, product_type, statuses, now)
+
+    def get_review_case(self, event_id: int, now: Optional[datetime] = None) -> ReviewCase:
+        return quarantine_store.get_review_case(self, event_id, now)
+
+    def get_review_history(self, event_id: int) -> list[ReviewEvent]:
+        return quarantine_store.get_review_history(self, event_id)
+
+    def get_quarantine_status(
+        self,
+        product_type: ProductType | str,
+        escalation_after_runs: int,
+        now: Optional[datetime] = None,
+    ) -> QuarantineStatus:
+        return quarantine_store.pending_status(self, product_type, escalation_after_runs, now)
+
+    def get_decided_untrusted_keys(self, product_type: ProductType | str) -> set[str]:
+        """Identities whose current reading was rejected or voided (untrusted, not pending)."""
+        return quarantine_store.decided_untrusted_keys(self, product_type)
+
+    def unalerted_quarantine_escalations(self, status: QuarantineStatus, channel: str) -> list:
+        return quarantine_store.unalerted_escalations(self, status, channel)
+
+    def record_quarantine_escalation_alerts(
+        self, escalations: Iterable, channel: str, sent_at: Optional[datetime] = None
+    ) -> None:
+        quarantine_store.record_escalation_alerts(
+            self, escalations, channel, sent_at or datetime.now(timezone.utc)
+        )
+
+    def unannounced_quarantine_resolutions(
+        self, product_type: ProductType | str, status: QuarantineStatus, channel: str
+    ) -> list:
+        return quarantine_store.unannounced_resolutions(self, product_type, status, channel)
+
+    def record_quarantine_resolution_alerts(
+        self, rows: Iterable, channel: str, sent_at: Optional[datetime] = None
+    ) -> None:
+        quarantine_store.record_resolution_alerts(
+            self, rows, channel, sent_at or datetime.now(timezone.utc)
+        )
+
+    def repeats_reviewed_untrusted(
+        self, record: CompetitorRateRecord, *, include_pending: bool = False
+    ) -> bool:
+        """Match rejected/voided readings, optionally including unresolved quarantines."""
+        return quarantine_store.repeats_reviewed_untrusted(
+            self, record, include_pending=include_pending
+        )
 
     def was_notified(self, change: RateChange, channel: str) -> bool:
         """True when this exact change has already been delivered on this channel.
@@ -2499,7 +2653,7 @@ class ObservationStore:
         confirmation in that case.
         """
         rows = self._connection.execute(
-            "SELECT * FROM observations o WHERE product_type = ? AND id = ("
+            f"SELECT * FROM {_effective_observations()} o WHERE product_type = ? AND id = ("
             "  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
             "  ORDER BY first_observed_at DESC, id DESC LIMIT 1"
             ") AND NOT EXISTS ("
@@ -2507,7 +2661,7 @@ class ObservationStore:
             "  AND rc.change_type = 'REMOVED_PRODUCT' AND "
             + _run_ordered_after("rc.run_id", "rc.detected_at", "o.last_seen_run_id", "o.last_seen_at")
             + ") "
-            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra="")
+            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra="", o3_src="observations")
             + "ORDER BY bank, term_months",
             (_product_value(product_type),),
         ).fetchall()
@@ -2540,7 +2694,7 @@ class ObservationStore:
             "  AND rc.change_type = 'REMOVED_PRODUCT' AND "
             + _run_ordered_after("rc.run_id", "rc.detected_at", "o.last_seen_run_id", "o.last_seen_at")
             + ") "
-            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra=""),
+            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra="", o3_src="observations"),
             (_product_value(product_type),),
         ).fetchall()
         run_ids_by_bank: dict[str, list[str]] = {}
@@ -2571,11 +2725,12 @@ class ObservationStore:
         the immediately preceding B -- itself a market-moving substitution,
         just a different wrong one.
         """
+        effective = _effective_observations()
         rows = self._connection.execute(
-            "SELECT * FROM observations o WHERE product_type = ? "
-            "AND validation_status != 'warning' AND id = ("
-            "  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
-            "  AND o2.validation_status != 'warning' "
+            f"SELECT * FROM {effective} o WHERE product_type = ? "
+            f"AND eff_status NOT IN {_UNTRUSTED_SQL} AND id = ("
+            f"  SELECT id FROM {effective} o2 WHERE o2.observation_key = o.observation_key "
+            f"  AND o2.eff_status NOT IN {_UNTRUSTED_SQL} "
             "  ORDER BY first_observed_at DESC, id DESC LIMIT 1"
             ") AND NOT EXISTS ("
             "  SELECT 1 FROM rate_changes rc WHERE rc.observation_key = o.observation_key "
@@ -2583,7 +2738,7 @@ class ObservationStore:
             + _run_ordered_after("rc.run_id", "rc.detected_at", "o.last_seen_run_id", "o.last_seen_at")
             + ") "
             + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(
-                extra=" AND o3.validation_status != 'warning'"
+                extra=f" AND o3.eff_status NOT IN {_UNTRUSTED_SQL}", o3_src=effective
             )
             + "ORDER BY bank, term_months",
             (_product_value(product_type),),
@@ -2668,6 +2823,7 @@ class ObservationStore:
                 withdrawal="rc.detected_at <= ?",
                 observation_params=(timestamp,),
                 withdrawal_params=(timestamp,),
+                review_cutoff=timestamp,
             )
         reference = self._connection.execute(
             "SELECT started_at, rowid FROM collection_runs WHERE run_id = ?",
@@ -2693,6 +2849,7 @@ class ObservationStore:
             withdrawal=withdrawal_cutoff,
             observation_params=observation_params,
             withdrawal_params=(*observation_params, timestamp),
+            review_cutoff=reference["started_at"],
         )
 
     def get_observations_as_of(
@@ -2735,8 +2892,9 @@ class ObservationStore:
         cutoff = self._as_of_cutoff(before_run_id, timestamp)
         if cutoff is None:
             return []
+        effective = _effective_observations(cutoff.review_cutoff)
         rows = self._connection.execute(
-            f"SELECT * FROM observations o WHERE product_type = ? AND {cutoff.outer} "
+            f"SELECT * FROM {effective} o WHERE product_type = ? AND {cutoff.outer} "
             "AND id = ("
             f"  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
             f"  AND {cutoff.inner} ORDER BY first_observed_at DESC, id DESC LIMIT 1"
@@ -2747,7 +2905,9 @@ class ObservationStore:
             "  AND "
             + _run_ordered_after("rc.run_id", "rc.detected_at", "o.first_seen_run_id", "o.first_observed_at")
             + ") "
-            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(extra=f" AND {cutoff.eligibility}")
+            + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(
+                extra=f" AND {cutoff.eligibility}", o3_src="observations"
+            )
             + "ORDER BY bank, term_months",
             (
                 _product_value(product_type),
@@ -2783,12 +2943,13 @@ class ObservationStore:
         cutoff = self._as_of_cutoff(before_run_id, timestamp)
         if cutoff is None:
             return []
+        effective = _effective_observations(cutoff.review_cutoff)
         rows = self._connection.execute(
-            f"SELECT * FROM observations o WHERE product_type = ? AND {cutoff.outer} "
-            "AND validation_status != 'warning' "
+            f"SELECT * FROM {effective} o WHERE product_type = ? AND {cutoff.outer} "
+            f"AND eff_status NOT IN {_UNTRUSTED_SQL} "
             "AND id = ("
-            f"  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
-            f"  AND {cutoff.inner} AND o2.validation_status != 'warning' "
+            f"  SELECT id FROM {effective} o2 WHERE o2.observation_key = o.observation_key "
+            f"  AND {cutoff.inner} AND o2.eff_status NOT IN {_UNTRUSTED_SQL} "
             "  ORDER BY first_observed_at DESC, id DESC LIMIT 1"
             ") "
             "AND NOT EXISTS ("
@@ -2798,7 +2959,8 @@ class ObservationStore:
             + _run_ordered_after("rc.run_id", "rc.detected_at", "o.first_seen_run_id", "o.first_observed_at")
             + ") "
             + _SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(
-                extra=f" AND {cutoff.eligibility} AND o3.validation_status != 'warning'"
+                extra=f" AND {cutoff.eligibility} AND o3.eff_status NOT IN {_UNTRUSTED_SQL}",
+                o3_src=effective,
             )
             + "ORDER BY bank, term_months",
             (
@@ -3033,8 +3195,16 @@ class ObservationStore:
         now: Optional[datetime] = None,
         product_type: Optional[ProductType | str] = None,
         rate_category: Optional[str] = None,
+        include_voided: bool = False,
     ) -> list[dict]:
         """Return stored change events in a window, newest first.
+
+        Events of a reading an operator voided (see :mod:`.quarantine`) are excluded unless
+        ``include_voided``, from the moment of the void -- bounded by ``now`` so a historical
+        window still sees them as they were then.
+
+        Approval flags and reconciled endpoints are also projected at ``now``. Raw event
+        rows remain audit evidence; a future approval cannot change an earlier query.
 
         Returns plain dicts; ``changes.load_changes`` rehydrates them into
         ``RateChange`` objects for callers that want the typed form.
@@ -3062,13 +3232,12 @@ class ObservationStore:
         if rate_category is not None:
             clauses.append("rate_category = ?")
             params.append(rate_category)
-        if not include_suspicious:
-            clauses.append("suspicious = 0")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = self._connection.execute(
             f"SELECT * FROM rate_changes {where} ORDER BY detected_at DESC, id DESC", params
         ).fetchall()
-        return [dict(row) for row in rows]
+        changes = quarantine_store.effective_changes(self, rows, now, include_voided=include_voided)
+        return [row for row in changes if include_suspicious or not row["suspicious"]]
 
     def get_banks(self, product_type: ProductType | str = ProductType.HOME_LOAN) -> list[str]:
         rows = self._connection.execute(
@@ -3239,6 +3408,16 @@ def _record_to_row(record: CompetitorRateRecord, timestamp: str, run_id: str) ->
     }
 
 
+def _record_status(row: sqlite3.Row) -> str:
+    """The status a record carries: effective (ledger-overlaid) when the query supplied it.
+
+    A voided reading is untrusted exactly like a quarantined one, and the record model's
+    vocabulary has no ``voided``, so it reads ``warning`` -- which every trust check keys on.
+    """
+    status = row["eff_status"] if "eff_status" in row.keys() else row["validation_status"]
+    return "warning" if status == "voided" else status
+
+
 def _row_to_record(row: sqlite3.Row) -> CompetitorRateRecord:
     return CompetitorRateRecord(
         bank=row["bank"],
@@ -3269,7 +3448,7 @@ def _row_to_record(row: sqlite3.Row) -> CompetitorRateRecord:
         raw_text_context=row["source_text"],
         raw_html_sha256=row["content_hash"],
         parser_version=row["parser_version"],
-        validation_status=row["validation_status"],
+        validation_status=_record_status(row),
         validation_warnings=json.loads(row["validation_warnings"]),
     )
 

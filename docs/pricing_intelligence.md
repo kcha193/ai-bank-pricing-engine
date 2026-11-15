@@ -748,6 +748,166 @@ validated as plain `http(s)`. These rules are enforced by
 - **Phone widths work but are long.** Below ~640 px Streamlit stacks every column, so KPI
   cards become a single column and the top navigation folds into a menu.
 
+## Quarantine review (DATA-002, DATA-016)
+
+A reading is **quarantined** when validation doubts it: a move over `suspicious_change_bps`
+(75 bps), a **peer-market outlier**, or a repeat of a reading an operator already refused. It is
+stored for audit but never enters a trusted benchmark: market snapshots fall back to the bank's
+last trusted rate while that is still fresh (`max_observation_age_hours`), and market activity and
+market state ignore its change events. Before 2026-11-15 nothing could release one, so a genuine
++100 bps reprice stayed quarantined until the bank dropped out of the market (audit Q7). Now an
+operator decides.
+
+### Data trust model
+
+Observation rows are never rewritten. Every decision is a row in the append-only
+`quarantine_reviews` ledger (SQLite triggers refuse `UPDATE`/`DELETE`); the **effective** trust of a
+stored reading is its raw validation status overlaid with the latest decision *as of the time the
+view is asked for*. So a historical (`as_of_run_id`) view never shows a reading as approved before
+the approval happened, and a void takes effect from when it was made.
+
+| State | Meaning | Allowed decisions |
+| --- | --- | --- |
+| `PENDING` | Quarantined, awaiting a decision | `approve`, `reject` |
+| `ACCEPTED` | Passed validation, no review | `void` |
+| `APPROVED` | An operator confirmed it against evidence (now trusted) | `void` |
+| `REJECTED` | An operator refused it. **Never trusted**; stays out | none (terminal) |
+| `VOIDED` | Was trusted, now withdrawn. Removed from current rankings, benchmarks, market state and change statistics | none (terminal) |
+| `SUPERSEDED` | Quarantined, but a newer reading of the same identity replaced it | none |
+
+**Reject vs void.** A rejected reading was never trusted. A voided one was, so its influence is
+removed from the current market and the trusted rate is rebuilt from the last valid predecessor
+(or the rate is simply unavailable if none is fresh). Source evidence is never deleted.
+
+A reading an operator rejected or voided does **not** re-enter merely because the same text appears
+again: an identical repeat is recorded as seen but stays untrusted, creates no change event and does
+not reopen the queue. A *different* reading is judged afresh.
+
+**An approval confirms that the reading matches independent evidence. It says nothing about whether
+the rate is attractive, and it never changes a price.** Nothing is ever approved automatically: not
+by repetition, not by the peer median, not by an LLM.
+
+### Review commands
+
+```bash
+pricing-intelligence --product term_deposit review list --status PENDING
+pricing-intelligence --product term_deposit review show --event-id 7
+pricing-intelligence --product term_deposit review approve --event-id 7 \
+  --reason "Verified against official rate card" --evidence https://bank.example/ratecard.pdf
+pricing-intelligence --product term_deposit review reject --event-id 7 \
+  --reason "Incorrect rate extracted from promotional text"
+pricing-intelligence --product term_deposit review void --event-id 12 \
+  --reason "Previously accepted source parsing error" --evidence ticket:OPS-123
+```
+
+(`python3 -m balance_pricing_engine.pricing_intelligence ...` is the same command.) `--status` takes
+`PENDING` (default), `ACCEPTED` (the accepted moves a `void` can target), `APPROVED`, `REJECTED`,
+`VOIDED`, `SUPERSEDED` or `ALL`. `list`/`show` show bank, product, term, old/new rate, change in bps,
+quarantine age and runs, status, collection run, source URL, the stored source text and the
+validation signals (e.g. `peer_outlier: ...`); `show` also prints the decision history. `--dry-run` on
+a decision validates it and prints the outcome without writing or needing authorisation.
+
+`--event-id` names one exact rate-change event (the id `review list` prints). Decisions are
+transactional and race-safe: a second contradictory decision is refused (`UNIQUE (observation_id,
+previous_state)` plus a write lock), repeating the same decision is an idempotent no-op that reports
+the existing ledger row, and an invalid transition (e.g. approving a `REJECTED` event, voiding a
+`PENDING` one) is rejected with the event's current state. A reason is mandatory; an approval also
+needs `--evidence` (a URL or an immutable reference such as a document hash or ticket id).
+Evidence text printed to the terminal comes from bank pages and is sanitised first.
+
+### Authorisation
+
+`approve`, `reject` and `void` require a configured credential and fail closed.
+
+1. Pick a high-entropy token per reviewer (at least 16 characters) and store it in your password
+   manager. Compute its digest: `printf %s "$TOKEN" | shasum -a 256`.
+2. Configure the **digests** (not the tokens) on the machine that runs the CLI:
+   `PRICING_INTELLIGENCE_REVIEW_CREDENTIALS="alice=<sha256>,bob=<sha256>"`.
+3. Present the token at run time through `PRICING_INTELLIGENCE_REVIEW_TOKEN` or, from a terminal, the
+   no-echo prompt it falls back to. **There is deliberately no `--token` option**: argv is visible to
+   other local users and lands in shell history.
+
+The identity recorded in the ledger is the one the token authenticated, not a name typed by the
+operator. The token and digests are never logged, echoed or placed in an error message. This is
+trusted-operator attribution: it proves the holder of that token acted, not who that person is, so
+protect the tokens like any shared credential and rotate them by replacing the digest.
+
+### Peer-median plausibility check (DATA-016)
+
+A move under 75 bps can still be a misread (a +60 bps special/standard mix-up became `MARKET_LEADER`
+in audit Q6). Each moving reading is compared with **comparable peers**: the same product, rate
+category, term, balance tier and eligibility; a different bank; observed recently enough
+(`max_peer_age_hours`); and not itself quarantined, rejected or voided. Balance tiers are bands of the
+advertised minimum (`balance_tier_edges`, default 10,000 / 100,000): banks quote different retail
+minimums (none, $1k, $5k) for the same everyday tier, and exact matching found **no** comparable peer
+for ASB on the preserved fixtures, so $500k+ specials are a separate tier but retail minimums pool.
+
+It flags a reading for **review** only when it both sits far from the peer median *and* moved
+materially more than the peers did, away from them:
+
+| Setting (`validation.peer.*`) | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | Turn the signal off |
+| `min_peers` | `3` | Fewer comparable peers = *insufficient evidence*: no median is invented |
+| `leader_side_deviation_bps` | `40` | Distance from the peer median on the side that wins the ranking when wrong |
+| `other_side_deviation_bps` | `75` | Same, on the other side |
+| `movement_excess_bps` | `40` | The reading must have moved this much more than the peer median move |
+| `dispersion_multiple` / `dispersion_floor_bps` | `4` / `5` | In a spread-out market the deviation must also exceed this many median-absolute-deviations (floored) |
+
+The leader side is **above** peers for a term deposit (highest rate leads) and **below** for a home
+loan (lowest leads); the economics differ, so the bounds do too. A flag is a review signal, not
+proof of error: it quarantines the reading, never rejects or approves it. With insufficient
+evidence (or no prior reading to measure movement) the check abstains, is reported as
+`peer_insufficient_evidence` in the run summary, and the existing movement control still applies.
+A stable outlier that did not move, and a market-wide move the candidate merely followed, are not flagged.
+
+### Quarantine age and escalation
+
+A pending quarantine must not stay invisible. `quarantine.escalation_after_runs` (default **3**)
+counts **distinct collection runs** that observed the same reading identity unreviewed. A retry of
+the same `run_id` never counts twice, and a run where the bank failed to collect does not count.
+
+| Runs pending | Behaviour |
+| --- | --- |
+| 1 | Pending. Existing warnings and `suspicious` change events are unchanged; the run is not degraded |
+| 2 .. N-1 | Still pending; `review list` and `health` show the age and run count |
+| N or more | The run is **degraded**: exit code **2** (`PARTIAL_SUCCESS`) if it would otherwise have succeeded, a `QuarantineEscalation` entry in `summary.failures` and `error_summary`, and one alert |
+
+A total failure (exit 1) keeps its precedence. The alert (webhook/Telegram) is sent **once per
+quarantined reading and channel**, not per run or retry, through the `quarantine_escalation_alerts`
+ledger (only confirmed deliveries are recorded, so a failed send is retried), and carries bank, term,
+rates and run counts only. One "resolved" notice follows when it is no longer pending. Dry runs
+alert nothing. `health` and `run` print pending count, affected banks, the oldest age and any
+escalation, and the run summary has a `quarantine` block. Once a decision is made the active condition
+clears and the history stays.
+
+### Operator procedure
+
+1. **List pending rates:** `review list --status PENDING` (per `--product`). Note the `EVENT` id, bank,
+   term, old/new rate and age.
+2. **Review the source evidence:** `review show --event-id N`. Open the bank's official page or rate
+   card. Compare the product, term, tier, conditions and rate, not only the number. Read the
+   `peer_outlier` / `suspicious_movement` signal for why it was held.
+3. **Approve or reject.** Genuine and evidenced: `review approve --event-id N --reason ... --evidence
+   <url or hash>`. A parser fault or misread: `review reject --event-id N --reason ...`. Use `--dry-run`
+   first if unsure. Approval confirms evidence, not attractiveness.
+4. **Void a previously trusted error:** find it with `review list --status ACCEPTED` (or `APPROVED`),
+   then `review void --event-id N --reason ...`. Its influence leaves the current market immediately.
+5. **Verify the benchmark:** `snapshot` (and `strategy --strategy MARKET_LEADER` / `market-state`) should
+   now show the expected rate; a quarantined or voided rate shows its last trusted fallback.
+6. **Review audit history:** `review show --event-id N` (decisions, reviewer, time, reason, evidence)
+   or `review list --status ALL`. The ledger is `quarantine_reviews`; nothing is ever edited or deleted.
+7. **Respond to a quarantine health escalation:** an exit-2 run with `QuarantineEscalation`, or the
+   quarantine alert, means a reading has waited `escalation_after_runs` runs. Work steps 1 to 3. If the
+   source is genuinely ambiguous, reject it rather than leave it pending: a bank is not silently dropped
+   from the market, but while pending the market uses its older rate, which becomes unavailable once it
+   passes `max_observation_age_hours`.
+
+Limitations: REJECT and VOID are terminal (no reinstate command). If a rejected rate later turns out to
+be genuine, the bank's next *different* reading is judged afresh. A voided accepted rate's predecessor
+only substitutes while it is inside the freshness window. Authorisation is token-based operator
+attribution, not per-person identity proof.
+
 ## Pricing-engine integration
 
 Competitor pricing has always entered the optimiser through
@@ -1097,6 +1257,9 @@ suspicious-movement threshold, database path, tracked terms, selected banks, and
 market-state cut-offs. There are no magic numbers scattered through the
 pipeline. `health.warning_after_failures`/`health.alert_after_failures`
 control collector-failure escalation (see Operations below).
+`validation.peer.*` configures the peer-market plausibility signal and
+`quarantine.escalation_after_runs` the quarantine escalation threshold (see
+[Quarantine review](#quarantine-review-data-002-data-016)).
 
 ## Pricing Intelligence Operations
 
@@ -1134,6 +1297,7 @@ Every one is optional; each feature it gates is off until set.
 | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | Telegram alert delivery (both required) |
 | `ANTHROPIC_API_KEY` | The separate LLM decision-support layer (`llm/`), unrelated to alerting |
 | `PRICING_ENGINE_API_KEYS` | The optional FastAPI serving layer's auth |
+| `PRICING_INTELLIGENCE_REVIEW_CREDENTIALS` + `PRICING_INTELLIGENCE_REVIEW_TOKEN` | Authorising `review approve/reject/void`: `identity=<sha256 of token>` entries, and the token presented at run time (never a CLI argument). Unset means every decision is refused |
 
 ### Manual run
 
@@ -1438,19 +1602,19 @@ a recovery notice.
 
 ### Suspicious rate detected
 
-1. Compare the flagged value against the bank's official page directly.
-2. Determine whether it is a genuine reprice or a parser fault (mis-parsed
-   digit, wrong table row, standard/special mix-up).
-3. Follow the existing quarantine workflow (see "Audit hardening and
-   operating limits" below) -- there is no automated approve/reject command;
-   review against source evidence and correct the parser if it is a fault.
+1. `review list --status PENDING` to find the event, then `review show --event-id N`.
+2. Compare the flagged value against the bank's official page directly.
+3. Decide whether it is a genuine reprice (`review approve`, with evidence) or a parser fault,
+   mis-parsed digit, wrong table row or standard/special mix-up (`review reject`; also fix the parser).
+   See [Quarantine review](#quarantine-review-data-002-data-016) for the full procedure.
 4. Re-run collection/`snapshot` once resolved.
 
 Suspicious observations are excluded from market benchmarks and market-state
 classification by construction (`compute_market_activity` skips them by
 default) -- a parser fault cannot silently reach the optimiser through
 scenario-triggering either, since `_scenario_trigger_candidates` only
-considers non-suspicious changes.
+considers non-suspicious changes. A quarantine left unreviewed for
+`quarantine.escalation_after_runs` runs degrades the run (exit 2) and alerts once.
 
 ### Telegram fails
 
@@ -1513,9 +1677,11 @@ failures, page mutations, and unparseable pages.
   persistent per-bank collector health with configurable failure escalation
   and recovery notifications, Telegram delivery alongside the existing
   webhook, a persisted `RunRecord` operational ledger, a `health` command, and
-  a documented/implemented backup command. Still open: a reviewed quarantine
-  *approval workflow* (the quarantine mechanism itself is enforced; there is
-  no operator approve/reject command) and a whole-job wall-clock timeout --
+  a documented/implemented backup command. **Resolved in Phase 2a (2026-11-15):**
+  the reviewed quarantine approval workflow (`review approve/reject/void`, an
+  append-only ledger, an authorised CLI, peer-median plausibility and
+  escalation -- see [Quarantine review](#quarantine-review-data-002-data-016)).
+  Still open: a whole-job wall-clock timeout --
   HTTP retry limits alone are not a wall-clock guarantee for a browser run.
 - Raw HTML is retained for parser diagnostics, under ignored `data/raw/` paths;
   no automatic retention policy is implemented. Live evidence is a dated check,

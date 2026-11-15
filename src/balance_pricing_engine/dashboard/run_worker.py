@@ -51,7 +51,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         json.dumps(
             {
                 "status": result.status,
-                "summary": build_summary(result.outcome, product),
+                "summary": build_summary(result.outcome, product, quarantine=result.quarantine),
             }
         ),
         encoding="utf-8",

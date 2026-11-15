@@ -223,7 +223,7 @@ def run_collection(
             return _clock_regression_failure(exc, product_type, summary_path)
         outcome = result.outcome
 
-    summary = build_summary(outcome, product_type)
+    summary = build_summary(outcome, product_type, quarantine=result.quarantine)
     summary["alerts_sent"] = result.alerts_sent
     code = result.code
 

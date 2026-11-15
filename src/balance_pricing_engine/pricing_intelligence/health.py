@@ -18,6 +18,7 @@ from balance_pricing_engine.pricing_intelligence.alerts import (
     build_telegram_sink_from_env,
     build_webhook_sink_from_env,
 )
+from balance_pricing_engine.pricing_intelligence.quarantine import QuarantineStatus
 from balance_pricing_engine.pricing_intelligence.store import CollectorHealth, RunRecord
 
 if TYPE_CHECKING:  # service imports this module; avoid the cycle at runtime
@@ -173,6 +174,8 @@ class SystemHealth:
     telegram_configured: bool
     webhook_configured: bool
     max_observation_age_hours: float
+    #: Pending operator-review quarantines and any escalated past the policy threshold.
+    quarantine: Optional[QuarantineStatus] = None
 
     @property
     def fresh_bank_count(self) -> int:
@@ -230,11 +233,16 @@ def assess_system_health(
         terms=set(config.tracked_terms_months),
         excluded_product_names=config.excluded_product_names,
     )
-    # Raw warning rows remain visible even when a category flip resolves to another tier.
+    quarantine = service.get_quarantine_status(product_type=product, now=now)
+    # Raw warning rows remain visible even when a category flip resolves to another tier. A
+    # reading an operator has already rejected or voided is untrusted but no longer an open
+    # quarantine, so it stops counting the bank as quarantined.
+    decided = store.get_decided_untrusted_keys(product)
     quarantined_banks = {
         r.bank
         for r in records
         if r.validation_status == "warning"
+        and r.observation_key() not in decided
         and r.term_months_normalised in config.tracked_terms_months
     }
     run_ids_by_bank = store.get_current_observation_run_ids(product_type=product)
@@ -278,4 +286,5 @@ def assess_system_health(
         telegram_configured=build_telegram_sink_from_env() is not None,
         webhook_configured=build_webhook_sink_from_env() is not None,
         max_observation_age_hours=config.max_observation_age_hours,
+        quarantine=quarantine,
     )
