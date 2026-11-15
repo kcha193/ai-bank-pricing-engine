@@ -74,6 +74,28 @@ def category_agnostic_key(
     )
 
 
+#: Separates a skipped row's :func:`category_agnostic_key` from the rate category its own
+#: cell or column heading names (never present in a bank, term or frequency).
+_SKIPPED_CATEGORY_SEPARATOR = "#"
+
+
+def skipped_row_key(group_key: str, rate_category: Optional[str]) -> str:
+    """A ``skipped_row_keys`` entry: the group key, plus the category when the cell names one.
+
+    The category lets a withdrawal check tell an unreadable standard rate from a special that
+    shares its balance tier (see ``pricing_intelligence.service._skipped_row_predecessor_keys``).
+    """
+    if rate_category is None:
+        return group_key
+    return f"{group_key}{_SKIPPED_CATEGORY_SEPARATOR}{rate_category}"
+
+
+def split_skipped_row_key(key: str) -> tuple[str, Optional[str]]:
+    """``(group_key, rate_category or None)`` for a ``skipped_row_keys`` entry."""
+    group_key, separator, rate_category = key.partition(_SKIPPED_CATEGORY_SEPARATOR)
+    return group_key, (rate_category if separator else None)
+
+
 class CompetitorRateRecord(BaseModel):
     """One advertised competitor rate with source and parser audit metadata."""
 

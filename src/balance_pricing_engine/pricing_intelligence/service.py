@@ -25,7 +25,11 @@ from balance_pricing_engine.competitor_rates.collectors import (
     build_collectors,
     collect_all_rates,
 )
-from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
+from balance_pricing_engine.competitor_rates.models import (
+    CompetitorRateRecord,
+    ProductType,
+    split_skipped_row_key,
+)
 from balance_pricing_engine.pricing_intelligence.changes import (
     ChangeType,
     RateChange,
@@ -326,10 +330,21 @@ def _skipped_row_predecessor_keys(
             unclaimed.setdefault(p.category_agnostic_group_key(), []).append(p)
 
     suppressed: set = set()
-    for group_key in skipped_group_keys:
+    for skipped_key in skipped_group_keys:
+        group_key, skipped_category = split_skipped_row_key(skipped_key)
         for candidate in unclaimed.get(group_key, []):
+            if _SLOT_CATEGORIES == {skipped_category, candidate.rate_category}:
+                # The unreadable cell's own heading says it was the other slot (a standard
+                # beside a special in one balance tier): this candidate's absence is real.
+                continue
             suppressed.add(candidate.observation_key())
     return suppressed
+
+
+#: Rate slots a term-deposit table publishes side by side in one balance tier. A skipped
+#: cell's category only separates these two; any other category (a post-processed
+#: ``non_comparable`` or PIE record) is still suppressed, as before categories were kept.
+_SLOT_CATEGORIES = {ORDINARY_CATEGORY, SPECIAL_CATEGORY}
 
 
 def _last_confirmed_predecessors(

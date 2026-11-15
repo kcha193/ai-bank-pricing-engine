@@ -19,6 +19,7 @@ from balance_pricing_engine.competitor_rates.models import (
     ProductType,
     SourceAttempt,
     category_agnostic_key,
+    skipped_row_key,
 )
 from balance_pricing_engine.competitor_rates.normalise import (
     NormalisedTerm,
@@ -264,6 +265,9 @@ def parse_html_rates(
         # whichever balance tier comes first (a dashed "Standard $1,000+" beside an
         # unreadable "Special rate $5,000+" would hide the standard's withdrawal and
         # withdraw the special instead).
+        pie_table = product == ProductType.TERM_DEPOSIT and _is_pie_return_table(
+            current_header_row
+        )
         for idx in unreadable_cells:
             header = current_header_row[idx] if idx < len(current_header_row or []) else ""
             cell_context = _clean_text(
@@ -278,7 +282,10 @@ def parse_html_rates(
                 )
                 + (" | " + header if header else "")
             )
-            _skip_unreadable_rate(skipped_row_keys, bank, product, term, cell_context)
+            category = _skipped_cell_category(
+                product, row, idx, current_header_row, context, term.special_label, pie_table
+            )
+            _skip_unreadable_rate(skipped_row_keys, bank, product, term, cell_context, category)
         if not rate_categories:
             if (
                 not unreadable_cells
@@ -296,9 +303,6 @@ def parse_html_rates(
                 )
                 _skip_unreadable_rate(skipped_row_keys, bank, product, term, row_context)
             continue
-        pie_table = product == ProductType.TERM_DEPOSIT and _is_pie_return_table(
-            current_header_row
-        )
         for rate, category, own_header, own_context in rate_categories:
             # Table-level PIE evidence outranks the special marker, as the per-cell "pie"
             # hint already does: a "special" in a PIE fund's return table is a fund return,
@@ -488,21 +492,25 @@ def _skip_unreadable_rate(
     product: ProductType,
     term: NormalisedTerm,
     context: str,
+    rate_category: str | None = None,
 ) -> None:
-    """Record an unreadable term-deposit rate as unknown this run (never as a withdrawal)."""
+    """Record an unreadable term-deposit rate as unknown this run (never as a withdrawal).
+
+    ``rate_category``, when the cell names one, keeps an unreadable standard rate from
+    shielding a withdrawn special in the same balance tier, and vice versa.
+    """
     logger.warning("%s %s: term row has no usable rate: %s", bank, product.value, context[:160])
     min_balance, max_balance = normalise_balance(context)
-    skipped_row_keys.append(
-        category_agnostic_key(
-            bank,
-            product,
-            term.months,
-            term.raw_label,
-            normalise_frequency(_strip_term_label(context, term.raw_label)),
-            min_balance,
-            max_balance,
-        )
+    group_key = category_agnostic_key(
+        bank,
+        product,
+        term.months,
+        term.raw_label,
+        normalise_frequency(_strip_term_label(context, term.raw_label)),
+        min_balance,
+        max_balance,
     )
+    skipped_row_keys.append(skipped_row_key(group_key, rate_category))
 
 
 def extract_all_sources(
@@ -787,9 +795,7 @@ def _extract_rates_with_categories(
     if len(plausible_cells) == 1:
         idx, cell, rate = plausible_cells[0]
         own_header = header_row[idx] if header_row is not None and idx < len(header_row) else None
-        hint = _rate_category_hint(product, cell, special_label)
-        if hint is None and own_header is not None:
-            hint = _rate_category_hint(product, own_header, special_label)
+        hint = _cell_category_hint(product, cell, own_header, special_label)
         if hint is None:
             hint = _rate_category(product, context, special_label)
         return [(rate, hint, own_header, context)]
@@ -798,9 +804,7 @@ def _extract_rates_with_categories(
     results: list[tuple[float, str, str | None, str]] = []
     for idx, cell, rate in plausible_cells:
         own_header = header_row[idx] if header_row is not None and idx < len(header_row) else None
-        hint = _rate_category_hint(product, cell, special_label)
-        if hint is None and own_header is not None:
-            hint = _rate_category_hint(product, own_header, special_label)
+        hint = _cell_category_hint(product, cell, own_header, special_label)
         if hint is None:
             hint = _rate_category(product, "", special_label)
         own_context = _clean_text(
@@ -869,6 +873,45 @@ def _rate_category_hint(product: ProductType, text: str, special_label: str | No
     if "fixed" in lowered:
         return "fixed"
     return None
+
+
+def _cell_category_hint(
+    product: ProductType, cell: str, own_header: str | None, special_label: str | None
+) -> str | None:
+    """Category a rate cell names itself, else its own column heading names, else ``None``."""
+    hint = _rate_category_hint(product, cell, special_label)
+    if hint is None and own_header is not None:
+        hint = _rate_category_hint(product, own_header, special_label)
+    return hint
+
+
+def _skipped_cell_category(
+    product: ProductType,
+    row: list[str],
+    idx: int,
+    header_row: list[str] | None,
+    context: str,
+    special_label: str | None,
+    pie_table: bool,
+) -> str | None:
+    """The category an unreadable rate cell would carry if it parsed, or ``None`` if unsure.
+
+    Same rules as :func:`_extract_rates_with_categories`: the cell's own or its heading's
+    category word first. Without one, a lone rate takes the row's category and one of several
+    the generic default; which applies depends on how many siblings parse, so the answer is
+    only kept when both agree (fixture D's "Standard rate" column is ``term_deposit`` either
+    way; an unlabelled rate on a "12 Months Special" row is not).
+    """
+    own_header = header_row[idx] if header_row is not None and idx < len(header_row) else None
+    category = _cell_category_hint(product, row[idx], own_header, special_label)
+    if category is None:
+        alone = _rate_category(product, context, special_label)
+        if alone != _rate_category(product, "", special_label):
+            return None
+        category = alone
+    if pie_table and category in {"term_deposit", "special"}:
+        return "pie_term_deposit"
+    return category
 
 
 def _rate_category(product: ProductType, context: str, special_label: str | None) -> str:

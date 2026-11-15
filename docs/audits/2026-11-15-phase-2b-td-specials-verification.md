@@ -196,6 +196,23 @@ Codex re-review of `1a419bd` raised two more:
     degrades the run through `special_comparability_uncertain`. A bank with only
     `not_comparable` specials still fails as before.
 
+Codex re-review of `eaece68` raised two more:
+
+20. **A restriction before an audience marker was ignored (P1).** "Available to eligible new
+    and existing customers" matched the `new and existing customers` marker, and only text
+    after the match was read. Fix: for a marker that starts with the audience, the words
+    before it are read back to the clause's preposition ("to", "for", "all", ...). Offer
+    markers ("available to all") are unchanged, so "Special rate available to all customers"
+    stays comparable.
+21. **An unreadable standard shielded a withdrawn special in its tier (P1).** Skipped keys
+    were category-agnostic, so in fixture D a misread standard (`4.0O%`) beside a dashed
+    special suppressed the special's withdrawal, and the unavailable 4.40% kept leading.
+    Fix: a per-cell skip carries the category the cell would have parsed as
+    (`models.skipped_row_key`; omitted when single-cell and multi-cell rules disagree, PIE
+    tables give `pie_term_deposit`). `_skipped_row_predecessor_keys` then spares a
+    `term_deposit`/`special` predecessor of the other slot. Any other category is still
+    suppressed, as before.
+
 Not changed, by design: health and exclusions assess admission before the staleness
 filter, because they exist to report stale specials (documented on
 `admitted_special_keys`).

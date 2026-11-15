@@ -27,6 +27,7 @@ from balance_pricing_engine.competitor_rates.models import (
     CompetitorRateRecord,
     ProductType,
     category_agnostic_key,
+    skipped_row_key,
 )
 from balance_pricing_engine.competitor_rates.normalise import normalise_balance
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType
@@ -1043,7 +1044,8 @@ def _tiered(reverse: bool = False) -> str:
 
 
 def _tier_key(min_balance: float) -> str:
-    return category_agnostic_key("ASB", TD, 12, "12 Months", "unknown", min_balance, None)
+    group = category_agnostic_key("ASB", TD, 12, "12 Months", "unknown", min_balance, None)
+    return skipped_row_key(group, "special")
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -1111,7 +1113,8 @@ def test_unreadable_value_under_a_special_rate_heading_beside_conditions_is_skip
     page = _conditions_page("Online only").replace("4.45% p.a.", value)
     skipped: list[str] = []
     parse_asb(page, skipped)
-    assert skipped == [category_agnostic_key("ASB", TD, 12, "12 Months", "unknown", None, None)]
+    group = category_agnostic_key("ASB", TD, 12, "12 Months", "unknown", None, None)
+    assert skipped == [skipped_row_key(group, "special")]
 
 
 @pytest.mark.parametrize("heading", ["Special rate (available online)", "Special % p.a. conditions"])
@@ -1367,3 +1370,55 @@ def test_bank_with_only_not_comparable_specials_is_still_a_zero_comparable_failu
     assert {f["error_type"] for f in summary["failures"] if f["bank"] == "ASB"} == {
         "no_comparable_rates"
     }
+
+
+@pytest.mark.parametrize(
+    ("availability", "status"),
+    [
+        ("Available to eligible new and existing customers", "not_comparable"),
+        ("Open to selected existing and new customers", "not_comparable"),
+        ("Offered to Auckland new and existing customers", "uncertain"),
+        ("Special for new and existing customers", "comparable"),
+        ("Rate for all customers", "comparable"),
+        ("Special rate available to all customers", "comparable"),
+    ],
+)
+def test_audience_qualifiers_before_an_audience_marker_narrow_availability(availability, status):
+    assert _assess(availability).status.value == status
+
+
+# -------- an unreadable cell keeps its category, same balance tier (PR #73 review, P1)
+
+
+def test_unreadable_standard_does_not_shield_a_withdrawn_special_in_its_tier(tmp_path):
+    market = Market(tmp_path, _D_PUBLIC)
+    market.run(0)
+    market.set_asb(_D_PUBLIC.replace("4.00% p.a.", "4.0O% p.a.").replace("4.40% p.a.", "-"))
+    result = market.run(1)
+    assert result.code == EXIT_PARTIAL_FAILURE  # the standard is unknown this run
+    removed = [(c.bank, c.rate_category, c.term_months) for c in result.outcome.changes
+               if c.change_type is ChangeType.REMOVED_PRODUCT]  # fmt: skip
+    assert removed == [("ASB", "special", 12)]
+    assert market.asb12(market.when(1, 1)) == (4.00, "term_deposit")
+
+
+def test_unreadable_special_does_not_shield_a_withdrawn_standard_in_its_tier(tmp_path):
+    market = Market(tmp_path, _D_PUBLIC)
+    market.run(0)
+    market.set_asb(_D_PUBLIC.replace("4.00% p.a.", "-").replace("4.40% p.a.", "4.4O% p.a."))
+    result = market.run(1)
+    assert result.code == EXIT_PARTIAL_FAILURE
+    removed = [(c.bank, c.rate_category, c.term_months) for c in result.outcome.changes
+               if c.change_type is ChangeType.REMOVED_PRODUCT]  # fmt: skip
+    assert removed == [("ASB", "term_deposit", 12)]
+    assert market.asb12(market.when(1, 1)) == (4.40, "special")
+
+
+def test_unreadable_cell_in_a_pie_return_table_keeps_the_pie_category():
+    html = (
+        "<html><body><table><tr><th>Term</th><th>Special rate of return</th></tr>"
+        "<tr><td>12 Months</td><td>4.4O%</td></tr></table></body></html>"
+    )
+    skipped: list[str] = []
+    parse_asb(html, skipped)
+    assert len(skipped) == 1 and skipped[0].endswith("#pie_term_deposit")

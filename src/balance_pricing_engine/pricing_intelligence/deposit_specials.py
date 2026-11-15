@@ -136,6 +136,29 @@ def _audience_qualifiers(text: str, end: int, bank_words: frozenset[str]) -> lis
     return [word for word in words if word not in bank_words]
 
 
+#: A marker that starts with the offer ("available to all") rather than the audience
+#: ("new and existing customers"). Words before an offer marker are about the offer, not
+#: the audience ("Special rate available to all").
+_OFFER_MARKER = re.compile(r"(?:available|open|offered)\b")
+#: Where a walk back from an audience marker leaves the audience ("Available *to* ...").
+_AUDIENCE_BOUNDARY = frozenset({"to", "for", "all", "available", "open", "offered", "is", "are"})
+
+
+def _leading_audience_qualifiers(text: str, start: int, bank_words: frozenset[str]) -> list[str]:
+    """Words narrowing an audience marker starting at ``start``, read backwards to the clause's
+    preposition: "Available to eligible new and existing customers" -> ``["eligible"]``,
+    "Special for new and existing customers" -> ``[]``."""
+    clause = re.split(r"[.;:|!?,]", text[:start])[-1]
+    words = re.findall(r"[a-z0-9'+$]+", _UNRESTRICTED_AUDIENCE.sub(" ", clause))
+    found: list[str] = []
+    for word in reversed(words):
+        if word in _AUDIENCE_BOUNDARY:
+            break
+        if word not in bank_words:
+            found.insert(0, word)
+    return found
+
+
 def _availability_matches(
     text: str, phrase: str, bank_words: frozenset[str] = frozenset()
 ) -> tuple[bool, bool, list[list[str]]]:
@@ -149,6 +172,8 @@ def _availability_matches(
     scoped: list[list[str]] = []
     for match in re.finditer(rf"(?<!\w){re.escape(phrase.lower())}(?!\w)", text):
         qualifiers = _audience_qualifiers(text, match.end(), bank_words)
+        if not _OFFER_MARKER.match(phrase.lower()):
+            qualifiers = _leading_audience_qualifiers(text, match.start(), bank_words) + qualifiers
         if _negated_in_clause(text, match.start()):
             negated = True
         elif qualifiers:
