@@ -2052,19 +2052,20 @@ def test_a_product_returning_after_a_same_timestamp_withdrawal_starts_a_fresh_st
     assert [record.bank for record in snapshot] == ["BNZ"]
 
 
-def test_a_stale_suspicious_tag_clears_once_reconfirmed(store, make_record):
-    """A large move that repeats unchanged is no longer suspicious."""
+def test_a_suspicious_tag_survives_an_unchanged_unflagged_repeat(store, make_record):
+    """Repetition without an operator decision never confirms a suspicious reading."""
     store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)
     suspicious = make_record(rate_pct=8.49, observed_at=DAY_TWO, validation_status="warning")
     store.record_observations([suspicious], observed_at=DAY_TWO)
     assert store.get_latest_rates()[0].validation_status == "warning"
 
-    # The same value reappears on day three, validated fresh against itself
-    # (no movement), so it is no longer flagged.
+    # Even an incoming unflagged record cannot confirm the existing quarantine.
     confirmed = make_record(rate_pct=8.49, observed_at=DAY_THREE)
     store.record_observations([confirmed], observed_at=DAY_THREE)
 
-    assert store.get_latest_rates()[0].validation_status != "warning"
+    assert store.get_latest_rates()[0].validation_status == "warning"
+    assert [r.advertised_rate_pct for r in store.get_last_confirmed_observations()] == [4.99]
+    assert store._connection.execute("SELECT COUNT(*) FROM quarantine_reviews").fetchone()[0] == 0
 
 
 def test_last_confirmed_observations_exclude_a_superseded_eligibility_state(store, make_record):
@@ -2121,8 +2122,8 @@ def test_last_confirmed_observations_keep_a_confirmed_state_even_when_superseded
     assert confirmed[0].max_lvr == 0.75, "the immediate confirmed predecessor, not the stale key"
 
 
-def test_a_stale_suspicious_tag_clears_via_a_fresh_state_not_a_mutation(store, make_record):
-    """The clearing must not touch the original row's own historical status."""
+def test_a_pending_repeat_retains_its_original_state_and_warning(store, make_record):
+    """Repeated evidence must retain quarantine identity and historical trust."""
     store.record_observations([make_record(rate_pct=4.99)], observed_at=DAY_ONE)
     suspicious = make_record(rate_pct=8.49, observed_at=DAY_TWO, validation_status="warning")
     result = store.record_observations([suspicious], observed_at=DAY_TWO)
@@ -2131,9 +2132,11 @@ def test_a_stale_suspicious_tag_clears_via_a_fresh_state_not_a_mutation(store, m
     confirmed = make_record(rate_pct=8.49, observed_at=DAY_THREE)
     result = store.record_observations([confirmed], observed_at=DAY_THREE)
 
-    assert result.inserted == 1, "confirmation must start a fresh state, not mutate the old one"
+    assert (result.inserted, result.unchanged) == (0, 1)
     history = store.get_rate_history(bank="ANZ", term_months=12)
-    assert len(history) == 3
+    assert len(history) == 2
+    assert [r.validation_status for r in history].count("warning") == 1
+    assert store.get_latest_rates()[0].validation_status == "warning"
 
 
 def test_confirmation_does_not_rewrite_the_historical_warning_state(store, make_record):

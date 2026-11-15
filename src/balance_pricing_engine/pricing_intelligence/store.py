@@ -1723,31 +1723,15 @@ class ObservationStore:
             and self._returned_after_an_eligibility_transition(connection, payload, current)
         )
 
-        # A repeated suspicious value that is no longer independently flagged
-        # this run (0 bps movement against its own warning-tagged baseline)
-        # is a confirmation, not a continuation: touching validation_status
-        # on the existing row in place would let today's confirmation
-        # retroactively rewrite what get_market_snapshot(as_of_run_id=...)
-        # or get_previous_market_snapshot() reconstruct for the run when it
-        # was still unverified. A fresh row leaves that historical row's
-        # "warning" status frozen, exactly like the checks above.
-        #
-        # Only an *unreviewed* quarantine is confirmed this way. A reading an operator
-        # approved is already trusted (ledger overlay), and one they rejected or voided
-        # must stay untrusted when the same text appears again: touched in place below,
-        # never re-inserted as a fresh, trusted-looking state.
-        confirming_a_suspicious_state = (
-            current is not None
-            and current["validation_status"] == "warning"
-            and payload["validation_status"] != "warning"
-            and quarantine_store.latest_review_state(connection, current["id"]) is None
-        )
+        # Collection cannot confirm a pending reading. Even if this run's peer check
+        # abstains, materially unchanged content keeps the stored warning and case ID.
+        # Operator approval is applied through the ledger overlay; a rejected or voided
+        # reading also stays on its existing row when the same content repeats.
 
         if (
             current is not None
             and not returned_after_a_withdrawal
             and not returned_after_an_eligibility_transition
-            and not confirming_a_suspicious_state
             and _is_unchanged(current, payload)
         ):
             # A materially unchanged reading still touches its provenance:
@@ -1858,16 +1842,14 @@ class ObservationStore:
         ],
         target_change_ids: Optional[Mapping[str, int]] = None,
     ) -> None:
-        """Clear the suspicious flag on the most recent change event for each
+        """Legacy compatibility API: clear the suspicious flag on the selected event for each
         key (and every companion event from the same run), rebasing the rate
         event onto the last verified predecessor where one is known.
 
-        A suspicious-but-accepted movement stays permanently excluded from
-        market activity / market-state (both default to skipping suspicious
-        changes) even after the same value repeats on a later, clean
-        collection -- strong evidence it was a genuine reprice, not a parser
-        fault. Called once ``_upsert_observation``'s own confirmation check
-        (a repeated value no longer flagged this run) identifies the key.
+        Collection never calls this method: repetition cannot confirm a quarantined
+        reading. Operator reviews now append ledger decisions and project effective
+        changes at read time through ``quarantine_store.effective_changes``. This
+        mutating API remains for compatibility with older callers and legacy data tests.
 
         An over-threshold rate change that also modifies eligibility or
         promotion data produces companion ``ELIGIBILITY_CHANGE``/
@@ -2064,9 +2046,13 @@ class ObservationStore:
             self, rows, channel, sent_at or datetime.now(timezone.utc)
         )
 
-    def repeats_reviewed_untrusted(self, record: CompetitorRateRecord) -> bool:
-        """True when ``record`` repeats a reading an operator already rejected or voided."""
-        return quarantine_store.repeats_reviewed_untrusted(self, record)
+    def repeats_reviewed_untrusted(
+        self, record: CompetitorRateRecord, *, include_pending: bool = False
+    ) -> bool:
+        """Match rejected/voided readings, optionally including unresolved quarantines."""
+        return quarantine_store.repeats_reviewed_untrusted(
+            self, record, include_pending=include_pending
+        )
 
     def was_notified(self, change: RateChange, channel: str) -> bool:
         """True when this exact change has already been delivered on this channel.
@@ -3217,6 +3203,9 @@ class ObservationStore:
         ``include_voided``, from the moment of the void -- bounded by ``now`` so a historical
         window still sees them as they were then.
 
+        Approval flags and reconciled endpoints are also projected at ``now``. Raw event
+        rows remain audit evidence; a future approval cannot change an earlier query.
+
         Returns plain dicts; ``changes.load_changes`` rehydrates them into
         ``RateChange`` objects for callers that want the typed form.
         """
@@ -3243,21 +3232,12 @@ class ObservationStore:
         if rate_category is not None:
             clauses.append("rate_category = ?")
             params.append(rate_category)
-        if not include_suspicious:
-            clauses.append("suspicious = 0")
-        if not include_voided:
-            clauses.append(
-                "NOT EXISTS (SELECT 1 FROM quarantine_reviews r WHERE r.new_state = 'VOIDED' "
-                "AND r.observation_key = rate_changes.observation_key "
-                "AND r.run_id = rate_changes.run_id "
-                "AND r.product_type = rate_changes.product_type AND r.reviewed_at <= ?)"
-            )
-            params.append(_iso(now))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = self._connection.execute(
             f"SELECT * FROM rate_changes {where} ORDER BY detected_at DESC, id DESC", params
         ).fetchall()
-        return [dict(row) for row in rows]
+        changes = quarantine_store.effective_changes(self, rows, now, include_voided=include_voided)
+        return [row for row in changes if include_suspicious or not row["suspicious"]]
 
     def get_banks(self, product_type: ProductType | str = ProductType.HOME_LOAN) -> list[str]:
         rows = self._connection.execute(

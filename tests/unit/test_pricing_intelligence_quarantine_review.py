@@ -477,7 +477,10 @@ def test_t19_companion_events_follow_the_rate_event():
     approve(market, market.only_pending().event_id)
     assert connection.execute("SELECT COUNT(*) FROM rate_changes WHERE suspicious = 1").fetchone()[
         0
-    ] == 0
+    ] == 2  # raw collection evidence is immutable across operator decisions
+    changes = market.service.get_changes(now=at(2, 2), product_type=HL)
+    assert {change.change_type.value for change in changes} == {"RATE_INCREASE", "PROMOTION_CHANGE"}
+    assert all(not change.suspicious for change in changes)
 
 
 # -------------------------------------------------------------- migration
@@ -531,7 +534,14 @@ def test_approving_the_current_reading_rebases_it_onto_the_last_trusted_rate():
         "WHERE id = ?",
         (current.event_id,),
     ).fetchone()
-    assert tuple(rows) == (5.05, 6.00, 95.0, 0)  # not the stale 6.50 -> 6.00 hop
+    assert tuple(rows) == (6.50, 6.00, -50.0, 1)  # original intermediate hop stays auditable
+    (effective,) = market.store.get_changes_since(
+        now=at(3, 3), product_type=HL, include_suspicious=False
+    )
+    assert (
+        effective["previous_rate_pct"], effective["current_rate_pct"],
+        effective["change_bps"], effective["suspicious"],
+    ) == (5.05, 6.00, 95.0, 0)  # public activity uses the last trusted predecessor
     # The superseded event was never approved and stays flagged.
     (stale,) = market.service.list_review_cases(HL, [ReviewState.SUPERSEDED], now=market.now)
     flagged = market.store._connection.execute(

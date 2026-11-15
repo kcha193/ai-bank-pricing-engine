@@ -741,6 +741,14 @@ class PricingIntelligenceService:
                     observation_key=record.observation_key(),
                     message="repeats a reading an operator rejected or voided; remains untrusted",
                 ))
+            elif record.observation_key() not in validation.suspicious_keys and (
+                self.store.repeats_reviewed_untrusted(record, include_pending=True)
+            ):
+                validation.issues.append(ObservationIssue(
+                    severity="warning", code="pending_quarantine", bank=record.bank,
+                    observation_key=record.observation_key(),
+                    message="repeats an unresolved reading; requires an operator decision",
+                ))
         for issue in validation.issues:
             logger.warning("validation: %s", issue)
 

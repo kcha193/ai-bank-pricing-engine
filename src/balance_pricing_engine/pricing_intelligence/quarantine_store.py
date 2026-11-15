@@ -23,6 +23,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Iterable, Optional
 
+from balance_pricing_engine.pricing_intelligence.changes import resolve_pairing
 from balance_pricing_engine.pricing_intelligence.quarantine import (
     ALLOWED_FROM,
     RESULT_STATE,
@@ -320,15 +321,29 @@ def _check_transition(case: ReviewCase, action: ReviewAction) -> None:
 
 
 def _trusted_predecessor(
-    connection: sqlite3.Connection, observation: sqlite3.Row
+    connection: sqlite3.Connection, observation: sqlite3.Row,
+    review_cutoff: Optional[str] = None,
 ) -> Optional["CompetitorRateRecord"]:
-    row = connection.execute(
-        f"SELECT * FROM {_s()._effective_observations()} o WHERE o.observation_key = ? "
-        "AND o.product_type = ? AND o.id < ? AND o.eff_status NOT IN ('warning', 'voided') "
-        "ORDER BY o.first_observed_at DESC, o.id DESC LIMIT 1",
-        (observation["observation_key"], observation["product_type"], observation["id"]),
-    ).fetchone()
-    return _s()._row_to_record(row) if row else None
+    effective = _s()._effective_observations(review_cutoff)
+    # Use the same trusted eligibility-supersession rule as observation fallbacks.
+    # Exact-key lookup alone misses a reprice that also changes eligibility.
+    rows = connection.execute(
+        f"SELECT * FROM {effective} o WHERE o.bank = ? AND o.product_type = ? "
+        "AND o.id < ? AND o.eff_status NOT IN ('warning', 'voided') AND o.id = ("
+        f"SELECT o2.id FROM {effective} o2 WHERE o2.observation_key = o.observation_key "
+        "AND o2.id < ? AND o2.eff_status NOT IN ('warning', 'voided') "
+        "ORDER BY o2.first_observed_at DESC, o2.id DESC LIMIT 1) "
+        + _s()._SUPERSEDED_BY_LATER_ELIGIBILITY_KEY.format(
+            extra=" AND o3.id < ? AND o3.eff_status NOT IN ('warning', 'voided')",
+            o3_src=effective,
+        ),
+        (observation["bank"], observation["product_type"], observation["id"],
+         observation["id"], observation["id"]),
+    ).fetchall()
+    record = _s()._row_to_record(observation)
+    return resolve_pairing([_s()._row_to_record(row) for row in rows], [record]).get(
+        record.observation_key()
+    )
 
 
 def apply_review(
@@ -410,8 +425,6 @@ def apply_review(
             raise InvalidReviewTransition(
                 f"event {event_id} was decided concurrently; re-read its state"
             ) from exc
-        if action is ReviewAction.APPROVE:
-            _apply_approval(store, connection, case)
         event = _event_from_row(
             connection.execute(
                 "SELECT * FROM quarantine_reviews WHERE review_id = ?", (review_id,)
@@ -422,27 +435,92 @@ def apply_review(
         return ReviewOutcome(case=refreshed, event=event, created=True)
 
 
-def _apply_approval(
-    store: "ObservationStore", connection: sqlite3.Connection, case: ReviewCase
-) -> None:
-    """Reconcile the quarantined event(s) so the approved rate counts as a genuine move.
-
-    Delegates to :meth:`~.store.ObservationStore.confirm_suspicious_changes`, pinned to the
-    exact event, which clears the flag on it and its companion events from the same run and
-    rebases a multi-hop chain onto the last independently trusted rate.
-    """
-    observation = connection.execute(
-        "SELECT * FROM observations WHERE id = ?", (case.observation_id,)
+def _original_predecessor_time(
+    store: "ObservationStore", observation: sqlite3.Row
+) -> Optional[str]:
+    """Recover a legacy-rebased event's original timestamp, including eligibility edits."""
+    record = _s()._row_to_record(observation)
+    previous = resolve_pairing(
+        store.get_previous_run_rates(
+            product_type=observation["product_type"], before_run_id=observation["first_seen_run_id"]
+        ), [record]
+    ).get(record.observation_key())
+    if previous is None:
+        return None
+    row = store._connection.execute(
+        "SELECT last_seen_at FROM observations WHERE observation_key = ? AND id < ? "
+        "ORDER BY first_observed_at DESC, id DESC LIMIT 1",
+        (previous.observation_key(), observation["id"]),
     ).fetchone()
-    store.confirm_suspicious_changes(
-        {
-            case.observation_key: (
-                _trusted_predecessor(connection, observation),
-                _s()._row_to_record(observation),
+    return row["last_seen_at"] if row is not None else None
+
+
+def effective_changes(
+    store: "ObservationStore", rows: Iterable[sqlite3.Row], now: datetime,
+    *, include_voided: bool = False,
+) -> list[dict]:
+    """Project event trust at ``now`` without rewriting collected evidence.
+
+    Exact event decisions also govern same-run companions. Approval rebases only the
+    rate event; companions describing an intermediate, untrusted hop stay suspicious.
+    The observation's immutable warning also recovers original suspicion for databases
+    where the earlier approval implementation already cleared the stored event flag.
+    """
+    connection = store._connection
+    cutoff = _s()._iso(now)
+    result = []
+    for row in rows:
+        change = dict(row)
+        reviews = connection.execute(
+            "SELECT * FROM quarantine_reviews WHERE observation_key = ? AND run_id = ? "
+            "AND product_type = ? ORDER BY review_seq",
+            (row["observation_key"], row["run_id"], row["product_type"]),
+        ).fetchall()
+        if not reviews:
+            result.append(change)
+            continue
+        observation = connection.execute(
+            "SELECT * FROM observations WHERE id = ?", (reviews[0]["observation_id"],)
+        ).fetchone()
+        if observation["validation_status"] == "warning":
+            change["suspicious"] = 1
+        decisions = [r for r in reviews if r["reviewed_at"] <= cutoff]
+        if decisions and decisions[-1]["new_state"] == "VOIDED" and not include_voided:
+            continue
+        approval = next((r for r in decisions if r["new_state"] == "APPROVED"), None)
+        if approval is not None:
+            predecessor = _trusted_predecessor(connection, observation, approval["reviewed_at"])
+            rebasing = (
+                predecessor is not None
+                and predecessor.advertised_rate_pct != approval["previous_rate_pct"]
             )
-        },
-        target_change_ids={case.observation_key: case.event_id},
-    )
+            if row["id"] == approval["change_id"]:
+                change["suspicious"] = 0
+                if predecessor is not None:
+                    change["previous_rate_pct"] = predecessor.advertised_rate_pct
+                    change["current_rate_pct"] = observation["rate_pct"]
+                    change["change_bps"] = _s().rate_change_bps(
+                        predecessor.advertised_rate_pct, observation["rate_pct"]
+                    )
+                    change["previous_observed_at"] = _s()._iso(predecessor.captured_at_utc)
+                    change["change_type"] = (
+                        "RATE_INCREASE" if change["change_bps"] > 0 else "RATE_DECREASE"
+                    )
+            elif not rebasing:
+                change["suspicious"] = 0
+        elif observation["validation_status"] == "warning" and row["id"] == reviews[0]["change_id"]:
+            # Legacy approvals may also have rebased the mutable event. Recover its
+            # original previous endpoint from the ledger for pre-approval audit reads.
+            previous = reviews[0]["previous_rate_pct"]
+            current = reviews[0]["proposed_rate_pct"]
+            change["previous_rate_pct"] = previous
+            change["current_rate_pct"] = current
+            change["change_bps"] = _s().rate_change_bps(previous, current)
+            change["change_type"] = "RATE_INCREASE" if change["change_bps"] > 0 else "RATE_DECREASE"
+            if not row["suspicious"]:
+                change["previous_observed_at"] = _original_predecessor_time(store, observation)
+        result.append(change)
+    return result
 
 
 def pending_status(
@@ -474,11 +552,14 @@ def pending_status(
     )
 
 
-def repeats_reviewed_untrusted(store: "ObservationStore", record: "CompetitorRateRecord") -> bool:
+def repeats_reviewed_untrusted(
+    store: "ObservationStore", record: "CompetitorRateRecord", *, include_pending: bool = False
+) -> bool:
     """True when ``record`` is the same reading an operator already rejected or voided.
 
     Such a reading must not re-enter the trusted market merely because the same source text
-    keeps appearing; a *different* reading is judged afresh.
+    keeps appearing; a *different* reading is judged afresh. ``include_pending`` extends
+    that protection to unreviewed warnings when a new peer check abstains or passes.
     """
     module = _s()
     connection = store._connection
@@ -487,7 +568,13 @@ def repeats_reviewed_untrusted(store: "ObservationStore", record: "CompetitorRat
         "id DESC LIMIT 1",
         (record.observation_key(),),
     ).fetchone()
-    if row is None or latest_review_state(connection, row["id"]) not in UNTRUSTING_STATES:
+    if row is None:
+        return False
+    state = latest_review_state(connection, row["id"])
+    untrusted = state in UNTRUSTING_STATES or (
+        include_pending and state is None and row["validation_status"] == "warning"
+    )
+    if not untrusted:
         return False
     return module._is_unchanged(row, module._record_to_row(record, "", ""))
 

@@ -363,3 +363,23 @@ trusted snapshot. A suspicious sibling remains in audit history without labellin
 representative as a fallback. Snapshot selection, freshness limits and pricing benchmarks are
 unchanged. Historical event details require the event's observation key and a state beginning
 no later than the event; unavailable historical parser evidence stays explicitly unavailable.
+
+
+### Quarantine review time and repeated evidence (PR #72)
+
+An unchanged reading is not independent confirmation. A pending peer-flagged reading
+remains quarantined even when later peer collection fails or the peer signal passes.
+The current peer assessment may report `insufficient_evidence`; this does not erase the
+stored suspicion. Only an explicit operator decision can approve or reject that reading.
+A genuinely different reading is validated normally against trusted evidence.
+
+Observation trust and change-event visibility both apply the append-only review ledger
+at the requested time. Before approval, a suspicious movement and its companions remain
+excluded from activity and market-state statistics. Approval becomes effective at its
+timestamp; void removes the event from current statistics at its timestamp while retaining
+earlier historical visibility. Operator decisions never rewrite collected event rows.
+Approved rate endpoints are reconciled to the last trusted predecessor at approval time;
+companions describing a superseded intermediate hop remain suspicious. Old databases
+whose approvals cleared event flags recover original suspicion from observation evidence
+and the ledger. These controls apply separately to home loans and term deposits and
+change no synthetic pricing mathematics.

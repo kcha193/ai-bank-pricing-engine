@@ -88,8 +88,10 @@ def _strip_advertised_rate_token(raw_text_context: str, advertised_rate_pct: flo
 
 #: Issue codes that quarantine a reading (accepted for audit, kept out of trusted market data
 #: until an operator decides): a movement over the threshold, a peer-market outlier
-#: (DATA-016), and a repeat of a reading an operator already rejected or voided.
-QUARANTINE_CODES = frozenset({"suspicious_movement", "peer_outlier", "reviewed_untrusted_reading"})
+#: (DATA-016), and repeats of unresolved, rejected or voided readings.
+QUARANTINE_CODES = frozenset({
+    "suspicious_movement", "peer_outlier", "reviewed_untrusted_reading", "pending_quarantine"
+})
 
 
 @dataclass(frozen=True)
