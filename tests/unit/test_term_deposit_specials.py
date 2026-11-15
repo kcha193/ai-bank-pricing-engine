@@ -1319,3 +1319,51 @@ def test_dash_in_the_rate_slot_beside_a_notes_dash_is_still_a_withdrawal(tmp_pat
     removed = [(c.bank, c.rate_category) for c in result.outcome.changes
                if c.change_type is ChangeType.REMOVED_PRODUCT]  # fmt: skip
     assert removed == [("ASB", "special")]
+
+
+# ------------- audience restrictions after the noun; uncertain-only banks (PR #73 review)
+
+
+@pytest.mark.parametrize(
+    ("availability", "status"),
+    [
+        ("Available to all customers aged 65 and over", "not_comparable"),
+        ("Available to all customers who apply online", "not_comparable"),
+        ("Open to everyone over 65", "uncertain"),
+        ("Available to all customers in Auckland", "uncertain"),
+        ("Available to all customers of ASB", "comparable"),
+        ("Available to all ASB customers", "comparable"),
+    ],
+)
+def test_audience_qualifiers_after_the_noun_narrow_availability(availability, status):
+    assert _assess(availability).status.value == status
+
+
+_UNCERTAIN_SPECIAL_ONLY = (
+    "<html><body><table><tr><th>Term</th><th>Special rate</th></tr>"
+    "<tr><td>12 Months</td><td>4.45% p.a.</td></tr></table></body></html>"
+)
+
+
+def test_bank_with_only_uncertain_specials_is_not_a_collector_failure(tmp_path):
+    market = Market(tmp_path, _UNCERTAIN_SPECIAL_ONLY)
+    result = market.run(0)
+    assert result.code == EXIT_PARTIAL_FAILURE
+    summary = summary_of(result)
+    assert "ASB" in summary["banks_succeeded"] and "ASB" not in summary["banks_failed"]
+    assert summary["bank_extraction_status"]["ASB"] == "COMPARABILITY_UNCERTAIN"
+    asb_failures = {f["error_type"] for f in summary["failures"] if f["bank"] == "ASB"}
+    assert asb_failures == {"special_comparability_uncertain"}
+    (health,) = [h for h in market.store.get_collector_health(TD) if h.bank == "ASB"]
+    assert health.consecutive_failures == 0
+
+
+def test_bank_with_only_not_comparable_specials_is_still_a_zero_comparable_failure(tmp_path):
+    page = _UNCERTAIN_SPECIAL_ONLY.replace(
+        "<td>4.45% p.a.</td>", "<td>4.45% p.a.</td><td>New customers only</td>"
+    )
+    summary = summary_of(Market(tmp_path, page).run(0))
+    assert "ASB" in summary["banks_failed"]
+    assert {f["error_type"] for f in summary["failures"] if f["bank"] == "ASB"} == {
+        "no_comparable_rates"
+    }

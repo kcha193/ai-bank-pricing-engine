@@ -181,6 +181,21 @@ Codex re-review of `ce87263` raised one more:
     outside a descriptive column. `_descriptive_heading` is now the single column-semantics
     test shared by `_rate_not_offered` and `_unreadable_rate_cells`.
 
+Codex re-review of `1a419bd` raised two more:
+
+18. **Audience restrictions after the noun were ignored (P1).** Only words before
+    "customers" were read, so "Available to all customers aged 65 and over" was
+    `comparable` and led ASB's benchmark. Fix: every word left in the availability clause
+    counts, before or after the audience noun. Restricted words (now also aged, seniors,
+    students, staff) give `not_comparable`; anything else gives `uncertain`. "New and
+    existing", "our/of/the" and the bank's own name leave the audience unrestricted.
+19. **A bank with only uncertain specials became a collector failure (P2).** With no ordinary
+    table and no availability evidence, `_banks_with_zero_comparable_rates()` added a
+    `no_comparable_rates` failure. ASB moved to `banks_failed` and the failure reached the
+    collector-health ledger. Fix: a bank with an uncertain special is exempt. It still
+    degrades the run through `special_comparability_uncertain`. A bank with only
+    `not_comparable` specials still fails as before.
+
 Not changed, by design: health and exclusions assess admission before the staleness
 filter, because they exist to report stale specials (documented on
 `admitted_special_keys`).

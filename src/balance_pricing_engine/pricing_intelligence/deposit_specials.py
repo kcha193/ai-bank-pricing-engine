@@ -109,30 +109,36 @@ def _negated_in_clause(text: str, position: int) -> bool:
 
 
 #: The audience an availability phrase names ("available to all <...> customers").
-_AUDIENCE = re.compile(r"\b(?:customers?|clients?|depositors?|investors?|applicants?|people)\b")
+_AUDIENCE = re.compile(
+    r"\b(?:customers?|clients?|depositors?|investors?|applicants?|people|everyone)\b"
+)
 #: Audience words that leave it unrestricted ("all our customers", "all new and existing").
 _UNRESTRICTED_AUDIENCE = re.compile(r"\b(?:new and existing|existing and new|our|of|the)\b")
 #: Audience words naming a group narrower than the bank's ordinary depositors.
 _RESTRICTED_AUDIENCE = frozenset(
-    {"new", "existing", "online", "business", "private", "premium", "selected", "eligible"}
-)
+    {
+        "new", "existing", "online", "business", "private", "premium", "selected", "eligible",
+        "aged", "seniors", "students", "staff",
+    }
+)  # fmt: skip
 
 
-def _audience_qualifiers(text: str, end: int) -> list[str]:
-    """Words narrowing the audience named right after an availability phrase ending at ``end``.
+def _audience_qualifiers(text: str, end: int, bank_words: frozenset[str]) -> list[str]:
+    """Words narrowing the audience of an availability phrase ending at ``end``.
 
-    "Available to all new customers" -> ``["new"]``; "... all new and existing customers" and
-    "... all our customers" -> ``[]``. Only words before the audience noun, in the same clause,
-    count; with no audience noun there is nothing to narrow.
+    Every word left in the phrase's clause, before or after the audience noun, narrows it:
+    "Available to all new customers" -> ``["new"]``, "... all customers aged 65 and over" ->
+    ``["aged", "65", "and", "over"]``. "New and existing", "our", "of", "the" and the bank's own
+    name do not ("all our customers", "all customers of ASB" -> ``[]``).
     """
     tail = re.split(r"[.;:|!?,]", text[end:])[0]
-    audience = _AUDIENCE.search(tail)
-    if audience is None:
-        return []
-    return re.findall(r"[a-z']+", _UNRESTRICTED_AUDIENCE.sub(" ", tail[: audience.start()]))
+    words = re.findall(r"[a-z0-9'+$]+", _UNRESTRICTED_AUDIENCE.sub(" ", _AUDIENCE.sub(" ", tail)))
+    return [word for word in words if word not in bank_words]
 
 
-def _availability_matches(text: str, phrase: str) -> tuple[bool, bool, list[list[str]]]:
+def _availability_matches(
+    text: str, phrase: str, bank_words: frozenset[str] = frozenset()
+) -> tuple[bool, bool, list[list[str]]]:
     """``(affirmed, negated, scoped)`` for each occurrence of ``phrase``.
 
     ``scoped`` holds the audience qualifiers of every occurrence that names a narrower group
@@ -142,7 +148,7 @@ def _availability_matches(text: str, phrase: str) -> tuple[bool, bool, list[list
     affirmed = negated = False
     scoped: list[list[str]] = []
     for match in re.finditer(rf"(?<!\w){re.escape(phrase.lower())}(?!\w)", text):
-        qualifiers = _audience_qualifiers(text, match.end())
+        qualifiers = _audience_qualifiers(text, match.end(), bank_words)
         if _negated_in_clause(text, match.start()):
             negated = True
         elif qualifiers:
@@ -202,7 +208,9 @@ def assess_deposit_special(
         uncertain.append("footnote_marker")
     evidence = []
     for marker in availability_markers:
-        affirmed, negated, scoped = _availability_matches(text, marker)
+        affirmed, negated, scoped = _availability_matches(
+            text, marker, frozenset(special.bank.lower().split())
+        )
         # A narrowed audience counts wherever it appears, like a restriction phrase: "all new
         # customers" is a restriction, an unrecognised qualifier ("all Auckland customers")
         # is not evidence either way.

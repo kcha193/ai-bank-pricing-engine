@@ -238,13 +238,21 @@ def _banks_with_zero_comparable_rates(
     since validation genuinely accepted the rows. Banks with zero accepted
     rows at all are excluded here; :func:`_validation_only_failures`
     already reports those.
+
+    So is a bank with an *uncertain* term-deposit special: the collector worked and the
+    special is held out on uncertainty, which :func:`_uncertain_special_failures` already
+    reports (degrading the run) without making it a collector incident. Only specials that
+    are understood exclusions (``not_comparable``) leave a bank with nothing comparable.
     """
     zero_accepted = _banks_with_zero_accepted_rates(outcome)
     comparable_banks = {record.bank for record in _comparable_records(outcome, product_type)}
+    uncertain_banks = {assessment.bank for assessment in _uncertain_specials(outcome)}
     return {
         bank
         for bank in outcome.succeeded_banks
-        if bank not in zero_accepted and bank not in comparable_banks
+        if bank not in zero_accepted
+        and bank not in comparable_banks
+        and bank not in uncertain_banks
     }
 
 
