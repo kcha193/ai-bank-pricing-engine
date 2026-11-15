@@ -853,3 +853,68 @@ def test_stale_uncertain_special_is_not_reported_as_an_exclusion(tmp_path):
     later = market.when(0) + timedelta(hours=market.config.max_observation_age_hours + 1)
     exclusions = market.service.get_market_exclusions(product_type=TD, now=later)
     assert not [e for e in exclusions if e.bank == "ASB"]
+
+
+# ---------------------- unreadable rate cells are skipped, not withdrawn (PR #73 review, P1)
+
+_D_PUBLIC = (
+    fixture("d_special_column_heading.html")
+    .replace("Special rate</th>", "Special rate</th><th>Availability</th>")
+    .replace("3.85% p.a.</td>", "3.85% p.a.</td><td>Available to all customers</td>")
+    .replace("4.40% p.a.</td>", "4.40% p.a.</td><td>Available to all customers</td>")
+)
+
+
+def _assert_partial_not_withdrawn(result) -> None:
+    assert result.code == EXIT_PARTIAL_FAILURE
+    assert summary_of(result)["bank_extraction_status"]["ASB"] == "PARSE_PARTIAL"
+    assert not [c for c in result.outcome.changes if c.change_type is ChangeType.REMOVED_PRODUCT]
+
+
+def test_unreadable_special_cell_beside_a_readable_standard_is_skipped(tmp_path):
+    market = Market(tmp_path, _D_PUBLIC)
+    assert market.run(0).code == EXIT_OK
+    assert market.asb12(market.when(0, 1)) == (4.40, "special")
+    market.set_asb(_D_PUBLIC.replace("4.40% p.a.", "4.4O% p.a."))
+    _assert_partial_not_withdrawn(market.run(1))
+    assert market.asb12(market.when(1, 1)) == (4.40, "special")
+
+
+def test_unreadable_standard_cell_beside_a_readable_special_is_skipped(tmp_path):
+    market = Market(tmp_path, _D_PUBLIC)
+    market.run(0)
+    market.set_asb(_D_PUBLIC.replace("4.00% p.a.", "4.OO% p.a."))
+    _assert_partial_not_withdrawn(market.run(1))
+    stored = {(r.rate_category, r.advertised_rate_pct)
+              for r in market.store.get_current_observations(product_type=TD)
+              if r.bank == "ASB" and r.term_months_normalised == 12}  # fmt: skip
+    assert stored == {("term_deposit", 4.00), ("special", 4.40)}
+
+
+def test_special_rate_heading_over_an_unreadable_value_is_skipped(tmp_path):
+    market = Market(tmp_path, fixture("c_special_separate_table.html"))
+    assert market.run(0).code == EXIT_OK
+    market.set_asb(fixture("c_special_separate_table.html").replace("4.45% p.a.", "N/A"))
+    _assert_partial_not_withdrawn(market.run(1))
+    assert market.asb12(market.when(1, 1)) == (4.45, "special")
+
+
+def test_dash_under_a_special_heading_means_not_offered(tmp_path):
+    market = Market(tmp_path, fixture("c_special_separate_table.html"))
+    market.run(0)
+    market.set_asb(fixture("c_special_separate_table.html").replace("4.45% p.a.", "-"))
+    result = market.run(1)
+    assert result.code == EXIT_OK
+    removed = [c for c in result.outcome.changes if c.change_type is ChangeType.REMOVED_PRODUCT]
+    assert [(c.bank, c.rate_category) for c in removed] == [("ASB", "special")]
+
+
+def test_well_formed_out_of_range_percentages_are_not_unreadable_rates():
+    html = fixture("a_standard_only.html").replace(
+        "<tr><td>12 Months</td><td>4.00% p.a.</td></tr>",
+        "<tr><td>12 Months</td><td>4.00% p.a.</td><td>Up to 100% of funds</td></tr>",
+    )
+    skipped: list[str] = []
+    records = parse_asb(html, skipped)
+    assert skipped == []
+    assert sorted(r.advertised_rate_pct for r in records) == [3.60, 4.00, 4.30, 4.40]

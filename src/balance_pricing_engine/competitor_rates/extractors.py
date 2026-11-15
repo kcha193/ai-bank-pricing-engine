@@ -21,6 +21,7 @@ from balance_pricing_engine.competitor_rates.models import (
     category_agnostic_key,
 )
 from balance_pricing_engine.competitor_rates.normalise import (
+    NormalisedTerm,
     normalise_balance,
     normalise_frequency,
     normalise_lvr_condition,
@@ -250,8 +251,13 @@ def parse_html_rates(
         rate_categories = _extract_rates_with_categories(
             row, context, product, term.special_label, header_row=current_header_row
         )
+        unreadable_cells = (
+            _unreadable_rate_cells(row, current_header_row, product)
+            if skipped_row_keys is not None and product == ProductType.TERM_DEPOSIT
+            else []
+        )
         if not rate_categories:
-            if (
+            if unreadable_cells or (
                 skipped_row_keys is not None
                 and product == ProductType.TERM_DEPOSIT
                 and _looks_like_unusable_rate_row(context)
@@ -265,25 +271,25 @@ def parse_html_rates(
                     if current_header_row
                     else context
                 )
-                logger.warning(
-                    "%s %s: term row has no usable rate: %s",
-                    bank,
-                    product.value,
-                    context[:160],
-                )
-                min_balance, max_balance = normalise_balance(row_context)
-                skipped_row_keys.append(
-                    category_agnostic_key(
-                        bank,
-                        product,
-                        term.months,
-                        term.raw_label,
-                        normalise_frequency(_strip_term_label(row_context, term.raw_label)),
-                        min_balance,
-                        max_balance,
+                _skip_unreadable_rate(skipped_row_keys, bank, product, term, row_context)
+            continue
+        # A readable rate elsewhere in the row must not hide an unreadable sibling cell
+        # (a standard and a special side by side): each one is skipped on its own.
+        for idx in unreadable_cells:
+            header = current_header_row[idx] if idx < len(current_header_row or []) else ""
+            cell_context = _clean_text(
+                " | ".join(
+                    cell
+                    for other, cell in enumerate(row)
+                    if other == idx
+                    or (
+                        other not in unreadable_cells
+                        and _extract_plausible_rate(cell, product) is None
                     )
                 )
-            continue
+                + (" | " + header if header else "")
+            )
+            _skip_unreadable_rate(skipped_row_keys, bank, product, term, cell_context)
         pie_table = product == ProductType.TERM_DEPOSIT and _is_pie_return_table(
             current_header_row
         )
@@ -387,6 +393,58 @@ def _looks_like_unusable_rate_row(context: str) -> bool:
     """A term row that advertises a rate (a percent sign, or a special) we could not read."""
     lowered = context.lower()
     return "%" in lowered or "special" in lowered
+
+
+#: Cell values that say a rate is not offered at this term, rather than unreadable.
+_NOT_OFFERED_CELLS = frozenset({"", "-", "–", "—"})
+#: A whole percentage, not a fragment of a misread one ("0%" inside "4.O0%").
+_WELL_FORMED_PERCENTAGE = re.compile(r"(?<![\w.])\d+(?:\.\d+)?\s*%")
+
+
+def _unreadable_rate_cells(
+    row: list[str], header_row: list[str] | None, product: ProductType
+) -> list[int]:
+    """Indices of cells advertising a term-deposit rate that could not be read.
+
+    A cell qualifies when it holds a percentage that is not a well-formed number ("4.4O%"),
+    or any other value under a special-rate heading ("N/A" below "Special rate"). A blank or
+    dash cell means "not offered" and does not qualify, and nor does a well-formed
+    percentage that is simply not a deposit rate ("Up to 100% of funds").
+    """
+    found = []
+    for idx, cell in enumerate(row):
+        text = cell.strip()
+        if text in _NOT_OFFERED_CELLS or _extract_plausible_rate(cell, product) is not None:
+            continue
+        header = (header_row[idx] if header_row is not None and idx < len(header_row) else "")
+        header = header.lower()
+        malformed = "%" in text and not _WELL_FORMED_PERCENTAGE.search(text)
+        if malformed or ("special" in header and "rate" in header):
+            found.append(idx)
+    return found
+
+
+def _skip_unreadable_rate(
+    skipped_row_keys: list[str],
+    bank: str,
+    product: ProductType,
+    term: NormalisedTerm,
+    context: str,
+) -> None:
+    """Record an unreadable term-deposit rate as unknown this run (never as a withdrawal)."""
+    logger.warning("%s %s: term row has no usable rate: %s", bank, product.value, context[:160])
+    min_balance, max_balance = normalise_balance(context)
+    skipped_row_keys.append(
+        category_agnostic_key(
+            bank,
+            product,
+            term.months,
+            term.raw_label,
+            normalise_frequency(_strip_term_label(context, term.raw_label)),
+            min_balance,
+            max_balance,
+        )
+    )
 
 
 def extract_all_sources(

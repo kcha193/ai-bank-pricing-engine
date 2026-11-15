@@ -95,5 +95,20 @@ Codex re-review of `6a5032c` raised two more:
    `comparable_records(admitted_keys=...)` mirrors `build_market_snapshot`, and health and
    `get_market_exclusions()` pass `service.admitted_special_keys(...)`.
 
+Codex re-review of `74e757e` raised two more, both about unreadable specials becoming
+withdrawals:
+
+5. **A readable cell hid an unreadable sibling (P1).** The skipped-row guard ran only when
+   the whole row had no rate, so fixture D with the special misread as `4.4O%` emitted
+   `REMOVED_PRODUCT`. Fix: `extractors._unreadable_rate_cells` checks each cell, and each
+   unreadable cell is skipped with its own category-agnostic key.
+6. **The column heading was ignored (P1).** "N/A" under fixture C's "Special rate" heading
+   was silently dropped. Fix: a non-blank, non-dash value under a special-rate heading is an
+   unreadable rate. A blank or dash cell still means "not offered".
+
+Known residual: a misread such as `4.O0%` still contains the fragment `0%`, which the
+existing rate parser reads as 0.00%. That reading is quarantined as a suspicious move (Phase
+2a), so it is not a withdrawal, but it is not reported as `row_skipped` either.
+
 Verification is recorded in the PR description and review replies; live verification is
 still pending, as above.

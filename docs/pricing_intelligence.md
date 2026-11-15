@@ -1066,7 +1066,10 @@ on rate alone.
     - low coverage against the bank's known lines (`low_coverage`);
     - one category losing most of its known lines (`category_low_coverage`);
     - a term row with an unreadable rate, such as `4.5O%`, or a special with no figure
-      (`row_skipped`).
+      (`row_skipped`). This is checked per rate cell, so an unreadable special beside a
+      readable standard rate (or the reverse) is still skipped. A value such as "N/A" under
+      a special-rate heading also counts. A blank or dash cell means "not offered", and a
+      well-formed percentage outside the deposit range ("Up to 100%") is not a rate cell.
   - `VALIDATION_PARTIAL`: rows rejected, or no comparable rows.
   - `COMPARABILITY_UNCERTAIN`: an uncertain special.
   - `TRUSTED_COLLECTION_SUCCESS`: fetch and parse succeeded, and every row is trusted.
