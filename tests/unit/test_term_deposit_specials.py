@@ -1164,3 +1164,64 @@ def test_amount_cell_under_a_special_minimum_heading_is_not_an_unreadable_rate()
     assert skipped == []
     assert [(r.advertised_rate_pct, r.min_balance_or_deposit) for r in records
             if r.rate_category == "special"] == [(4.45, 5000.0)]  # fmt: skip
+
+
+# --------------------------- availability must name an unrestricted audience (PR #73, P1)
+
+
+def _assess(availability: str):
+    (assessment,) = assess_deposit_specials(
+        [_td(), _td(rate=4.5, category="special", context=f"12 Months Special | 4.5% | {availability}")],
+        restriction_markers=(), availability_markers=PricingIntelligenceConfig().deposit_specials.availability_markers,
+        balance_tier_edges=(10_000.0,),
+    )  # fmt: skip
+    return assessment
+
+
+@pytest.mark.parametrize(
+    "availability",
+    [
+        "Available to all new customers",
+        "Open to all existing customers",
+        "Available to all online customers",
+        "Available to all business clients",
+        # A restricted audience elsewhere in the text still restricts.
+        "Available to all customers. Available to all new customers",
+    ],
+)
+def test_availability_limited_to_a_restricted_audience_is_not_comparable(availability):
+    assessment = _assess(availability)
+    assert assessment.status is SpecialComparability.NOT_COMPARABLE
+    assert any(reason.startswith("restricted_availability:") for reason in assessment.reasons)
+
+
+@pytest.mark.parametrize(
+    "availability",
+    [
+        "Available to all customers",
+        "Available to all new and existing customers",
+        "Available to all existing and new customers",
+        "Available to all our customers",
+        "Open to everyone",
+        "Available to all.",
+    ],
+)
+def test_availability_to_an_unrestricted_audience_is_still_evidence(availability):
+    assert _assess(availability).status is SpecialComparability.COMPARABLE
+
+
+def test_availability_to_an_unrecognised_audience_is_uncertain():
+    assessment = _assess("Available to all Auckland customers")
+    assert assessment.status is SpecialComparability.UNCERTAIN
+    assert "scoped_availability:available to all auckland" in assessment.reasons
+
+
+def test_new_customer_only_special_never_drives_the_benchmark(tmp_path):
+    page = fixture("c_special_separate_table.html").replace(
+        "Available to all new and existing customers", "Available to all new customers"
+    )
+    market = Market(tmp_path, page)
+    result = market.run(0)
+    assert result.code == EXIT_OK
+    assert specials_in(result)[4.45][0] == SpecialComparability.NOT_COMPARABLE.value
+    assert market.asb12(market.when(0, 1)) == (4.00, "term_deposit")

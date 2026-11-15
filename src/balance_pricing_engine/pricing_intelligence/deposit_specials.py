@@ -19,7 +19,8 @@ eligibility the page does not state:
 ``NOT_COMPARABLE``
     The text or fields show it is unlike the ordinary rate: a restriction phrase, a PIE or
     foreign-currency marker, a PIE return-table heading ("Rate of return", "Return
-    Frequency"), a negated availability phrase ("Not available to all customers"), a
+    Frequency"), a negated availability phrase ("Not available to all customers"), an
+    availability phrase naming a restricted audience ("Available to all new customers"), a
     balance tier the ordinary rate does not serve, or a different published payment
     frequency. Recorded and excluded. This is an understood exclusion, so
     it does not degrade the run.
@@ -107,15 +108,48 @@ def _negated_in_clause(text: str, position: int) -> bool:
     return any(w.replace("'", "") in _NEGATIONS or w.endswith("n't") for w in words)
 
 
-def _availability_matches(text: str, phrase: str) -> tuple[bool, bool]:
-    """``(affirmed, negated)``: whether ``phrase`` occurs plainly and whether it occurs negated."""
+#: The audience an availability phrase names ("available to all <...> customers").
+_AUDIENCE = re.compile(r"\b(?:customers?|clients?|depositors?|investors?|applicants?|people)\b")
+#: Audience words that leave it unrestricted ("all our customers", "all new and existing").
+_UNRESTRICTED_AUDIENCE = re.compile(r"\b(?:new and existing|existing and new|our|of|the)\b")
+#: Audience words naming a group narrower than the bank's ordinary depositors.
+_RESTRICTED_AUDIENCE = frozenset(
+    {"new", "existing", "online", "business", "private", "premium", "selected", "eligible"}
+)
+
+
+def _audience_qualifiers(text: str, end: int) -> list[str]:
+    """Words narrowing the audience named right after an availability phrase ending at ``end``.
+
+    "Available to all new customers" -> ``["new"]``; "... all new and existing customers" and
+    "... all our customers" -> ``[]``. Only words before the audience noun, in the same clause,
+    count; with no audience noun there is nothing to narrow.
+    """
+    tail = re.split(r"[.;:|!?,]", text[end:])[0]
+    audience = _AUDIENCE.search(tail)
+    if audience is None:
+        return []
+    return re.findall(r"[a-z']+", _UNRESTRICTED_AUDIENCE.sub(" ", tail[: audience.start()]))
+
+
+def _availability_matches(text: str, phrase: str) -> tuple[bool, bool, list[list[str]]]:
+    """``(affirmed, negated, scoped)`` for each occurrence of ``phrase``.
+
+    ``scoped`` holds the audience qualifiers of every occurrence that names a narrower group
+    (``["new"]`` for "available to all new customers"): that is not evidence of public
+    availability.
+    """
     affirmed = negated = False
+    scoped: list[list[str]] = []
     for match in re.finditer(rf"(?<!\w){re.escape(phrase.lower())}(?!\w)", text):
+        qualifiers = _audience_qualifiers(text, match.end())
         if _negated_in_clause(text, match.start()):
             negated = True
+        elif qualifiers:
+            scoped.append(qualifiers)
         else:
             affirmed = True
-    return affirmed, negated
+    return affirmed, negated, scoped
 
 
 def _band(amount: Optional[float], edges: Sequence[float]) -> int:
@@ -168,7 +202,16 @@ def assess_deposit_special(
         uncertain.append("footnote_marker")
     evidence = []
     for marker in availability_markers:
-        affirmed, negated = _availability_matches(text, marker)
+        affirmed, negated, scoped = _availability_matches(text, marker)
+        # A narrowed audience counts wherever it appears, like a restriction phrase: "all new
+        # customers" is a restriction, an unrecognised qualifier ("all Auckland customers")
+        # is not evidence either way.
+        for qualifiers in scoped:
+            audience = " ".join([marker.lower(), *qualifiers])
+            if _RESTRICTED_AUDIENCE.intersection(qualifiers):
+                disqualifying.append(f"restricted_availability:{audience}")
+            else:
+                uncertain.append(f"scoped_availability:{audience}")
         if negated:
             disqualifying.append(f"negated_availability:{marker.lower()}")
         elif affirmed:

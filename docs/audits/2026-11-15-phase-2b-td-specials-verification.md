@@ -150,6 +150,17 @@ Codex re-review of `f601125` raised one more:
     same class) is never a rate placeholder. A misread rate inside a term cell
     ("12 Months 4.0O%") is still unreadable.
 
+Codex re-review of `dd84704` raised one more:
+
+15. **A restricted audience after an availability phrase was admitted (P1).** "Available to
+    all new customers" matched the `available to all` marker, so a new-customer-only special
+    was `comparable` and led ASB's 12-month benchmark at 4.45%. Fix: the words between an
+    availability phrase and its audience noun ("customers", "clients", ...) are checked. A
+    restricted group (new, existing, online, business, private, premium, selected, eligible)
+    makes it `not_comparable` (`restricted_availability`), wherever it appears in the text.
+    Any other qualifier is `uncertain` (`scoped_availability`), so the special is excluded
+    and the run exits 2. "New and existing" and "our" leave the audience unrestricted.
+
 Not changed, by design: health and exclusions assess admission before the staleness
 filter, because they exist to report stale specials (documented on
 `admitted_special_keys`).
