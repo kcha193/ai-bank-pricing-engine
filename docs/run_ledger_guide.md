@@ -209,7 +209,8 @@ Each run creates a directory named `{YYYYMMDD_HHMMSS_microseconds}_{scenario_nam
 data/outputs/runs/
 └── 20260514_013815_123456_baseline/
     ├── metadata.json           # run identity and governance flags
-    ├── config_snapshot.yaml    # exact copy of the config used
+    ├── config_snapshot.yaml    # copy of the caller's YAML file (provenance)
+    ├── effective_config.json   # validated config actually priced (canonical JSON)
     ├── summary.json            # accepted recommendation and boundary metadata
     ├── grid_results.csv        # every evaluated rate pair
     ├── top_results.csv         # top candidates by objective value
@@ -259,7 +260,8 @@ happened, which code version produced it, and whether any governance flags were 
 | `run_id` | Globally unique identifier (UUID4) — use this to refer to a specific run in committee notes or audit logs |
 | `scenario_name` | The label passed to `write_run_ledger` |
 | `timestamp` | UTC time when the ledger was written (ISO-8601 format) |
-| `config_hash` | SHA-256 fingerprint of the config file — if the hash matches a prior run, the assumptions were identical |
+| `config_hash` | SHA-256 of the canonical JSON of the **effective validated config** that was priced (same definition as `decision_record.config_hash`). Equal hashes mean identical economics, regardless of YAML formatting, key order or file name. Verify with `sha256(effective_config.json)` |
+| `source_config_file_sha256` | SHA-256 of the original YAML file bytes (`null` if unavailable). Differs from `config_hash` by design; it identifies the file, not the economics |
 | `git_commit` | Short hash of the code version used (or `null` if git is unavailable) — confirms the exact engine logic |
 | `package_version` | Engine package version |
 | `python_version` | Python version used |
@@ -276,6 +278,7 @@ Example:
   "boundary_warning_flag": false,
   "config_hash": "ab1574f3b9b39027...",
   "config_path": "configs/base.yaml",
+  "source_config_file_sha256": "da6bfe40235799a0...",
   "expansion_rounds": 2,
   "git_commit": "d8bd121",
   "initial_boundary_warning_flag": true,
@@ -304,9 +307,18 @@ the expansion resolved the issue and the result is reliable.
 
 ### `config_snapshot.yaml`
 
-An exact copy of the YAML config file used for the run. Combined with `config_hash` in
-`metadata.json`, this allows any past run to be reproduced exactly, even after the live config
-has been updated.
+A copy of the YAML file the caller supplied (provenance of the source). Its bytes hash to
+`source_config_file_sha256`. It does **not** necessarily show what was priced: an in-memory
+override applied after the file was loaded is not in it, and when competitor-rate resolution is
+enabled `PricingService` snapshots its effective overlay instead. The authoritative record of the
+priced configuration is `effective_config.json` (below).
+
+### `effective_config.json`
+
+The validated `EngineConfig` that drove pricing, as canonical JSON (sorted keys, compact
+separators). `sha256` of this file's bytes equals `config_hash` in `metadata.json` and
+`decision_record.json`. Runs written before GOV-004 do not have this file; their `config_hash`
+is the SHA-256 of the YAML file bytes.
 
 **This is the most important reproducibility artifact.** If a regulator or internal auditor
 asks "what assumptions did you use when you set rates on 14 May 2026?", the answer is in this
@@ -319,7 +331,12 @@ python3 - <<'EOF'
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
 
-config = load_config("data/outputs/runs/<run_dir>/config_snapshot.yaml")
+from balance_pricing_engine.config import EngineConfig
+from pathlib import Path
+
+config = EngineConfig.model_validate_json(
+    Path("data/outputs/runs/<run_dir>/effective_config.json").read_text(encoding="utf-8")
+)
 diagnostics = run_baseline_diagnostics(config)
 print(diagnostics.best_result.loan_rate)
 EOF
@@ -577,17 +594,27 @@ governance repository:
 run_dir = write_run_ledger(..., base_dir="/mnt/shared/pricing-governance/runs")
 ```
 
-**Reproduce a past run.** Load the config snapshot from the ledger directory and re-run the
-engine. The `config_hash` in `metadata.json` lets you verify the snapshot has not been modified:
+**Reproduce a past run.** Load `effective_config.json` from the ledger directory and re-run the
+engine. The `config_hash` in `metadata.json` (and `decision_record.json`) lets you verify the file
+has not been modified:
 
 ```python
 import hashlib
+import json
 from pathlib import Path
 
-snapshot = Path("data/outputs/runs/<run_dir>/config_snapshot.yaml")
-actual_hash = hashlib.sha256(snapshot.read_bytes()).hexdigest()
-print(actual_hash)  # should match config_hash in metadata.json
+run_dir = Path("data/outputs/runs/<run_dir>")
+recorded = json.loads((run_dir / "metadata.json").read_text())
+effective = hashlib.sha256((run_dir / "effective_config.json").read_bytes()).hexdigest()
+assert effective == recorded["config_hash"]  # the priced configuration is intact
+
+# Independent: was the caller's original YAML file the same one?
+source = hashlib.sha256((run_dir / "config_snapshot.yaml").read_bytes()).hexdigest()
+print(source == recorded["source_config_file_sha256"])  # true unless an overlay was snapshotted
 ```
+
+Configuration identity is not model approval. A matching hash proves *which* configuration was
+priced; it does not make the decision approved. Governance gates and human review still apply.
 
 **Do not edit ledger artifacts after the fact.** The `pricing_memo.md` and
 `governance_checklist.md` are generated from the engine state at run time. Post-hoc edits to

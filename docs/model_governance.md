@@ -371,10 +371,22 @@ Record the rejection rationale alongside the proposal.
 
 ### Audit trail
 
-Every priced run already records the `config_hash`, `git_commit`, and UTC `timestamp` in
-`RunMetadata`, so the exact parameter set behind a recommendation is reconstructible. Approvals are
-bound to that `config_hash` (registry) or to the run's governance checklist (config parameters),
+Every priced run already records the `config_hash` (canonical hash of the effective validated config
+that was priced, GOV-004), `source_config_file_sha256` (the caller's original YAML bytes, a separate
+provenance field), `git_commit`, and UTC `timestamp` in `RunMetadata`, so the exact parameter set behind
+a recommendation is reconstructible from `effective_config.json`. Approvals are
+bound to the registry's `config_hash` (a different, model-training hash) or to the run's governance checklist (config parameters),
 giving a complete who-approved-what-when chain from approved parameter value to priced output.
+
+### Configuration identity (GOV-004)
+
+`decision_record.config_hash` identifies the validated `EngineConfig` that was priced, after in-memory
+overrides and competitor-rate resolution; `source_config_file_sha256` identifies the original YAML
+file. In-memory overrides therefore change `config_hash` but not the source hash. The definitions
+live in `config_identity.py`; `effective_config.json` in a persisted ledger lets anyone re-derive the
+hash. This is configuration identity only: it is **not** model approval, and a correctly recorded
+decision can still be `REVIEW_REQUIRED` or `BLOCKED` by the gates above. Decision records written
+before GOV-004 carry a source-file-bytes `config_hash` and no `config_hash_basis`.
 
 ## Canonical Funding Economics Assumption
 

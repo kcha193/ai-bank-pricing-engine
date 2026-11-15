@@ -14,6 +14,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from balance_pricing_engine.config_identity import CONFIG_HASH_BASIS
+
 if TYPE_CHECKING:
     from balance_pricing_engine.features.contracts import FeatureLineage
     from balance_pricing_engine.governance.gates import GateResult
@@ -22,7 +24,14 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class DecisionRecord:
-    """Serialisable, append-only record of one pricing decision."""
+    """Serialisable, append-only record of one pricing decision.
+
+    ``config_hash`` is the canonical hash of the validated effective config that was
+    priced (see ``config_identity.effective_config_hash``). ``source_config_file_sha256``
+    is the SHA-256 of the caller's original YAML bytes, or ``None`` when no source file
+    was supplied. The two may differ and must never be conflated. Records written before
+    GOV-004 lack both new fields and carry a source-file-bytes ``config_hash``.
+    """
 
     decision_id: str
     correlation_id: str
@@ -51,6 +60,8 @@ class DecisionRecord:
     run_id: str | None = None
     shadow_evaluation: dict[str, Any] | None = None
     stage_durations_seconds: dict[str, float] = field(default_factory=dict)
+    source_config_file_sha256: str | None = None
+    config_hash_basis: str = CONFIG_HASH_BASIS
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -77,6 +88,7 @@ def build_decision_record(
     stage_durations_seconds: dict[str, float] | None = None,
     run_id: str | None = None,
     shadow_evaluation: dict[str, Any] | None = None,
+    source_config_file_sha256: str | None = None,
 ) -> DecisionRecord:
     """Assemble a DecisionRecord from a completed ScenarioDiagnostics and lineage."""
     best_result = diagnostics.best_result
@@ -113,6 +125,7 @@ def build_decision_record(
         used_deterministic_response=used_deterministic,
         shadow_evaluation=shadow_evaluation,
         stage_durations_seconds=stage_durations_seconds or {},
+        source_config_file_sha256=source_config_file_sha256,
     )
 
 

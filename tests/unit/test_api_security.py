@@ -338,7 +338,7 @@ def test_invalid_yaml_scalar_conversion_is_safe_422(route, forbid_execution):
     assert forbid_execution == []
 
 
-def test_ledger_uses_original_yaml_hash_and_safe_relative_reference(tmp_path, monkeypatch):
+def test_ledger_records_effective_hash_original_yaml_hash_and_safe_relative_reference(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     response = TestClient(app).post(
         "/v1/pricing/scenarios",
@@ -355,8 +355,19 @@ def test_ledger_uses_original_yaml_hash_and_safe_relative_reference(tmp_path, mo
     import json
 
     record = json.loads((run_dir / "decision_record.json").read_text())
-    assert record["config_hash"] == hashlib.sha256(CONFIG_YAML.encode()).hexdigest()
+    # GOV-004: config_hash is the canonical hash of the effective config; the original
+    # request YAML bytes are recorded separately as source_config_file_sha256.
+    from balance_pricing_engine.config_identity import effective_config_hash
+    from balance_pricing_engine.api.limits import load_api_config
+
+    source_sha = hashlib.sha256(CONFIG_YAML.encode()).hexdigest()
+    assert record["source_config_file_sha256"] == source_sha
+    assert record["config_hash"] == effective_config_hash(load_api_config(CONFIG_YAML))
+    assert record["config_hash"] != source_sha
+    effective_file = run_dir / "effective_config.json"
+    assert hashlib.sha256(effective_file.read_bytes()).hexdigest() == record["config_hash"]
     assert str(tmp_path) not in response.text
+    assert str(tmp_path) not in (run_dir / "decision_record.json").read_text()
 
 
 def test_trusted_local_config_still_accepts_custom_competitor_file(tmp_path):
