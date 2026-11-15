@@ -61,3 +61,27 @@ No live collection was run, because it was not authorised in this session. The r
 requires a supervised, dated check of real term-deposit page structures before Phase 2b is
 fully closed. The check covers specials, tiers and parser completion per bank, and it must be
 done with a scratch database, not the operational one.
+
+## PR #73 review follow-up (2026-11-15)
+
+Two P1 findings from the automated review of `e18dba7`:
+
+1. **Historical snapshots disagreed with the live benchmark.** `_row_to_history_record()`
+   replaced every historical `raw_text_context` with a placeholder, so reassessing a special
+   as of an earlier run found no availability evidence. Fixture C gave ASB 4.45% live but
+   4.00% as of `run-0`, and 4.00% in the history series. Fix: for term-deposit specials,
+   `source_text` is a material field (`store._keeps_historical_evidence`), so each stored
+   state holds the text that was valid for its whole lifetime, and history reads return it.
+   The HTML extractor already stores that text in the material `eligibility_text`, so no
+   extra states are created in practice. The history series now also takes dates from
+   special states and withdrawals. There is no schema change and no migration.
+2. **PIE-table specials could be admitted.** The table-level PIE signature ("Rate of
+   return", "Return Frequency") converted only `term_deposit` rows. A "12 Months Special" row
+   in such a table stayed `special` and, with "Available to all customers", led the market.
+   Fix: the extractor converts specials in a PIE return table to `pie_term_deposit`, like the
+   per-cell "pie" hint. The assessment also marks a stored special that carries the signature
+   `not_comparable` (`pie_return_table`), using the same pattern (`is_pie_return_text`).
+
+Verification: `ruff check .` clean. `pytest -m "not live_rates"`: 2939 passed, 2 skipped
+(17 new tests in `tests/unit/test_term_deposit_specials.py`). Coverage 96.85%. Live
+verification is still pending, as above.

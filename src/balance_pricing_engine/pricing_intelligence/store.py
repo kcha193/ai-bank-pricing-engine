@@ -40,6 +40,7 @@ from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord,
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange
 from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
+from balance_pricing_engine.pricing_intelligence.deposit_specials import SPECIAL_CATEGORY
 from balance_pricing_engine.pricing_intelligence import quarantine_store
 from balance_pricing_engine.pricing_intelligence.quarantine import (
     QuarantineStatus,
@@ -3348,8 +3349,23 @@ def _product_value(product_type: ProductType | str) -> str:
     return ProductType(product_type).value
 
 
+def _keeps_historical_evidence(row: Mapping) -> bool:
+    """Whether a stored state's ``source_text`` is part of its identity (a term-deposit special).
+
+    A term-deposit special's comparability is decided from its row text (DATA-001), so
+    that text is material for those rows: a reworded special starts a new state instead
+    of overwriting the old one, and each state's text is the evidence that held for its
+    whole lifetime -- which is what lets :func:`_row_to_history_record` return it.
+    """
+    return row["product_type"] == ProductType.TERM_DEPOSIT.value and (
+        row["rate_category"] == SPECIAL_CATEGORY
+    )
+
+
 def _is_unchanged(current: sqlite3.Row, payload: dict) -> bool:
     """True when the new observation matches the stored state on material fields."""
+    if _keeps_historical_evidence(payload) and current["source_text"] != payload["source_text"]:
+        return False
     for field_name in _MATERIAL_FIELDS:
         stored = current[field_name]
         incoming = payload[field_name]
@@ -3492,11 +3508,21 @@ def _row_to_history_record(row: sqlite3.Row) -> CompetitorRateRecord:
     ``source_url``/``source_bank_page_title`` are left as the current values:
     unlike page content, a bank's URL rarely changes, and the still-current
     canonical link is more useful here than a placeholder.
+
+    The exception is a term-deposit special's ``raw_text_context``: its text is
+    material (see :func:`_keeps_historical_evidence`), so the stored text is the
+    evidence that held throughout this state, and a historical snapshot must
+    reassess the special from it exactly as the live view did at the time.
     """
-    return _row_to_record(row).model_copy(
+    record = _row_to_record(row)
+    return record.model_copy(
         update={
             "captured_at_utc": record_first_observed_at(row),
-            "raw_text_context": _NO_HISTORICAL_EVIDENCE_TEXT,
+            "raw_text_context": (
+                record.raw_text_context
+                if _keeps_historical_evidence(row)
+                else _NO_HISTORICAL_EVIDENCE_TEXT
+            ),
             "raw_html_sha256": _NO_HISTORICAL_EVIDENCE_HASH,
             "parser_version": "unavailable",
         }

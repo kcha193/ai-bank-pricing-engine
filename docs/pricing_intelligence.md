@@ -1014,7 +1014,9 @@ collecting one is never read as the other being withdrawn.
 **Classification.** The extractor tags a term-deposit row `special` when its own text, its
 term label ("12 Months Special", "Special 9 months") or its column heading ("Special rate")
 says so. PIE fund rows (`pie_term_deposit`) and fund, savings and tax-adjusted rows
-(`non_comparable`) are separated first and never become specials. A special keeps its own
+(`non_comparable`) are separated first and never become specials. This includes a "special"
+row inside a PIE return table, identified by its "Rate of return" or "Return Frequency"
+heading even when no cell says PIE ("Effective rate of return" alone is not that signature). A special keeps its own
 identity (`rate_category` is part of `observation_key()`), so a standard and a special rate
 for the same term are stored side by side.
 
@@ -1027,7 +1029,7 @@ column heading). It never treats silence as eligibility.
 | Status | Rule | Effect |
 |---|---|---|
 | `comparable` | The text contains an `availability_markers` phrase (for example "available to all", "new and existing customers"), **and** none of the `not_comparable` conditions apply, **and** there is no footnote marker, **and** its payment frequency is one the bank's ordinary rate at that term also publishes | Admitted to the ordinary benchmark. It keeps `rate_category="special"` on its `BankTermRate`. Strategy rationales name it ("includes comparable promotional special rate(s): ASB") |
-| `not_comparable` | Any `restriction_markers` phrase (new money, new or existing customers only, online only, conditions apply, rollover, ...), a PIE or foreign-currency marker, a minimum balance in a different band (`validation.peer.balance_tier_edges`) from every ordinary rate at that term (the retail band when there is none), or a published payment frequency that differs from a published ordinary one | Recorded and excluded. This is an understood exclusion, so the run is **not** degraded |
+| `not_comparable` | Any `restriction_markers` phrase (new money, new or existing customers only, online only, conditions apply, rollover, ...), a PIE or foreign-currency marker, a PIE return-table heading on a stored special (`pie_return_table`), a minimum balance in a different band (`validation.peer.balance_tier_edges`) from every ordinary rate at that term (the retail band when there is none), or a published payment frequency that differs from a published ordinary one | Recorded and excluded. This is an understood exclusion, so the run is **not** degraded |
 | `uncertain` | Neither of the above: no availability evidence, a footnote marker (`*`, `†`), or an unpublished frequency where the ordinary rate publishes one | Recorded and excluded. The run **exits 2** (`special_comparability_uncertain`), and the bank stays in `banks_succeeded` because its collector worked. It does not count against collector health |
 
 The marker vocabularies live in `PricingIntelligenceConfig.deposit_specials` and can be
@@ -1036,6 +1038,16 @@ phrase says "this wording on the page means public availability". It does not as
 particular bank's special is public. Stale, quarantined, rejected and voided specials never
 reach the assessment, because it runs on the same trusted records the snapshot ranks. Each
 bank appears once per term. On an exact tie the ordinary rate is preferred.
+
+**Historical views.** `get_market_snapshot(as_of_run_id=...)`,
+`get_previous_market_snapshot()` and `get_rate_history_series()` reassess specials from the
+text that was current at that point, with the trust ledger as of that point, so they
+reproduce the benchmark the live view used then. A term-deposit special's row text is part of
+its stored state: a reworded special starts a new state rather than overwriting the old
+text, so later evidence never changes an earlier decision. Other categories still return the
+history placeholder text. A historical special whose text carries no availability evidence is
+`uncertain` and stays out. The history series also takes a date when an admitted special
+starts, changes or is withdrawn, not only when an ordinary rate moves.
 
 Economic assumption: a promotion that every depositor eligible for the bank's ordinary rate
 can take is that bank's competitive price for the term, because depositors rank on rate. A

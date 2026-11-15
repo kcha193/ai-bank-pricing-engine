@@ -288,7 +288,10 @@ def parse_html_rates(
             current_header_row
         )
         for rate, category, own_header, own_context in rate_categories:
-            if pie_table and category == "term_deposit":
+            # Table-level PIE evidence outranks the special marker, as the per-cell "pie"
+            # hint already does: a "special" in a PIE fund's return table is a fund return,
+            # never a term-deposit special that could enter the ordinary benchmark.
+            if pie_table and category in {"term_deposit", "special"}:
                 category = "pie_term_deposit"
             # own_context (this record's row text with sibling rate-bearing
             # cells excluded) plus own_header, not the shared `context` --
@@ -465,9 +468,16 @@ def _is_pie_return_table(header_row: list[str] | None) -> bool:
     and a different one collides with the advertised rate at the same identity. Kiwibank's
     header names its PIE column outright, which the per-cell "pie" hint already handles.
     """
-    return header_row is not None and bool(
-        _PIE_RETURN_HEADER_PATTERN.search(" ".join(header_row).lower())
-    )
+    return header_row is not None and is_pie_return_text(" ".join(header_row))
+
+
+def is_pie_return_text(text: str) -> bool:
+    """Whether ``text`` carries a PIE fund return-table signature.
+
+    See :func:`_is_pie_return_table`. Shared with the deposit-special assessment so both
+    layers read the same signature.
+    """
+    return bool(_PIE_RETURN_HEADER_PATTERN.search(text.lower()))
 
 
 def _is_header_row(row: list[str]) -> bool:

@@ -18,7 +18,8 @@ eligibility the page does not state:
     benchmark, keeping ``rate_category="special"`` so the representative stays explainable.
 ``NOT_COMPARABLE``
     The text or fields show it is unlike the ordinary rate: a restriction phrase, a PIE or
-    foreign-currency marker, a balance tier the ordinary rate does not serve, or a different
+    foreign-currency marker, a PIE return-table heading ("Rate of return", "Return
+    Frequency"), a balance tier the ordinary rate does not serve, or a different
     published payment frequency. Recorded and excluded. This is an understood exclusion, so
     it does not degrade the run.
 ``UNCERTAIN``
@@ -43,6 +44,7 @@ from enum import Enum
 import re
 from typing import Iterable, Optional, Sequence
 
+from balance_pricing_engine.competitor_rates.extractors import is_pie_return_text
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
 
 #: Category the extractor assigns to a promotional term-deposit row.
@@ -122,6 +124,9 @@ def assess_deposit_special(
     ]
     if _contains(text, "pie"):
         disqualifying.append("pie_marker")
+    if is_pie_return_text(text):
+        # A record stored before the extractor reclassified PIE-table specials.
+        disqualifying.append("pie_return_table")
     if any(_contains(text, word) for word in _FOREIGN_CURRENCY_WORDS):
         disqualifying.append("foreign_currency")
     ordinary_bands = {

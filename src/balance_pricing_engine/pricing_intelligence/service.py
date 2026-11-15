@@ -50,6 +50,8 @@ from balance_pricing_engine.pricing_intelligence.positioning import (
     compute_market_activity,
 )
 from balance_pricing_engine.pricing_intelligence.deposit_specials import (
+    ORDINARY_CATEGORY,
+    SPECIAL_CATEGORY,
     DepositSpecialAssessment,
     assess_deposit_specials,
     comparable_keys,
@@ -402,6 +404,14 @@ def _resolve_rate_category(
     if ProductType(product_type) is ProductType.TERM_DEPOSIT:
         return "term_deposit"
     return "special"
+
+
+def _admits_specials(product_type: ProductType | str, rate_category: Optional[str]) -> bool:
+    """Whether comparable term-deposit specials join this view (the ordinary TD benchmark)."""
+    return (
+        ProductType(product_type) is ProductType.TERM_DEPOSIT
+        and rate_category == ORDINARY_CATEGORY
+    )
 
 
 #: Distinguishes "rate_category not supplied" from an explicit
@@ -1045,7 +1055,7 @@ class PricingIntelligenceService:
         Assessed against the same trusted records the snapshot ranks, so a stale,
         quarantined, rejected or voided special never reaches it.
         """
-        if ProductType(product_type) is not ProductType.TERM_DEPOSIT or rate_category != "term_deposit":
+        if not _admits_specials(product_type, rate_category):
             return None
         return comparable_keys(self.assess_deposit_specials(records))
 
@@ -1302,18 +1312,26 @@ class PricingIntelligenceService:
         change happens to introduce.
         """
         rate_category = _resolve_rate_category(product_type, rate_category)
-        history = self.store.get_rate_history(
-            term_months=term_months, product_type=product_type, rate_category=rate_category
-        )
-        change_dates = {record.captured_at_utc.astimezone(tz).date() for record in history}
+        # An admitted special can move the term-deposit benchmark on a day no ordinary
+        # rate changed, so its own state starts and withdrawals are change dates too.
+        categories = {rate_category}
+        if _admits_specials(product_type, rate_category):
+            categories.add(SPECIAL_CATEGORY)
+        change_dates = {
+            record.captured_at_utc.astimezone(tz).date()
+            for category in categories
+            for record in self.store.get_rate_history(
+                term_months=term_months, product_type=product_type, rate_category=category
+            )
+        }
         for change in self.get_changes(
             days=None,
             term_months=term_months,
             product_type=product_type,
-            rate_category=rate_category,
+            rate_category=rate_category if len(categories) == 1 else None,
         ):
             if change.change_type is ChangeType.REMOVED_PRODUCT and (
-                change.rate_category == rate_category
+                change.rate_category in categories
             ):
                 change_dates.add(change.detected_at.astimezone(tz).date())
 

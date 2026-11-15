@@ -566,3 +566,203 @@ def test_t22_approved_special_becomes_trusted_and_comparable(tmp_path):
                           reviewed_at=market.when(1, 2))  # fmt: skip
     assert market.asb12(market.when(1, 3)) == (5.45, "special")
     assert market.term12(market.when(1, 3)).best_rate == 5.45
+
+
+# ------------------------------------------- historical reconstruction (PR #73 review, P1)
+#
+# A historical snapshot must reproduce the benchmark the live view used at that point. The
+# special's eligibility evidence is its row text; history must read the text that was current
+# then, never a placeholder (which reassesses as uncertain) and never text from a later run.
+
+
+def _as_of(market: Market, run: str):
+    return market.service.get_market_snapshot(product_type=TD, as_of_run_id=run).term(12)
+
+
+def _series(market: Market) -> dict:
+    return {
+        day: rates.get("ASB")
+        for day, rates in market.service.get_rate_history_series(term_months=12, product_type=TD)
+    }
+
+
+def test_historical_snapshot_reproduces_a_comparable_special(tmp_path):
+    """Fixture C replay: live 4.45% must not become 4.00% as of the same run."""
+    market = Market(tmp_path, fixture("c_special_separate_table.html"))
+    assert market.run(0).code == EXIT_OK
+    live = market.term12(market.when(0, 1))
+    assert (live.best_rate, live.market_leaders) == (4.45, ("ASB",))
+    historical = _as_of(market, "run-0")
+    assert (historical.best_rate, historical.market_leaders) == (4.45, ("ASB",))
+    asb = next(e for e in historical.entries if e.bank == "ASB")
+    assert (asb.rate_pct, asb.rate_category) == (4.45, "special")
+    assert set(_series(market).values()) == {4.45}
+    # Unchanged later runs touch the row; the earlier reconstruction must not move.
+    market.run(1)
+    assert _as_of(market, "run-0").best_rate == 4.45
+    previous = market.service.get_previous_market_snapshot(product_type=TD).term(12)
+    assert previous.best_rate == 4.45
+    replay = market.run(1)  # the same run_id again
+    assert replay.outcome.already_recorded
+    assert _as_of(market, "run-0").best_rate == _as_of(market, "run-1").best_rate == 4.45
+
+
+def test_later_evidence_never_rewrites_an_earlier_historical_decision(tmp_path):
+    market = Market(tmp_path, fixture("c_special_separate_table.html"))
+    market.run(0)
+    market.set_asb(fixture("c_special_separate_table.html").replace(
+        "Available to all new and existing customers",
+        "Available to all new and existing customers. New money only"))  # fmt: skip
+    result = market.run(1)
+    assert specials_in(result)[4.45][0] == "not_comparable"
+    assert market.asb12(market.when(1, 1)) == (4.00, "term_deposit")
+    assert _as_of(market, "run-0").best_rate == 4.45  # no look-ahead
+    assert _as_of(market, "run-1").best_rate == 4.05
+    series = _series(market)
+    assert [series[d] for d in sorted(series)] == [4.45, 4.00]
+
+
+def test_store_keeps_each_specials_own_evidence_when_only_its_text_changes(tmp_path):
+    """Store-level guarantee, independent of how the extractor fills material fields."""
+    store = ObservationStore(str(tmp_path / "obs.db"))
+    common = dict(rate=4.5, category="special", special_conditions="Special")
+    open_text = "12 Months Special | 4.50% p.a. | Available to all customers"
+    store.record_observations([_td(), _td(context=open_text, **common)], run_id="r0",
+                              observed_at=T0, product_type=TD)  # fmt: skip
+    store.record_observations(
+        [_td(), _td(context="12 Months Special | 4.50% p.a. | New money only", **common)],
+        run_id="r1", observed_at=T0 + timedelta(days=1), product_type=TD,
+    )
+    texts = {
+        run: next(r.raw_text_context for r in store.get_observations_as_of(
+            as_of=at, product_type=TD, before_run_id=run) if r.rate_category == "special")
+        for run, at in (("r0", T0), ("r1", T0 + timedelta(days=1)))
+    }  # fmt: skip
+    assert texts == {"r0": open_text, "r1": "12 Months Special | 4.50% p.a. | New money only"}
+
+
+@pytest.mark.parametrize(
+    ("name", "rate", "status"),
+    [("p_restricted_special.html", 4.75, "not_comparable"),
+     ("e_special_in_term_label.html", 4.10, "uncertain")],
+)  # fmt: skip
+def test_excluded_specials_stay_excluded_historically(tmp_path, name, rate, status):
+    market = Market(tmp_path, fixture(name))
+    result = market.run(0)
+    assert specials_in(result)[rate][0] == status
+    historical = _as_of(market, "run-0")
+    assert rate not in {e.rate_pct for e in historical.entries}
+    assert historical.best_rate == market.term12(market.when(0, 1)).best_rate
+
+
+def test_historical_text_without_availability_evidence_fails_conservatively(tmp_path):
+    store = ObservationStore(str(tmp_path / "obs.db"))
+    store.record_observations(
+        [_td(), _td(rate=4.5, category="special", context="12 Months Special | 4.50% p.a.")],
+        run_id="legacy", observed_at=T0, product_type=TD,
+    )
+    service = PricingIntelligenceService(config=PricingIntelligenceConfig(), store=store)
+    term = service.get_market_snapshot(product_type=TD, as_of_run_id="legacy").term(12)
+    assert [(e.rate_pct, e.rate_category) for e in term.entries] == [(4.0, "term_deposit")]
+
+
+def test_historical_approval_is_not_applied_before_it_was_made(tmp_path):
+    market, case = _quarantined_special(tmp_path)
+    market.service.review(case.event_id, ReviewAction.APPROVE, reviewer="alice",
+                          reason="confirmed on the rate card", evidence_ref="evidence/asb.png",
+                          reviewed_at=market.when(1, 2))  # fmt: skip
+    assert _as_of(market, "run-1").best_rate == 4.45  # approval came after run-1 started
+    market.run(2)
+    assert _as_of(market, "run-2").best_rate == 5.45
+    assert _as_of(market, "run-0").best_rate == 4.45
+
+
+def test_historical_void_is_not_applied_before_it_was_made(tmp_path):
+    market = Market(tmp_path, fixture("c_special_separate_table.html"))
+    market.run(0)
+    market.set_asb(fixture("c_special_separate_table.html").replace("4.45%", "4.50%"))
+    market.run(1)
+    (accepted,) = [
+        c for c in market.service.list_review_cases(TD, [ReviewState.ACCEPTED], now=market.when(1, 1))
+        if c.bank == "ASB" and c.proposed_rate_pct == 4.50
+    ]
+    market.service.review(accepted.event_id, ReviewAction.VOID, reviewer="bob",
+                          reason="source parsing error", reviewed_at=market.when(1, 2))  # fmt: skip
+    assert _as_of(market, "run-1").best_rate == 4.50  # the void came after run-1 started
+    market.run(2)
+    assert _as_of(market, "run-2").best_rate == 4.45  # voided reading withdrawn from then on
+
+
+def test_historical_rejection_keeps_the_special_out(tmp_path):
+    market, case = _quarantined_special(tmp_path)
+    market.service.review(case.event_id, ReviewAction.REJECT, reviewer="alice",
+                          reason="misread", reviewed_at=market.when(1, 2))  # fmt: skip
+    market.run(2)
+    assert _as_of(market, "run-1").best_rate == _as_of(market, "run-2").best_rate == 4.45
+
+
+# ------------------------------------------ PIE tables hold no specials (PR #73 review, P1)
+
+_PIE_SPECIAL_TABLES = {
+    "rate_of_return": (
+        "<tr><th>Term</th><th>Rate of return</th><th>Availability</th></tr>"
+        "<tr><td>12 Months Special</td><td>4.45% p.a.</td>"
+        "<td>Available to all customers</td></tr>"
+    ),
+    "return_frequency": (
+        "<tr><th>Term</th><th>Rate</th><th>Return Frequency</th><th>Availability</th></tr>"
+        "<tr><td>12 Months Special</td><td>4.45% p.a.</td><td>Annually</td>"
+        "<td>Available to all customers</td></tr>"
+    ),
+}
+
+
+def _asb_with_pie_special(table: str) -> str:
+    return fixture("a_standard_only.html").replace("</body>", f"<table>{table}</table>\n</body>")
+
+
+@pytest.mark.parametrize("table", sorted(_PIE_SPECIAL_TABLES))
+def test_special_row_in_a_pie_table_is_a_pie_return(table):
+    records = parse_asb(_asb_with_pie_special(_PIE_SPECIAL_TABLES[table]))
+    (pie,) = [r for r in records if r.advertised_rate_pct == 4.45]
+    assert pie.rate_category == "pie_term_deposit"
+    ordinary = sorted((r.term_months_normalised, r.advertised_rate_pct, r.rate_category)
+                      for r in records if r.advertised_rate_pct != 4.45)  # fmt: skip
+    assert ordinary == [(6, 3.60, "term_deposit"), (12, 4.00, "term_deposit"),
+                        (24, 4.30, "term_deposit"), (36, 4.40, "term_deposit")]  # fmt: skip
+
+
+@pytest.mark.parametrize("table", sorted(_PIE_SPECIAL_TABLES))
+def test_pie_special_with_availability_text_never_leads_the_td_market(tmp_path, table):
+    market = Market(tmp_path, _asb_with_pie_special(_PIE_SPECIAL_TABLES[table]))
+    result = market.run(0)
+    assert result.code == EXIT_OK
+    assert 4.45 not in specials_in(result)
+    term = market.term12(market.when(0, 1))
+    assert (term.best_rate, term.market_leaders) == (4.05, ("BNZ", "Kiwibank"))
+    assert market.asb12(market.when(0, 1)) == (4.00, "term_deposit")
+    assert _as_of(market, "run-0").best_rate == 4.05
+
+
+@pytest.mark.parametrize(
+    ("context", "pie"),
+    [
+        ("12 Months Special | 4.5% | Available to all customers | Rate of return", True),
+        ("12 Months Special | 4.5% | Available to all customers | Rate of return p.a.", True),
+        ("12 Months Special | 4.5% | Annually | Available to all customers | Return Frequency",
+         True),
+        ("12 Months Special | 4.5% | Available to all customers | Effective rate of return",
+         False),
+    ],
+)
+def test_stored_special_carrying_a_pie_table_signature_is_not_comparable(context, pie):
+    """Defence for specials stored before the extractor reclassified PIE-table rows."""
+    (assessment,) = assess_deposit_specials(
+        [_td(), _td(rate=4.5, category="special", context=context)],
+        restriction_markers=(), availability_markers=("available to all",),
+        balance_tier_edges=(10_000.0,),
+    )  # fmt: skip
+    assert ("pie_return_table" in assessment.reasons) is pie
+    assert assessment.status is (
+        SpecialComparability.NOT_COMPARABLE if pie else SpecialComparability.COMPARABLE
+    )
