@@ -1068,8 +1068,11 @@ on rate alone.
     - a term row with an unreadable rate, such as `4.5O%`, or a special with no figure
       (`row_skipped`). This is checked per rate cell, so an unreadable special beside a
       readable standard rate (or the reverse) is still skipped. A value such as "N/A" under
-      a heading naming a special ("Special", "Special rate") also counts; longer text such as
-      conditions under a "Special conditions" heading does not. A blank or dash cell means "not offered", and a
+      a heading naming a special ("Special", "Special rate") also counts. Nothing under a
+      descriptive heading ("Special conditions", "Availability", "Notes") is a rate cell, so
+      "Online only" there is a restriction, not a missing rate. Each unreadable cell is keyed
+      from its own heading, so its balance tier is its own, not the first tier in the header
+      row. A blank or dash cell means "not offered", and a
       well-formed percentage outside the deposit range ("Up to 100%") is not a rate cell.
       On a row whose own text says "Special" but has no readable rate, a dash in any non-term
       cell (or a blank first non-term cell) is a genuine withdrawal; "N/A" stays unknown. A

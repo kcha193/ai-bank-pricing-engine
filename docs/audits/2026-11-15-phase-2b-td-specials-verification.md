@@ -125,6 +125,22 @@ Codex could not review `cfdce94` (usage limit reached). A local independent revi
     skipped instead of withdrawn. A dash in any non-term cell now means not offered.
 11. A bare "%" label ("Rate % p.a.") counted as a misread rate. A digit is now required.
 
+Codex re-review of `8e19241` raised two more:
+
+12. **An all-unreadable row took the first column's tier (P1).** When no rate in the row
+    parsed, the skipped key was built from the row plus every heading joined, so a dashed
+    "Standard $1,000+" beside an unreadable "Special rate $5,000+" skipped the $1,000 key:
+    the special was withdrawn and the withdrawn standard kept the benchmark. Fix: every
+    named unreadable cell is keyed from its own heading whether or not a sibling parsed;
+    the joined-heading row fallback runs only when no cell can be named.
+13. **Short conditions text counted as a missing rate (P2).** "Online only" or "Conditions
+    apply" under "Special conditions" passed the placeholder check (heading contains
+    "special", at most two words), so an understood `not_comparable` special also returned
+    `PARSE_PARTIAL` and exit 2. Fix: a descriptive heading (conditions, availability,
+    eligibility, restrictions, notes, details, ...) never marks a rate cell, for either the
+    placeholder or the misread-percentage check. A heading that also names a rate
+    ("Special rate (available online)") stays a rate column, so "N/A" there is still unknown.
+
 Not changed, by design: health and exclusions assess admission before the staleness
 filter, because they exist to report stale specials (documented on
 `admitted_special_keys`).

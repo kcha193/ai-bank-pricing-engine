@@ -256,26 +256,14 @@ def parse_html_rates(
             if skipped_row_keys is not None and product == ProductType.TERM_DEPOSIT
             else []
         )
-        if not rate_categories:
-            if unreadable_cells or (
-                skipped_row_keys is not None
-                and product == ProductType.TERM_DEPOSIT
-                and _looks_like_unusable_rate_row(context)
-                and not _rate_not_offered(row)
-            ):
-                # A recognised term-deposit row whose advertised rate could not be read
-                # (e.g. "4.5O%", or a special with no usable figure). Reported like a row
-                # that failed record construction: its stored predecessor is unknown this
-                # run, not withdrawn, and the bank's collection is partial (DATA-001).
-                row_context = (
-                    _clean_text(context + " | " + " | ".join(current_header_row))
-                    if current_header_row
-                    else context
-                )
-                _skip_unreadable_rate(skipped_row_keys, bank, product, term, row_context)
-            continue
-        # A readable rate elsewhere in the row must not hide an unreadable sibling cell
-        # (a standard and a special side by side): each one is skipped on its own.
+        # A recognised term-deposit rate cell that could not be read (e.g. "4.5O%", or "N/A"
+        # under a special-rate heading) is reported like a row that failed record
+        # construction: its stored predecessor is unknown this run, not withdrawn, and the
+        # bank's collection is partial (DATA-001). Each cell is keyed from its own heading,
+        # whether or not a sibling rate was readable: joining every heading would give it
+        # whichever balance tier comes first (a dashed "Standard $1,000+" beside an
+        # unreadable "Special rate $5,000+" would hide the standard's withdrawal and
+        # withdraw the special instead).
         for idx in unreadable_cells:
             header = current_header_row[idx] if idx < len(current_header_row or []) else ""
             cell_context = _clean_text(
@@ -291,6 +279,23 @@ def parse_html_rates(
                 + (" | " + header if header else "")
             )
             _skip_unreadable_rate(skipped_row_keys, bank, product, term, cell_context)
+        if not rate_categories:
+            if (
+                not unreadable_cells
+                and skipped_row_keys is not None
+                and product == ProductType.TERM_DEPOSIT
+                and _looks_like_unusable_rate_row(context)
+                and not _rate_not_offered(row)
+            ):
+                # No single cell can be named (e.g. "12 months special | N/A" with no special
+                # heading): the row as a whole is unknown.
+                row_context = (
+                    _clean_text(context + " | " + " | ".join(current_header_row))
+                    if current_header_row
+                    else context
+                )
+                _skip_unreadable_rate(skipped_row_keys, bank, product, term, row_context)
+            continue
         pie_table = product == ProductType.TERM_DEPOSIT and _is_pie_return_table(
             current_header_row
         )
@@ -399,8 +404,17 @@ def _looks_like_unusable_rate_row(context: str) -> bool:
 #: Cell values that say a rate is not offered at this term, rather than unreadable.
 _DASH_CELLS = frozenset({"-", "–", "—"})
 _NOT_OFFERED_CELLS = _DASH_CELLS | {""}
-#: A placeholder under a special heading is short ("N/A", "TBC"); conditions text is not.
+#: A placeholder under a special-rate heading is short ("N/A", "TBC").
 _PLACEHOLDER_MAX_WORDS = 2
+#: A heading that names a special but describes it rather than carrying its rate ("Special
+#: conditions", "Special offer details"): its cells are evidence, never a rate, however short.
+#: A heading that also names a rate ("Special rate (available online)") stays a rate column:
+#: dropping a placeholder there would turn an unknown rate into a withdrawal.
+_NON_RATE_HEADING = re.compile(
+    r"\b(?:conditions?|eligib\w*|availab\w*|restrictions?|criteria|notes?|details?"
+    r"|descriptions?|requirements?)\b"
+)
+_RATE_HEADING = re.compile(r"\brates?\b|%|\bp\.?a\b|\binterest\b")
 #: A whole percentage, not a fragment of a misread one ("0%" inside "4.O0%").
 _WELL_FORMED_PERCENTAGE = re.compile(r"(?<![\w.])\d+(?:\.\d+)?\s*%")
 
@@ -425,8 +439,9 @@ def _unreadable_rate_cells(
     ("4.4O%"), or a short placeholder under a heading naming a special ("N/A" below
     "Special" or "Special rate", matching how :func:`_rate_category_hint` reads headings).
     A blank or dash cell means "not offered", and neither a well-formed percentage that is
-    not a deposit rate ("Up to 100% of funds"), a bare "%" label nor conditions text under a
-    "Special conditions" heading qualifies.
+    not a deposit rate ("Up to 100% of funds") nor a bare "%" label qualifies. Nothing under
+    a descriptive heading ("Special conditions", "Availability") qualifies either: "Online
+    only" there is a restriction to assess, not a rate that failed to parse.
     """
     found = []
     for idx, cell in enumerate(row):
@@ -435,6 +450,8 @@ def _unreadable_rate_cells(
             continue
         header = (header_row[idx] if header_row is not None and idx < len(header_row) else "")
         header = header.lower()
+        if _NON_RATE_HEADING.search(header) and not _RATE_HEADING.search(header):
+            continue
         malformed = (
             "%" in text
             and re.search(r"\d", text) is not None

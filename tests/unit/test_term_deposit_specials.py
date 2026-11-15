@@ -23,7 +23,11 @@ from balance_pricing_engine.competitor_rates.collectors import (
     COLLECTORS_BY_BANK,
     build_collectors,
 )
-from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
+from balance_pricing_engine.competitor_rates.models import (
+    CompetitorRateRecord,
+    ProductType,
+    category_agnostic_key,
+)
 from balance_pricing_engine.competitor_rates.normalise import normalise_balance
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType
 from balance_pricing_engine.pricing_intelligence.config import (
@@ -1017,3 +1021,103 @@ def test_percent_sign_without_a_number_is_not_an_unreadable_rate():
     records = parse_asb(html, skipped)
     assert skipped == []
     assert 4.00 in {r.advertised_rate_pct for r in records}
+
+
+# ------------------- per-cell identity and rate-column semantics (PR #73 review round, P1/P2)
+
+_TIER_HEADINGS = ("<th>Standard $1,000+</th>", "<th>Special rate $5,000+</th>")
+
+
+def _tiered(reverse: bool = False) -> str:
+    """12-month standard ($1,000+) and special ($5,000+) rates in their own columns."""
+    standard, special = _TIER_HEADINGS
+    head, rates = (special + standard, "{special}{standard}") if reverse else (
+        standard + special, "{standard}{special}")  # fmt: skip
+    row = "<tr><td>{term}</td>" + rates + "<td>Available to all customers</td></tr>"
+    return (
+        "<html><body><table><tr><th>Term</th>" + head + "<th>Availability</th></tr>"
+        + row.format(term="6 Months", standard="<td>3.60% p.a.</td>", special="<td>3.85% p.a.</td>")
+        + row.format(term="12 Months", standard="<td>4.00% p.a.</td>", special="<td>4.40% p.a.</td>")
+        + "</table></body></html>"
+    )
+
+
+def _tier_key(min_balance: float) -> str:
+    return category_agnostic_key("ASB", TD, 12, "12 Months", "unknown", min_balance, None)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_unreadable_special_with_no_readable_sibling_keeps_its_own_tier(reverse):
+    page = _tiered(reverse).replace("4.00% p.a.", "-").replace("4.40% p.a.", "4.4O% p.a.")
+    skipped: list[str] = []
+    parse_asb(page, skipped)
+    assert skipped == [_tier_key(5000.0)]
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_unreadable_special_beside_a_withdrawn_standard_is_not_withdrawn(tmp_path, reverse):
+    market = Market(tmp_path, _tiered(reverse))
+    assert market.run(0).code == EXIT_OK
+    assert market.asb12(market.when(0, 1)) == (4.40, "special")
+    market.set_asb(_tiered(reverse).replace("4.00% p.a.", "-").replace("4.40% p.a.", "4.4O% p.a."))
+    for day in (1, 2):  # a repeat of the same page changes nothing further
+        result = market.run(day)
+        assert result.code == EXIT_PARTIAL_FAILURE
+        assert summary_of(result)["bank_extraction_status"]["ASB"] == "PARSE_PARTIAL"
+        removed = [(c.bank, c.rate_category, c.term_months)
+                   for c in result.outcome.changes if c.change_type is ChangeType.REMOVED_PRODUCT]  # fmt: skip
+        # The dashed standard really was withdrawn; the unreadable special is only unknown.
+        assert removed == ([("ASB", "term_deposit", 12)] if day == 1 else [])
+        assert market.asb12(market.when(day, 1)) == (4.40, "special")
+
+
+def test_dashed_special_beside_a_readable_standard_is_still_a_withdrawal(tmp_path):
+    market = Market(tmp_path, _tiered())
+    market.run(0)
+    market.set_asb(_tiered().replace("4.40% p.a.", "-"))
+    result = market.run(1)
+    assert result.code == EXIT_OK
+    removed = [(c.bank, c.rate_category) for c in result.outcome.changes
+               if c.change_type is ChangeType.REMOVED_PRODUCT]  # fmt: skip
+    assert removed == [("ASB", "special")]
+    assert market.asb12(market.when(1, 1)) == (4.00, "term_deposit")
+
+
+def _conditions_page(text: str) -> str:
+    return fixture("c_special_separate_table.html").replace(
+        "<th>Availability</th>", "<th>Special conditions</th>"
+    ).replace("Available to all new and existing customers", text)
+
+
+@pytest.mark.parametrize("text", ["Online only", "Conditions apply", "N/A"])
+def test_short_text_under_a_special_conditions_heading_is_not_a_rate(text):
+    skipped: list[str] = []
+    records = parse_asb(_conditions_page(text), skipped)
+    assert skipped == []
+    (special,) = [r for r in records if r.rate_category == "special"]
+    assert special.advertised_rate_pct == 4.45 and text in special.raw_text_context
+
+
+@pytest.mark.parametrize("text", ["Online only", "Conditions apply"])
+def test_restricted_special_with_short_conditions_is_an_understood_exclusion(tmp_path, text):
+    result = Market(tmp_path, _conditions_page(text)).run(0)
+    assert result.code == EXIT_OK
+    assert summary_of(result)["bank_extraction_status"]["ASB"] != "PARSE_PARTIAL"
+    assert specials_in(result)[4.45][0] == SpecialComparability.NOT_COMPARABLE.value
+
+
+@pytest.mark.parametrize("value", ["N/A", "4.4O%"])
+def test_unreadable_value_under_a_special_rate_heading_beside_conditions_is_skipped(value):
+    page = _conditions_page("Online only").replace("4.45% p.a.", value)
+    skipped: list[str] = []
+    parse_asb(page, skipped)
+    assert skipped == [category_agnostic_key("ASB", TD, 12, "12 Months", "unknown", None, None)]
+
+
+@pytest.mark.parametrize("heading", ["Special rate (available online)", "Special % p.a. conditions"])
+def test_a_heading_naming_a_rate_stays_a_rate_column_despite_descriptive_words(heading):
+    page = fixture("c_special_separate_table.html").replace(
+        "<th>Special rate</th>", f"<th>{heading}</th>").replace("4.45% p.a.", "N/A")  # fmt: skip
+    skipped: list[str] = []
+    parse_asb(page, skipped)
+    assert len(skipped) == 1 and "|12|" in skipped[0]
