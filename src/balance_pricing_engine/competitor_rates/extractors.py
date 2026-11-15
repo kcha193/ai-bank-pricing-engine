@@ -261,7 +261,7 @@ def parse_html_rates(
                 skipped_row_keys is not None
                 and product == ProductType.TERM_DEPOSIT
                 and _looks_like_unusable_rate_row(context)
-                and not _rate_slot_not_offered(row)
+                and not _rate_not_offered(row)
             ):
                 # A recognised term-deposit row whose advertised rate could not be read
                 # (e.g. "4.5O%", or a special with no usable figure). Reported like a row
@@ -397,19 +397,23 @@ def _looks_like_unusable_rate_row(context: str) -> bool:
 
 
 #: Cell values that say a rate is not offered at this term, rather than unreadable.
-_NOT_OFFERED_CELLS = frozenset({"", "-", "–", "—"})
+_DASH_CELLS = frozenset({"-", "–", "—"})
+_NOT_OFFERED_CELLS = _DASH_CELLS | {""}
+#: A placeholder under a special heading is short ("N/A", "TBC"); conditions text is not.
+_PLACEHOLDER_MAX_WORDS = 2
 #: A whole percentage, not a fragment of a misread one ("0%" inside "4.O0%").
 _WELL_FORMED_PERCENTAGE = re.compile(r"(?<![\w.])\d+(?:\.\d+)?\s*%")
 
 
-def _rate_slot_not_offered(row: list[str]) -> bool:
-    """Whether the row's rate slot (its first cell that is not the term) is blank or a dash.
+def _rate_not_offered(row: list[str]) -> bool:
+    """Whether a row with no readable rate says the rate is not offered.
 
-    "Special 12 months | -" says the special is not offered, so its withdrawal is genuine.
-    "Special 12 months | N/A" stays unknown: N/A could be a broken value as easily as an absence.
+    True when any non-term cell is a dash, wherever the rate column sits ("12 months special |
+    $5,000 | -", "Special | 12 months | -"), or when the first non-term cell is blank. "N/A"
+    stays unknown: it could be a broken value as easily as an absence.
     """
-    slot = next((cell for cell in row if not _TERM_PHRASE_PATTERN.search(cell)), "")
-    return slot.strip() in _NOT_OFFERED_CELLS
+    others = [cell.strip() for cell in row if not _TERM_PHRASE_PATTERN.search(cell)]
+    return any(cell in _DASH_CELLS for cell in others) or (not others or not others[0])
 
 
 def _unreadable_rate_cells(
@@ -417,10 +421,12 @@ def _unreadable_rate_cells(
 ) -> list[int]:
     """Indices of cells advertising a term-deposit rate that could not be read.
 
-    A cell qualifies when it holds a percentage that is not a well-formed number ("4.4O%"),
-    or any other value under a special-rate heading ("N/A" below "Special rate"). A blank or
-    dash cell means "not offered" and does not qualify, and nor does a well-formed
-    percentage that is simply not a deposit rate ("Up to 100% of funds").
+    A cell qualifies when it holds a digit and a percentage that is not a well-formed number
+    ("4.4O%"), or a short placeholder under a heading naming a special ("N/A" below
+    "Special" or "Special rate", matching how :func:`_rate_category_hint` reads headings).
+    A blank or dash cell means "not offered", and neither a well-formed percentage that is
+    not a deposit rate ("Up to 100% of funds"), a bare "%" label nor conditions text under a
+    "Special conditions" heading qualifies.
     """
     found = []
     for idx, cell in enumerate(row):
@@ -429,8 +435,13 @@ def _unreadable_rate_cells(
             continue
         header = (header_row[idx] if header_row is not None and idx < len(header_row) else "")
         header = header.lower()
-        malformed = "%" in text and not _WELL_FORMED_PERCENTAGE.search(text)
-        if malformed or ("special" in header and "rate" in header):
+        malformed = (
+            "%" in text
+            and re.search(r"\d", text) is not None
+            and not _WELL_FORMED_PERCENTAGE.search(text)
+        )
+        placeholder = "special" in header and len(text.split()) <= _PLACEHOLDER_MAX_WORDS
+        if malformed or placeholder:
             found.append(idx)
     return found
 

@@ -1029,7 +1029,7 @@ column heading). It never treats silence as eligibility.
 | Status | Rule | Effect |
 |---|---|---|
 | `comparable` | The text contains an `availability_markers` phrase (for example "available to all", "new and existing customers"), **and** none of the `not_comparable` conditions apply, **and** there is no footnote marker, **and** its payment frequency is one the bank's ordinary rate at that term also publishes | Admitted to the ordinary benchmark. It keeps `rate_category="special"` on its `BankTermRate`. Strategy rationales name it ("includes comparable promotional special rate(s): ASB") |
-| `not_comparable` | Any `restriction_markers` phrase (new money, new or existing customers only, online only, conditions apply, rollover, ...), a PIE or foreign-currency marker, a PIE return-table heading on a stored special (`pie_return_table`), a negated availability phrase in the same clause ("Not available to all customers", "no longer open to all": `negated_availability`), a minimum balance in a different band (`validation.peer.balance_tier_edges`) from every ordinary rate at that term (the retail band when there is none), or a published payment frequency that differs from a published ordinary one | Recorded and excluded. This is an understood exclusion, so the run is **not** degraded |
+| `not_comparable` | Any `restriction_markers` phrase (new money, new or existing customers only, online only, conditions apply, rollover, ...), a PIE or foreign-currency marker, a PIE return-table heading on a stored special (`pie_return_table`), a negation anywhere earlier in the same clause as an availability phrase ("Not available for all customers", "isn’t open to all": `negated_availability`), a minimum balance in a different band (`validation.peer.balance_tier_edges`) from every ordinary rate at that term (the retail band when there is none), or a published payment frequency that differs from a published ordinary one | Recorded and excluded. This is an understood exclusion, so the run is **not** degraded |
 | `uncertain` | Neither of the above: no availability evidence, a footnote marker (`*`, `†`), or an unpublished frequency where the ordinary rate publishes one | Recorded and excluded. The run **exits 2** (`special_comparability_uncertain`), and the bank stays in `banks_succeeded` because its collector worked. It does not count against collector health |
 
 The marker vocabularies live in `PricingIntelligenceConfig.deposit_specials` and can be
@@ -1068,10 +1068,12 @@ on rate alone.
     - a term row with an unreadable rate, such as `4.5O%`, or a special with no figure
       (`row_skipped`). This is checked per rate cell, so an unreadable special beside a
       readable standard rate (or the reverse) is still skipped. A value such as "N/A" under
-      a special-rate heading also counts. A blank or dash cell means "not offered", and a
+      a heading naming a special ("Special", "Special rate") also counts; longer text such as
+      conditions under a "Special conditions" heading does not. A blank or dash cell means "not offered", and a
       well-formed percentage outside the deposit range ("Up to 100%") is not a rate cell.
-      On a row whose term label says "Special", a blank or dash in the rate slot (the first
-      non-term cell) is a genuine withdrawal; "N/A" there stays unknown.
+      On a row whose own text says "Special" but has no readable rate, a dash in any non-term
+      cell (or a blank first non-term cell) is a genuine withdrawal; "N/A" stays unknown. A
+      bare "%" label with no digits is not a misread rate.
   - `VALIDATION_PARTIAL`: rows rejected, or no comparable rows.
   - `COMPARABILITY_UNCERTAIN`: an uncertain special.
   - `TRUSTED_COLLECTION_SUCCESS`: fetch and parse succeeded, and every row is trusted.

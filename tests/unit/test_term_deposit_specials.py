@@ -946,3 +946,74 @@ def test_unreadable_value_on_a_special_labelled_row_is_still_unknown(tmp_path):
     market.set_asb(_LABELLED_SPECIAL.replace("4.45% p.a.", "N/A"))
     _assert_partial_not_withdrawn(market.run(1))
     assert market.asb12(market.when(1, 1)) == (4.45, "special")
+
+
+# ----------------------------------------- local review follow-up (negation, headings, slots)
+
+
+@pytest.mark.parametrize(
+    "availability",
+    [
+        "Not available for all customers",
+        "Not offered to all customers",
+        "This offer isn’t available to all customers",  # typographic apostrophe
+        "Not being made available to all customers",
+    ],
+)
+def test_negation_anywhere_earlier_in_the_clause_negates_availability(availability):
+    (assessment,) = assess_deposit_specials(
+        [_td(), _td(rate=4.5, category="special", context=f"12 Months Special | 4.5% | {availability}")],
+        restriction_markers=(), availability_markers=PricingIntelligenceConfig().deposit_specials.availability_markers,
+        balance_tier_edges=(10_000.0,),
+    )  # fmt: skip
+    assert assessment.status is SpecialComparability.NOT_COMPARABLE
+    assert any(reason.startswith("negated_availability:") for reason in assessment.reasons)
+
+
+@pytest.mark.parametrize("heading", ["Special", "Specials", "Special offer", "Special % p.a."])
+def test_placeholder_under_any_special_heading_is_skipped(heading):
+    html = fixture("a_standard_only.html").replace(
+        "<tr><th>Term</th><th>$5,000+</th></tr>",
+        f"<tr><th>Term</th><th>$5,000+</th><th>{heading}</th></tr>",
+    ).replace("<td>4.00% p.a.</td></tr>", "<td>4.00% p.a.</td><td>N/A</td></tr>")
+    skipped: list[str] = []
+    parse_asb(html, skipped)
+    assert len(skipped) == 1 and "|12|" in skipped[0]
+
+
+def test_conditions_text_under_a_special_heading_is_not_an_unreadable_rate():
+    html = fixture("c_special_separate_table.html").replace(
+        "<th>Availability</th>", "<th>Special conditions</th>")  # fmt: skip
+    skipped: list[str] = []
+    parse_asb(html, skipped)
+    assert skipped == []
+
+
+@pytest.mark.parametrize(
+    ("header", "row"),
+    [
+        ("<th>Term</th><th>Min deposit</th><th>Rate</th>",
+         "<td>12 months special</td><td>$5,000</td><td>{rate}</td>"),
+        ("<th>Type</th><th>Term</th><th>Rate</th>",
+         "<td>Special</td><td>12 months</td><td>{rate}</td>"),
+    ],
+)  # fmt: skip
+def test_dash_rate_on_a_special_row_is_not_offered_wherever_the_rate_sits(header, row):
+    table = f"<table><tr>{header}</tr><tr>{row}</tr></table>"
+    skipped: list[str] = []
+    records = parse_asb(f"<html><body>{table.format(rate='-')}</body></html>", skipped)
+    assert (records, skipped) == ([], [])
+    unknown: list[str] = []
+    parse_asb(f"<html><body>{table.format(rate='N/A')}</body></html>", unknown)
+    assert len(unknown) == 1
+
+
+def test_percent_sign_without_a_number_is_not_an_unreadable_rate():
+    html = fixture("a_standard_only.html").replace(
+        "<tr><td>12 Months</td><td>4.00% p.a.</td></tr>",
+        "<tr><td>12 Months</td><td>Rate % p.a.</td><td>4.00%</td></tr>",
+    )
+    skipped: list[str] = []
+    records = parse_asb(html, skipped)
+    assert skipped == []
+    assert 4.00 in {r.advertised_rate_pct for r in records}

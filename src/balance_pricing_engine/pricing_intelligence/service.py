@@ -1054,7 +1054,10 @@ class PricingIntelligenceService:
 
         Assessed against the trusted subset of ``records`` (the snapshot passes the records it
         ranks), so a stale, quarantined, rejected or voided special never reaches it. Health
-        and exclusions pass the same resolved records, so they describe the same admissions.
+        and exclusions pass the resolved records *before* the staleness filter, on purpose:
+        they exist to report stale rates, and a special assessed only among fresh records
+        could never be reported stale. In the rare case where the bank's ordinary rate at the
+        term is stale but the special is fresh, the two assessments can therefore differ.
         """
         if not _admits_specials(product_type, rate_category):
             return None

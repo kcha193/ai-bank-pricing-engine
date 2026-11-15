@@ -113,6 +113,22 @@ Codex re-review of `3e7f87c` raised one more:
    withdrawn special kept leading. Fix: that fallback does not fire when the rate slot (the
    first non-term cell) is blank or a dash (`_rate_slot_not_offered`). "N/A" stays unknown.
 
+Codex could not review `cfdce94` (usage limit reached). A local independent review of
+`e18dba7..cfdce94` found four more heuristic gaps, now fixed with tests:
+
+8. Negation only looked two words back, per phrase: "Not available for all customers",
+   "Not offered to all customers" and "isn’t" (typographic apostrophe) were admitted. Any
+   negation earlier in the clause now negates the phrase; apostrophes are folded.
+9. "N/A" under a "Special" / "Specials" / "Special offer" heading (no "rate") was dropped.
+   Any heading naming a special now counts, for short placeholders only (not conditions text).
+10. A dash rate that was not the first non-term cell ("12 months special | $5,000 | -") was
+    skipped instead of withdrawn. A dash in any non-term cell now means not offered.
+11. A bare "%" label ("Rate % p.a.") counted as a misread rate. A digit is now required.
+
+Not changed, by design: health and exclusions assess admission before the staleness
+filter, because they exist to report stale specials (documented on
+`admitted_special_keys`).
+
 Known residual: a misread such as `4.O0%` still contains the fragment `0%`, which the
 existing rate parser reads as 0.00%. That reading is quarantined as a suspicious move (Phase
 2a), so it is not a withdrawal, but it is not reported as `row_skipped` either.

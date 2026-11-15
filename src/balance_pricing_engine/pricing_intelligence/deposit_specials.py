@@ -91,23 +91,27 @@ def _contains(text: str, phrase: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(phrase.lower())}(?!\w)", text) is not None
 
 
-#: Words that turn a following availability phrase into evidence *against* availability
-#: ("Not available to all customers", "no longer open to all", "isn't open to all").
-_NEGATIONS = frozenset({"not", "no", "never", "unavailable", "isn't", "isnt", "aren't", "arent"})
-#: How far back a negation can sit, within the same clause, and still govern the phrase.
-_NEGATION_WINDOW_WORDS = 2
+#: Words that turn a later availability phrase in the same clause into evidence *against*
+#: availability ("Not available for all customers", "isn't open to all").
+_NEGATIONS = frozenset({"not", "no", "never", "unavailable", "isnt", "arent", "cannot"})
+
+
+def _negated_in_clause(text: str, position: int) -> bool:
+    """Whether a negation appears earlier in the clause that contains ``position``.
+
+    ``|`` separates cells, so a negation in another cell or sentence ("No fees. Available to
+    all customers") does not count. Typographic apostrophes are folded first (``isn’t``).
+    """
+    clause = re.split(r"[.;:|!?,]", text[:position])[-1].replace("’", "'")
+    words = re.findall(r"[a-z']+", clause)
+    return any(w.replace("'", "") in _NEGATIONS or w.endswith("n't") for w in words)
 
 
 def _availability_matches(text: str, phrase: str) -> tuple[bool, bool]:
-    """``(affirmed, negated)``: whether ``phrase`` occurs plainly and whether it occurs negated.
-
-    A negation counts only inside the phrase's own clause (``|`` separates cells), so
-    "No fees. Available to all customers" is still positive evidence.
-    """
+    """``(affirmed, negated)``: whether ``phrase`` occurs plainly and whether it occurs negated."""
     affirmed = negated = False
     for match in re.finditer(rf"(?<!\w){re.escape(phrase.lower())}(?!\w)", text):
-        clause = re.split(r"[.;:|!?,]", text[: match.start()])[-1]
-        if _NEGATIONS.intersection(clause.split()[-_NEGATION_WINDOW_WORDS:]):
+        if _negated_in_clause(text, match.start()):
             negated = True
         else:
             affirmed = True
