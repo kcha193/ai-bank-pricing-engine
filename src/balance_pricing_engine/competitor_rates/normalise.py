@@ -317,8 +317,20 @@ def normalise_lvr_condition(label: str | None) -> str:
 #: See normalise_balance()'s docstring for why ascending order alone is not
 #: enough to infer a range.
 _BALANCE_RANGE_SEPARATOR_PATTERN = re.compile(
-    r"\$\s*[0-9][0-9,]*(?:\.\d+)?\s*(?:to|-|–|—)\s*\$"
+    r"\$\s*[0-9][0-9,]*(?:\.\d+)?(?:[kKmM](?![A-Za-z]))?\s*(?:to|-|–|—)\s*\$"
 )
+
+#: A dollar amount, optionally abbreviated with a ``k``/``m`` multiplier written directly
+#: after the number ("$500k", "$1m", "$2.5M"). The multiplier must not start a word, so
+#: "$1,000 minimum" and "$1,000min" stay $1,000.
+_BALANCE_AMOUNT_PATTERN = re.compile(r"\$\s*([0-9][0-9,]*(?:\.\d+)?)([kKmM](?![A-Za-z]))?")
+_BALANCE_MULTIPLIERS = {"k": 1_000.0, "m": 1_000_000.0}
+
+
+def _balance_amount(match: re.Match[str]) -> float:
+    amount = float(match.group(1).replace(",", ""))
+    suffix = match.group(2)
+    return amount * _BALANCE_MULTIPLIERS[suffix.lower()] if suffix else amount
 
 
 def normalise_balance(label: str | None) -> tuple[float | None, float | None]:
@@ -355,10 +367,10 @@ def normalise_balance(label: str | None) -> tuple[float | None, float | None]:
     """
     if not label:
         return None, None
-    figures = list(re.finditer(r"\$\s*([0-9][0-9,]*(?:\.\d+)?)", label))
+    figures = list(_BALANCE_AMOUNT_PATTERN.finditer(label))
     if not figures:
         return None, None
-    amounts = [float(figure.group(1).replace(",", "")) for figure in figures]
+    amounts = [_balance_amount(figure) for figure in figures]
     if len(amounts) == 1:
         return amounts[0], None
     range_begins_at_first_amount = _BALANCE_RANGE_SEPARATOR_PATTERN.match(

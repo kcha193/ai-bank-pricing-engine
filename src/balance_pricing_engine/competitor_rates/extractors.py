@@ -251,6 +251,38 @@ def parse_html_rates(
             row, context, product, term.special_label, header_row=current_header_row
         )
         if not rate_categories:
+            if (
+                skipped_row_keys is not None
+                and product == ProductType.TERM_DEPOSIT
+                and _looks_like_unusable_rate_row(context)
+            ):
+                # A recognised term-deposit row whose advertised rate could not be read
+                # (e.g. "4.5O%", or a special with no usable figure). Reported like a row
+                # that failed record construction: its stored predecessor is unknown this
+                # run, not withdrawn, and the bank's collection is partial (DATA-001).
+                row_context = (
+                    _clean_text(context + " | " + " | ".join(current_header_row))
+                    if current_header_row
+                    else context
+                )
+                logger.warning(
+                    "%s %s: term row has no usable rate: %s",
+                    bank,
+                    product.value,
+                    context[:160],
+                )
+                min_balance, max_balance = normalise_balance(row_context)
+                skipped_row_keys.append(
+                    category_agnostic_key(
+                        bank,
+                        product,
+                        term.months,
+                        term.raw_label,
+                        normalise_frequency(_strip_term_label(row_context, term.raw_label)),
+                        min_balance,
+                        max_balance,
+                    )
+                )
             continue
         pie_table = product == ProductType.TERM_DEPOSIT and _is_pie_return_table(
             current_header_row
@@ -346,6 +378,12 @@ def parse_html_rates(
                 continue
             records.append(record)
     return _dedupe_records(records)
+
+
+def _looks_like_unusable_rate_row(context: str) -> bool:
+    """A term row that advertises a rate (a percent sign, or a special) we could not read."""
+    lowered = context.lower()
+    return "%" in lowered or "special" in lowered
 
 
 def extract_all_sources(

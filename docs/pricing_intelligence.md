@@ -1009,6 +1009,88 @@ broker-intermediated product looks like.
 Each product keeps its own baseline, change history, and bootstrap state, so
 collecting one is never read as the other being withdrawn.
 
+### Term-deposit specials and extraction completeness (DATA-001, DATA-019)
+
+**Classification.** The extractor tags a term-deposit row `special` when its own text, its
+term label ("12 Months Special", "Special 9 months") or its column heading ("Special rate")
+says so. PIE fund rows (`pie_term_deposit`) and fund, savings and tax-adjusted rows
+(`non_comparable`) are separated first and never become specials. A special keeps its own
+identity (`rate_category` is part of `observation_key()`), so a standard and a special rate
+for the same term are stored side by side.
+
+**When a special enters the benchmark.** The default term-deposit market view
+(`rate_category="term_deposit"`) is the ordinary rows plus only those specials that
+`pricing_intelligence/deposit_specials.py` classifies as **comparable**. The classification
+reads only the evidence on the record (`raw_text_context`: the row's cells plus its own
+column heading). It never treats silence as eligibility.
+
+| Status | Rule | Effect |
+|---|---|---|
+| `comparable` | The text contains an `availability_markers` phrase (for example "available to all", "new and existing customers"), **and** none of the `not_comparable` conditions apply, **and** there is no footnote marker, **and** its payment frequency is one the bank's ordinary rate at that term also publishes | Admitted to the ordinary benchmark. It keeps `rate_category="special"` on its `BankTermRate`. Strategy rationales name it ("includes comparable promotional special rate(s): ASB") |
+| `not_comparable` | Any `restriction_markers` phrase (new money, new or existing customers only, online only, conditions apply, rollover, ...), a PIE or foreign-currency marker, a minimum balance in a different band (`validation.peer.balance_tier_edges`) from every ordinary rate at that term (the retail band when there is none), or a published payment frequency that differs from a published ordinary one | Recorded and excluded. This is an understood exclusion, so the run is **not** degraded |
+| `uncertain` | Neither of the above: no availability evidence, a footnote marker (`*`, `†`), or an unpublished frequency where the ordinary rate publishes one | Recorded and excluded. The run **exits 2** (`special_comparability_uncertain`), and the bank stays in `banks_succeeded` because its collector worked. It does not count against collector health |
+
+The marker vocabularies live in `PricingIntelligenceConfig.deposit_specials` and can be
+overridden in YAML. They are evidence vocabularies, not eligibility assumptions: adding a
+phrase says "this wording on the page means public availability". It does not assert that a
+particular bank's special is public. Stale, quarantined, rejected and voided specials never
+reach the assessment, because it runs on the same trusted records the snapshot ranks. Each
+bank appears once per term. On an exact tie the ordinary rate is preferred.
+
+Economic assumption: a promotion that every depositor eligible for the bank's ordinary rate
+can take is that bank's competitive price for the term, because depositors rank on rate. A
+restricted promotion is not, and a high promotional rate does not become the representative
+on rate alone.
+
+**Partial extraction.** `summary.json` (scheduled workflow) carries additive keys:
+
+- `deposit_specials`: every special this run, with its status, reasons, key and URL.
+- `bank_extraction_status`: per bank, the most severe stage reached:
+  - `FETCH_FAILED`: no page.
+  - `PARSE_FAILED`: a page, but no rates.
+  - `PARSE_PARTIAL`: one of:
+    - low coverage against the bank's known lines (`low_coverage`);
+    - one category losing most of its known lines (`category_low_coverage`);
+    - a term row with an unreadable rate, such as `4.5O%`, or a special with no figure
+      (`row_skipped`).
+  - `VALIDATION_PARTIAL`: rows rejected, or no comparable rows.
+  - `COMPARABILITY_UNCERTAIN`: an uncertain special.
+  - `TRUSTED_COLLECTION_SUCCESS`: fetch and parse succeeded, and every row is trusted.
+
+Every partial state exits 2. The affected lines' stored predecessors are exempt from
+withdrawal detection, so a partial page produces no false `REMOVED_PRODUCT` events. Valid
+rows from the page are still stored, and unconfirmed lines keep their last trusted state
+under the normal freshness limit. A special that is genuinely gone from the page (the
+category's only line) is still a withdrawal. A drop in row count alone is not treated as a
+parser fault. Coverage can only be judged against history, so a bank's first-ever collection
+cannot detect a layout that silently omits rows.
+
+**Balance tiers.** `normalise_balance()` reads `$5,000+`, `$10,000 - $499,999`,
+`$10k to $49,999`, `$500k+`, `$1m+` and `$2.5M+`. The `k` and `m` multipliers apply only when
+written directly after the number, so "$1,000 minimum" stays $1,000. Two amounts become a
+range only when an explicit "to" or dash joins them. Two unrelated minimums never produce a
+maximum.
+
+**Operator steps for an exit 2 on term deposits.**
+
+1. Read the `failures` and `bank_extraction_status` entries for the bank.
+2. For `special_comparability_uncertain`, open the `source_url`. Check whether the special is
+   open to anyone who qualifies for the ordinary rate.
+   - If the page states this in wording the policy does not recognise, add that phrase to
+     `deposit_specials.availability_markers`.
+   - If the page states a restriction, add it to `restriction_markers`.
+   - If the page does not say, the exit 2 is correct. Leave the special out of the benchmark.
+3. For `PARSE_PARTIAL`, compare the raw snapshot with the last good one. Then follow
+   "Troubleshooting a broken parser" below.
+
+Known limitations:
+
+- Change-driven features still match on the change's own category: rate-move alert context,
+  scenario auto-triggers and market-state activity. A move in an admitted comparable special
+  is alerted, but it does not trigger a term-deposit scenario.
+- Footnote text outside the table is not read.
+- The Playwright collection path is not covered by unit tests.
+
 ### Feeding deposits into the optimiser
 
 ```python

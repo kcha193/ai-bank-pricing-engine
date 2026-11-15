@@ -148,6 +148,7 @@ def resolve_competitor_rate(
         )
 
     base_pct, rationale = _resolve_market_rate(strategy, term_market)
+    rationale += _promotional_note(term_market)
     rate_pct = base_pct + bps_to_percent(offset_bps)
     if rate_pct <= 0:
         raise MarketStrategyError(
@@ -173,6 +174,21 @@ def resolve_competitor_rate(
         as_of=snapshot.as_of,
         rationale=rationale,
     )
+
+
+def _promotional_note(term_market: TermMarket) -> str:
+    """Name the banks represented by a term-deposit special, if any.
+
+    A special reaches the ordinary deposit benchmark only through the comparability policy in
+    :mod:`.deposit_specials`; the rationale says so, so a promotional representative is never
+    mistaken for a carded rate.
+    """
+    if term_market.product_type is not ProductType.TERM_DEPOSIT:
+        return ""
+    banks = [entry.bank for entry in term_market.entries if entry.rate_category == "special"]
+    if not banks:
+        return ""
+    return f"; includes comparable promotional special rate(s): {', '.join(banks)}"
 
 
 def _resolve_market_rate(

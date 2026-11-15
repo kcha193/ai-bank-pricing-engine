@@ -82,6 +82,10 @@ realised profit or introduce a new optimisation criterion. A negative value is a
 Advertised-rate history uses step lines and retains missing-data gaps. Rate axes are narrowed
 for comparison and labelled in percent; dispersion and movement remain on separate bps axes.
 Deposit market leadership means the highest comparable deposit rate, not the best bank margin.
+Term-deposit specials count as comparable only on explicit page evidence of public
+availability and like-for-like terms (balance band, payment frequency). Otherwise they are
+recorded and excluded, and uncertain ones degrade the collection (exit 2). See
+`docs/pricing_intelligence.md` -> "Term-deposit specials and extraction completeness".
 Each product's health summary reflects its own backend freshness and collector state.
 
 The selected scenario's **model-best** candidate maximises the existing objective under

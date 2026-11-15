@@ -49,6 +49,11 @@ from balance_pricing_engine.pricing_intelligence.positioning import (
     compute_competitive_position,
     compute_market_activity,
 )
+from balance_pricing_engine.pricing_intelligence.deposit_specials import (
+    DepositSpecialAssessment,
+    assess_deposit_specials,
+    comparable_keys,
+)
 from balance_pricing_engine.pricing_intelligence.snapshot import (
     MarketSnapshot,
     build_market_snapshot,
@@ -471,6 +476,7 @@ def _low_coverage_category_predecessor_keys_to_suppress(
     accepted: Sequence[CompetitorRateRecord],
     baseline: Sequence[CompetitorRateRecord],
     min_coverage_ratio: float,
+    pairs: Optional[set[tuple[str, str]]] = None,
 ) -> set[str]:
     """Baseline keys to exempt from withdrawal detection for a
     ``(bank, rate_category)`` pair whose coverage this run fell below
@@ -530,6 +536,8 @@ def _low_coverage_category_predecessor_keys_to_suppress(
             matched = matched_keys.get(bank, set())
             if len(matched) < len(known) * min_coverage_ratio:
                 suppressed.update(known - matched)
+                if pairs is not None:
+                    pairs.add((bank, category))
     return suppressed
 
 
@@ -560,6 +568,15 @@ class CollectionOutcome:
     #: "failed" one despite the underlying observations being untouched and
     #: still reflecting the original, successful attempt.
     already_recorded: bool = False
+    #: Every term-deposit special this run accepted, classified by
+    #: :mod:`.deposit_specials` against the same run's ordinary rows. Empty for home loans.
+    deposit_special_assessments: tuple[DepositSpecialAssessment, ...] = ()
+    #: ``(bank, rate_category)`` pairs whose matched coverage fell below
+    #: ``min_bank_coverage_ratio`` while the bank as a whole stayed above it -- the same
+    #: computation that already exempts those keys from withdrawal detection
+    #: (:func:`_low_coverage_category_predecessor_keys_to_suppress`), surfaced so the run
+    #: is reported as partial instead of successful.
+    low_coverage_categories: tuple[tuple[str, str], ...] = ()
 
     @property
     def succeeded_banks(self) -> tuple[str, ...]:
@@ -848,6 +865,7 @@ class PricingIntelligenceService:
             reliably_collected_banks = _reliably_collected_banks(
                 report, accepted, baseline, self.config.validation.min_bank_coverage_ratio
             )
+            low_coverage_pairs: set[tuple[str, str]] = set()
             if already_recorded:
                 # This exact run_id already committed its observations (and
                 # any changes they produced) in an earlier call -- a retry,
@@ -951,7 +969,10 @@ class PricingIntelligenceService:
                         # _reliably_collected_banks() gives a whole-bank
                         # coverage regression.
                         | _low_coverage_category_predecessor_keys_to_suppress(
-                            accepted, baseline, self.config.validation.min_bank_coverage_ratio
+                            accepted,
+                            baseline,
+                            self.config.validation.min_bank_coverage_ratio,
+                            low_coverage_pairs,
                         )
                     ),
                 )
@@ -993,9 +1014,40 @@ class PricingIntelligenceService:
             changes=tuple(changes),
             low_coverage_banks=low_coverage_banks,
             already_recorded=already_recorded,
+            deposit_special_assessments=self.assess_deposit_specials(accepted),
+            low_coverage_categories=tuple(
+                sorted(pair for pair in low_coverage_pairs if pair[0] not in low_coverage_banks)
+            ),
         )
 
     # ------------------------------------------------------------ market view
+
+    def assess_deposit_specials(
+        self, records: Sequence[CompetitorRateRecord]
+    ) -> tuple[DepositSpecialAssessment, ...]:
+        """Classify every term-deposit special in ``records`` (see :mod:`.deposit_specials`)."""
+        policy = self.config.deposit_specials
+        return assess_deposit_specials(
+            records,
+            restriction_markers=policy.restriction_markers,
+            availability_markers=policy.availability_markers,
+            balance_tier_edges=self.config.validation.peer.balance_tier_edges,
+        )
+
+    def _admitted_special_keys(
+        self,
+        records: Sequence[CompetitorRateRecord],
+        product_type: ProductType | str,
+        rate_category: Optional[str],
+    ) -> Optional[set[str]]:
+        """Comparable term-deposit specials for the ordinary term-deposit view, else ``None``.
+
+        Assessed against the same trusted records the snapshot ranks, so a stale,
+        quarantined, rejected or voided special never reaches it.
+        """
+        if ProductType(product_type) is not ProductType.TERM_DEPOSIT or rate_category != "term_deposit":
+            return None
+        return comparable_keys(self.assess_deposit_specials(records))
 
     def get_resolved_current_observations(
         self,
@@ -1086,8 +1138,10 @@ class PricingIntelligenceService:
                 now=now or datetime.now(timezone.utc),
                 max_age_hours=self.config.max_observation_age_hours,
             )
+        trusted = _exclude_suspicious(records)
         return build_market_snapshot(
-            _exclude_suspicious(records),
+            trusted,
+            admitted_keys=self._admitted_special_keys(trusted, product_type, rate_category),
             product_type=product_type,
             rate_category=rate_category,
             terms_months=self.config.tracked_terms_months,
@@ -1136,8 +1190,10 @@ class PricingIntelligenceService:
                 as_of=as_of, product_type=product_type, before_run_id=before_run_id
             ),
         )
+        trusted = _exclude_suspicious(records)
         return build_market_snapshot(
-            _exclude_suspicious(records),
+            trusted,
+            admitted_keys=self._admitted_special_keys(trusted, product_type, rate_category),
             product_type=product_type,
             rate_category=rate_category,
             terms_months=self.config.tracked_terms_months,
@@ -1276,8 +1332,10 @@ class PricingIntelligenceService:
                     as_of=as_of, product_type=product_type
                 ),
             )
+            trusted = _exclude_suspicious(records)
             snapshot = build_market_snapshot(
-                _exclude_suspicious(records),
+                trusted,
+                admitted_keys=self._admitted_special_keys(trusted, product_type, rate_category),
                 product_type=product_type,
                 rate_category=rate_category,
                 terms_months=[term_months],
