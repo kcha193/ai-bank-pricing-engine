@@ -1080,8 +1080,9 @@ on rate alone.
       from its own heading, so its balance tier is its own, not the first tier in the header
       row. A blank or dash cell means "not offered", and a
       well-formed percentage outside the deposit range ("Up to 100%") is not a rate cell.
-      On a row whose own text says "Special" but has no readable rate, a dash in any non-term
-      cell (or a blank first non-term cell) is a genuine withdrawal; "N/A" stays unknown. A
+      On a row whose own text says "Special" but has no readable rate, a dash in any rate
+      slot (or a blank first rate slot) is a genuine withdrawal; a rate slot is a non-term
+      cell outside a descriptive column, so a dash under "Notes" withdraws nothing; "N/A" stays unknown. A
       bare "%" label with no digits is not a misread rate.
   - `VALIDATION_PARTIAL`: rows rejected, or no comparable rows.
   - `COMPARABILITY_UNCERTAIN`: an uncertain special.

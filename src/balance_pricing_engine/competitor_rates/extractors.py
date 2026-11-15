@@ -285,7 +285,7 @@ def parse_html_rates(
                 and skipped_row_keys is not None
                 and product == ProductType.TERM_DEPOSIT
                 and _looks_like_unusable_rate_row(context)
-                and not _rate_not_offered(row)
+                and not _rate_not_offered(row, current_header_row)
             ):
                 # No single cell can be named (e.g. "12 months special | N/A" with no special
                 # heading): the row as a whole is unknown.
@@ -419,15 +419,27 @@ _RATE_HEADING = re.compile(r"\brates?\b|%|\bp\.?a\b|\binterest\b")
 _WELL_FORMED_PERCENTAGE = re.compile(r"(?<![\w.])\d+(?:\.\d+)?\s*%")
 
 
-def _rate_not_offered(row: list[str]) -> bool:
+def _descriptive_heading(header_row: list[str] | None, idx: int) -> bool:
+    """Whether column ``idx`` describes the offer rather than carrying a rate (see
+    :data:`_NON_RATE_HEADING`). Shared by every check that asks which cells are rate slots."""
+    header = header_row[idx].lower() if header_row is not None and idx < len(header_row) else ""
+    return bool(_NON_RATE_HEADING.search(header)) and not _RATE_HEADING.search(header)
+
+
+def _rate_not_offered(row: list[str], header_row: list[str] | None = None) -> bool:
     """Whether a row with no readable rate says the rate is not offered.
 
-    True when any non-term cell is a dash, wherever the rate column sits ("12 months special |
-    $5,000 | -", "Special | 12 months | -"), or when the first non-term cell is blank. "N/A"
-    stays unknown: it could be a broken value as easily as an absence.
+    True when any rate slot is a dash, wherever the rate column sits ("12 months special |
+    $5,000 | -", "Special | 12 months | -"), or when the first rate slot is blank. A rate slot
+    is a non-term cell outside a descriptive column: a dash under "Notes" says nothing about
+    the rate. "N/A" stays unknown: it could be a broken value as easily as an absence.
     """
-    others = [cell.strip() for cell in row if not _TERM_PHRASE_PATTERN.search(cell)]
-    return any(cell in _DASH_CELLS for cell in others) or (not others or not others[0])
+    slots = [
+        cell.strip()
+        for idx, cell in enumerate(row)
+        if not _TERM_PHRASE_PATTERN.search(cell) and not _descriptive_heading(header_row, idx)
+    ]
+    return any(cell in _DASH_CELLS for cell in slots) or (not slots or not slots[0])
 
 
 def _unreadable_rate_cells(
@@ -450,7 +462,7 @@ def _unreadable_rate_cells(
             continue
         header = (header_row[idx] if header_row is not None and idx < len(header_row) else "")
         header = header.lower()
-        if _NON_RATE_HEADING.search(header) and not _RATE_HEADING.search(header):
+        if _descriptive_heading(header_row, idx):
             continue
         malformed = (
             "%" in text

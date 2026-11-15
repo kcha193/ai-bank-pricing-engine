@@ -1287,3 +1287,35 @@ def test_special_move_whose_run_cannot_be_reconstructed_is_not_counted(tmp_path,
         lambda **kwargs: [replace(c, run_id=run_id) for c in real(**kwargs)],
     )  # fmt: skip
     assert _activity_and_state(market, 1) == (0, 0)
+
+
+# ------------------ only a rate slot's dash means "not offered" (PR #73 review, P1)
+
+_NOTES_COLUMN = fixture("c_special_separate_table.html").replace(
+    "<tr><th>Term</th><th>Special rate</th><th>Availability</th></tr>",
+    "<tr><th>Term</th><th>Rate</th><th>Availability</th><th>Notes</th></tr>",
+).replace(
+    "<tr><td>12 Months</td><td>4.45% p.a.</td><td>Available to all new and existing customers</td>",
+    "<tr><td>12 Months Special</td><td>4.45% p.a.</td>"
+    "<td>Available to all new and existing customers</td><td>-</td>",
+)
+
+
+def test_dash_in_a_notes_column_does_not_withdraw_an_unreadable_special(tmp_path):
+    market = Market(tmp_path, _NOTES_COLUMN)
+    assert market.run(0).code == EXIT_OK
+    assert market.asb12(market.when(0, 1)) == (4.45, "special")
+    market.set_asb(_NOTES_COLUMN.replace("4.45% p.a.", "N/A"))
+    _assert_partial_not_withdrawn(market.run(1))
+    assert market.asb12(market.when(1, 1)) == (4.45, "special")
+
+
+def test_dash_in_the_rate_slot_beside_a_notes_dash_is_still_a_withdrawal(tmp_path):
+    market = Market(tmp_path, _NOTES_COLUMN)
+    market.run(0)
+    market.set_asb(_NOTES_COLUMN.replace("4.45% p.a.", "-"))
+    result = market.run(1)
+    assert result.code == EXIT_OK
+    removed = [(c.bank, c.rate_category) for c in result.outcome.changes
+               if c.change_type is ChangeType.REMOVED_PRODUCT]  # fmt: skip
+    assert removed == [("ASB", "special")]

@@ -172,6 +172,15 @@ Codex re-review of `6ac3cb8` raised one more:
     recorded the move, reconstructed as `get_market_snapshot(as_of_run_id=...)` does. A move
     whose run cannot be reconstructed is not counted.
 
+Codex re-review of `ce87263` raised one more:
+
+17. **A dash in a descriptive column withdrew an unreadable special (P1).** The not-offered
+    rule accepted a dash in any non-term cell, so `12 Months Special | N/A | Available ... |
+    -` (dash under "Notes") emitted `REMOVED_PRODUCT` and moved ASB's benchmark from 4.45%
+    to 4.00%. Fix: the dash and blank rules look only at rate slots, i.e. non-term cells
+    outside a descriptive column. `_descriptive_heading` is now the single column-semantics
+    test shared by `_rate_not_offered` and `_unreadable_rate_cells`.
+
 Not changed, by design: health and exclusions assess admission before the staleness
 filter, because they exist to report stale specials (documented on
 `admitted_special_keys`).
