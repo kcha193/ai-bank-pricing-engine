@@ -125,6 +125,14 @@ def test_a_stable_outlier_that_did_not_move_is_not_flagged():
     assert outcome.issues == [] and outcome.peer_assessments == []
 
 
+def test_a_reading_moving_back_toward_the_peers_is_not_flagged():
+    base = {**TD_BASE, "ASB": 5.40}  # far above peers, then falls 50 bps toward them
+    outcome = run(TD, base, {"ASB": 4.90})
+    assert codes(outcome, "ASB") == []
+    found = assessment(outcome, "ASB")
+    assert found.status == "ok" and found.deviation_bps > 0 > found.excess_movement_bps
+
+
 def test_first_observation_has_no_movement_to_judge():
     current = market(TD, {**TD_BASE, "ASB": 4.80}, captured_at=NOW)
     outcome = validate_observations(current, previous=[])
@@ -160,6 +168,42 @@ def test_peers_at_other_terms_categories_or_balance_tiers_are_not_comparable():
     )
     outcome = validate_observations(asb_now, previous=asb_prev + tiered)
     assert assessment(outcome, "ASB").peer_count == 0
+
+
+def test_different_retail_minimums_are_the_same_balance_tier_but_a_large_tier_is_not():
+    # None / $1,000 / $5,000 minimums are all everyday retail offers (the live fixtures mix them).
+    previous = [
+        make_rate(TD, "ANZ", 12, 4.00, PREVIOUS_AT),
+        make_rate(TD, "BNZ", 12, 4.05, PREVIOUS_AT, min_balance_or_deposit=1_000),
+        make_rate(TD, "Westpac", 12, 4.00, PREVIOUS_AT, min_balance_or_deposit=5_000),
+        make_rate(TD, "ASB", 12, 4.00, PREVIOUS_AT, min_balance_or_deposit=5_000),
+    ]
+    current = [
+        make_rate(TD, b.bank, 12, 4.60 if b.bank == "ASB" else b.advertised_rate_pct, NOW,
+                  min_balance_or_deposit=b.min_balance_or_deposit)
+        for b in previous
+    ]  # fmt: skip
+    assert codes(validate_observations(current, previous=previous), "ASB") == ["peer_outlier"]
+    def wholesale_peers(at_time, rate_of):
+        return [
+            make_rate(TD, b.bank, 12, rate_of(b), at_time, min_balance_or_deposit=500_000)
+            if b.bank != "ASB"
+            else make_rate(TD, "ASB", 12, rate_of(b), at_time, min_balance_or_deposit=5_000)
+            for b in previous
+        ]
+
+    outcome = validate_observations(
+        wholesale_peers(NOW, lambda b: 4.60 if b.bank == "ASB" else b.advertised_rate_pct),
+        previous=wholesale_peers(PREVIOUS_AT, lambda b: b.advertised_rate_pct),
+    )
+    assert assessment(outcome, "ASB").peer_count == 0  # a $500k+ tier is not comparable to retail
+
+
+def test_balance_tier_edges_are_validated():
+    with pytest.raises(ValueError):
+        PeerPlausibilityThresholds(balance_tier_edges=(100_000.0, 10_000.0))
+    with pytest.raises(ValueError):
+        PeerPlausibilityThresholds(balance_tier_edges=(-1.0,))
 
 
 def test_stale_peers_are_excluded():

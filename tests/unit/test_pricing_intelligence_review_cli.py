@@ -285,3 +285,36 @@ def test_review_auth_does_not_leak_secrets_in_its_error_or_repr():
     )
     env[review_auth.TOKEN_ENV_VAR] = TOKEN
     assert TOKEN not in repr(review_auth.authenticate(env))
+
+
+# ------------------------------------------------------------------- health
+
+
+def test_t23_health_command_reports_the_pending_quarantine(database, capsys):
+    cli(database, "health")
+    out = capsys.readouterr().out
+    assert "Quarantine: 1 reading(s) awaiting review" in out and "ASB" in out
+    assert "ESCALATED" not in out
+
+
+def test_health_command_reports_an_escalation_and_a_clean_state(tmp_path, capsys):
+    path = tmp_path / "escalated.db"
+    market = spike_market(store=ObservationStore(path))
+    market.run(3)
+    market.run(4)
+    market.store.close()
+    cli(path, "health")
+    assert "ESCALATED (1 at or beyond 3 runs)" in capsys.readouterr().out
+    clean = tmp_path / "clean.db"
+    ObservationStore(clean).close()
+    cli(clean, "health")
+    assert "no readings awaiting review" in capsys.readouterr().out
+
+
+def test_review_list_all_statuses_and_empty_filter(database, capsys, authorised):
+    cli(database, "review", "reject", "--event-id", str(pending_id(database)), "--reason", "misread")
+    capsys.readouterr()
+    assert cli(database, "review", "list", "--status", "ALL") == 0
+    assert "REJECTED" in capsys.readouterr().out
+    assert cli(database, "review", "list") == 0
+    assert "No quarantined readings" in capsys.readouterr().out

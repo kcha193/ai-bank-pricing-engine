@@ -494,3 +494,100 @@ def test_t31_migration_preserves_existing_observations(tmp_path):
     assert reopened._connection.execute("SELECT COUNT(*) FROM observations").fetchone()[0] == before
     assert reopened._connection.execute("SELECT COUNT(*) FROM quarantine_reviews").fetchone()[0] == 0
     reopened.close()
+
+
+# ------------------------------------------- exact targeting (no "latest suspicious")
+
+
+def chain_market() -> Market:
+    """Trusted 5.05, then two further quarantined readings of the same identity."""
+    market = Market(HL)
+    market.run(0)
+    market.run(1)
+    market.set("ASB", 6.50)  # +145 bps -> quarantined (event 1)
+    market.run(2)
+    market.set("ASB", 6.00)  # +95 bps against the *trusted* rate -> quarantined again (event 2)
+    market.run(3)
+    return market
+
+
+def test_a_replaced_quarantine_is_superseded_and_only_the_current_reading_is_reviewable():
+    market = chain_market()
+    (current,) = market.pending()
+    assert current.proposed_rate_pct == 6.00 and current.runs_pending == 2
+    (stale,) = market.service.list_review_cases(HL, [ReviewState.SUPERSEDED], now=market.now)
+    assert stale.proposed_rate_pct == 6.50 and stale.event_id != current.event_id
+    with pytest.raises(InvalidReviewTransition, match="SUPERSEDED"):
+        approve(market, stale.event_id, reviewed_at=at(3, 2))
+    assert market.ledger_rows() == []
+
+
+def test_approving_the_current_reading_rebases_it_onto_the_last_trusted_rate():
+    market = chain_market()
+    (current,) = market.pending()
+    approve(market, current.event_id, reviewed_at=at(3, 2))
+    rows = market.store._connection.execute(
+        "SELECT previous_rate_pct, current_rate_pct, change_bps, suspicious FROM rate_changes "
+        "WHERE id = ?",
+        (current.event_id,),
+    ).fetchone()
+    assert tuple(rows) == (5.05, 6.00, 95.0, 0)  # not the stale 6.50 -> 6.00 hop
+    # The superseded event was never approved and stays flagged.
+    (stale,) = market.service.list_review_cases(HL, [ReviewState.SUPERSEDED], now=market.now)
+    flagged = market.store._connection.execute(
+        "SELECT suspicious FROM rate_changes WHERE id = ?", (stale.event_id,)
+    ).fetchone()
+    assert flagged["suspicious"] == 1
+    assert market.bank_rate("ASB", at(3, 3)) == 6.00
+
+
+def test_confirm_suspicious_changes_can_be_pinned_to_one_exact_event():
+    market = chain_market()
+    connection = market.store._connection
+    ids = [r["id"] for r in connection.execute(
+        "SELECT id FROM rate_changes WHERE suspicious = 1 AND change_type IN "
+        "('RATE_INCREASE', 'RATE_DECREASE') ORDER BY id"
+    )]  # fmt: skip
+    assert len(ids) == 2
+    key = connection.execute("SELECT observation_key FROM rate_changes WHERE id = ?", (ids[0],)).fetchone()[0]
+    record = market.store.get_current_observations(HL)[0]
+    market.store.confirm_suspicious_changes({key: (None, record)}, target_change_ids={key: ids[0]})
+    remaining = [r["id"] for r in connection.execute("SELECT id FROM rate_changes WHERE suspicious = 1")]
+    assert remaining == [ids[1]]  # exactly the named event, not "the latest"
+
+
+def test_unreadable_stored_signals_do_not_break_the_queue():
+    market = spike_market()
+    market.store._connection.execute(
+        "UPDATE observations SET validation_warnings = 'not json' WHERE validation_status = 'warning'"
+    )
+    (case,) = market.pending()
+    assert case.signals == ()
+
+
+def test_a_dry_run_validates_without_writing():
+    market = spike_market()
+    event_id = market.only_pending().event_id
+    outcome = approve(market, event_id, dry_run=True)
+    assert outcome.dry_run is True and outcome.event is None and outcome.created is False
+    assert market.ledger_rows() == []
+    with pytest.raises(InvalidReviewTransition):
+        market.service.review(
+            event_id, ReviewAction.VOID, reviewer="a", reason="x", reviewed_at=REVIEWED_AT, dry_run=True
+        )
+
+
+def test_review_cannot_predate_the_event_or_an_earlier_decision():
+    market = spike_market()
+    event_id = market.only_pending().event_id
+    with pytest.raises(ReviewInputError, match="precedes"):
+        approve(market, event_id, reviewed_at=at(1))
+    assert market.ledger_rows() == []
+
+
+def test_oversized_or_control_character_fields_are_refused():
+    market = spike_market()
+    event_id = market.only_pending().event_id
+    for bad in ("x" * 1001, "line\x00break", "esc\x1b[31m"):
+        with pytest.raises(ReviewInputError):
+            approve(market, event_id, reason=bad)

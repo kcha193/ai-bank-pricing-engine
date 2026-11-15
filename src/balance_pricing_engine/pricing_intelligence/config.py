@@ -46,6 +46,12 @@ class PeerPlausibilityThresholds(BaseModel):
     min_peers: int = Field(default=3, ge=2)
     # Peers older than this relative to the candidate's observation are ignored.
     max_peer_age_hours: float = Field(default=168.0, gt=0)
+    # Balance tiers are compared by *band of the advertised minimum*, not exact equality: banks
+    # quote different retail minimums (none, $1,000, $5,000) for what is the same everyday
+    # tier, and demanding an exact match leaves a real market with no comparable peer at all.
+    # A minimum below the first edge is the retail tier; each further edge starts a larger-
+    # balance tier ($500k+ specials are not comparable to retail). Maximums are not banded.
+    balance_tier_edges: tuple[float, ...] = (10_000.0, 100_000.0)
     leader_side_deviation_bps: float = Field(default=40.0, gt=0)
     other_side_deviation_bps: float = Field(default=75.0, gt=0)
     # The candidate must also have moved this much more than the peer median move.
@@ -54,6 +60,14 @@ class PeerPlausibilityThresholds(BaseModel):
     # must also exceed this many median-absolute-deviations (floored) to count.
     dispersion_multiple: float = Field(default=4.0, ge=0)
     dispersion_floor_bps: float = Field(default=5.0, ge=0)
+
+
+    @model_validator(mode="after")
+    def validate_tier_edges(self) -> "PeerPlausibilityThresholds":
+        edges = list(self.balance_tier_edges)
+        if any(edge <= 0 for edge in edges) or edges != sorted(set(edges)):
+            raise ValueError("balance_tier_edges must be positive and strictly ascending")
+        return self
 
 
 class ValidationThresholds(BaseModel):

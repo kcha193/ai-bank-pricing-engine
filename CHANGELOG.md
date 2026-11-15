@@ -7,6 +7,19 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Governed quarantine review (DATA-002) and peer-median plausibility (DATA-016), Phase 2a.**
+  `pricing-intelligence review list|show|approve|reject|void` over an append-only
+  `quarantine_reviews` ledger (reviewer, UTC time, mandatory reason, evidence, previous/new state,
+  exact target event); authenticated by hashed credentials supplied through the environment
+  (`PRICING_INTELLIGENCE_REVIEW_CREDENTIALS` / `_TOKEN`, no token CLI flag). Approval makes a genuine
+  quarantined move trusted (Q7); reject keeps an error out; void removes a previously trusted error
+  from current rankings, benchmarks, market state and change statistics (Q6) while historical as-of
+  views keep the correct temporal semantics. A configurable peer-market check
+  (`validation.peer.*`) quarantines a +60 bps misread that the movement rule misses, as a review
+  signal only. A quarantine left unreviewed for `quarantine.escalation_after_runs` (default 3)
+  distinct runs degrades the run (exit 2), shows in `health`, and alerts once. See
+  [docs/pricing_intelligence.md](docs/pricing_intelligence.md#quarantine-review-data-002-data-016) and
+  `docs/audits/2026-11-15-phase-2a-quarantine-governance-verification.md`.
 - **Pricing Watch dashboard** (`src/balance_pricing_engine/dashboard/`): a seven-page
   Streamlit operating console — Overview, Market Watch, Rate Changes, Historical Trends,
   Pricing Scenarios (with the former YAML runner as *Scenario Lab*), Operations and System

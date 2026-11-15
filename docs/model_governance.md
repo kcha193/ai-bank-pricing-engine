@@ -53,6 +53,39 @@ or replay-prevention system. Finite, correctly signed inputs can still be econom
 the existing warnings and governance gates remain necessary. Pricing maths and run-ledger schemas
 are unchanged. See [LLM usage](usage_guide.md#human-reviewed-llm-scenarios).
 
+## Market-data quarantine governance (DATA-002, DATA-016)
+
+Competitor rates feed MARKET_LEADER / MARKET_MEDIAN assumptions, so an incorrect reading must not
+become trusted market data silently, and a genuine one must not be locked out. Implementation:
+`pricing_intelligence/quarantine.py`, `quarantine_store.py`, `peer_plausibility.py`,
+`review_cli.py`, `review_auth.py`. Operator procedure: [pricing_intelligence.md → Quarantine
+review](pricing_intelligence.md#quarantine-review-data-002-data-016).
+
+- **Decisions are operator-only and append-only.** `approve` / `reject` / `void` write to
+  `quarantine_reviews` (reviewer, UTC time, mandatory reason, evidence reference, previous and new
+  state, exact target event and run). Triggers refuse `UPDATE`/`DELETE`. Collection never approves
+  anything; neither does repetition, the peer median or an LLM.
+- **Authenticated attribution.** Mutating commands need `PRICING_INTELLIGENCE_REVIEW_CREDENTIALS`
+  (identity = SHA-256 of that reviewer's token) and a token supplied at run time, never on the command
+  line. The recorded identity is the one the token authenticated. This is trusted-operator
+  attribution, not identity proof; unset credentials refuse every decision.
+- **Approval confirms evidence, not attractiveness.** It makes a reading eligible for trusted market
+  data; it does not approve a price, change economics or touch the model-approval registry.
+  Configuration identity and model approval remain separate (see GOV-004, GOV-001).
+- **Reject vs void.** A rejected reading was never trusted and stays out, even if the same text keeps
+  appearing. A voided one was trusted; its influence is removed from current rankings, benchmarks,
+  market state and change statistics, and history before the void is preserved.
+- **Temporal integrity.** Stored observations are never rewritten. Effective trust is the stored status
+  overlaid with the ledger *as of the view's time*, so historical (`as_of`) reconstructions never show a
+  reading as approved (or voided) before the decision.
+- **Peer plausibility is a review signal.** It quarantines a reading that is far from comparable peers
+  and moved far more than they did; it never rejects or approves and abstains without enough peers.
+- **Unresolved quarantine escalates.** After `quarantine.escalation_after_runs` distinct runs the run is
+  degraded (exit 2), health reports it and one alert is sent.
+
+Remaining limits: REJECT/VOID are terminal; attribution is token-based; peer comparison needs at least
+three comparable banks and a prior reading to measure movement.
+
 ## Governance Control Plane (`governance/`)
 
 The primitives below (registry approval, fail-loud artifact checks, boundary/policy-band

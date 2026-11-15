@@ -10,8 +10,9 @@ It is a **review signal, never a verdict**: a flagged reading is quarantined for
 comparable peers it abstains and says so -- no median is ever fabricated -- leaving the
 other validation controls in force.
 
-Comparable means: same product, rate category, term, balance tier and eligibility
-(LVR / equity for loans); a different bank; observed recently enough; and itself not
+Comparable means: same product, rate category, term, balance tier (a band of the advertised
+minimum, see ``PeerPlausibilityThresholds.balance_tier_edges``) and eligibility (LVR / equity
+for loans); a different bank; observed recently enough; and itself not
 quarantined, rejected or voided. A peer is a *bank*: several rows of one bank in a group
 count once.
 
@@ -68,7 +69,13 @@ def _band(value: Optional[float]) -> str:
     return "" if value is None else f"{value:.4f}"
 
 
-def peer_group_key(record: CompetitorRateRecord) -> tuple:
+def balance_tier(minimum: Optional[float], edges: Sequence[float]) -> int:
+    """Balance tier of an advertised minimum: 0 is the retail tier (no minimum counts as 0)."""
+    value = minimum or 0.0
+    return sum(1 for edge in edges if value >= edge)
+
+
+def peer_group_key(record: CompetitorRateRecord, tier_edges: Sequence[float] = ()) -> tuple:
     """Records sharing this key are comparable offers (bank and product name excluded)."""
     term = (
         str(record.term_months_normalised)
@@ -79,8 +86,7 @@ def peer_group_key(record: CompetitorRateRecord) -> tuple:
         str(ProductType(record.product_type)),
         record.rate_category,
         term,
-        _band(record.min_balance_or_deposit),
-        _band(record.max_balance_or_deposit),
+        balance_tier(record.min_balance_or_deposit, tier_edges),
         record.lvr_condition or "",
         _band(record.max_lvr),
         _band(record.min_equity),
@@ -105,10 +111,11 @@ def assess_peers(
         return []
 
     # Current-collection readings per (group, bank): (rate, move vs own baseline or None).
+    edges = config.balance_tier_edges
     in_batch: set[tuple[tuple, str]] = set()
     current: dict[tuple, dict[str, list[tuple[float, Optional[float]]]]] = {}
     for entry in entries:
-        group = peer_group_key(entry.record)
+        group = peer_group_key(entry.record, edges)
         in_batch.add((group, entry.record.bank))
         if not entry.trusted:
             continue
@@ -124,7 +131,7 @@ def assess_peers(
     # that reading is recent enough. A bank *present* but quarantined does not.
     carried: dict[tuple, dict[str, list[CompetitorRateRecord]]] = {}
     for record in previous:
-        group = peer_group_key(record)
+        group = peer_group_key(record, edges)
         if (group, record.bank) not in in_batch:
             carried.setdefault(group, {}).setdefault(record.bank, []).append(record)
 
@@ -133,7 +140,7 @@ def assess_peers(
         if not entry.candidate or entry.baseline is None:
             continue
         record = entry.record
-        group = peer_group_key(record)
+        group = peer_group_key(record, edges)
         rates: dict[str, float] = {}
         moves: list[float] = []
         for bank, readings in current.get(group, {}).items():
