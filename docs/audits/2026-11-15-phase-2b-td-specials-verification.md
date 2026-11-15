@@ -82,6 +82,18 @@ Two P1 findings from the automated review of `e18dba7`:
    per-cell "pie" hint. The assessment also marks a stored special that carries the signature
    `not_comparable` (`pie_return_table`), using the same pattern (`is_pie_return_text`).
 
-Verification: `ruff check .` clean. `pytest -m "not live_rates"`: 2939 passed, 2 skipped
-(17 new tests in `tests/unit/test_term_deposit_specials.py`). Coverage 96.85%. Live
-verification is still pending, as above.
+Codex re-review of `6a5032c` raised two more:
+
+3. **Negated availability counted as evidence (P1).** "Not available to all customers"
+   matched `available to all` and `all customers`, so the special was admitted. Fix: a
+   negation ("not", "no", "never", "unavailable", "isn't", ...) in the two words before an
+   availability phrase, in the same clause, makes it `not_comparable`
+   (`negated_availability:<phrase>`). "No fees. Available to all customers" is still positive.
+4. **Health and exclusions ignored admitted specials (P2).** `health.comparable_records()`
+   filtered on the exact category, so a bank whose only benchmark rate was an admitted special
+   showed freshness `UNKNOWN`, and its stale special produced no exclusion. Fix:
+   `comparable_records(admitted_keys=...)` mirrors `build_market_snapshot`, and health and
+   `get_market_exclusions()` pass `service.admitted_special_keys(...)`.
+
+Verification is recorded in the PR description and review replies; live verification is
+still pending, as above.

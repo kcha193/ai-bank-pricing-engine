@@ -1044,7 +1044,7 @@ class PricingIntelligenceService:
             balance_tier_edges=self.config.validation.peer.balance_tier_edges,
         )
 
-    def _admitted_special_keys(
+    def admitted_special_keys(
         self,
         records: Sequence[CompetitorRateRecord],
         product_type: ProductType | str,
@@ -1052,12 +1052,13 @@ class PricingIntelligenceService:
     ) -> Optional[set[str]]:
         """Comparable term-deposit specials for the ordinary term-deposit view, else ``None``.
 
-        Assessed against the same trusted records the snapshot ranks, so a stale,
-        quarantined, rejected or voided special never reaches it.
+        Assessed against the trusted subset of ``records`` (the snapshot passes the records it
+        ranks), so a stale, quarantined, rejected or voided special never reaches it. Health
+        and exclusions pass the same resolved records, so they describe the same admissions.
         """
         if not _admits_specials(product_type, rate_category):
             return None
-        return comparable_keys(self.assess_deposit_specials(records))
+        return comparable_keys(self.assess_deposit_specials(_exclude_suspicious(records)))
 
     def get_resolved_current_observations(
         self,
@@ -1151,7 +1152,7 @@ class PricingIntelligenceService:
         trusted = _exclude_suspicious(records)
         return build_market_snapshot(
             trusted,
-            admitted_keys=self._admitted_special_keys(trusted, product_type, rate_category),
+            admitted_keys=self.admitted_special_keys(trusted, product_type, rate_category),
             product_type=product_type,
             rate_category=rate_category,
             terms_months=self.config.tracked_terms_months,
@@ -1203,7 +1204,7 @@ class PricingIntelligenceService:
         trusted = _exclude_suspicious(records)
         return build_market_snapshot(
             trusted,
-            admitted_keys=self._admitted_special_keys(trusted, product_type, rate_category),
+            admitted_keys=self.admitted_special_keys(trusted, product_type, rate_category),
             product_type=product_type,
             rate_category=rate_category,
             terms_months=self.config.tracked_terms_months,
@@ -1353,7 +1354,7 @@ class PricingIntelligenceService:
             trusted = _exclude_suspicious(records)
             snapshot = build_market_snapshot(
                 trusted,
-                admitted_keys=self._admitted_special_keys(trusted, product_type, rate_category),
+                admitted_keys=self.admitted_special_keys(trusted, product_type, rate_category),
                 product_type=product_type,
                 rate_category=rate_category,
                 terms_months=[term_months],
@@ -1507,13 +1508,17 @@ class PricingIntelligenceService:
         the newest stale record, i.e. the last known rate.
         """
         now = now or datetime.now(timezone.utc)
-        records = self.get_resolved_current_observations(product_type=product_type)
+        records = _exclude_suspicious(
+            self.get_resolved_current_observations(product_type=product_type)
+        )
+        rate_category = _resolve_rate_category(product_type, None)
         candidates = comparable_records(
-            _exclude_suspicious(records),
-            rate_category=_resolve_rate_category(product_type, None),
+            records,
+            rate_category=rate_category,
             banks=set(self.config.selected_banks),
             terms=set(self.config.tracked_terms_months),
             excluded_product_names=self.config.excluded_product_names,
+            admitted_keys=self.admitted_special_keys(records, product_type, rate_category),
         )
         threshold = self.config.max_observation_age_hours
         has_fresh = {

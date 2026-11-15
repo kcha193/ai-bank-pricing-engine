@@ -19,8 +19,9 @@ eligibility the page does not state:
 ``NOT_COMPARABLE``
     The text or fields show it is unlike the ordinary rate: a restriction phrase, a PIE or
     foreign-currency marker, a PIE return-table heading ("Rate of return", "Return
-    Frequency"), a balance tier the ordinary rate does not serve, or a different
-    published payment frequency. Recorded and excluded. This is an understood exclusion, so
+    Frequency"), a negated availability phrase ("Not available to all customers"), a
+    balance tier the ordinary rate does not serve, or a different published payment
+    frequency. Recorded and excluded. This is an understood exclusion, so
     it does not degrade the run.
 ``UNCERTAIN``
     No disqualifying evidence, but no positive evidence of availability either (or a footnote
@@ -90,6 +91,29 @@ def _contains(text: str, phrase: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(phrase.lower())}(?!\w)", text) is not None
 
 
+#: Words that turn a following availability phrase into evidence *against* availability
+#: ("Not available to all customers", "no longer open to all", "isn't open to all").
+_NEGATIONS = frozenset({"not", "no", "never", "unavailable", "isn't", "isnt", "aren't", "arent"})
+#: How far back a negation can sit, within the same clause, and still govern the phrase.
+_NEGATION_WINDOW_WORDS = 2
+
+
+def _availability_matches(text: str, phrase: str) -> tuple[bool, bool]:
+    """``(affirmed, negated)``: whether ``phrase`` occurs plainly and whether it occurs negated.
+
+    A negation counts only inside the phrase's own clause (``|`` separates cells), so
+    "No fees. Available to all customers" is still positive evidence.
+    """
+    affirmed = negated = False
+    for match in re.finditer(rf"(?<!\w){re.escape(phrase.lower())}(?!\w)", text):
+        clause = re.split(r"[.;:|!?,]", text[: match.start()])[-1]
+        if _NEGATIONS.intersection(clause.split()[-_NEGATION_WINDOW_WORDS:]):
+            negated = True
+        else:
+            affirmed = True
+    return affirmed, negated
+
+
 def _band(amount: Optional[float], edges: Sequence[float]) -> int:
     return bisect_right(list(edges), amount or 0.0)
 
@@ -138,11 +162,13 @@ def assess_deposit_special(
     disqualifying.extend(frequency_disqualifying)
     if any(marker in special.raw_text_context for marker in _FOOTNOTE_MARKERS):
         uncertain.append("footnote_marker")
-    evidence = [
-        f"public_availability_evidence:{marker.lower()}"
-        for marker in availability_markers
-        if _contains(text, marker)
-    ]
+    evidence = []
+    for marker in availability_markers:
+        affirmed, negated = _availability_matches(text, marker)
+        if negated:
+            disqualifying.append(f"negated_availability:{marker.lower()}")
+        elif affirmed:
+            evidence.append(f"public_availability_evidence:{marker.lower()}")
     if not evidence:
         uncertain.append("no_public_availability_evidence")
 

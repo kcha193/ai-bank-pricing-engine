@@ -1029,7 +1029,7 @@ column heading). It never treats silence as eligibility.
 | Status | Rule | Effect |
 |---|---|---|
 | `comparable` | The text contains an `availability_markers` phrase (for example "available to all", "new and existing customers"), **and** none of the `not_comparable` conditions apply, **and** there is no footnote marker, **and** its payment frequency is one the bank's ordinary rate at that term also publishes | Admitted to the ordinary benchmark. It keeps `rate_category="special"` on its `BankTermRate`. Strategy rationales name it ("includes comparable promotional special rate(s): ASB") |
-| `not_comparable` | Any `restriction_markers` phrase (new money, new or existing customers only, online only, conditions apply, rollover, ...), a PIE or foreign-currency marker, a PIE return-table heading on a stored special (`pie_return_table`), a minimum balance in a different band (`validation.peer.balance_tier_edges`) from every ordinary rate at that term (the retail band when there is none), or a published payment frequency that differs from a published ordinary one | Recorded and excluded. This is an understood exclusion, so the run is **not** degraded |
+| `not_comparable` | Any `restriction_markers` phrase (new money, new or existing customers only, online only, conditions apply, rollover, ...), a PIE or foreign-currency marker, a PIE return-table heading on a stored special (`pie_return_table`), a negated availability phrase in the same clause ("Not available to all customers", "no longer open to all": `negated_availability`), a minimum balance in a different band (`validation.peer.balance_tier_edges`) from every ordinary rate at that term (the retail band when there is none), or a published payment frequency that differs from a published ordinary one | Recorded and excluded. This is an understood exclusion, so the run is **not** degraded |
 | `uncertain` | Neither of the above: no availability evidence, a footnote marker (`*`, `†`), or an unpublished frequency where the ordinary rate publishes one | Recorded and excluded. The run **exits 2** (`special_comparability_uncertain`), and the bank stays in `banks_succeeded` because its collector worked. It does not count against collector health |
 
 The marker vocabularies live in `PricingIntelligenceConfig.deposit_specials` and can be
@@ -1037,7 +1037,9 @@ overridden in YAML. They are evidence vocabularies, not eligibility assumptions:
 phrase says "this wording on the page means public availability". It does not assert that a
 particular bank's special is public. Stale, quarantined, rejected and voided specials never
 reach the assessment, because it runs on the same trusted records the snapshot ranks. Each
-bank appears once per term. On an exact tie the ordinary rate is preferred.
+bank appears once per term. On an exact tie the ordinary rate is preferred. Health freshness
+and stale-rate exclusions use the same admissions (`service.admitted_special_keys`), so a
+bank whose only benchmark rate is an admitted special is judged on that special.
 
 **Historical views.** `get_market_snapshot(as_of_run_id=...)`,
 `get_previous_market_snapshot()` and `get_rate_history_series()` reassess specials from the

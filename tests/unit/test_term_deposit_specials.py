@@ -766,3 +766,90 @@ def test_stored_special_carrying_a_pie_table_signature_is_not_comparable(context
     assert assessment.status is (
         SpecialComparability.NOT_COMPARABLE if pie else SpecialComparability.COMPARABLE
     )
+
+
+# --------------------------------- negated availability is not evidence (PR #73 review, P1)
+
+
+@pytest.mark.parametrize(
+    ("context", "status", "reason"),
+    [
+        ("12 Months Special | 4.5% | Not available to all customers", "not_comparable",
+         "negated_availability:available to all"),
+        ("12 Months Special | 4.5% | No longer available to all customers", "not_comparable",
+         "negated_availability:available to all"),
+        ("12 Months Special | 4.5% | This offer isn't open to all", "not_comparable",
+         "negated_availability:open to all"),
+        ("12 Months Special | 4.5% | Unavailable to all customers", "not_comparable",
+         "negated_availability:all customers"),
+        # A negation in another clause says nothing about availability.
+        ("12 Months Special | 4.5% | No fees. Available to all customers", "comparable",
+         "public_availability_evidence:available to all"),
+    ],
+)
+def test_negated_availability_phrases_are_not_evidence(context, status, reason):
+    (assessment,) = assess_deposit_specials(
+        [_td(), _td(rate=4.5, category="special", context=context)],
+        restriction_markers=(),
+        availability_markers=("available to all", "all customers", "open to all"),
+        balance_tier_edges=(10_000.0,),
+    )  # fmt: skip
+    assert assessment.status is SpecialComparability(status)
+    assert reason in assessment.reasons
+
+
+def test_negated_availability_special_never_leads_the_td_market(tmp_path):
+    market = Market(tmp_path, fixture("c_special_separate_table.html").replace(
+        "Available to all new and existing customers",
+        "Not available to all new and existing customers"))  # fmt: skip
+    result = market.run(0)
+    assert result.code == EXIT_OK
+    status, reasons = specials_in(result)[4.45]
+    assert status == "not_comparable" and "negated_availability:available to all" in reasons
+    assert market.asb12(market.when(0, 1)) == (4.00, "term_deposit")
+    assert market.term12(market.when(0, 1)).best_rate == 4.05
+
+
+# ------------------------- health and exclusions see admitted specials (PR #73 review, P2)
+
+_SPECIAL_ONLY = (
+    "<!DOCTYPE html><html><body><table>"
+    "<tr><th>Term</th><th>Special rate</th><th>Availability</th></tr>"
+    "<tr><td>12 Months</td><td>4.45% p.a.</td>"
+    "<td>Available to all new and existing customers</td></tr>"
+    "</table></body></html>"
+)
+
+
+def test_health_counts_a_bank_whose_only_benchmark_rate_is_an_admitted_special(tmp_path):
+    from balance_pricing_engine.pricing_intelligence.health import (
+        FreshnessState,
+        assess_system_health,
+    )
+
+    market = Market(tmp_path, _SPECIAL_ONLY)
+    assert market.run(0).code == EXIT_OK
+    assert market.asb12(market.when(0, 1)) == (4.45, "special")
+    health = assess_system_health(market.service, product_type=TD, now=market.when(0, 1))
+    asb = next(b for b in health.banks if b.bank == "ASB")
+    assert asb.freshness.state is FreshnessState.FRESH
+
+
+def test_stale_admitted_special_is_reported_as_an_exclusion(tmp_path):
+    market = Market(tmp_path, _SPECIAL_ONLY)
+    market.run(0)
+    later = market.when(0) + timedelta(hours=market.config.max_observation_age_hours + 1)
+    stale_view = market.term12(later)
+    assert stale_view is None or not [e for e in stale_view.entries if e.bank == "ASB"]
+    exclusions = market.service.get_market_exclusions(product_type=TD, now=later)
+    assert [(e.bank, e.term_months, e.rate_pct) for e in exclusions if e.bank == "ASB"] == [
+        ("ASB", 12, 4.45)
+    ]
+
+
+def test_stale_uncertain_special_is_not_reported_as_an_exclusion(tmp_path):
+    market = Market(tmp_path, _SPECIAL_ONLY.replace("Available to all new and existing customers", ""))
+    market.run(0)
+    later = market.when(0) + timedelta(hours=market.config.max_observation_age_hours + 1)
+    exclusions = market.service.get_market_exclusions(product_type=TD, now=later)
+    assert not [e for e in exclusions if e.bank == "ASB"]

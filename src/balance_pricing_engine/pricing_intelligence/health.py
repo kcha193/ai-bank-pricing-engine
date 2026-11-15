@@ -56,19 +56,26 @@ def comparable_records(
     banks: Collection[str],
     terms: Collection[int],
     excluded_product_names: Collection[str],
+    admitted_keys: Optional[Collection[str]] = None,
 ) -> list[CompetitorRateRecord]:
     """Records eligible for the market snapshot, before the staleness check.
 
-    The same filters ``build_market_snapshot`` applies (comparable tier, tracked bank and term,
-    no ``non_comparable`` or name-excluded product). Exclusion and health logic must use this,
-    not a looser record set, or they would describe records the market view never considered.
+    The same filters ``build_market_snapshot`` applies (comparable tier or an
+    ``admitted_keys`` term-deposit special, tracked bank and term, no ``non_comparable`` or
+    name-excluded product). Exclusion and health logic must use this, not a looser or
+    narrower record set, or they would describe records the market view never considered.
     """
     markers = tuple(name.lower() for name in excluded_product_names)
+    admitted = admitted_keys or ()
     return [
         r
         for r in records
         if r.rate_category != "non_comparable"
-        and (rate_category is None or r.rate_category == rate_category)
+        and (
+            rate_category is None
+            or r.rate_category == rate_category
+            or r.observation_key() in admitted
+        )
         and r.bank in banks
         and r.term_months_normalised in terms
         and not any(marker in r.product_name.lower() for marker in markers)
@@ -226,12 +233,14 @@ def assess_system_health(
     snapshot = service.get_market_snapshot(product_type=product, now=now)
     records = store.get_current_observations(product_type=product)
     # Freshness describes what the market view uses, not every row ever stored for the bank.
+    resolved = service.get_resolved_current_observations(product_type=product)
     comparable = comparable_records(
-        service.get_resolved_current_observations(product_type=product),
+        resolved,
         rate_category=snapshot.rate_category,
         banks=set(config.selected_banks),
         terms=set(config.tracked_terms_months),
         excluded_product_names=config.excluded_product_names,
+        admitted_keys=service.admitted_special_keys(resolved, product, snapshot.rate_category),
     )
     quarantine = service.get_quarantine_status(product_type=product, now=now)
     # Raw warning rows remain visible even when a category flip resolves to another tier. A
