@@ -50,6 +50,10 @@ from balance_pricing_engine.pricing_intelligence.config import (
     HealthThresholds,
     PricingIntelligenceConfig,
 )
+from balance_pricing_engine.pricing_intelligence.quarantine import (
+    QuarantineEscalation,
+    QuarantineStatus,
+)
 from balance_pricing_engine.pricing_intelligence.service import (
     CollectionOutcome,
     PricingIntelligenceService,
@@ -403,9 +407,47 @@ def _bank_scoped_failures(
     )
 
 
+#: ``error_type`` of the summary ``failures`` entries that report an unresolved quarantine.
+#: Not a collection failure: the bank's collector worked, an operator decision is overdue.
+QUARANTINE_ESCALATION_ERROR_TYPE = "QuarantineEscalation"
+
+
+def _quarantine_summary(status: QuarantineStatus) -> dict:
+    return {
+        "pending": status.pending_count,
+        "affected_banks": list(status.affected_banks),
+        "oldest_pending_age_hours": status.oldest_age_hours,
+        "escalation_after_runs": status.escalation_after_runs,
+        "escalated": [
+            {
+                "event_id": e.event_id,
+                "bank": e.bank,
+                "term_months": e.term_months,
+                "runs_pending": e.runs_pending,
+                "previous_rate_pct": e.previous_rate_pct,
+                "proposed_rate_pct": e.proposed_rate_pct,
+            }
+            for e in status.escalated
+        ],
+    }
+
+
+def _escalation_failure(escalation: QuarantineEscalation) -> dict:
+    return {
+        "bank": escalation.bank,
+        "error_type": QUARANTINE_ESCALATION_ERROR_TYPE,
+        "error": (
+            f"quarantined {escalation.term_months}m reading "
+            f"{escalation.previous_rate_pct}% -> {escalation.proposed_rate_pct}% unresolved for "
+            f"{escalation.runs_pending} runs; operator review required"
+        ),
+    }
+
+
 def build_summary(
     outcome: CollectionOutcome,
     product_type: ProductType | str = ProductType.HOME_LOAN,
+    quarantine: Optional[QuarantineStatus] = None,
 ) -> dict:
     """Machine-readable summary of one collection run.
 
@@ -417,7 +459,7 @@ def build_summary(
     """
     bank_scoped_failures = _bank_scoped_failures(outcome, product_type)
     bank_scoped_failed_banks = {failure["bank"] for failure in bank_scoped_failures}
-    return {
+    summary = {
         "product_type": ProductType(product_type).value,
         "collected_at_utc": outcome.report.captured_at_utc.isoformat(),
         "banks_succeeded": [
@@ -443,7 +485,17 @@ def build_summary(
             for result in outcome.report.failed
         ]
         + bank_scoped_failures,
+        "peer_flagged": sum(1 for a in outcome.validation.peer_assessments if a.status == "flagged"),
+        "peer_insufficient_evidence": len(outcome.validation.peer_insufficient_evidence),
     }
+    if quarantine is not None:
+        summary["quarantine"] = _quarantine_summary(quarantine)
+        # Listed with the failures so the run's error summary says why it is degraded, but the
+        # bank stays in banks_succeeded: its collector worked.
+        summary["failures"] = summary["failures"] + [
+            _escalation_failure(e) for e in quarantine.escalated
+        ]
+    return summary
 
 
 def exit_code_for(
@@ -974,6 +1026,77 @@ def _dispatch_health_alerts(
     return total_sent
 
 
+def _quarantine_escalation_alert(
+    product_type: ProductType, escalations: list[QuarantineEscalation], threshold: int
+) -> Alert:
+    label = _health_product_label(product_type)
+    lines = [
+        f"{e.bank} {e.term_months}m {e.previous_rate_pct}% -> {e.proposed_rate_pct}%: "
+        f"unreviewed for {e.runs_pending} runs ({e.age_hours:.0f} h)"
+        for e in escalations
+    ]
+    body = "\n".join(
+        [
+            f"{label} readings held in quarantine for {threshold}+ runs. They are excluded "
+            "from market data until an operator approves, rejects or voids them.",
+            "",
+            *lines,
+            "",
+            "Review: pricing-intelligence review list --status PENDING",
+        ]
+    )
+    return plain_alert("⚠️ PRICING INTELLIGENCE QUARANTINE UNRESOLVED", body)
+
+
+def _quarantine_resolved_alert(product_type: ProductType, rows: list) -> Alert:
+    label = _health_product_label(product_type)
+    lines = [f"{row['bank']} {row['term_months']}m" for row in rows]
+    body = "\n".join([f"{label} quarantine no longer pending:", *lines])
+    return plain_alert("✅ PRICING INTELLIGENCE QUARANTINE RESOLVED", body)
+
+
+def _dispatch_quarantine_alerts(
+    store,
+    product_type: ProductType,
+    status: QuarantineStatus,
+    sinks: Mapping[str, AlertSink],
+    at: datetime,
+) -> int:
+    """Alert once per quarantined reading and channel when it crosses the escalation
+    threshold, and once more when it is no longer pending.
+
+    Deduplicated through the ``quarantine_escalation_alerts`` ledger (never per retry, never
+    per run), and only confirmed deliveries are recorded so a failed send is retried. Carries
+    bank/term/rates only: no evidence text, URLs or credentials.
+    """
+    sent = 0
+    for channel, sink in sinks.items():
+        new = store.unalerted_quarantine_escalations(status, channel)
+        resolved = store.unannounced_quarantine_resolutions(product_type, status, channel)
+        rendered: list[tuple[str, Alert]] = []
+        if new:
+            rendered.append(
+                (
+                    "new",
+                    _quarantine_escalation_alert(product_type, new, status.escalation_after_runs),
+                )
+            )
+        if resolved:
+            rendered.append(("resolved", _quarantine_resolved_alert(product_type, resolved)))
+        if not rendered:
+            continue
+        delivered = dispatch_alerts_safely_detailed([alert for _, alert in rendered], sink)
+        sent += len(delivered)
+        for kind, alert in rendered:
+            if alert not in delivered:
+                continue
+            if kind == "new":
+                store.record_quarantine_escalation_alerts(new, channel, at)
+            else:
+                store.record_quarantine_resolution_alerts(resolved, channel, at)
+    return sent
+
+
 # ---------------------------------------------------------------------------
 # The operational cycle
 # ---------------------------------------------------------------------------
@@ -987,6 +1110,8 @@ class OperationalRunResult:
     run_record: Optional[RunRecord]
     alerts_sent: int
     code: int
+    #: Pending/escalated quarantines as of this run (see ``quarantine.escalation_after_runs``).
+    quarantine: Optional[QuarantineStatus] = None
 
     @property
     def status(self) -> str:
@@ -1068,7 +1193,13 @@ def run_operational_cycle(
     )
 
     code = exit_code_for(outcome, product_type)
-    summary = build_summary(outcome, product_type)
+    # A quarantined reading is invisible to the market view by design, so one nobody resolves
+    # must not leave a run looking healthy: at or past the threshold the run is degraded.
+    # Only an otherwise-successful run is upgraded -- a total failure keeps its precedence.
+    quarantine = service.get_quarantine_status(product_type, now=captured_at_utc)
+    if code == EXIT_OK and quarantine.escalated:
+        code = EXIT_PARTIAL_FAILURE
+    summary = build_summary(outcome, product_type, quarantine=quarantine)
     banks_attempted = sorted({result.bank for result in outcome.report.results})
 
     if dry_run:
@@ -1240,6 +1371,11 @@ def run_operational_cycle(
         else:
             alerts_sent = _dispatch_rendered_alerts(service.store, rendered, sinks)
 
+    if not dry_run and sinks:
+        alerts_sent += _dispatch_quarantine_alerts(
+            service.store, product_type, quarantine, sinks, replay_now
+        )
+
     error_summary = None
     if code != EXIT_OK:
         error_summary = "; ".join(
@@ -1296,6 +1432,7 @@ def run_operational_cycle(
                                 failure["error"]
                                 for failure in summary["failures"]
                                 if failure["bank"] == bank
+                                and failure["error_type"] != QUARANTINE_ESCALATION_ERROR_TYPE
                             ),
                             None,
                         ),
@@ -1381,5 +1518,9 @@ def run_operational_cycle(
         # stays None and nothing is written -- rather than guessed.
 
     return OperationalRunResult(
-        outcome=outcome, run_record=run_record, alerts_sent=alerts_sent, code=code
+        outcome=outcome,
+        run_record=run_record,
+        alerts_sent=alerts_sent,
+        code=code,
+        quarantine=quarantine,
     )
