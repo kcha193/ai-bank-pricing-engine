@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from balance_pricing_engine.scenarios.runner import ScenarioDiagnostics
 
 from balance_pricing_engine.run_ledger.checklist import write_governance_checklist
-from balance_pricing_engine.run_ledger.config_snapshot import write_config_snapshot
+from balance_pricing_engine.run_ledger.config_snapshot import write_config_snapshot, write_effective_config
 from balance_pricing_engine.run_ledger.directory import create_run_directory
 from balance_pricing_engine.run_ledger.memo import write_pricing_memo
 from balance_pricing_engine.run_ledger.metadata import build_run_metadata, write_run_metadata
@@ -31,12 +31,13 @@ def write_run_ledger(
 ) -> Path:
     """Create a full run ledger directory and write all artifacts.
 
-    ``config_path`` is recorded in metadata.json verbatim as the caller's
-    original config source. ``effective_config_path``, when given, is what
-    gets hashed and snapshotted instead -- pass it when ``config_path`` no
-    longer reflects what was actually priced (e.g. the caller enabled
-    competitor-rate resolution, which replaces rates in ``config`` after
-    ``config_path`` was set).
+    ``config`` is the validated config that was actually priced. Its canonical hash is
+    ``metadata.config_hash`` and the exact hashed bytes are written to
+    ``effective_config.json`` (additive artifact). ``config_path`` is the caller's
+    original source file: recorded verbatim in metadata.json and hashed as
+    ``source_config_file_sha256``. ``effective_config_path``, when given, only replaces
+    what is copied to ``config_snapshot.yaml`` (the competitor-rate overlay written by
+    ``PricingService``); it never affects either hash.
 
     Returns the path to the created run directory.
     """
@@ -49,10 +50,11 @@ def write_run_ledger(
         diagnostics=diagnostics,
         competitor_rate_source=competitor_rate_source,
         timestamp=run_timestamp,
-        config_hash_source=snapshot_source,
+        config=config,
     )
     write_run_metadata(metadata, run_dir)
     write_config_snapshot(snapshot_source, run_dir)
+    write_effective_config(config, run_dir)
     diagnostics.write_artifacts(run_dir, sensitivity=sensitivity)
     write_pricing_memo(run_dir, metadata, config, diagnostics, sensitivity)
     write_governance_checklist(run_dir, metadata, config, diagnostics)

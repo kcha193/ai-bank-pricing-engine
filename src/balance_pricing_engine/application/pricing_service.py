@@ -19,7 +19,6 @@ the exception into a transport-appropriate error response.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import subprocess
@@ -45,6 +44,7 @@ from balance_pricing_engine.competitor_rates.models import ValidationIssue
 from balance_pricing_engine.competitor_rates.store import load_rate_run
 from balance_pricing_engine.competitor_rates.validate import validate_staleness
 from balance_pricing_engine.config import EngineConfig
+from balance_pricing_engine.config_identity import effective_config_hash, file_sha256_if_present
 from balance_pricing_engine.events.models import (
     governance_review_required,
     model_resolved,
@@ -114,6 +114,8 @@ class PricingService:
     def _run_scenario(
         self, request: PricingScenarioRequest, effective_config_path: str | Path | None
     ) -> PricingDecision:
+        # Provenance of the caller's original file; never the temporary effective overlay.
+        source_config_file_sha256 = file_sha256_if_present(request.config_path)
         correlation_id = request.correlation_id or str(uuid.uuid4())
         decision_id = str(uuid.uuid4())
         metrics = ExecutionMetrics(correlation_id=correlation_id, decision_id=decision_id)
@@ -234,7 +236,8 @@ class PricingService:
             scenario_name=request.scenario_name,
             timestamp=datetime.now(timezone.utc).isoformat(),
             decision_status=status.value,
-            config_hash=_config_hash(request.config, effective_config_path),
+            config_hash=effective_config_hash(request.config),
+            source_config_file_sha256=source_config_file_sha256,
             package_version=_package_version(),
             git_commit=_git_commit(),
             diagnostics=diagnostics,
@@ -568,15 +571,6 @@ def _shadow_payload(
     if not evaluations:
         return None
     return {result.product: result.to_dict() for result in evaluations}
-
-
-def _config_hash(config: EngineConfig, config_path: str | Path | None) -> str:
-    """Config fingerprint: hashes the source YAML file when available, else the
-    validated config's JSON representation."""
-    if config_path is not None:
-        return hashlib.sha256(Path(config_path).read_bytes()).hexdigest()
-    payload = json.dumps(config.model_dump(mode="json"), sort_keys=True)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _package_version() -> str | None:

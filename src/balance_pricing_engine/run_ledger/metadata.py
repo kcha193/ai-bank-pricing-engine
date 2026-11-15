@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import subprocess
 import sys
@@ -12,7 +11,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
+from balance_pricing_engine.config_identity import effective_config_hash, file_sha256_if_present
+
 if TYPE_CHECKING:
+    from balance_pricing_engine.config import EngineConfig
     from balance_pricing_engine.scenarios.runner import ScenarioDiagnostics
 
 
@@ -40,10 +42,6 @@ def _package_version() -> Optional[str]:
         return None
 
 
-def _config_hash(config_path: str | Path) -> str:
-    return hashlib.sha256(Path(config_path).read_bytes()).hexdigest()
-
-
 @dataclass(frozen=True)
 class RunMetadata:
     run_id: str
@@ -59,6 +57,7 @@ class RunMetadata:
     expansion_rounds: int
     policy_band_breached: bool
     competitor_rate_source: Optional[str]
+    source_config_file_sha256: Optional[str] = None
 
 
 def build_run_metadata(
@@ -67,16 +66,19 @@ def build_run_metadata(
     diagnostics: "ScenarioDiagnostics",
     competitor_rate_source: Optional[str] = None,
     timestamp: datetime | None = None,
-    config_hash_source: str | Path | None = None,
+    config: Optional["EngineConfig"] = None,
 ) -> RunMetadata:
     """Build a RunMetadata record from a completed ScenarioDiagnostics.
 
-    ``config_hash_source``, when given, is hashed instead of ``config_path``.
-    Callers use this when ``config_path`` points at the caller's original YAML
-    but the config that actually drove pricing was later modified (e.g.
-    competitor-rate resolution) -- ``config_path`` still records where the
-    request came from, while the hash reflects what was actually priced.
+    ``config_hash`` is the canonical hash of the effective (validated) config that was
+    priced -- the same definition as ``decision_record.config_hash``.
+    ``source_config_file_sha256`` is the SHA-256 of the original file at ``config_path``.
+    When ``config`` is omitted (legacy callers), the effective config is the one loaded
+    from ``config_path``.
     """
+    from balance_pricing_engine.config import load_config
+
+    effective_config = config if config is not None else load_config(config_path)
     vi = sys.version_info
     run_timestamp = timestamp or datetime.now(timezone.utc)
     return RunMetadata(
@@ -85,7 +87,7 @@ def build_run_metadata(
         timestamp=run_timestamp.isoformat(),
         git_commit=_git_commit(),
         config_path=str(config_path),
-        config_hash=_config_hash(config_hash_source if config_hash_source is not None else config_path),
+        config_hash=effective_config_hash(effective_config),
         python_version=f"{vi.major}.{vi.minor}.{vi.micro}",
         package_version=_package_version(),
         boundary_warning_flag=diagnostics.boundary_diagnostics.has_warning,
@@ -93,6 +95,7 @@ def build_run_metadata(
         expansion_rounds=diagnostics.expansion_rounds,
         policy_band_breached=diagnostics.policy_band_breached,
         competitor_rate_source=competitor_rate_source,
+        source_config_file_sha256=file_sha256_if_present(config_path),
     )
 
 
