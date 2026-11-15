@@ -1070,6 +1070,8 @@ on rate alone.
       readable standard rate (or the reverse) is still skipped. A value such as "N/A" under
       a special-rate heading also counts. A blank or dash cell means "not offered", and a
       well-formed percentage outside the deposit range ("Up to 100%") is not a rate cell.
+      On a row whose term label says "Special", a blank or dash in the rate slot (the first
+      non-term cell) is a genuine withdrawal; "N/A" there stays unknown.
   - `VALIDATION_PARTIAL`: rows rejected, or no comparable rows.
   - `COMPARABILITY_UNCERTAIN`: an uncertain special.
   - `TRUSTED_COLLECTION_SUCCESS`: fetch and parse succeeded, and every row is trusted.

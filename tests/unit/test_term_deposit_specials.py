@@ -918,3 +918,31 @@ def test_well_formed_out_of_range_percentages_are_not_unreadable_rates():
     records = parse_asb(html, skipped)
     assert skipped == []
     assert sorted(r.advertised_rate_pct for r in records) == [3.60, 4.00, 4.30, 4.40]
+
+
+_LABELLED_SPECIAL = fixture("a_standard_only.html").replace(
+    "<tr><td>2 Years</td>",
+    "<tr><td>Special 12 months</td><td>4.45% p.a.</td><td>Available to all customers</td></tr>"
+    "\n  <tr><td>2 Years</td>",
+)
+
+
+@pytest.mark.parametrize("gone", ["-", "–", ""])
+def test_dash_or_blank_rate_on_a_special_labelled_row_is_a_withdrawal(tmp_path, gone):
+    market = Market(tmp_path, _LABELLED_SPECIAL)
+    assert market.run(0).code == EXIT_OK
+    assert market.asb12(market.when(0, 1)) == (4.45, "special")
+    market.set_asb(_LABELLED_SPECIAL.replace("4.45% p.a.", gone))
+    result = market.run(1)
+    assert result.code == EXIT_OK
+    removed = [c for c in result.outcome.changes if c.change_type is ChangeType.REMOVED_PRODUCT]
+    assert [(c.bank, c.rate_category) for c in removed] == [("ASB", "special")]
+    assert market.asb12(market.when(1, 1)) == (4.00, "term_deposit")
+
+
+def test_unreadable_value_on_a_special_labelled_row_is_still_unknown(tmp_path):
+    market = Market(tmp_path, _LABELLED_SPECIAL)
+    market.run(0)
+    market.set_asb(_LABELLED_SPECIAL.replace("4.45% p.a.", "N/A"))
+    _assert_partial_not_withdrawn(market.run(1))
+    assert market.asb12(market.when(1, 1)) == (4.45, "special")

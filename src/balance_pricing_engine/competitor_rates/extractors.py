@@ -261,6 +261,7 @@ def parse_html_rates(
                 skipped_row_keys is not None
                 and product == ProductType.TERM_DEPOSIT
                 and _looks_like_unusable_rate_row(context)
+                and not _rate_slot_not_offered(row)
             ):
                 # A recognised term-deposit row whose advertised rate could not be read
                 # (e.g. "4.5O%", or a special with no usable figure). Reported like a row
@@ -399,6 +400,16 @@ def _looks_like_unusable_rate_row(context: str) -> bool:
 _NOT_OFFERED_CELLS = frozenset({"", "-", "–", "—"})
 #: A whole percentage, not a fragment of a misread one ("0%" inside "4.O0%").
 _WELL_FORMED_PERCENTAGE = re.compile(r"(?<![\w.])\d+(?:\.\d+)?\s*%")
+
+
+def _rate_slot_not_offered(row: list[str]) -> bool:
+    """Whether the row's rate slot (its first cell that is not the term) is blank or a dash.
+
+    "Special 12 months | -" says the special is not offered, so its withdrawal is genuine.
+    "Special 12 months | N/A" stays unknown: N/A could be a broken value as easily as an absence.
+    """
+    slot = next((cell for cell in row if not _TERM_PHRASE_PATTERN.search(cell)), "")
+    return slot.strip() in _NOT_OFFERED_CELLS
 
 
 def _unreadable_rate_cells(

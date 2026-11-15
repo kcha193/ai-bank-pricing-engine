@@ -106,6 +106,13 @@ withdrawals:
    was silently dropped. Fix: a non-blank, non-dash value under a special-rate heading is an
    unreadable rate. A blank or dash cell still means "not offered".
 
+Codex re-review of `3e7f87c` raised one more:
+
+7. **Dash on a "Special"-labelled row suppressed a withdrawal (P1).** The row-level fallback
+   (`"special" in context`) still treated "Special 12 months | -" as unreadable, so the
+   withdrawn special kept leading. Fix: that fallback does not fire when the rate slot (the
+   first non-term cell) is blank or a dash (`_rate_slot_not_offered`). "N/A" stays unknown.
+
 Known residual: a misread such as `4.O0%` still contains the fragment `0%`, which the
 existing rate parser reads as 0.00%. That reading is quarantined as a suspicious move (Phase
 2a), so it is not a withdrawal, but it is not reported as `row_skipped` either.
