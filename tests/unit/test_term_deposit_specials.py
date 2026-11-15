@@ -1121,3 +1121,46 @@ def test_a_heading_naming_a_rate_stays_a_rate_column_despite_descriptive_words(h
     skipped: list[str] = []
     parse_asb(page, skipped)
     assert len(skipped) == 1 and "|12|" in skipped[0]
+
+
+_SPECIAL_TERM_HEADING = fixture("c_special_separate_table.html").replace(
+    "<tr><th>Term</th><th>Special rate</th>", "<tr><th>Special term</th><th>Special rate</th>"
+)
+
+
+def test_term_cell_under_a_special_term_heading_is_not_an_unreadable_rate(tmp_path):
+    skipped: list[str] = []
+    parse_asb(_SPECIAL_TERM_HEADING, skipped)
+    assert skipped == []
+    market = Market(tmp_path, _SPECIAL_TERM_HEADING)
+    assert market.run(0).code == EXIT_OK
+    assert market.asb12(market.when(0, 1)) == (4.45, "special")
+    market.set_asb(_SPECIAL_TERM_HEADING.replace("4.45% p.a.", "-"))
+    result = market.run(1)
+    assert result.code == EXIT_OK
+    removed = [(c.bank, c.rate_category) for c in result.outcome.changes
+               if c.change_type is ChangeType.REMOVED_PRODUCT]  # fmt: skip
+    assert removed == [("ASB", "special")]
+    assert market.asb12(market.when(1, 1)) == (4.00, "term_deposit")
+
+
+def test_misread_rate_inside_a_term_cell_is_still_unreadable():
+    html = fixture("a_standard_only.html").replace(
+        "<tr><td>12 Months</td><td>4.00% p.a.</td></tr>",
+        "<tr><td>12 Months 4.0O%</td><td></td></tr>",
+    )
+    skipped: list[str] = []
+    parse_asb(html, skipped)
+    assert len(skipped) == 1 and "|12|" in skipped[0]
+
+
+def test_amount_cell_under_a_special_minimum_heading_is_not_an_unreadable_rate():
+    page = fixture("c_special_separate_table.html").replace(
+        "<tr><th>Term</th><th>Special rate</th>",
+        "<tr><th>Term</th><th>Special minimum deposit</th><th>Special rate</th>",
+    ).replace("<td>12 Months</td><td>4.45% p.a.", "<td>12 Months</td><td>$5,000</td><td>4.45% p.a.")
+    skipped: list[str] = []
+    records = parse_asb(page, skipped)
+    assert skipped == []
+    assert [(r.advertised_rate_pct, r.min_balance_or_deposit) for r in records
+            if r.rate_category == "special"] == [(4.45, 5000.0)]  # fmt: skip

@@ -457,7 +457,14 @@ def _unreadable_rate_cells(
             and re.search(r"\d", text) is not None
             and not _WELL_FORMED_PERCENTAGE.search(text)
         )
-        placeholder = "special" in header and len(text.split()) <= _PLACEHOLDER_MAX_WORDS
+        # A term or an amount ("12 Months" under "Special term", "$5,000" under "Special
+        # minimum deposit") is never a rate placeholder.
+        placeholder = (
+            "special" in header
+            and len(text.split()) <= _PLACEHOLDER_MAX_WORDS
+            and not _TERM_PHRASE_PATTERN.search(text)
+            and "$" not in text
+        )
         if malformed or placeholder:
             found.append(idx)
     return found

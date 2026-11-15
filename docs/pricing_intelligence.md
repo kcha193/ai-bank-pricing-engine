@@ -1070,7 +1070,8 @@ on rate alone.
       readable standard rate (or the reverse) is still skipped. A value such as "N/A" under
       a heading naming a special ("Special", "Special rate") also counts. Nothing under a
       descriptive heading ("Special conditions", "Availability", "Notes") is a rate cell, so
-      "Online only" there is a restriction, not a missing rate. Each unreadable cell is keyed
+      "Online only" there is a restriction, not a missing rate. A term ("12 Months" under
+      "Special term") or an amount ("$5,000") is never a rate placeholder either. Each unreadable cell is keyed
       from its own heading, so its balance tier is its own, not the first tier in the header
       row. A blank or dash cell means "not offered", and a
       well-formed percentage outside the deposit range ("Up to 100%") is not a rate cell.

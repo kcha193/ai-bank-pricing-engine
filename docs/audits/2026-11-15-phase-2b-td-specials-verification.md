@@ -141,6 +141,15 @@ Codex re-review of `8e19241` raised two more:
     placeholder or the misread-percentage check. A heading that also names a rate
     ("Special rate (available online)") stays a rate column, so "N/A" there is still unknown.
 
+Codex re-review of `f601125` raised one more:
+
+14. **A term cell under "Special term" counted as a placeholder (P1).** "12 Months" is two
+    words under a heading containing "special", so it was skipped as an unreadable rate:
+    `PARSE_PARTIAL`, and a dashed special's withdrawal was suppressed (the withdrawn 4.45%
+    kept leading). Fix: a term phrase or an amount ("$5,000", found by local review of the
+    same class) is never a rate placeholder. A misread rate inside a term cell
+    ("12 Months 4.0O%") is still unreadable.
+
 Not changed, by design: health and exclusions assess admission before the staleness
 filter, because they exist to report stale specials (documented on
 `admitted_special_keys`).
