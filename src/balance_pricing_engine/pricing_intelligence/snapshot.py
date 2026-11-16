@@ -213,6 +213,7 @@ def build_market_snapshot(
     banks: Optional[Iterable[str]] = None,
     excluded_product_names: Optional[Iterable[str]] = None,
     quarantined_keys: Optional[set[str]] = None,
+    admitted_keys: Optional[set[str]] = None,
 ) -> MarketSnapshot:
     """Build a market snapshot from a set of current observations.
 
@@ -228,6 +229,13 @@ def build_market_snapshot(
     "Back My Build", deliberately captured under its own product name for
     exactly this purpose (see ``ASBCollector``) -- cannot win MARKET_LEADER on
     rate alone.
+
+    ``admitted_keys`` admits specific records outside ``rate_category`` by
+    ``observation_key()`` -- the term-deposit specials that
+    :mod:`.deposit_specials` found comparable. An admitted record keeps its own
+    ``rate_category`` on its :class:`BankTermRate`, so a promotional
+    representative stays visible. On an exact rate tie the record in
+    ``rate_category`` itself is preferred, whatever the input order.
     """
     product = ProductType(product_type)
     lower_is_better = _better_is_lower(product)
@@ -250,7 +258,11 @@ def build_market_snapshot(
             continue
         if record.term_months_normalised is None:
             continue
-        if rate_category is not None and record.rate_category != rate_category:
+        if (
+            rate_category is not None
+            and record.rate_category != rate_category
+            and record.observation_key() not in (admitted_keys or ())
+        ):
             continue
         if allowed_banks is not None and record.bank not in allowed_banks:
             continue
@@ -264,8 +276,16 @@ def build_market_snapshot(
 
         bucket = best_by_term_bank.setdefault(term, {})
         incumbent = bucket.get(record.bank)
-        if incumbent is None or _is_more_competitive(
-            record.advertised_rate_pct, incumbent.advertised_rate_pct, lower_is_better
+        if (
+            incumbent is None
+            or _is_more_competitive(
+                record.advertised_rate_pct, incumbent.advertised_rate_pct, lower_is_better
+            )
+            or (
+                rate_change_bps(incumbent.advertised_rate_pct, record.advertised_rate_pct) == 0
+                and incumbent.rate_category != rate_category
+                and record.rate_category == rate_category
+            )
         ):
             bucket[record.bank] = record
         latest_observed = (

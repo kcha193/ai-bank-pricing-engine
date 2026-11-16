@@ -54,6 +54,10 @@ from balance_pricing_engine.pricing_intelligence.quarantine import (
     QuarantineEscalation,
     QuarantineStatus,
 )
+from balance_pricing_engine.pricing_intelligence.deposit_specials import (
+    SpecialComparability,
+    comparable_keys,
+)
 from balance_pricing_engine.pricing_intelligence.service import (
     CollectionOutcome,
     PricingIntelligenceService,
@@ -196,10 +200,29 @@ def _comparable_rate_count(
     :func:`_resolve_rate_category` the market snapshot itself uses, so this
     cannot drift from what "usable" actually means for a given product.
     """
+    return len(_comparable_records(outcome, product_type))
+
+
+def _comparable_records(
+    outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
+) -> list:
+    """Accepted rows the product's default market view can use: rows in the default
+    category, plus term-deposit specials :mod:`.deposit_specials` found comparable."""
     target_category = _resolve_rate_category(product_type, None)
-    return sum(
-        1 for record in outcome.validation.accepted if record.rate_category == target_category
-    )
+    admitted = comparable_keys(outcome.deposit_special_assessments)
+    return [
+        record
+        for record in outcome.validation.accepted
+        if record.rate_category == target_category or record.observation_key() in admitted
+    ]
+
+
+def _uncertain_specials(outcome: CollectionOutcome) -> list:
+    return [
+        assessment
+        for assessment in outcome.deposit_special_assessments
+        if assessment.status is SpecialComparability.UNCERTAIN
+    ]
 
 
 def _banks_with_zero_comparable_rates(
@@ -215,18 +238,21 @@ def _banks_with_zero_comparable_rates(
     since validation genuinely accepted the rows. Banks with zero accepted
     rows at all are excluded here; :func:`_validation_only_failures`
     already reports those.
+
+    So is a bank with an *uncertain* term-deposit special: the collector worked and the
+    special is held out on uncertainty, which :func:`_uncertain_special_failures` already
+    reports (degrading the run) without making it a collector incident. Only specials that
+    are understood exclusions (``not_comparable``) leave a bank with nothing comparable.
     """
     zero_accepted = _banks_with_zero_accepted_rates(outcome)
-    target_category = _resolve_rate_category(product_type, None)
-    comparable_banks = {
-        record.bank
-        for record in outcome.validation.accepted
-        if record.rate_category == target_category
-    }
+    comparable_banks = {record.bank for record in _comparable_records(outcome, product_type)}
+    uncertain_banks = {assessment.bank for assessment in _uncertain_specials(outcome)}
     return {
         bank
         for bank in outcome.succeeded_banks
-        if bank not in zero_accepted and bank not in comparable_banks
+        if bank not in zero_accepted
+        and bank not in comparable_banks
+        and bank not in uncertain_banks
     }
 
 
@@ -376,6 +402,61 @@ def _hard_skipped_row_failures(outcome: CollectionOutcome, already_flagged: set[
     return failures
 
 
+def _category_low_coverage_failures(
+    outcome: CollectionOutcome, already_flagged: set[str]
+) -> list[dict]:
+    """Banks where one rate category lost most of its known lines while the bank overall
+    still cleared the coverage threshold (CollectionOutcome.low_coverage_categories).
+
+    Those missing lines are already exempt from withdrawal detection; this reports the gap
+    instead of letting the run read as complete. A category that genuinely closed (its
+    only line removed) never appears here -- see
+    ``service._low_coverage_category_predecessor_keys_to_suppress``.
+    """
+    by_bank: dict[str, list[str]] = {}
+    for bank, category in outcome.low_coverage_categories:
+        if bank not in already_flagged:
+            by_bank.setdefault(bank, []).append(category)
+    return [
+        {
+            "bank": bank,
+            "error_type": "category_low_coverage",
+            "error": (
+                "matched fewer known rate lines than the coverage threshold in "
+                f"categor{'y' if len(categories) == 1 else 'ies'}: {', '.join(categories)}"
+            ),
+        }
+        for bank, categories in sorted(by_bank.items())
+    ]
+
+
+def _uncertain_special_failures(outcome: CollectionOutcome) -> list[dict]:
+    """Term-deposit specials whose comparability could not be established.
+
+    Not a collector failure (the bank stays in ``banks_succeeded``, like a quarantine
+    escalation), but the run must not claim full success: the special was kept out of the
+    benchmark on uncertainty, not on evidence.
+    """
+    by_bank: dict[str, list] = {}
+    for assessment in _uncertain_specials(outcome):
+        by_bank.setdefault(assessment.bank, []).append(assessment)
+    return [
+        {
+            "bank": bank,
+            "error_type": SPECIAL_COMPARABILITY_UNCERTAIN_ERROR_TYPE,
+            "error": (
+                f"{len(items)} term-deposit special(s) kept out of the benchmark: comparability "
+                "uncertain ("
+                + "; ".join(
+                    f"{a.term_months}m {a.rate_pct}%: {', '.join(a.reasons)}" for a in items
+                )
+                + ")"
+            ),
+        }
+        for bank, items in sorted(by_bank.items())
+    ]
+
+
 def _bank_scoped_failures(
     outcome: CollectionOutcome, product_type: ProductType | str = ProductType.HOME_LOAN
 ) -> list[dict]:
@@ -398,18 +479,67 @@ def _bank_scoped_failures(
     partial_rejection_failures = _partial_rejection_failures(outcome, already_flagged)
     already_flagged |= {failure["bank"] for failure in partial_rejection_failures}
     hard_skipped_row_failures = _hard_skipped_row_failures(outcome, already_flagged)
+    already_flagged |= {failure["bank"] for failure in hard_skipped_row_failures}
+    category_low_coverage_failures = _category_low_coverage_failures(outcome, already_flagged)
     return (
         zero_accepted_failures
         + zero_comparable_failures
         + low_coverage_failures
         + partial_rejection_failures
         + hard_skipped_row_failures
+        + category_low_coverage_failures
     )
 
 
 #: ``error_type`` of the summary ``failures`` entries that report an unresolved quarantine.
 #: Not a collection failure: the bank's collector worked, an operator decision is overdue.
 QUARANTINE_ESCALATION_ERROR_TYPE = "QuarantineEscalation"
+#: ``error_type`` for a term-deposit special kept out of the benchmark on uncertainty. Like a
+#: quarantine escalation, it degrades the run without marking the bank's collector failed.
+SPECIAL_COMPARABILITY_UNCERTAIN_ERROR_TYPE = "special_comparability_uncertain"
+#: Failure types that degrade a run without counting against collector health.
+NON_COLLECTOR_ERROR_TYPES = frozenset(
+    {QUARANTINE_ESCALATION_ERROR_TYPE, SPECIAL_COMPARABILITY_UNCERTAIN_ERROR_TYPE}
+)
+
+#: Per-bank extraction outcome reported in ``summary["bank_extraction_status"]``. A bank that
+#: reaches TRUSTED_COLLECTION_SUCCESS passed every stage (fetch, parse, validation,
+#: comparability); otherwise the earliest stage that fell short names its status.
+_EXTRACTION_STATUS_BY_ERROR_TYPE = {
+    "validation_rejected": "VALIDATION_PARTIAL",
+    "no_comparable_rates": "VALIDATION_PARTIAL",
+    "low_coverage": "PARSE_PARTIAL",
+    "category_low_coverage": "PARSE_PARTIAL",
+    "row_skipped": "PARSE_PARTIAL",
+    SPECIAL_COMPARABILITY_UNCERTAIN_ERROR_TYPE: "COMPARABILITY_UNCERTAIN",
+}
+_EXTRACTION_STATUS_ORDER = (
+    "FETCH_FAILED",
+    "PARSE_FAILED",
+    "PARSE_PARTIAL",
+    "VALIDATION_PARTIAL",
+    "COMPARABILITY_UNCERTAIN",
+    "TRUSTED_COLLECTION_SUCCESS",
+)
+
+
+def _bank_extraction_status(outcome: CollectionOutcome, failures: list[dict]) -> dict[str, str]:
+    """Most severe extraction stage reached per attempted bank (see the order above)."""
+    status: dict[str, str] = {}
+    for result in outcome.report.results:
+        if result.succeeded:
+            status[result.bank] = "TRUSTED_COLLECTION_SUCCESS"
+        else:
+            # A fetch that returned a page but yielded nothing parseable carries a content hash.
+            status[result.bank] = "PARSE_FAILED" if result.content_sha256 else "FETCH_FAILED"
+    for failure in failures:
+        candidate = _EXTRACTION_STATUS_BY_ERROR_TYPE.get(failure["error_type"])
+        current = status.get(failure["bank"])
+        if candidate and current and (
+            _EXTRACTION_STATUS_ORDER.index(candidate) < _EXTRACTION_STATUS_ORDER.index(current)
+        ):
+            status[failure["bank"]] = candidate
+    return dict(sorted(status.items()))
 
 
 def _quarantine_summary(status: QuarantineStatus) -> dict:
@@ -488,6 +618,9 @@ def build_summary(
         "peer_flagged": sum(1 for a in outcome.validation.peer_assessments if a.status == "flagged"),
         "peer_insufficient_evidence": len(outcome.validation.peer_insufficient_evidence),
     }
+    summary["failures"] = summary["failures"] + _uncertain_special_failures(outcome)
+    summary["deposit_specials"] = [a.describe() for a in outcome.deposit_special_assessments]
+    summary["bank_extraction_status"] = _bank_extraction_status(outcome, summary["failures"])
     if quarantine is not None:
         summary["quarantine"] = _quarantine_summary(quarantine)
         # Listed with the failures so the run's error summary says why it is degraded, but the
@@ -538,6 +671,10 @@ def exit_code_for(
         or outcome.low_coverage_banks
         or outcome.report.skipped_row_keys
         or _banks_with_zero_comparable_rates(outcome, product_type)
+        # A category that lost most of its known lines (DATA-001), or a term-deposit special
+        # kept out of the benchmark only because its comparability is uncertain.
+        or outcome.low_coverage_categories
+        or _uncertain_specials(outcome)
     ):
         return EXIT_PARTIAL_FAILURE
     return EXIT_OK
@@ -1432,7 +1569,7 @@ def run_operational_cycle(
                                 failure["error"]
                                 for failure in summary["failures"]
                                 if failure["bank"] == bank
-                                and failure["error_type"] != QUARANTINE_ESCALATION_ERROR_TYPE
+                                and failure["error_type"] not in NON_COLLECTOR_ERROR_TYPES
                             ),
                             None,
                         ),

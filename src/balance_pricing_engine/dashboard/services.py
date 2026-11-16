@@ -221,10 +221,9 @@ class DashboardServices:
             )
             week_activity = service.get_market_activity(days=7, now=now, product_type=product)
             moves_by_term: dict[int, int] = {}
-            for change in service.get_changes(
+            for change in service.get_market_changes(
                 days=7,
                 now=now,
-                scope_to_market=True,
                 product_type=product,
                 rate_category=snapshot.rate_category,
             ):
@@ -323,11 +322,10 @@ class DashboardServices:
                 return Result.empty(_no_term_message(term_months, product))
             quarantined = service.get_market_quarantined(product, snapshot=snapshot)
             last_change: dict[str, datetime] = {}
-            for change in service.get_changes(
+            for change in service.get_market_changes(
                 days=None,
                 term_months=term_months,
                 now=now,
-                scope_to_market=True,
                 product_type=product,
                 rate_category=snapshot.rate_category,
             ):
@@ -416,11 +414,10 @@ class DashboardServices:
             moves = sorted(
                 (
                     c
-                    for c in service.get_changes(
+                    for c in service.get_market_changes(
                         days=days,
                         term_months=term_months,
                         now=now,
-                        scope_to_market=True,
                         product_type=product,
                         rate_category=rate_category,
                     )

@@ -25,7 +25,11 @@ from balance_pricing_engine.competitor_rates.collectors import (
     build_collectors,
     collect_all_rates,
 )
-from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
+from balance_pricing_engine.competitor_rates.models import (
+    CompetitorRateRecord,
+    ProductType,
+    split_skipped_row_key,
+)
 from balance_pricing_engine.pricing_intelligence.changes import (
     ChangeType,
     RateChange,
@@ -48,6 +52,13 @@ from balance_pricing_engine.pricing_intelligence.positioning import (
     MarketActivity,
     compute_competitive_position,
     compute_market_activity,
+)
+from balance_pricing_engine.pricing_intelligence.deposit_specials import (
+    ORDINARY_CATEGORY,
+    SPECIAL_CATEGORY,
+    DepositSpecialAssessment,
+    assess_deposit_specials,
+    comparable_keys,
 )
 from balance_pricing_engine.pricing_intelligence.snapshot import (
     MarketSnapshot,
@@ -319,10 +330,21 @@ def _skipped_row_predecessor_keys(
             unclaimed.setdefault(p.category_agnostic_group_key(), []).append(p)
 
     suppressed: set = set()
-    for group_key in skipped_group_keys:
+    for skipped_key in skipped_group_keys:
+        group_key, skipped_category = split_skipped_row_key(skipped_key)
         for candidate in unclaimed.get(group_key, []):
+            if _SLOT_CATEGORIES == {skipped_category, candidate.rate_category}:
+                # The unreadable cell's own heading says it was the other slot (a standard
+                # beside a special in one balance tier): this candidate's absence is real.
+                continue
             suppressed.add(candidate.observation_key())
     return suppressed
+
+
+#: Rate slots a term-deposit table publishes side by side in one balance tier. A skipped
+#: cell's category only separates these two; any other category (a post-processed
+#: ``non_comparable`` or PIE record) is still suppressed, as before categories were kept.
+_SLOT_CATEGORIES = {ORDINARY_CATEGORY, SPECIAL_CATEGORY}
 
 
 def _last_confirmed_predecessors(
@@ -399,6 +421,14 @@ def _resolve_rate_category(
     return "special"
 
 
+def _admits_specials(product_type: ProductType | str, rate_category: Optional[str]) -> bool:
+    """Whether comparable term-deposit specials join this view (the ordinary TD benchmark)."""
+    return (
+        ProductType(product_type) is ProductType.TERM_DEPOSIT
+        and rate_category == ORDINARY_CATEGORY
+    )
+
+
 #: Distinguishes "rate_category not supplied" from an explicit
 #: rate_category=None on get_market_snapshot()/get_previous_market_snapshot()
 #: specifically. Those two build their result via build_market_snapshot(),
@@ -471,6 +501,7 @@ def _low_coverage_category_predecessor_keys_to_suppress(
     accepted: Sequence[CompetitorRateRecord],
     baseline: Sequence[CompetitorRateRecord],
     min_coverage_ratio: float,
+    pairs: Optional[set[tuple[str, str]]] = None,
 ) -> set[str]:
     """Baseline keys to exempt from withdrawal detection for a
     ``(bank, rate_category)`` pair whose coverage this run fell below
@@ -530,6 +561,8 @@ def _low_coverage_category_predecessor_keys_to_suppress(
             matched = matched_keys.get(bank, set())
             if len(matched) < len(known) * min_coverage_ratio:
                 suppressed.update(known - matched)
+                if pairs is not None:
+                    pairs.add((bank, category))
     return suppressed
 
 
@@ -560,6 +593,15 @@ class CollectionOutcome:
     #: "failed" one despite the underlying observations being untouched and
     #: still reflecting the original, successful attempt.
     already_recorded: bool = False
+    #: Every term-deposit special this run accepted, classified by
+    #: :mod:`.deposit_specials` against the same run's ordinary rows. Empty for home loans.
+    deposit_special_assessments: tuple[DepositSpecialAssessment, ...] = ()
+    #: ``(bank, rate_category)`` pairs whose matched coverage fell below
+    #: ``min_bank_coverage_ratio`` while the bank as a whole stayed above it -- the same
+    #: computation that already exempts those keys from withdrawal detection
+    #: (:func:`_low_coverage_category_predecessor_keys_to_suppress`), surfaced so the run
+    #: is reported as partial instead of successful.
+    low_coverage_categories: tuple[tuple[str, str], ...] = ()
 
     @property
     def succeeded_banks(self) -> tuple[str, ...]:
@@ -848,6 +890,7 @@ class PricingIntelligenceService:
             reliably_collected_banks = _reliably_collected_banks(
                 report, accepted, baseline, self.config.validation.min_bank_coverage_ratio
             )
+            low_coverage_pairs: set[tuple[str, str]] = set()
             if already_recorded:
                 # This exact run_id already committed its observations (and
                 # any changes they produced) in an earlier call -- a retry,
@@ -951,7 +994,10 @@ class PricingIntelligenceService:
                         # _reliably_collected_banks() gives a whole-bank
                         # coverage regression.
                         | _low_coverage_category_predecessor_keys_to_suppress(
-                            accepted, baseline, self.config.validation.min_bank_coverage_ratio
+                            accepted,
+                            baseline,
+                            self.config.validation.min_bank_coverage_ratio,
+                            low_coverage_pairs,
                         )
                     ),
                 )
@@ -993,9 +1039,44 @@ class PricingIntelligenceService:
             changes=tuple(changes),
             low_coverage_banks=low_coverage_banks,
             already_recorded=already_recorded,
+            deposit_special_assessments=self.assess_deposit_specials(accepted),
+            low_coverage_categories=tuple(
+                sorted(pair for pair in low_coverage_pairs if pair[0] not in low_coverage_banks)
+            ),
         )
 
     # ------------------------------------------------------------ market view
+
+    def assess_deposit_specials(
+        self, records: Sequence[CompetitorRateRecord]
+    ) -> tuple[DepositSpecialAssessment, ...]:
+        """Classify every term-deposit special in ``records`` (see :mod:`.deposit_specials`)."""
+        policy = self.config.deposit_specials
+        return assess_deposit_specials(
+            records,
+            restriction_markers=policy.restriction_markers,
+            availability_markers=policy.availability_markers,
+            balance_tier_edges=self.config.validation.peer.balance_tier_edges,
+        )
+
+    def admitted_special_keys(
+        self,
+        records: Sequence[CompetitorRateRecord],
+        product_type: ProductType | str,
+        rate_category: Optional[str],
+    ) -> Optional[set[str]]:
+        """Comparable term-deposit specials for the ordinary term-deposit view, else ``None``.
+
+        Assessed against the trusted subset of ``records`` (the snapshot passes the records it
+        ranks), so a stale, quarantined, rejected or voided special never reaches it. Health
+        and exclusions pass the resolved records *before* the staleness filter, on purpose:
+        they exist to report stale rates, and a special assessed only among fresh records
+        could never be reported stale. In the rare case where the bank's ordinary rate at the
+        term is stale but the special is fresh, the two assessments can therefore differ.
+        """
+        if not _admits_specials(product_type, rate_category):
+            return None
+        return comparable_keys(self.assess_deposit_specials(_exclude_suspicious(records)))
 
     def get_resolved_current_observations(
         self,
@@ -1014,6 +1095,91 @@ class PricingIntelligenceService:
             lambda: self.store.get_last_confirmed_observations(product_type=product_type),
             quarantined_keys,
         )
+
+    def _resolved_observations_as_of_run(
+        self,
+        run_id: str,
+        product_type: ProductType | str,
+        quarantined_keys: Optional[set[str]] = None,
+    ) -> tuple[Optional[datetime], list[CompetitorRateRecord]]:
+        """``(run start, records)``: the state as of ``run_id``, suspicious readings resolved.
+
+        ``(None, [])`` when the run is unknown.
+        """
+        as_of = self.store.get_run_started_at(run_id)
+        if as_of is None:
+            return None, []
+        # before_run_id=run_id anchors the reconstruction to this specific
+        # run's own (started_at, rowid) position, not just its timestamp --
+        # two runs for the same product can share started_at, and without
+        # this a later same-timestamp run's state would still win the per-key
+        # selection even when this run_id explicitly names the earlier one.
+        # See ObservationStore._as_of_cutoff()'s docstring.
+        records = self.store.get_observations_as_of(
+            as_of=as_of, product_type=product_type, before_run_id=run_id
+        )
+        return as_of, _resolve_suspicious_if_present(
+            records,
+            lambda: self.store.get_confirmed_observations_as_of(
+                as_of=as_of, product_type=product_type, before_run_id=run_id
+            ),
+            quarantined_keys,
+        )
+
+    def get_market_changes(
+        self,
+        *,
+        product_type: ProductType | str,
+        rate_category: Optional[str],
+        now: Optional[datetime] = None,
+        **filters: object,
+    ) -> list[RateChange]:
+        """Changes that move the ``rate_category`` view, scoped to the configured market.
+
+        ``filters`` are :meth:`get_changes` arguments (``days``, ``since``, ``bank``,
+        ``term_months``). Every activity figure (market activity and state, the dashboard's
+        per-term and per-bank moves, the briefs) reads this one set, so they cannot disagree.
+
+        For the ordinary term-deposit view that includes a comparable special's rate moves,
+        since an admitted special moves the benchmark (:meth:`admitted_special_keys`). Each
+        move keeps the admission it had in the run that recorded it, so a later loss of public
+        availability neither rewrites earlier activity nor lets a restricted, uncertain or
+        never-admitted special's move count. Suspicious moves stay out downstream
+        (:func:`~.positioning.compute_market_activity`).
+        """
+        admits = _admits_specials(product_type, rate_category)
+        changes = self.get_changes(
+            now=now,
+            scope_to_market=True,
+            product_type=product_type,
+            rate_category=None if admits else rate_category,
+            **filters,  # type: ignore[arg-type]
+        )
+        if not admits:
+            return changes
+        admitted_by_run: dict[str, set[str]] = {}
+
+        def admitted(change: RateChange) -> bool:
+            if change.run_id is None:
+                return False
+            if change.run_id not in admitted_by_run:
+                _, records = self._resolved_observations_as_of_run(change.run_id, product_type)
+                trusted = _exclude_suspicious(records)
+                admitted_by_run[change.run_id] = (
+                    self.admitted_special_keys(trusted, product_type, rate_category) or set()
+                )
+            return change.observation_key in admitted_by_run[change.run_id]
+
+        return [
+            change
+            for change in changes
+            if change.rate_category == rate_category
+            or (
+                change.rate_category == SPECIAL_CATEGORY
+                and change.is_rate_move
+                and admitted(change)
+            )
+        ]
 
     def get_market_snapshot(
         self,
@@ -1056,27 +1222,9 @@ class PricingIntelligenceService:
         as_of: Optional[datetime] = None
         quarantined_keys: set[str] = set()
         if as_of_run_id is not None:
-            as_of = self.store.get_run_started_at(as_of_run_id)
-            if as_of is None:
-                records = []
-            else:
-                # before_run_id=as_of_run_id anchors the reconstruction to
-                # this specific run's own (started_at, rowid) position, not
-                # just its timestamp -- two runs for the same product can
-                # share started_at, and without this a later same-timestamp
-                # run's state would still win the per-key selection even when
-                # this run_id explicitly names the earlier one. See
-                # ObservationStore._as_of_cutoff()'s docstring.
-                records = self.store.get_observations_as_of(
-                    as_of=as_of, product_type=product_type, before_run_id=as_of_run_id
-                )
-                records = _resolve_suspicious_if_present(
-                    records,
-                    lambda: self.store.get_confirmed_observations_as_of(
-                        as_of=as_of, product_type=product_type, before_run_id=as_of_run_id
-                    ),
-                    quarantined_keys,
-                )
+            as_of, records = self._resolved_observations_as_of_run(
+                as_of_run_id, product_type, quarantined_keys
+            )
         else:
             records = self.get_resolved_current_observations(
                 product_type=product_type, quarantined_keys=quarantined_keys
@@ -1086,8 +1234,10 @@ class PricingIntelligenceService:
                 now=now or datetime.now(timezone.utc),
                 max_age_hours=self.config.max_observation_age_hours,
             )
+        trusted = _exclude_suspicious(records)
         return build_market_snapshot(
-            _exclude_suspicious(records),
+            trusted,
+            admitted_keys=self.admitted_special_keys(trusted, product_type, rate_category),
             product_type=product_type,
             rate_category=rate_category,
             terms_months=self.config.tracked_terms_months,
@@ -1136,8 +1286,10 @@ class PricingIntelligenceService:
                 as_of=as_of, product_type=product_type, before_run_id=before_run_id
             ),
         )
+        trusted = _exclude_suspicious(records)
         return build_market_snapshot(
-            _exclude_suspicious(records),
+            trusted,
+            admitted_keys=self.admitted_special_keys(trusted, product_type, rate_category),
             product_type=product_type,
             rate_category=rate_category,
             terms_months=self.config.tracked_terms_months,
@@ -1246,18 +1398,26 @@ class PricingIntelligenceService:
         change happens to introduce.
         """
         rate_category = _resolve_rate_category(product_type, rate_category)
-        history = self.store.get_rate_history(
-            term_months=term_months, product_type=product_type, rate_category=rate_category
-        )
-        change_dates = {record.captured_at_utc.astimezone(tz).date() for record in history}
+        # An admitted special can move the term-deposit benchmark on a day no ordinary
+        # rate changed, so its own state starts and withdrawals are change dates too.
+        categories = {rate_category}
+        if _admits_specials(product_type, rate_category):
+            categories.add(SPECIAL_CATEGORY)
+        change_dates = {
+            record.captured_at_utc.astimezone(tz).date()
+            for category in categories
+            for record in self.store.get_rate_history(
+                term_months=term_months, product_type=product_type, rate_category=category
+            )
+        }
         for change in self.get_changes(
             days=None,
             term_months=term_months,
             product_type=product_type,
-            rate_category=rate_category,
+            rate_category=rate_category if len(categories) == 1 else None,
         ):
             if change.change_type is ChangeType.REMOVED_PRODUCT and (
-                change.rate_category == rate_category
+                change.rate_category in categories
             ):
                 change_dates.add(change.detected_at.astimezone(tz).date())
 
@@ -1276,8 +1436,10 @@ class PricingIntelligenceService:
                     as_of=as_of, product_type=product_type
                 ),
             )
+            trusted = _exclude_suspicious(records)
             snapshot = build_market_snapshot(
-                _exclude_suspicious(records),
+                trusted,
+                admitted_keys=self.admitted_special_keys(trusted, product_type, rate_category),
                 product_type=product_type,
                 rate_category=rate_category,
                 terms_months=[term_months],
@@ -1376,12 +1538,8 @@ class PricingIntelligenceService:
             days = days or self.config.market_state.lookback_days
             window = {"days": days}
         return compute_market_activity(
-            self.get_changes(
-                now=now,
-                scope_to_market=True,
-                product_type=product_type,
-                rate_category=rate_category,
-                **window,
+            self.get_market_changes(
+                product_type=product_type, rate_category=rate_category, now=now, **window
             ),
             lookback_days=days,
             now=now,
@@ -1405,12 +1563,11 @@ class PricingIntelligenceService:
         already scoped to those same settings.
         """
         rate_category = _resolve_rate_category(product_type, rate_category)
-        changes = self.get_changes(
-            days=self.config.market_state.lookback_days,
-            now=now,
-            scope_to_market=True,
+        changes = self.get_market_changes(
             product_type=product_type,
             rate_category=rate_category,
+            now=now,
+            days=self.config.market_state.lookback_days,
         )
         return classify_market_state(
             changes, thresholds=self.config.market_state, now=now
@@ -1431,13 +1588,17 @@ class PricingIntelligenceService:
         the newest stale record, i.e. the last known rate.
         """
         now = now or datetime.now(timezone.utc)
-        records = self.get_resolved_current_observations(product_type=product_type)
+        records = _exclude_suspicious(
+            self.get_resolved_current_observations(product_type=product_type)
+        )
+        rate_category = _resolve_rate_category(product_type, None)
         candidates = comparable_records(
-            _exclude_suspicious(records),
-            rate_category=_resolve_rate_category(product_type, None),
+            records,
+            rate_category=rate_category,
             banks=set(self.config.selected_banks),
             terms=set(self.config.tracked_terms_months),
             excluded_product_names=self.config.excluded_product_names,
+            admitted_keys=self.admitted_special_keys(records, product_type, rate_category),
         )
         threshold = self.config.max_observation_age_hours
         has_fresh = {

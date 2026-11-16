@@ -169,6 +169,36 @@ class QuarantinePolicy(BaseModel):
     escalation_after_runs: int = Field(default=3, ge=1)
 
 
+class DepositSpecialPolicy(BaseModel):
+    """Evidence phrases for term-deposit special comparability (DATA-001).
+
+    See :mod:`.deposit_specials`. Matched case-insensitively as whole phrases against a
+    special's own row text and column heading. A restriction phrase makes a special
+    not comparable; an availability phrase is the only positive evidence that admits it to
+    the ordinary term-deposit benchmark. These are evidence vocabularies, not assumptions:
+    a special matching neither stays *uncertain* and degrades the run.
+    """
+
+    restriction_markers: tuple[str, ...] = (
+        "new money", "new funds", "new deposits only", "new customers only",
+        "existing customers only", "for new customers", "for existing customers",
+        "online only", "apply online", "online applications only", "selected customers",
+        "private bank", "premium banking", "members only", "business customers",
+        "conditions apply", "eligibility criteria", "by invitation", "rollover", "reinvest",
+    )  # fmt: skip
+    availability_markers: tuple[str, ...] = (
+        "available to all", "all customers", "new and existing customers",
+        "existing and new customers", "open to all", "open to everyone",
+    )  # fmt: skip
+
+    @model_validator(mode="after")
+    def validate_markers(self) -> "DepositSpecialPolicy":
+        markers = self.restriction_markers + self.availability_markers
+        if any(not marker.strip() for marker in markers):
+            raise ValueError("deposit special markers must not be blank")
+        return self
+
+
 class PricingIntelligenceConfig(BaseModel):
     """Top-level pricing-intelligence settings."""
 
@@ -200,6 +230,7 @@ class PricingIntelligenceConfig(BaseModel):
     market_state: MarketStateThresholds = Field(default_factory=MarketStateThresholds)
     health: HealthThresholds = Field(default_factory=HealthThresholds)
     quarantine: QuarantinePolicy = Field(default_factory=QuarantinePolicy)
+    deposit_specials: DepositSpecialPolicy = Field(default_factory=DepositSpecialPolicy)
 
     @model_validator(mode="after")
     def validate_terms(self) -> "PricingIntelligenceConfig":
