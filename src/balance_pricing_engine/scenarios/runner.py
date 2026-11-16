@@ -18,6 +18,7 @@ from balance_pricing_engine.config import (
     LoanTierConfig,
     ResponseCoefficientsConfig,
     SegmentedPricingConfig,
+    revalidation_payload,
 )
 from balance_pricing_engine.diagnostics import (
     BoundaryDiagnostics,
@@ -208,8 +209,7 @@ def run_baseline_diagnostics(
     registry: object | None = None,
 ) -> ScenarioDiagnostics:
     """Run the baseline scenario and keep all evaluated pricing candidates."""
-    # exclude_unset: defaults stay defaults (see EconomicConfig.model_copy).
-    config = EngineConfig.model_validate(config.model_dump(exclude_unset=True))
+    config = EngineConfig.model_validate(revalidation_payload(config))
     rng = make_rng(config.random_seed)
     loan_customers = generate_loan_customers(config.simulation.n_loan_customers, rng)
     deposit_customers = generate_deposit_customers(config.simulation.n_deposit_customers, rng)

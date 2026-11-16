@@ -29,10 +29,7 @@ class EconomicConfig(BaseModel):
         deep: bool = False,
     ) -> _EconomicConfigT:
         # Pydantic's default model_copy trusts updates and skips all validation.
-        # exclude_unset keeps which fields were given explicitly (``model_fields_set``) across
-        # the round trip; a plain dump would turn every default into an explicit value (e.g. an
-        # omitted pricing_intelligence.min_banks would then be checked against selected_banks).
-        data = super().model_copy(deep=deep).model_dump(exclude_unset=True)
+        data = revalidation_payload(super().model_copy(deep=deep))
         data.update(update or {})
         return type(self).model_validate(data)
 
@@ -285,6 +282,26 @@ def _validate_tier_sequence(tier_name: str, tiers: list[tuple[str, Optional[floa
         raise ValueError(
             f"{tier_name} must have strictly increasing upper bounds (duplicates not allowed)."
         )
+
+
+def revalidation_payload(config: BaseModel) -> dict[str, Any]:
+    """Every effective value of ``config`` as a dict, for ``model_validate``.
+
+    A full ``model_dump()`` keeps every value, including in-place edits inside nested models
+    that were created from defaults (``exclude_unset`` would drop those whole sections). But it
+    also turns every default into an explicit value, and one validation depends on that
+    distinction: ``pricing_intelligence.min_banks`` is checked against ``selected_banks`` only
+    when given explicitly. So a defaulted ``min_banks`` is left out and stays the policy default.
+    """
+    data = config.model_dump()
+    intelligence = getattr(config, "pricing_intelligence", None)
+    if (
+        isinstance(intelligence, PricingIntelligenceConfig)
+        and "min_banks" not in intelligence.model_fields_set
+        and intelligence.min_banks == PricingIntelligenceConfig.model_fields["min_banks"].default
+    ):
+        del data["pricing_intelligence"]["min_banks"]
+    return data
 
 
 def load_config(path: str | Path) -> EngineConfig:
