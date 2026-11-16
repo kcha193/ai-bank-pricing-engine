@@ -99,7 +99,9 @@ class PricingService:
         self._feature_store = feature_store or LocalFeatureStore()
 
     def run_scenario(self, request: PricingScenarioRequest) -> PricingDecision:
-        request = replace(request, config=EngineConfig.model_validate(request.config.model_dump()))
+        # exclude_unset: defaults stay defaults (see EconomicConfig.model_copy).
+        revalidated = EngineConfig.model_validate(request.config.model_dump(exclude_unset=True))
+        request = replace(request, config=revalidated)
         request = replace(request, config=apply_competitor_rates_to_config(request.config))
         materialized_config_path = _materialize_effective_config(
             request.config, request.config_path

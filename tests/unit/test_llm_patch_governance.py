@@ -184,3 +184,19 @@ def test_llm_seed_must_be_usable_by_the_scenario_rng(tmp_path, seed):
     interface = interface_for(tmp_path, [{"path": ["random_seed"], "value": seed}])
     result = interface.propose(load_config("configs/base.yaml"), "invalid seed")
     assert result.proposal is None
+
+
+def test_patch_into_an_omitted_optional_section_is_refused():
+    """base.yaml omits ``multiperiod``: the section does not exist, so a patch cannot create it."""
+    from types import SimpleNamespace
+
+    from balance_pricing_engine.llm.scenario_interface import _patched_config
+
+    config = load_config("configs/base.yaml")
+    assert config.multiperiod is None
+    proposal = SimpleNamespace(
+        patches=[ConfigPatch(path=("multiperiod", "discount_rate"), value=0.05)]
+    )
+
+    with pytest.raises(ValueError, match="existing scenario section"):
+        _patched_config(config, proposal)

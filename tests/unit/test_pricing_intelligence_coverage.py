@@ -8,6 +8,7 @@ assessment and its enforcement at the single strategy seam every caller goes thr
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -415,3 +416,150 @@ def test_a_covered_overlay_prices_exactly_as_before(make_record):
     assert overlay.market == explicit.market
     assert overlay.response == config.response
     assert overlay.model_dump(exclude={"market"}) == config.model_dump(exclude={"market"})
+
+
+# ------------------------------------------- omitted-vs-explicit minimum through revalidation
+#
+# An omitted min_banks is the policy default and must not be checked against a small tracked
+# set; an explicit one must. The distinction lives in Pydantic's ``model_fields_set``, so every
+# dump -> validate round trip the engine performs must carry it, or a default would come back as
+# an explicit (and invalid) value. Regression for PR #74 review r4582806887.
+
+
+def _engine_config(tmp_path, intelligence_yaml):
+    path = tmp_path / "engine.yaml"
+    path.write_text(open("configs/base.yaml").read() + "\npricing_intelligence:\n" + intelligence_yaml)
+    return load_config(str(path))
+
+
+def _small_simulation(config):
+    return config.model_copy(
+        update={"simulation": {"n_loan_customers": 200, "n_deposit_customers": 200}}
+    )
+
+
+def _round_trips():
+    from balance_pricing_engine.competitor_rates.apply import revalidate_config
+    from balance_pricing_engine.llm.scenario_interface import ConfigPatch, _patched_config
+    from balance_pricing_engine.pricing_intelligence.strategy import (
+        apply_manual_competitor_rate_to_config,
+    )
+
+    patch = SimpleNamespace(patches=[ConfigPatch(path=("market", "cash_rate"), value=0.04)])
+    return {
+        "model_copy": lambda c: c.model_copy(update={"random_seed": 7}),
+        "revalidate_config": lambda c: revalidate_config(c, market_updates={"cash_rate": 0.04}),
+        "manual_overlay": lambda c: apply_manual_competitor_rate_to_config(c, 0.05),
+        "llm_patch": lambda c: _patched_config(c, patch),
+    }
+
+
+@pytest.mark.parametrize("seam", ["model_copy", "revalidate_config", "manual_overlay", "llm_patch"])
+@pytest.mark.parametrize(
+    "intelligence_yaml,expected_min,explicit",
+    [
+        ("  selected_banks: [ANZ]\n", 3, False),
+        ("  selected_banks: [ANZ, ASB]\n", 3, False),
+        ("  our_bank: null\n", 3, False),  # five default banks, minimum omitted
+        ("  selected_banks: [ANZ]\n  min_banks: 1\n", 1, True),
+        ("  selected_banks: [ANZ, ASB]\n  min_banks: 2\n", 2, True),
+        ("  min_banks: 3\n", 3, True),
+    ],
+)
+def test_revalidation_preserves_whether_min_banks_was_explicit(
+    tmp_path, seam, intelligence_yaml, expected_min, explicit
+):
+    config = _engine_config(tmp_path, intelligence_yaml)
+
+    revalidated = _round_trips()[seam](config).pricing_intelligence
+
+    assert revalidated.min_banks == expected_min
+    assert ("min_banks" in revalidated.model_fields_set) is explicit
+    assert revalidated.selected_banks == config.pricing_intelligence.selected_banks
+
+
+@pytest.mark.parametrize(
+    "intelligence_yaml",
+    ["  selected_banks: [ANZ]\n  min_banks: 3\n", "  selected_banks: [ANZ, ASB]\n  min_banks: 3\n"],
+)
+def test_an_explicit_minimum_above_the_tracked_banks_still_fails_to_load(tmp_path, intelligence_yaml):
+    with pytest.raises(ValidationError, match="exceeds the"):
+        _engine_config(tmp_path, intelligence_yaml)
+
+
+@pytest.mark.parametrize("value", [True, "3", None, 3.0])
+def test_min_banks_rejects_non_integer_types(value):
+    with pytest.raises(ValidationError):
+        PricingIntelligenceConfig(min_banks=value)
+
+
+def test_an_explicit_minimum_stays_checked_after_a_copy_shrinks_the_tracked_set(tmp_path):
+    """An explicit minimum must not become silently valid by being carried through a copy."""
+    config = _engine_config(tmp_path, "  min_banks: 3\n")
+    intelligence = config.pricing_intelligence.model_dump(exclude_unset=True)
+
+    with pytest.raises(ValidationError, match="exceeds the"):
+        config.model_copy(
+            update={"pricing_intelligence": {**intelligence, "selected_banks": ["ANZ"]}}
+        )
+
+
+def test_revalidation_keeps_the_effective_config_and_its_hash(tmp_path):
+    from balance_pricing_engine.competitor_rates.apply import revalidate_config
+    from balance_pricing_engine.config_identity import effective_config_hash
+
+    for config in (
+        load_config("configs/base.yaml"),
+        _engine_config(tmp_path, "  selected_banks: [ANZ]\n"),
+    ):
+        revalidated = revalidate_config(config)
+        assert revalidated.model_dump() == config.model_dump()
+        assert effective_config_hash(revalidated) == effective_config_hash(config)
+
+
+def test_revalidation_still_rejects_an_unrelated_invalid_financial_overlay(tmp_path):
+    from balance_pricing_engine.competitor_rates.apply import (
+        CompetitorRateResolutionError,
+        revalidate_config,
+    )
+
+    config = _engine_config(tmp_path, "  selected_banks: [ANZ]\n")
+
+    with pytest.raises(CompetitorRateResolutionError, match="invalid configuration"):
+        revalidate_config(config, market_updates={"cash_rate": float("nan")})
+
+
+def test_manual_baseline_runs_on_a_small_tracked_set_with_the_default_minimum(tmp_path):
+    from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
+
+    config = _small_simulation(_engine_config(tmp_path, "  selected_banks: [ANZ]\n"))
+
+    diagnostics = run_baseline_diagnostics(config, max_boundary_expansions=0)
+
+    assert diagnostics.best_result is not None
+
+
+def test_pricing_service_runs_on_a_small_tracked_set_with_the_default_minimum(tmp_path):
+    from balance_pricing_engine.application import PricingScenarioRequest, PricingService
+
+    config = _small_simulation(_engine_config(tmp_path, "  selected_banks: [ANZ]\n"))
+
+    decision = PricingService().run_scenario(
+        PricingScenarioRequest(config=config, max_boundary_expansions=0)
+    )
+
+    assert decision.decision_record is not None
+
+
+def test_a_small_tracked_set_keeps_the_market_policy_and_manual_contract(tmp_path, make_record):
+    config = _engine_config(tmp_path, "  selected_banks: [ANZ]\n")
+    thin = _hl_snapshot([_hl(make_record, "ANZ", 4.79)])
+
+    assert apply_market_strategy_to_config(config, strategy="MANUAL", snapshot=thin) is config
+    with pytest.raises(InsufficientCoverageError, match="minimum required: 3"):
+        apply_market_strategy_to_config(config, strategy="MARKET_MEDIAN", snapshot=thin)
+
+    lowered = _engine_config(tmp_path, "  selected_banks: [ANZ]\n  min_banks: 1\n")
+    overlay = resolve_market_overlay(lowered, strategy="MARKET_MEDIAN", snapshot=thin)
+    assert overlay.config.market.competitor_loan_rate == pytest.approx(0.0479)
+    assert overlay.loan.coverage.min_banks == 1

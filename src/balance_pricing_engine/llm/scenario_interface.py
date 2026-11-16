@@ -196,11 +196,13 @@ class NLScenarioResult:
 
 def _patched_config(config: EngineConfig, proposal: PatchProposal) -> EngineConfig:
     # Dump once, patch only this detached in-memory document, validate the complete batch once.
-    data = config.model_dump()
+    # exclude_unset: defaults stay defaults (see EconomicConfig.model_copy). An omitted
+    # optional section is then absent rather than None; both mean "no existing section".
+    data = config.model_dump(exclude_unset=True)
     for patch in proposal.patches:
         target = data
         for key in patch.path[:-1]:
-            target = target[key]
+            target = target.get(key)
             if not isinstance(target, dict):
                 raise ValueError("Patch requires an existing scenario section.")
         target[patch.path[-1]] = patch.value

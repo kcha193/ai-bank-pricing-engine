@@ -58,7 +58,8 @@ def revalidate_config(
     same failure mode; ``context`` names the overlay in the raised error.
     """
     try:
-        data = config.model_dump()
+        # exclude_unset: defaults stay defaults (see EconomicConfig.model_copy).
+        data = config.model_dump(exclude_unset=True)
         if market_updates is not None:
             data["market"].update(market_updates)
         return type(config).model_validate(data)

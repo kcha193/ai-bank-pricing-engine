@@ -29,7 +29,10 @@ class EconomicConfig(BaseModel):
         deep: bool = False,
     ) -> _EconomicConfigT:
         # Pydantic's default model_copy trusts updates and skips all validation.
-        data = super().model_copy(deep=deep).model_dump()
+        # exclude_unset keeps which fields were given explicitly (``model_fields_set``) across
+        # the round trip; a plain dump would turn every default into an explicit value (e.g. an
+        # omitted pricing_intelligence.min_banks would then be checked against selected_banks).
+        data = super().model_copy(deep=deep).model_dump(exclude_unset=True)
         data.update(update or {})
         return type(self).model_validate(data)
 
