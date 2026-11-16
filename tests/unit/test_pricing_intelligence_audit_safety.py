@@ -32,7 +32,8 @@ def test_own_bank_is_excluded_from_service_and_overlay_benchmarks(make_record, s
         make_record(bank=b, rate_pct=r, observed_at=now)
         for b, r in [("ASB", 4.0), ("ANZ", 4.8), ("BNZ", 4.9)]
     ]
-    intelligence = PricingIntelligenceConfig(our_bank="ASB")
+    # Three banks, one of them ours: two competitors remain, so accept two explicitly here.
+    intelligence = PricingIntelligenceConfig(our_bank="ASB", min_banks=2)
     config = load_config("configs/base.yaml").model_copy(
         update={"pricing_intelligence": intelligence}
     )

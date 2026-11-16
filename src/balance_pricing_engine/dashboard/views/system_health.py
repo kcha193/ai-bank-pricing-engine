@@ -30,6 +30,7 @@ from balance_pricing_engine.pricing_intelligence.health import (
     CollectorStatus,
     FreshnessState,
     HealthLevel,
+    RunHealth,
     SystemHealth,
 )
 
@@ -58,6 +59,7 @@ def _components(health: SystemHealth) -> pd.DataFrame:
             f"Observations older than {health.max_observation_age_hours:.0f} h are excluded",
         ),
         ("Last run", run.status if run else "NONE RECORDED", last_run_detail),
+        ("Latest collection", health.run_health.value, health.collection_summary),
         ("Telegram", _yes_no(health.telegram_configured), ""),
         ("Webhook", _yes_no(health.webhook_configured), ""),
     ]
@@ -73,6 +75,13 @@ def _collectors(health: SystemHealth) -> pd.DataFrame:
                 "Observation age": fmt_age_hours(b.freshness.age_hours),
                 "Failures": b.consecutive_failures,
                 "Freshness": fmt_freshness(b.freshness.state),
+                "Operational status": b.operational.label if b.operational else EM_DASH,
+                "Latest attempt": (
+                    f"{fmt_nz_datetime(b.operational.latest_attempt_at)} · "
+                    f"{b.operational.collection.value}"
+                    if b.operational and b.operational.latest_attempt_at
+                    else EM_DASH
+                ),
                 "Health": fmt_health(b.health),
                 "Current records": b.current_record_count,
                 "Last error": b.last_error,
@@ -83,6 +92,12 @@ def _collectors(health: SystemHealth) -> pd.DataFrame:
 
 
 def _explain(health: SystemHealth, exclusions) -> None:
+    if health.run_health in (RunHealth.FAILED, RunHealth.DEGRADED):
+        # A failed or partial attempt must never read as a refresh (DATA-004).
+        st.warning(
+            f"{health.collection_summary}. Stored observations were not refreshed by that "
+            "attempt; their ages below are unchanged."
+        )
     for bank in health.banks:
         if bank.collector is CollectorStatus.FAILING:
             observation_message = {
@@ -213,6 +228,9 @@ DATA_STATES = """
 | **No market data** | Nothing has been collected yet (or the database is unavailable). |
 | **⚠ Stale** | The latest validated observation is older than the freshness limit; it is excluded from rankings and statistics. |
 | **Collection failing** | The collector could not read the bank's page. Its last validated rate is kept and ages normally; it is never treated as a withdrawal. |
+| **Degraded** | The rate is still inside the age limit, but the latest collection attempt failed or skipped the bank. The rate was not refreshed. |
+| **Unknown** | No collection run is recorded for the product, so a stored rate is not treated as confirmed. |
+| **Insufficient coverage** | Fewer distinct eligible banks than the configured minimum: rates are shown as observed data, and market-derived scenarios are refused. |
 | **Quarantined** | A reading failed plausibility checks. The last confirmed rate is shown and labelled instead. |
 | **Incomplete coverage** | Fewer banks are fresh than are configured, so market statistics cover fewer banks. |
 """
@@ -248,9 +266,11 @@ def _overview_tiles(
     cols[2].metric(prefix + "Last run age", run_age, border=True)
     cols[3].metric(
         prefix + "Fresh banks",
-        f"{health.fresh_bank_count} / {len(health.banks)}",
+        f"{health.confirmed_fresh_bank_count} / {len(health.banks)}",
         border=True,
-        help=f"Observations older than {health.max_observation_age_hours:.0f} h are stale.",
+        help=f"Banks with observations newer than {health.max_observation_age_hours:.0f} h "
+        f"that were collected successfully in the latest attempt. "
+        f"{health.fresh_bank_count} have observations inside the age limit.",
     )
     cols[4].metric(prefix + "Collectors failing", failing, border=True)
     cols[5].metric(

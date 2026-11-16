@@ -156,6 +156,10 @@ class MarketSnapshot:
     product_type: ProductType
     terms: dict[int, TermMarket]
     rate_category: Optional[str] = None
+    #: The time this view describes the market *at* -- ``now`` for a live view, the run start for
+    #: a reconstruction. ``as_of`` is the newest input, which says nothing about the oldest; input
+    #: ages are measured against this (see :mod:`.coverage`). ``None`` for legacy callers.
+    evaluated_at: Optional[datetime] = None
 
     @property
     def banks(self) -> tuple[str, ...]:
@@ -214,6 +218,7 @@ def build_market_snapshot(
     excluded_product_names: Optional[Iterable[str]] = None,
     quarantined_keys: Optional[set[str]] = None,
     admitted_keys: Optional[set[str]] = None,
+    evaluated_at: Optional[datetime] = None,
 ) -> MarketSnapshot:
     """Build a market snapshot from a set of current observations.
 
@@ -236,6 +241,9 @@ def build_market_snapshot(
     ``rate_category`` on its :class:`BankTermRate`, so a promotional
     representative stays visible. On an exact rate tie the record in
     ``rate_category`` itself is preferred, whatever the input order.
+
+    ``evaluated_at`` records when the view was evaluated (see :attr:`MarketSnapshot.evaluated_at`);
+    it never filters records.
     """
     product = ProductType(product_type)
     lower_is_better = _better_is_lower(product)
@@ -327,6 +335,7 @@ def build_market_snapshot(
         product_type=product,
         terms=terms,
         rate_category=rate_category,
+        evaluated_at=evaluated_at,
     )
 
 

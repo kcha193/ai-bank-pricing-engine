@@ -186,7 +186,12 @@ def run_collection(
             for term in terms:
                 try:
                     comparison = run_triggered_scenarios(
-                        pricing_config, term_months=term, snapshot=snapshot
+                        pricing_config,
+                        term_months=term,
+                        snapshot=snapshot,
+                        # The collecting store's own coverage policy (DATA-003): an
+                        # under-covered term raises and is skipped below, never priced.
+                        min_banks=config.min_banks,
                     )
                 except Exception:  # noqa: BLE001 - decision-support only, one term must not cost the rest
                     logger.warning(

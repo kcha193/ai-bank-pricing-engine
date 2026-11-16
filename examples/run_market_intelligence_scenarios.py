@@ -100,6 +100,9 @@ def main() -> None:
                 snapshot=snapshot,
                 term_months=args.term,
                 offset_bps=offset,
+                # The store's own coverage policy, even when --config has no
+                # pricing_intelligence block of its own.
+                min_banks=intelligence_config.min_banks,
             )
             # The same optimiser every other scenario uses.
             diagnostics = run_baseline_diagnostics(config)

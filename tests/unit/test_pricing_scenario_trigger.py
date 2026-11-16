@@ -180,3 +180,63 @@ def test_a_term_deposit_snapshot_overlays_the_deposit_side_not_the_loan_side():
     assert no_change.competitor_rate == _small_config().market.competitor_deposit_rate, (
         "the loan-side competitor rate must be untouched by a deposit scenario"
     )
+
+
+# ------------------------------------------------- benchmark coverage (DATA-003, T26/T27)
+
+
+def _no_optimiser(monkeypatch):
+    import balance_pricing_engine.pricing_scenario_trigger as trigger
+
+    def refuse(*args, **kwargs):  # pragma: no cover - reaching it is the failure
+        raise AssertionError("an under-covered benchmark must never reach the optimiser")
+
+    monkeypatch.setattr(trigger, "run_baseline_diagnostics", refuse)
+
+
+def test_home_loan_scenarios_enforce_coverage_before_any_optimiser_run(monkeypatch):
+    """T26."""
+    import pytest
+
+    from balance_pricing_engine.pricing_intelligence.strategy import InsufficientCoverageError
+
+    _no_optimiser(monkeypatch)
+    thin = build_market_snapshot([_record("ANZ", 4.79), _record("BNZ", 4.85)])
+
+    with pytest.raises(InsufficientCoverageError, match="12-month home loans: 2 eligible banks"):
+        run_triggered_scenarios(_small_config(), term_months=12, snapshot=thin)
+
+
+def test_term_deposit_scenarios_enforce_coverage_before_any_optimiser_run(monkeypatch):
+    """T27."""
+    import pytest
+
+    from balance_pricing_engine.pricing_intelligence.strategy import InsufficientCoverageError
+
+    _no_optimiser(monkeypatch)
+    thin = build_market_snapshot(
+        [_deposit_record("ANZ", 4.00)], product_type="term_deposit", rate_category="term_deposit"
+    )
+
+    with pytest.raises(
+        InsufficientCoverageError,
+        match=r"^Insufficient competitor coverage for 12-month term deposits: 1 eligible bank; "
+        r"minimum required: 3\.$",
+    ):
+        run_triggered_scenarios(_small_config(), term_months=12, snapshot=thin)
+
+
+def test_scenario_coverage_follows_the_engine_config_and_reports_its_evidence():
+    from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
+
+    config = _small_config().model_copy(
+        update={"pricing_intelligence": PricingIntelligenceConfig(min_banks=5)}
+    )
+
+    comparison = run_triggered_scenarios(
+        config, term_months=12, snapshot=_snapshot(), max_boundary_expansions=0
+    )
+
+    assert comparison.coverage.eligible_bank_count == 5
+    assert comparison.coverage.min_banks == 5
+    assert comparison.coverage.sufficient

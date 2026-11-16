@@ -794,7 +794,28 @@ def _strategy(service: PricingIntelligenceService, args: argparse.Namespace) -> 
     print(f"  offset_bps            {assumption.offset_bps:+.0f}")
     print(f"  source banks          {', '.join(assumption.source_banks) or 'n/a'}")
     print(f"  rationale             {assumption.rationale}")
+    coverage = assumption.coverage
+    if coverage is None:
+        print(f"  evidence              {assumption.evidence_summary()}")
+        return 0
+    print(
+        f"  eligible banks        {coverage.eligible_bank_count} (minimum {coverage.min_banks}): "
+        f"{', '.join(coverage.eligible_banks)}"
+    )
+    print(f"  coverage              {coverage.status.value}")
+    print(f"  evaluated at          {coverage.evaluated_at:%Y-%m-%d %H:%M} UTC")
+    print(f"  newest input          {_utc_or_na(coverage.newest_observed_at)}")
+    age = (
+        f" ({coverage.oldest_input_age_hours:.0f} h old)"
+        if coverage.oldest_input_age_hours is not None
+        else ""
+    )
+    print(f"  oldest input          {_utc_or_na(coverage.oldest_observed_at)}{age}")
     return 0
+
+
+def _utc_or_na(value: Optional[datetime]) -> str:
+    return f"{value:%Y-%m-%d %H:%M} UTC" if value is not None else "n/a"
 
 
 def _ocr(collection_config: CollectionConfig) -> int:

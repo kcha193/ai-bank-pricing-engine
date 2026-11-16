@@ -1,0 +1,30 @@
+===== Case H: service.resolve_competitor_assumption(MARKET_MEDIAN, 12m)
+-- home_loan
+ day 1: 4.850% | eligible 5/min 3 | status SUFFICIENT | as_of(newest) 2026-11-11 18:30 | oldest 2026-11-10 18:30 (25 h)
+ day 6: 4.850% | eligible 5/min 3 | status SUFFICIENT_AGED | as_of(newest) 2026-11-16 18:30 | oldest 2026-11-10 18:30 (145 h)
+ day 8: REFUSED InsufficientCoverageError: Insufficient competitor coverage for 12-month home loans: 1 eligible bank; minimum required: 3.
+-- term_deposit
+ day 1: 4.000% | eligible 5/min 3 | status SUFFICIENT | as_of(newest) 2026-11-11 18:30 | oldest 2026-11-10 18:30 (25 h)
+ day 6: 4.000% | eligible 5/min 3 | status SUFFICIENT_AGED | as_of(newest) 2026-11-16 18:30 | oldest 2026-11-10 18:30 (145 h)
+ day 8: REFUSED InsufficientCoverageError: Insufficient competitor coverage for 12-month term deposits: 1 eligible bank; minimum required: 3.
+
+===== Case I-b: seeded TD market, then every TD fetch fails
+-- @T0+1d exit 1 | run_health FAILED | Latest collection failed: 5 of 5 banks failed
+   fresh_bank_count (rate age) 5 | confirmed_fresh_bank_count 0
+          Age (hours)                                                                           Status Latest attempt status
+Bank                                                                                                                        
+ANZ              25.0  Degraded — last collection failed; latest trusted observations are 25 hours old                FAILED
+ASB              25.0  Degraded — last collection failed; latest trusted observations are 25 hours old                FAILED
+BNZ              25.0  Degraded — last collection failed; latest trusted observations are 25 hours old                FAILED
+Westpac          25.0  Degraded — last collection failed; latest trusted observations are 25 hours old                FAILED
+Kiwibank         25.0  Degraded — last collection failed; latest trusted observations are 25 hours old                FAILED
+-- @T0+8d exit 1 | run_health FAILED | Latest collection failed: 5 of 5 banks failed
+   fresh_bank_count (rate age) 0 | confirmed_fresh_bank_count 0
+          Age (hours)                                                                                                          Status Latest attempt status
+Bank                                                                                                                                                       
+ANZ             193.0  Stale — latest trusted observations are 193 hours old; excluded from market statistics; last collection failed                FAILED
+ASB             193.0  Stale — latest trusted observations are 193 hours old; excluded from market statistics; last collection failed                FAILED
+BNZ             193.0  Stale — latest trusted observations are 193 hours old; excluded from market statistics; last collection failed                FAILED
+Westpac         193.0  Stale — latest trusted observations are 193 hours old; excluded from market statistics; last collection failed                FAILED
+Kiwibank        193.0  Stale — latest trusted observations are 193 hours old; excluded from market statistics; last collection failed                FAILED
+-- home_loan side unaffected: run_health UNKNOWN (No collection run recorded)

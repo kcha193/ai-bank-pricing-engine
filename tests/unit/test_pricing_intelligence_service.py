@@ -1579,7 +1579,10 @@ def test_resolve_rate_category_defaults_per_product_but_honours_an_explicit_valu
 def _deposit_service(make_record, *records_kwargs):
     service = PricingIntelligenceService(
         config=PricingIntelligenceConfig(
-            database_path=":memory:", collection=CollectionConfig(inter_request_delay_seconds=0)
+            database_path=":memory:",
+            collection=CollectionConfig(inter_request_delay_seconds=0),
+            # Thin category-routing fixtures: the coverage minimum is tested separately.
+            min_banks=1,
         ),
         store=ObservationStore(":memory:"),
     )
@@ -1638,6 +1641,8 @@ def test_resolve_competitor_assumption_does_not_blend_categories(service, make_r
         ],
         observed_at=DAY_ONE,
     )
+    # One comparable bank by design (blending would make it two); the minimum is tested elsewhere.
+    service.config = service.config.model_copy(update={"min_banks": 1})
 
     assumption = service.resolve_competitor_assumption(strategy=CompetitorRateStrategy.MARKET_MEDIAN)
 

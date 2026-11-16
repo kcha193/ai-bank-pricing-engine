@@ -25,6 +25,12 @@ from balance_pricing_engine.competitor_rates.apply import (
 )
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.pricing_intelligence.bps import bps_to_percent
+from balance_pricing_engine.pricing_intelligence.coverage import (
+    DEFAULT_AGED_INPUT_HOURS,
+    DEFAULT_MIN_BANKS,
+    BenchmarkCoverage,
+    assess_benchmark_coverage,
+)
 from balance_pricing_engine.pricing_intelligence.rbnz import OcrSeries
 from balance_pricing_engine.pricing_intelligence.rbnz import _parse_period as _parse_ocr_period
 from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot, TermMarket
@@ -36,6 +42,20 @@ class MarketStrategyError(CompetitorRateResolutionError):
     Subclasses the existing competitor-rate error so delivery layers that
     already map that failure to a 422 keep working unchanged.
     """
+
+
+class InsufficientCoverageError(MarketStrategyError):
+    """Too few distinct eligible banks for a market-derived benchmark (DATA-003).
+
+    Raised instead of resolving a "market" statistic from one or two banks, and never answered
+    by silently substituting the configured rate. ``coverage`` carries the evidence (eligible
+    banks, the minimum, input ages) for delivery layers that explain the refusal. A term with no
+    eligible bank at all raises this too, with ``coverage`` describing zero banks.
+    """
+
+    def __init__(self, message: str, coverage: Optional[BenchmarkCoverage] = None) -> None:
+        super().__init__(message)
+        self.coverage = coverage
 
 
 def _require_snapshot_product(
@@ -90,12 +110,27 @@ class ResolvedCompetitorAssumption:
     source_banks: tuple[str, ...]
     as_of: Optional[datetime]
     rationale: str
+    #: Coverage and input-age evidence for a market-derived assumption; ``None`` under MANUAL,
+    #: which consults no market. ``as_of`` stays the snapshot's newest input; the *oldest*
+    #: input's timestamp and age live here (DATA-003).
+    coverage: Optional[BenchmarkCoverage] = None
+
+    @property
+    def is_market_benchmark(self) -> bool:
+        """True only for an assumption resolved from a sufficiently covered market view."""
+        return self.coverage is not None and self.coverage.sufficient
 
     def summary(self) -> str:
         return (
             f"{self.strategy.value} @ {self.term_months}m -> {self.rate_pct:.2f}% "
             f"({self.rationale})"
         )
+
+    def evidence_summary(self) -> str:
+        """What the assumption rests on: banks and oldest input, or a manual disclosure."""
+        if self.coverage is None:
+            return "manual scenario assumption; not a verified market benchmark"
+        return self.coverage.describe()
 
 
 def resolve_competitor_rate(
@@ -105,8 +140,19 @@ def resolve_competitor_rate(
     manual_rate: Optional[float] = None,
     offset_bps: float = 0.0,
     our_bank: Optional[str] = None,
+    *,
+    min_banks: Optional[int] = None,
+    now: Optional[datetime] = None,
+    aged_input_hours: Optional[float] = None,
 ) -> ResolvedCompetitorAssumption:
     """Resolve the competitor rate assumption for one term.
+
+    Every market-derived strategy requires at least ``min_banks`` distinct eligible banks at
+    the term, after the own-bank exclusion; fewer raises :class:`InsufficientCoverageError`.
+    ``None`` applies the documented default, :data:`.coverage.DEFAULT_MIN_BANKS` (3), so a
+    direct caller cannot bypass the policy by omission; pass a smaller value explicitly (and
+    deliberately) to accept a thinner market. ``now`` is the evaluation time input ages are
+    measured against (default: the snapshot's own ``evaluated_at``, then ``as_of``).
 
     ``offset_bps`` shifts the resolved market rate, which is what expresses a
     scenario such as "market leader minus 5 bps" without inventing a strategy
@@ -138,14 +184,27 @@ def resolve_competitor_rate(
         raise MarketStrategyError(f"{strategy.value} requires a market snapshot")
     if not math.isfinite(offset_bps):
         raise MarketStrategyError("offset_bps must be finite")
+    coverage = assess_benchmark_coverage(
+        snapshot,
+        term_months,
+        min_banks=DEFAULT_MIN_BANKS if min_banks is None else min_banks,
+        our_bank=our_bank,
+        now=now,
+        aged_input_hours=(
+            DEFAULT_AGED_INPUT_HOURS if aged_input_hours is None else aged_input_hours
+        ),
+    )
     term_market = snapshot.term(term_months)
     if term_market is not None:
         term_market = term_market.excluding_bank(our_bank)
     if term_market is None or not term_market.entries:
-        raise MarketStrategyError(
+        raise InsufficientCoverageError(
             f"{strategy.value} requires advertised rates at {term_months} months; "
-            f"snapshot covers {list(snapshot.term_months)}"
+            f"snapshot covers {list(snapshot.term_months)}",
+            coverage,
         )
+    if not coverage.sufficient:
+        raise InsufficientCoverageError(coverage.shortfall_message(), coverage)
 
     base_pct, rationale = _resolve_market_rate(strategy, term_market)
     rationale += _promotional_note(term_market)
@@ -173,6 +232,7 @@ def resolve_competitor_rate(
         # view this assumption was actually resolved from.
         as_of=snapshot.as_of,
         rationale=rationale,
+        coverage=coverage,
     )
 
 
@@ -213,6 +273,25 @@ def _resolve_market_rate(
     raise MarketStrategyError(f"unsupported competitor-rate strategy: {strategy}")
 
 
+@dataclass(frozen=True)
+class MarketOverlay:
+    """A config with market-derived competitor assumptions applied, and their evidence."""
+
+    config: object
+    loan: ResolvedCompetitorAssumption
+    deposit: Optional[ResolvedCompetitorAssumption] = None
+
+
+def _policy(config, min_banks: Optional[int]) -> dict:
+    """Coverage policy for an overlay: explicit ``min_banks``, else the engine config's
+    ``pricing_intelligence`` block, else the documented defaults."""
+    intelligence = getattr(config, "pricing_intelligence", None)
+    if min_banks is None and intelligence is not None:
+        min_banks = intelligence.min_banks
+    aged = intelligence.aged_input_hours if intelligence is not None else None
+    return {"min_banks": min_banks, "aged_input_hours": aged}
+
+
 def apply_market_strategy_to_config(
     config,
     strategy: CompetitorRateStrategy | str = CompetitorRateStrategy.MANUAL,
@@ -224,6 +303,9 @@ def apply_market_strategy_to_config(
     deposit_strategy: Optional[CompetitorRateStrategy | str] = None,
     deposit_term_months: Optional[int] = None,
     deposit_offset_bps: float = 0.0,
+    *,
+    min_banks: Optional[int] = None,
+    now: Optional[datetime] = None,
 ):
     """Return ``config`` with its loan-side competitor assumption resolved.
 
@@ -239,12 +321,58 @@ def apply_market_strategy_to_config(
     for ``strategy`` without ``snapshot`` -- a requested market strategy must
     not silently fall back to the stale configured rate.
 
+    Each market-derived side must meet the coverage minimum on its own (a joint overlay never
+    lets one well-covered side vouch for the other): ``min_banks`` if given, else
+    ``config.pricing_intelligence.min_banks``, else :data:`.coverage.DEFAULT_MIN_BANKS`.
+    Under-coverage raises :class:`InsufficientCoverageError`; the configured rate is never
+    substituted.
+
     When ``set_reference_rate`` is true the market-relative spread anchor
     (``home_loan_reference_rate``) is moved with the competitor rate, so
     ``pricing_strategy.home_loan_spread_bps`` reads as spread-to-market. This
     mirrors :func:`competitor_rates.apply.apply_competitor_rates_to_config`.
     Set it false to keep spreads anchored to an independent benchmark.
     """
+    return resolve_market_overlay(
+        config,
+        strategy=strategy,
+        snapshot=snapshot,
+        term_months=term_months,
+        offset_bps=offset_bps,
+        set_reference_rate=set_reference_rate,
+        deposit_snapshot=deposit_snapshot,
+        deposit_strategy=deposit_strategy,
+        deposit_term_months=deposit_term_months,
+        deposit_offset_bps=deposit_offset_bps,
+        min_banks=min_banks,
+        now=now,
+    ).config
+
+
+def resolve_market_overlay(
+    config,
+    strategy: CompetitorRateStrategy | str = CompetitorRateStrategy.MANUAL,
+    snapshot: Optional[MarketSnapshot] = None,
+    term_months: int = 12,
+    offset_bps: float = 0.0,
+    set_reference_rate: bool = True,
+    deposit_snapshot: Optional[MarketSnapshot] = None,
+    deposit_strategy: Optional[CompetitorRateStrategy | str] = None,
+    deposit_term_months: Optional[int] = None,
+    deposit_offset_bps: float = 0.0,
+    *,
+    min_banks: Optional[int] = None,
+    now: Optional[datetime] = None,
+) -> "MarketOverlay":
+    """:func:`apply_market_strategy_to_config` plus the evidence behind each side.
+
+    Returns a :class:`MarketOverlay`: the overlaid config and each side's
+    :class:`ResolvedCompetitorAssumption` (``deposit`` is ``None`` when the deposit side was not
+    requested). Delivery layers use it to show bank coverage and input age beside a result.
+    The coverage policy is resolved by :func:`_policy`; side semantics, the MANUAL
+    same-object invariant and ``set_reference_rate`` are as documented there.
+    """
+    policy = _policy(config, min_banks)
     resolved_strategy = CompetitorRateStrategy(strategy)
     resolved_deposit_strategy = (
         CompetitorRateStrategy(deposit_strategy)
@@ -269,6 +397,8 @@ def apply_market_strategy_to_config(
         manual_rate=config.market.competitor_loan_rate,
         offset_bps=offset_bps,
         our_bank=config.pricing_intelligence.our_bank if config.pricing_intelligence else None,
+        now=now,
+        **policy,
     )
 
     updates: dict = {}
@@ -284,6 +414,7 @@ def apply_market_strategy_to_config(
     # silently instead of failing the way the loan side already does; the
     # resolve_competitor_rate() call below is what raises "requires a market
     # snapshot" for that case.
+    resolved_deposit = None
     if deposit_snapshot is not None or deposit_strategy is not None:
         resolved_deposit = resolve_competitor_rate(
             strategy=deposit_strategy if deposit_strategy is not None else strategy,
@@ -294,6 +425,8 @@ def apply_market_strategy_to_config(
             manual_rate=config.market.competitor_deposit_rate,
             offset_bps=deposit_offset_bps,
             our_bank=config.pricing_intelligence.our_bank if config.pricing_intelligence else None,
+            now=now,
+            **policy,
         )
         if resolved_deposit.strategy is not CompetitorRateStrategy.MANUAL:
             updates["competitor_deposit_rate"] = resolved_deposit.competitor_loan_rate
@@ -308,9 +441,13 @@ def apply_market_strategy_to_config(
     # No side resolved to a market rate: MANUAL must return the very same
     # object, not a copy, so existing scenarios are untouched.
     if not updates:
-        return config
+        return MarketOverlay(config, resolved, resolved_deposit)
 
-    return revalidate_config(config, context="market-intelligence overlay", market_updates=updates)
+    return MarketOverlay(
+        revalidate_config(config, context="market-intelligence overlay", market_updates=updates),
+        resolved,
+        resolved_deposit,
+    )
 
 
 def apply_manual_competitor_rate_to_config(

@@ -26,12 +26,20 @@ via ``orchestration.run_operational_cycle``'s injectable
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from typing import Optional
 
 from balance_pricing_engine.competitor_rates.models import ProductType
 from balance_pricing_engine.config import EngineConfig
+from balance_pricing_engine.pricing_intelligence.coverage import (
+    DEFAULT_MIN_BANKS,
+    BenchmarkCoverage,
+    assess_benchmark_coverage,
+)
 from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot
 from balance_pricing_engine.pricing_intelligence.strategy import (
     CompetitorRateStrategy,
+    InsufficientCoverageError,
     apply_market_strategy_to_config,
 )
 from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
@@ -89,6 +97,8 @@ class ScenarioComparison:
     rows: tuple[ScenarioRow, ...] = field(default_factory=tuple)
 
     product_type: ProductType = ProductType.HOME_LOAN
+    #: Bank coverage and oldest-input age of the benchmark every market row was resolved from.
+    coverage: Optional[BenchmarkCoverage] = None
 
     @property
     def median_reference(self) -> "ScenarioRow | None":
@@ -118,6 +128,8 @@ def run_triggered_scenarios(
     term_months: int,
     snapshot: MarketSnapshot,
     max_boundary_expansions: int = 2,
+    min_banks: Optional[int] = None,
+    now: Optional[datetime] = None,
 ) -> ScenarioComparison:
     """Run the fixed scenario set for one term, against ``snapshot``.
 
@@ -132,8 +144,28 @@ def run_triggered_scenarios(
     (``HOME_LOAN``) drives the loan side as before. ``apply_market_strategy_to_config``
     requires the loan-side ``snapshot`` argument to be a home-loan market view for
     every non-MANUAL strategy, so a term-deposit snapshot must never be passed there.
+
+    Every row but "No change" is market-derived, so the term's benchmark must meet the coverage
+    minimum (``min_banks``, else ``base_config.pricing_intelligence.min_banks``, else the
+    documented default) before any optimiser run starts; under-coverage raises
+    :class:`~.pricing_intelligence.strategy.InsufficientCoverageError` and produces no partial
+    comparison.
     """
     is_deposit = ProductType(snapshot.product_type) is ProductType.TERM_DEPOSIT
+    intelligence = base_config.pricing_intelligence
+    if min_banks is None:
+        min_banks = intelligence.min_banks if intelligence is not None else DEFAULT_MIN_BANKS
+    coverage_kwargs = {"aged_input_hours": intelligence.aged_input_hours} if intelligence else {}
+    coverage = assess_benchmark_coverage(
+        snapshot,
+        term_months,
+        min_banks=min_banks,
+        our_bank=intelligence.our_bank if intelligence is not None else None,
+        now=now,
+        **coverage_kwargs,
+    )
+    if not coverage.sufficient:
+        raise InsufficientCoverageError(coverage.shortfall_message(), coverage)
     rows: list[ScenarioRow] = []
     for label, strategy, offset_bps in _SCENARIOS:
         if is_deposit:
@@ -143,6 +175,8 @@ def run_triggered_scenarios(
                 deposit_snapshot=snapshot,
                 deposit_term_months=term_months,
                 deposit_offset_bps=offset_bps,
+                min_banks=min_banks,
+                now=now,
             )
         else:
             scenario_config = apply_market_strategy_to_config(
@@ -151,6 +185,8 @@ def run_triggered_scenarios(
                 snapshot=snapshot,
                 term_months=term_months,
                 offset_bps=offset_bps,
+                min_banks=min_banks,
+                now=now,
             )
         diagnostics = run_baseline_diagnostics(
             scenario_config, max_boundary_expansions=max_boundary_expansions
@@ -172,7 +208,10 @@ def run_triggered_scenarios(
         )
         rows.append(row)
     return ScenarioComparison(
-        term_months=term_months, rows=tuple(rows), product_type=ProductType(snapshot.product_type)
+        term_months=term_months,
+        rows=tuple(rows),
+        product_type=ProductType(snapshot.product_type),
+        coverage=coverage,
     )
 
 

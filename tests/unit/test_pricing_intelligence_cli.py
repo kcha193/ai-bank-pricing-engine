@@ -723,9 +723,40 @@ def test_strategy_resolves_a_market_median_assumption(populated_database, capsys
     assert "competitor_loan_rate" in output
 
 
-def test_strategy_uses_the_selected_deposit_market(mixed_product_database, capsys):
+def test_strategy_refuses_an_under_covered_deposit_market(mixed_product_database, capsys):
+    """Two deposit banks under the default three-bank minimum: refused, never resolved."""
     exit_code = run(
         [
+            "--database",
+            mixed_product_database,
+            "--product",
+            "term_deposit",
+            "strategy",
+            "--strategy",
+            "MARKET_LEADER",
+            "--term",
+            "12",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert (
+        "ERROR: Insufficient competitor coverage for 12-month term deposits: 2 eligible banks; "
+        "minimum required: 3." in output
+    )
+    assert "advertised rate" not in output
+
+
+def test_strategy_uses_the_selected_deposit_market(mixed_product_database, tmp_path, capsys):
+    engine = tmp_path / "engine.yaml"
+    engine.write_text(
+        open("configs/base.yaml").read() + "\npricing_intelligence:\n  min_banks: 2\n"
+    )
+    exit_code = run(
+        [
+            "--config",
+            str(engine),
             "--database",
             mixed_product_database,
             "--product",
@@ -742,6 +773,8 @@ def test_strategy_uses_the_selected_deposit_market(mixed_product_database, capsy
     assert exit_code == 0
     assert "advertised rate       4.000%" in output
     assert "competitor_deposit_rate" in output
+    assert "eligible banks        2 (minimum 2): ANZ, BNZ" in output
+    assert "oldest input" in output
 
 
 def test_strategy_supports_a_leader_offset(populated_database, capsys):

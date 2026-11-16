@@ -11,9 +11,9 @@ from balance_pricing_engine.dashboard.services import DashboardServices
 from balance_pricing_engine.dashboard.settings import load_settings
 
 
-def make_services(market) -> DashboardServices:
+def make_services(market, env: Optional[dict] = None) -> DashboardServices:
     """Services bound to a ``market_factory`` database and its fixed clock."""
-    settings = load_settings({}, database_path=str(market.database))
+    settings = load_settings(dict(env or {}), database_path=str(market.database))
     return DashboardServices(settings, clock=lambda: market.now)
 
 

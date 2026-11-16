@@ -10,6 +10,17 @@ Comparison runs retain their own assumptions. Model-best rates, expected volumes
 remain synthetic model outputs. These provenance labels change no response, pricing or financial
 calculation and grant no pricing approval.
 
+### Benchmark coverage and input age (DATA-003, Phase 2c)
+
+A market-derived competitor assumption (median, mean, leader, second-best) is only formed from
+at least `pricing_intelligence.min_banks` distinct eligible banks per product and term (default
+3 of the five tracked NZ banks), counted after every trust, comparability and own-bank
+exclusion rule. Below that the assumption is refused, never replaced by the configured rate;
+MANUAL remains available and is labelled an assumption, not a market benchmark. Each resolved
+assumption reports its eligible banks, the oldest contributing observation and its age at an
+explicit evaluation time. The check is a gate: for identical valid assumptions the competitor
+input, and so every elasticity, response, funding and optimiser output, is unchanged.
+
 ## API execution boundary (Phase 1e)
 
 API requests are synthetic-data decision support and carry delivery-specific customer,

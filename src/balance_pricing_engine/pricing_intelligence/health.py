@@ -44,6 +44,71 @@ class HealthLevel(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class CollectionOutcome(str, Enum):
+    """What the latest *attempted* collection did for one bank (``operational_runs``)."""
+
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    #: The latest run did not attempt this bank at all.
+    NOT_ATTEMPTED = "NOT_ATTEMPTED"
+    #: No operational run is recorded for the product (e.g. a legacy database).
+    UNKNOWN = "UNKNOWN"
+
+
+class OperationalState(str, Enum):
+    """Observation freshness combined with the latest collection attempt (DATA-004)."""
+
+    #: Fresh observations, and the bank was collected successfully in the latest attempt.
+    FRESH = "FRESH"
+    #: Usable observations remain, but the latest attempt failed, skipped the bank, or did not
+    #: reconfirm every current observation.
+    DEGRADED = "DEGRADED"
+    #: The trusted observations are older than the freshness limit.
+    STALE = "STALE"
+    #: No trusted observation, or no collection evidence to judge it by.
+    UNKNOWN = "UNKNOWN"
+    #: A reading awaits operator review (Phase 2a).
+    QUARANTINED = "QUARANTINED"
+
+
+class RunHealth(str, Enum):
+    """The product's latest operational run, independent of how old the rates are."""
+
+    HEALTHY = "HEALTHY"  # SUCCESS
+    DEGRADED = "DEGRADED"  # PARTIAL_SUCCESS
+    FAILED = "FAILED"  # FAILED
+    UNKNOWN = "UNKNOWN"  # no run recorded
+
+
+_RUN_HEALTH = {
+    "SUCCESS": RunHealth.HEALTHY,
+    "PARTIAL_SUCCESS": RunHealth.DEGRADED,
+    "FAILED": RunHealth.FAILED,
+}
+
+
+def run_health(run: Optional[RunRecord]) -> RunHealth:
+    if run is None:
+        return RunHealth.UNKNOWN
+    return _RUN_HEALTH.get(run.status, RunHealth.UNKNOWN)
+
+
+def collection_summary(run: Optional[RunRecord]) -> str:
+    """One line on the latest attempt: never phrased as a refresh unless it succeeded."""
+    if run is None:
+        return "No collection run recorded"
+    attempted = len(run.banks_attempted) or len(run.banks_successful) + len(run.banks_failed)
+    failed = len(run.banks_failed)
+    health = run_health(run)
+    if health is RunHealth.HEALTHY:
+        return f"Latest collection succeeded: {len(run.banks_successful)} of {attempted} banks"
+    if health is RunHealth.DEGRADED:
+        return f"Latest collection partially succeeded: {failed} of {attempted} banks failed"
+    if health is RunHealth.FAILED:
+        return f"Latest collection failed: {failed} of {attempted} banks failed"
+    return f"Latest collection status {run.status!r} is not recognised"
+
+
 def is_stale(captured_at: datetime, now: datetime, max_age_hours: float) -> bool:
     """True when ``captured_at`` is strictly older than the freshness window."""
     return captured_at < now - timedelta(hours=max_age_hours)
@@ -157,6 +222,119 @@ def assess_observation_freshness(
     return ObservationFreshness(bank, state, oldest, age, quarantined, not_confirmed)
 
 
+def _hours(age: Optional[float]) -> str:
+    return f"{age:.0f} hours old" if age is not None else "of unknown age"
+
+
+@dataclass(frozen=True)
+class OperationalFreshness:
+    """One bank's operational state: observation freshness *and* the latest attempt.
+
+    The two facts stay separate fields; ``state`` combines them. Observation timestamps are
+    never rewritten: a failed attempt leaves ``observation.oldest_confirmation`` exactly where
+    it was, and a retried or empty ledger row never makes an old reading look new.
+    """
+
+    bank: str
+    state: OperationalState
+    observation: ObservationFreshness
+    collection: CollectionOutcome
+    latest_attempt_at: Optional[datetime]
+    latest_attempt_status: Optional[str]
+    latest_attempt_run_id: Optional[str]
+    #: The bank's last successful collection (collector health), when known.
+    last_success_at: Optional[datetime]
+    reason: str
+
+    @property
+    def label(self) -> str:
+        if self.state is OperationalState.QUARANTINED:
+            return "Quarantined readings"
+        if self.state is OperationalState.FRESH:
+            return "Fresh"
+        title = {
+            OperationalState.DEGRADED: "Degraded",
+            OperationalState.STALE: "Stale",
+            OperationalState.UNKNOWN: "Unknown",
+        }[self.state]
+        return f"{title} — {self.reason}"
+
+
+def assess_operational_freshness(
+    observation: ObservationFreshness,
+    latest_run: Optional[RunRecord],
+    *,
+    last_success_at: Optional[datetime] = None,
+) -> OperationalFreshness:
+    """Combine one bank's observation freshness with the product's latest operational run.
+
+    The single rule set behind the freshness frame, system health and the dashboard. Evaluated
+    in order: quarantine (Phase 2a), then stale observations (excluded from the market view
+    whatever the latest attempt did), then no trusted observation, then no operational ledger
+    (UNKNOWN -- old observation rows alone never prove a successful collection), then the
+    bank's own outcome in the latest attempt.
+    """
+    age = observation.age_hours
+    if latest_run is None:
+        collection = CollectionOutcome.UNKNOWN
+    elif observation.bank in latest_run.banks_failed:
+        collection = CollectionOutcome.FAILED
+    elif observation.bank in latest_run.banks_successful:
+        collection = CollectionOutcome.SUCCEEDED
+    else:
+        collection = CollectionOutcome.NOT_ATTEMPTED
+    failed_note = "; last collection failed" if collection is CollectionOutcome.FAILED else ""
+
+    if observation.quarantined:
+        state = OperationalState.QUARANTINED
+        reason = "a reading awaits operator review; the last confirmed rate is used" + failed_note
+    elif observation.state is FreshnessState.STALE:
+        state = OperationalState.STALE
+        reason = (
+            f"latest trusted observations are {_hours(age)}; excluded from market statistics"
+            + failed_note
+        )
+    elif observation.state is FreshnessState.UNKNOWN:
+        state = OperationalState.UNKNOWN
+        reason = "no trusted observation recorded" + failed_note
+    elif collection is CollectionOutcome.UNKNOWN:
+        state = OperationalState.UNKNOWN
+        reason = (
+            "no operational collection run recorded; observations are "
+            f"{_hours(age)} (legacy evidence, not a confirmed collection)"
+        )
+    elif collection is CollectionOutcome.FAILED:
+        state = OperationalState.DEGRADED
+        reason = f"last collection failed; latest trusted observations are {_hours(age)}"
+    elif collection is CollectionOutcome.NOT_ATTEMPTED:
+        state = OperationalState.DEGRADED
+        reason = (
+            f"not attempted in the latest collection; latest trusted observations are "
+            f"{_hours(age)}"
+        )
+    elif observation.not_fully_confirmed:
+        state = OperationalState.DEGRADED
+        reason = (
+            "latest collection did not reconfirm every current observation; oldest is "
+            f"{_hours(age)}"
+        )
+    else:
+        state = OperationalState.FRESH
+        reason = f"collected in the latest run; oldest trusted observation is {_hours(age)}"
+
+    return OperationalFreshness(
+        bank=observation.bank,
+        state=state,
+        observation=observation,
+        collection=collection,
+        latest_attempt_at=latest_run.started_at if latest_run else None,
+        latest_attempt_status=latest_run.status if latest_run else None,
+        latest_attempt_run_id=latest_run.run_id if latest_run else None,
+        last_success_at=last_success_at,
+        reason=reason,
+    )
+
+
 @dataclass(frozen=True)
 class BankHealth:
     bank: str
@@ -167,6 +345,8 @@ class BankHealth:
     last_error: str
     current_record_count: int
     health: HealthLevel
+    #: Observation freshness combined with the latest operational attempt (DATA-004).
+    operational: Optional[OperationalFreshness] = None
 
 
 @dataclass(frozen=True)
@@ -186,7 +366,35 @@ class SystemHealth:
 
     @property
     def fresh_bank_count(self) -> int:
+        """Banks whose trusted observations are inside the freshness window (rate age only)."""
         return sum(1 for b in self.banks if b.freshness.state is FreshnessState.FRESH)
+
+    @property
+    def confirmed_fresh_bank_count(self) -> int:
+        """Banks that are fresh *and* were collected successfully in the latest attempt."""
+        return sum(
+            1
+            for b in self.banks
+            if b.operational is not None and b.operational.state is OperationalState.FRESH
+        )
+
+    @property
+    def run_health(self) -> RunHealth:
+        return run_health(self.latest_run)
+
+    @property
+    def collection_summary(self) -> str:
+        return collection_summary(self.latest_run)
+
+    @property
+    def oldest_observation_age_hours(self) -> Optional[float]:
+        """Age of the oldest trusted observation still inside the freshness window."""
+        ages = [
+            b.freshness.age_hours
+            for b in self.banks
+            if b.freshness.state is FreshnessState.FRESH and b.freshness.age_hours is not None
+        ]
+        return max(ages, default=None)
 
 
 @dataclass(frozen=True)
@@ -257,6 +465,9 @@ def assess_system_health(
     run_ids_by_bank = store.get_current_observation_run_ids(product_type=product)
     latest_run_id = store.latest_run_id(product_type=product)
     collectors = {c.bank: c for c in store.get_collector_health(product_type=product)}
+    # The latest *attempt* for this product, not the latest observation write: a total failure
+    # never reaches record_observations(), so only operational_runs can show it (DATA-004).
+    latest_attempt = store.get_latest_run_record(product_type=product)
 
     banks = []
     for bank in config.selected_banks:
@@ -282,6 +493,11 @@ def assess_system_health(
                 last_error=(entry.last_error or "") if entry else "",
                 current_record_count=sum(1 for r in records if r.bank == bank),
                 health=_bank_health_level(freshness, status),
+                operational=assess_operational_freshness(
+                    freshness,
+                    latest_attempt,
+                    last_success_at=entry.last_success_at if entry else None,
+                ),
             )
         )
     return SystemHealth(
@@ -289,7 +505,7 @@ def assess_system_health(
         product_type=product,
         database_ok=report.ok,
         database_issues=tuple(report.issues),
-        latest_run=store.get_latest_run_record(product_type=product),
+        latest_run=latest_attempt,
         banks=tuple(banks),
         snapshot_valid=bool(snapshot.terms),
         telegram_configured=build_telegram_sink_from_env() is not None,

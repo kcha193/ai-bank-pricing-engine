@@ -187,7 +187,22 @@ def _exclusion_warnings(exclusions, product: ProductType) -> None:
         )
 
 
+def _benchmark_evidence(view: ScenarioView) -> None:
+    """Which banks, against which minimum, and how old the oldest input is -- per side."""
+    if view.coverage_warning:
+        st.warning(view.coverage_warning, icon=":material/group_off:")
+    for coverage in (view.loan_coverage, view.deposit_coverage):
+        if coverage is not None:
+            info = profile(coverage.product_type)
+            st.caption(f"{info.symbol} {info.label} benchmark evidence: {coverage.describe()}.")
+    if view.loan_coverage is None and view.deposit_coverage is None:
+        st.caption(
+            "Competitor input: manual scenario assumption; not a verified market benchmark."
+        )
+
+
 def _governance(view: ScenarioView) -> None:
+    _benchmark_evidence(view)
     if view.mode == SCENARIO_JOINT:
         _exclusion_warnings(view.excluded_banks, ProductType.HOME_LOAN)
         _exclusion_warnings(view.deposit_excluded_banks, ProductType.TERM_DEPOSIT)

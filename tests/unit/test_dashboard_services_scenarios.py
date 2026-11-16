@@ -13,6 +13,7 @@ from balance_pricing_engine.pricing_intelligence.strategy import (
     CompetitorRateStrategy,
     apply_manual_competitor_rate_to_config,
     apply_market_strategy_to_config,
+    resolve_market_overlay,
 )
 from balance_pricing_engine.pricing_scenario_trigger import run_triggered_scenarios
 from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
@@ -35,9 +36,7 @@ def test_request_fields_reach_the_backend_unchanged(market_factory):
     request = ScenarioRequest(12, "MARKET_LEADER", None, -5.0, 4.89)
     with (
         patch.object(
-            services_module,
-            "apply_market_strategy_to_config",
-            wraps=apply_market_strategy_to_config,
+            services_module, "resolve_market_overlay", wraps=resolve_market_overlay
         ) as apply_,
         patch.object(
             services_module, "run_triggered_scenarios", wraps=run_triggered_scenarios
@@ -48,7 +47,10 @@ def test_request_fields_reach_the_backend_unchanged(market_factory):
     assert applied["strategy"] is CompetitorRateStrategy.MARKET_LEADER
     assert applied["term_months"] == 12 and applied["offset_bps"] == -5.0
     assert applied["snapshot"].term(12).market_leaders == ("ANZ",)
+    # The dashboard's own coverage policy reaches the strategy seam (DATA-003).
+    assert applied["min_banks"] == services.settings.intelligence.min_banks
     assert trigger.call_args.kwargs["term_months"] == 12
+    assert trigger.call_args.kwargs["min_banks"] == services.settings.intelligence.min_banks
 
 
 def test_displayed_rows_and_selected_scenario_equal_direct_backend_calls(market_factory):

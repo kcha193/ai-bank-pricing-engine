@@ -51,4 +51,5 @@ exclude = [
     "notebooks/",
     "docs/audits/2026-11-13-evidence/",
     "docs/audits/2026-11-15-phase-2a-evidence/",
+    "docs/audits/2026-11-16-phase-2c-evidence/",
 ]

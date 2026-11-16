@@ -162,6 +162,26 @@ def observed_badge() -> None:
     st.badge(OBSERVED_LABEL, icon=":material/visibility:", color="blue", help=_OBSERVED_HELP)
 
 
+def benchmark_evidence(coverage, product) -> None:
+    """Bank coverage and oldest-input age beside a market benchmark (DATA-003).
+
+    Below the configured minimum the figures stay visible as observed data, with one warning
+    that they are not a trusted market benchmark; otherwise one factual caption. ``coverage`` is
+    the backend's ``BenchmarkCoverage``; nothing is computed here.
+    """
+    if coverage is None:
+        return
+    info = profile(product)
+    if not coverage.sufficient:
+        st.warning(
+            f"⚠ {coverage.shortfall_message()} The {info.noun} rates shown are observed data, "
+            "not a trusted market benchmark; market-derived scenarios are refused.",
+            icon=":material/group_off:",
+        )
+        return
+    st.caption(f"Benchmark evidence: {coverage.describe()}.")
+
+
 def coverage_badge(fresh: int, configured: int) -> None:
     if configured and fresh == configured:
         st.badge(f"All {configured} banks fresh", icon=":material/check_circle:", color="green")

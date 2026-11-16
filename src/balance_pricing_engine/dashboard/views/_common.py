@@ -181,10 +181,16 @@ def _product_status(services: DashboardServices, product) -> None:
             )
             return
         ui.market_state_badge(header.market_state)
-        ui.coverage_badge(header.fresh_banks, header.configured_banks)
+        ui.coverage_badge(header.trusted_fresh_banks, header.configured_banks)
         st.caption(
             f"Updated {fmt_nz_datetime(header.last_update)} NZ · "
-            f"{header.fresh_banks} / {header.configured_banks} fresh",
-            help=f"{info.label}: last successful update (Pacific/Auckland) and banks with fresh "
-            "data. Each product is collected and assessed separately.",
+            f"{header.trusted_fresh_banks} / {header.configured_banks} fresh"
+            + (
+                f" · {header.collection_summary}"
+                if header.collection_status not in (None, "HEALTHY")
+                else ""
+            ),
+            help=f"{info.label}: last successful update (Pacific/Auckland), banks fresh and "
+            "collected in the latest attempt, and that attempt's outcome. Each product is "
+            "collected and assessed separately.",
         )
