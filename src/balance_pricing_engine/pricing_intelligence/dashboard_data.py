@@ -16,21 +16,35 @@ from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord
 from balance_pricing_engine.pricing_intelligence.changes import RateChange
 from balance_pricing_engine.pricing_intelligence.health import (
     assess_observation_freshness,
+    assess_operational_freshness,
     collector_status,
 )
 from balance_pricing_engine.pricing_intelligence.snapshot import MarketSnapshot, _term_label
 from balance_pricing_engine.pricing_intelligence.store import CollectorHealth, RunRecord
 
 
+_NOT_SUPPLIED = object()
+
+
 def build_freshness_frame(
     records: Sequence[CompetitorRateRecord], banks: Sequence[str], max_age_hours: float,
     now: datetime, run_ids_by_bank: Mapping[str, Sequence[str]] | None,
     latest_run_id: str | None,
+    *,
+    latest_run: Optional[RunRecord] | object = _NOT_SUPPLIED,
+    collector_health: Sequence[CollectorHealth] = (),
 ) -> pd.DataFrame:
     """Expose each bank's oldest current confirmation and latest-run coverage.
 
-    This describes recorded observations. It cannot infer an unrecorded failed
-    attempt, or label a successful HTTP request as a verified source reading.
+    Recorded observations alone cannot show a failed attempt (it writes no
+    ``collection_runs`` row). Pass ``latest_run`` -- the product's latest
+    ``operational_runs`` attempt from
+    :meth:`.store.ObservationStore.get_latest_run_record`, or ``None`` when none
+    is recorded -- and ``Status`` becomes the operational state from
+    :func:`.health.assess_operational_freshness` (e.g. "Degraded — last
+    collection failed; ..."), with the attempt's time and status as extra
+    columns. Without it the legacy three columns and labels are returned
+    unchanged, for callers that predate the operational ledger.
 
     ``run_ids_by_bank`` (from :meth:`.store.ObservationStore.get_current_observation_run_ids`)
     and ``latest_run_id`` (from :meth:`.store.ObservationStore.latest_run_id`)
@@ -39,11 +53,13 @@ def build_freshness_frame(
     runs can share a ``started_at`` value, which a timestamp comparison
     would then read as "the same run".
     """
+    operational = latest_run is not _NOT_SUPPLIED
+    columns = ["Oldest confirmation (UTC)", "Age (hours)", "Status"]
+    if operational:
+        columns += ["Latest attempt (UTC)", "Latest attempt status", "Last success (UTC)"]
     if not banks:
-        return pd.DataFrame(
-            columns=["Oldest confirmation (UTC)", "Age (hours)", "Status"],
-            index=pd.Index([], name="Bank"),
-        )
+        return pd.DataFrame(columns=columns, index=pd.Index([], name="Bank"))
+    successes = {entry.bank: entry.last_success_at for entry in collector_health}
     rows = []
     for bank in banks:
         freshness = assess_observation_freshness(
@@ -54,14 +70,25 @@ def build_freshness_frame(
             run_ids=(run_ids_by_bank or {}).get(bank, []),
             latest_run_id=latest_run_id,
         )
-        rows.append(
-            {
-                "Bank": bank,
-                "Oldest confirmation (UTC)": freshness.oldest_confirmation,
-                "Age (hours)": freshness.age_hours,
-                "Status": freshness.label,
-            }
-        )
+        row = {
+            "Bank": bank,
+            "Oldest confirmation (UTC)": freshness.oldest_confirmation,
+            "Age (hours)": freshness.age_hours,
+            "Status": freshness.label,
+        }
+        if operational:
+            state = assess_operational_freshness(
+                freshness, latest_run, last_success_at=successes.get(bank)
+            )
+            row.update(
+                {
+                    "Status": state.label,
+                    "Latest attempt (UTC)": state.latest_attempt_at,
+                    "Latest attempt status": state.latest_attempt_status,
+                    "Last success (UTC)": state.last_success_at,
+                }
+            )
+        rows.append(row)
     return pd.DataFrame(rows).set_index("Bank")
 
 

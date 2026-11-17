@@ -250,6 +250,7 @@ def test_both_sides_can_be_overlaid_from_their_own_snapshots(engine_config):
         deposit_snapshot=_deposit_snapshot(),
         deposit_strategy=CompetitorRateStrategy.MARKET_LEADER,
         deposit_term_months=12,
+        min_banks=1,  # the mortgage fixture is one bank (ASB); coverage is tested separately
     )
 
     assert result.market.competitor_deposit_rate == 0.0405, "BNZ leads at 4.05%"
@@ -380,6 +381,7 @@ def test_omitting_a_deposit_snapshot_leaves_the_deposit_side_alone(engine_config
         strategy=CompetitorRateStrategy.MARKET_MEDIAN,
         snapshot=_mortgage_snapshot(),
         term_months=12,
+        min_banks=1,  # one-bank (ASB) mortgage fixture
     )
 
     assert (

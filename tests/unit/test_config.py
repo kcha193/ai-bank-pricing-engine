@@ -102,3 +102,81 @@ def _base_config(**overrides):
     for section, values in overrides.items():
         config[section].update(values)
     return config
+
+
+# ------------------------------------------------- revalidation keeps every effective value
+#
+# Regression for PR #74 review r4583163702: a field edited in place inside a nested model that
+# was created from its default (base.yaml minus ``response.coefficients``) is not in the
+# parent's ``model_fields_set``. Revalidation must still price -- and validate -- the edited
+# value, never silently restore the default.
+
+
+def _without_coefficients():
+    import yaml
+
+    raw = yaml.safe_load(open("configs/base.yaml"))
+    del raw["response"]["coefficients"]
+    raw["simulation"] = {"n_loan_customers": 200, "n_deposit_customers": 200}
+    return raw
+
+
+def _edited_in_place(intercept):
+    config = EngineConfig.model_validate(_without_coefficients())
+    assert "coefficients" not in config.response.model_fields_set
+    config.response.coefficients.loan.intercept = intercept
+    return config
+
+
+def _config_seams():
+    from types import SimpleNamespace
+
+    from balance_pricing_engine.competitor_rates.apply import revalidate_config
+    from balance_pricing_engine.llm.scenario_interface import ConfigPatch, _patched_config
+    from balance_pricing_engine.pricing_intelligence.strategy import (
+        apply_manual_competitor_rate_to_config,
+    )
+
+    patch = SimpleNamespace(patches=[ConfigPatch(path=("market", "cash_rate"), value=0.04)])
+    return {
+        "model_copy": lambda c: c.model_copy(update={"random_seed": 7}),
+        "revalidate_config": revalidate_config,
+        "manual_overlay": lambda c: apply_manual_competitor_rate_to_config(c, 0.05),
+        "llm_patch": lambda c: _patched_config(c, patch),
+    }
+
+
+@pytest.mark.parametrize("seam", ["model_copy", "revalidate_config", "manual_overlay", "llm_patch"])
+def test_revalidation_keeps_an_in_place_edit_to_a_default_created_section(seam):
+    revalidated = _config_seams()[seam](_edited_in_place(9.0))
+
+    assert revalidated.response.coefficients.loan.intercept == 9.0
+
+
+@pytest.mark.parametrize("seam", ["model_copy", "revalidate_config", "manual_overlay", "llm_patch"])
+def test_revalidation_rejects_a_non_finite_in_place_edit(seam):
+    with pytest.raises(ValueError, match="finite"):
+        _config_seams()[seam](_edited_in_place(float("nan")))
+
+
+def test_scenario_entry_points_price_an_in_place_edit():
+    from balance_pricing_engine.application import PricingScenarioRequest, PricingService
+    from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
+
+    explicit_raw = _without_coefficients()
+    explicit_raw["response"]["coefficients"] = _edited_in_place(9.0).response.coefficients.model_dump()
+    explicit = EngineConfig.model_validate(explicit_raw)
+    default = EngineConfig.model_validate(_without_coefficients())
+
+    expected = run_baseline_diagnostics(explicit, max_boundary_expansions=0).best_result
+    baseline = run_baseline_diagnostics(default, max_boundary_expansions=0).best_result
+    assert expected.total_objective != baseline.total_objective  # the edit moves the price
+
+    edited = run_baseline_diagnostics(_edited_in_place(9.0), max_boundary_expansions=0)
+    assert edited.best_result.total_objective == expected.total_objective
+    decision = PricingService().run_scenario(
+        PricingScenarioRequest(config=_edited_in_place(9.0), max_boundary_expansions=0)
+    )
+    assert decision.decision_record.config_hash != PricingService().run_scenario(
+        PricingScenarioRequest(config=default, max_boundary_expansions=0)
+    ).decision_record.config_hash

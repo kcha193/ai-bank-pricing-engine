@@ -161,6 +161,7 @@ def render(services: DashboardServices) -> None:
     if not positions or summary is None:
         return
 
+    ui.benchmark_evidence(summary.coverage, product)
     selected = next(p for p in positions if p.bank == bank)
     _bank_card(selected, summary.banks_observed, product)
 

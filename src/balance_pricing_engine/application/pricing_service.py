@@ -43,7 +43,7 @@ from balance_pricing_engine.competitor_rates.apply import apply_competitor_rates
 from balance_pricing_engine.competitor_rates.models import ValidationIssue
 from balance_pricing_engine.competitor_rates.store import load_rate_run
 from balance_pricing_engine.competitor_rates.validate import validate_staleness
-from balance_pricing_engine.config import EngineConfig
+from balance_pricing_engine.config import EngineConfig, revalidation_payload
 from balance_pricing_engine.config_identity import effective_config_hash, file_sha256_if_present
 from balance_pricing_engine.events.models import (
     governance_review_required,
@@ -99,7 +99,8 @@ class PricingService:
         self._feature_store = feature_store or LocalFeatureStore()
 
     def run_scenario(self, request: PricingScenarioRequest) -> PricingDecision:
-        request = replace(request, config=EngineConfig.model_validate(request.config.model_dump()))
+        revalidated = EngineConfig.model_validate(revalidation_payload(request.config))
+        request = replace(request, config=revalidated)
         request = replace(request, config=apply_competitor_rates_to_config(request.config))
         materialized_config_path = _materialize_effective_config(
             request.config, request.config_path

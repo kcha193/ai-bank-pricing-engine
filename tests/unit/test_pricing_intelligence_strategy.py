@@ -78,7 +78,7 @@ def test_resolved_assumption_as_of_reflects_the_snapshot_not_the_leading_bank(ma
     )
 
     resolved = resolve_competitor_rate(
-        CompetitorRateStrategy.MARKET_LEADER, snapshot=lopsided_snapshot
+        CompetitorRateStrategy.MARKET_LEADER, snapshot=lopsided_snapshot, min_banks=2
     )
 
     assert lopsided_snapshot.as_of == day_two
@@ -127,7 +127,9 @@ def test_second_lowest_fails_clearly_when_every_bank_is_tied(make_record):
     )
 
     with pytest.raises(MarketStrategyError, match="tied"):
-        resolve_competitor_rate(CompetitorRateStrategy.MARKET_SECOND_LOWEST, snapshot=tied)
+        resolve_competitor_rate(
+            CompetitorRateStrategy.MARKET_SECOND_LOWEST, snapshot=tied, min_banks=2
+        )
 
 
 def test_an_extreme_offset_is_rejected(snapshot):

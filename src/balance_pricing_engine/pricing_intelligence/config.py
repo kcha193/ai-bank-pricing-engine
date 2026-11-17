@@ -13,6 +13,10 @@ from typing import Optional
 from pydantic import BaseModel, Field, model_validator
 
 from balance_pricing_engine.competitor_rates.collection_config import CollectionConfig
+from balance_pricing_engine.pricing_intelligence.coverage import (
+    DEFAULT_AGED_INPUT_HOURS,
+    DEFAULT_MIN_BANKS,
+)
 from balance_pricing_engine.secrets.provider import EnvSecretsProvider, SecretsProvider
 
 # Fixed home-loan terms tracked in phase 1, in months.
@@ -219,6 +223,14 @@ class PricingIntelligenceConfig(BaseModel):
     # left in a live pricing view forever is itself a risk: MARKET_LEADER or
     # MARKET_MEDIAN could otherwise keep tracking a months-stale rate.
     max_observation_age_hours: float = Field(default=168.0, gt=0)
+    # Minimum *distinct eligible* banks behind a market-derived competitor assumption
+    # (MARKET_MEDIAN/MEAN/LEADER/SECOND_LOWEST), per product and term, after every trust and
+    # comparability rule and the own-bank exclusion (DATA-003). Below it the assumption is
+    # refused, never silently replaced by the configured rate. See pricing_intelligence.coverage.
+    min_banks: int = Field(default=DEFAULT_MIN_BANKS, ge=1, strict=True)
+    # An input still inside the freshness window but older than this is reported as "aged" on
+    # the benchmark evidence (not excluded): old inputs stay visible before they turn stale.
+    aged_input_hours: float = Field(default=DEFAULT_AGED_INPUT_HOURS, gt=0)
     # Product names that are structurally not comparable to standard fixed
     # lending -- e.g. ASB's construction-only "Back My Build" (see
     # ASBCollector) -- and so must not win MARKET_LEADER/MARKET_MEDIAN purely
@@ -240,6 +252,14 @@ class PricingIntelligenceConfig(BaseModel):
             raise ValueError("tracked_terms_months must be positive")
         if len(set(self.tracked_terms_months)) != len(self.tracked_terms_months):
             raise ValueError("tracked_terms_months must not contain duplicates")
+        # Only an *explicit* minimum is checked against the tracked set: the default is a
+        # policy, and a deliberately small tracked set must still load (its market strategies
+        # then fail at resolution with a coverage message rather than at config load).
+        if "min_banks" in self.model_fields_set and self.min_banks > len(self.selected_banks):
+            raise ValueError(
+                f"min_banks ({self.min_banks}) exceeds the {len(self.selected_banks)} selected "
+                "banks; no market-derived benchmark could ever be resolved"
+            )
         return self
 
 

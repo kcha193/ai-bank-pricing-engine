@@ -13,6 +13,7 @@ from balance_pricing_engine.scenario_reporting import (
     diagnostic_blocked,
     model_best_label,
 )
+from balance_pricing_engine.pricing_intelligence.coverage import BenchmarkCoverage
 from balance_pricing_engine.pricing_intelligence.health import FreshnessState, MarketExclusion
 
 #: Pricing Studio modes. A single-side scenario overlays one competitor benchmark; the joint mode
@@ -30,6 +31,17 @@ class HeaderInfo:
     fresh_banks: int
     configured_banks: int
     product_type: ProductType = ProductType.HOME_LOAN
+    #: Banks fresh *and* collected successfully in the latest attempt (DATA-004). ``fresh_banks``
+    #: counts rate age only, so it stays high after a failed collection; this does not.
+    confirmed_fresh_banks: Optional[int] = None
+    #: ``health.RunHealth`` value of the latest operational attempt, and a one-line summary.
+    collection_status: Optional[str] = None
+    collection_summary: str = ""
+
+    @property
+    def trusted_fresh_banks(self) -> int:
+        """Confirmed-fresh count when known; the rate-age count only for legacy callers."""
+        return self.fresh_banks if self.confirmed_fresh_banks is None else self.confirmed_fresh_banks
 
 
 @dataclass(frozen=True)
@@ -72,6 +84,9 @@ class TermSummary:
     #: deposits). ``None`` only for positional callers that predate product awareness.
     best_pct: Optional[float] = None
     product_type: ProductType = ProductType.HOME_LOAN
+    #: Distinct eligible banks against ``min_banks`` and the oldest input's age (DATA-003). Below
+    #: the minimum the figures are observed data, not a trusted market benchmark.
+    coverage: Optional[BenchmarkCoverage] = None
 
 
 @dataclass(frozen=True)
@@ -301,6 +316,12 @@ class ScenarioView:
     deposit_curve: tuple[CurvePoint, ...] = ()
     #: Joint mode only: stale deposit-side banks (``excluded_banks`` holds the loan side).
     deposit_excluded_banks: tuple[MarketExclusion, ...] = ()
+    #: Coverage/input-age evidence of each market-derived side; ``None`` for a manual side.
+    loan_coverage: Optional[BenchmarkCoverage] = None
+    deposit_coverage: Optional[BenchmarkCoverage] = None
+    #: Set when the market comparison set could not be built (e.g. under-covered benchmark) but
+    #: a manual scenario still ran; the manual figure is an assumption, not a benchmark.
+    coverage_warning: str = ""
 
     @property
     def median_reference_rate(self) -> Optional[float]:

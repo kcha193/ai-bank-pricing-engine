@@ -101,7 +101,15 @@ def test_all_pages_offer_only_live_terms_and_preserve_no_data_guidance(
         optimiser.assert_not_called()
 
 
-def clocked_page(page, market):
+def one_bank_config(tmp_path):
+    """Engine config accepting a one-bank benchmark: these fixtures test stale-term handling,
+    not the coverage minimum (``test_pricing_intelligence_coverage.py`` owns that)."""
+    path = tmp_path / "one_bank.yaml"
+    path.write_text(open("configs/base.yaml").read() + "\npricing_intelligence:\n  min_banks: 1\n")
+    return {"PRICING_WATCH_CONFIG": str(path)}
+
+
+def clocked_page(page, market, env=None):
     st.cache_data.clear()
     script = f"""
 import streamlit as st
@@ -109,7 +117,7 @@ from datetime import datetime
 from balance_pricing_engine.dashboard.services import DashboardServices
 from balance_pricing_engine.dashboard.settings import load_settings
 from balance_pricing_engine.dashboard.views import {page} as page
-settings = load_settings({{}}, database_path={str(market.database)!r})
+settings = load_settings({dict(env or {})!r}, database_path={str(market.database)!r})
 services = DashboardServices(settings, clock=lambda: st.session_state.get(
     'test_now', datetime.fromisoformat({market.now.isoformat()!r})))
 page.render(services)
@@ -178,10 +186,18 @@ def test_stale_rates_never_reach_rankings_or_scenario_benchmarks(tmp_path, make_
             == "EMPTY"
         )
         optimiser.assert_not_called()
-    view = services.scenarios(ScenarioRequest(24, "MARKET_MEDIAN", None, 0.0, None)).value
+    # The stale peer (BNZ) does not count toward coverage: one eligible bank is refused (T18).
+    refused = services.scenarios(ScenarioRequest(24, "MARKET_MEDIAN", None, 0.0, None))
+    assert refused.status == "ERROR"
+    assert "24-month home loans: 1 eligible bank; minimum required: 3." in refused.message
+    # With a one-bank minimum the stale peer is still excluded from the benchmark itself.
+    env = one_bank_config(tmp_path)
+    one_bank = make_services(market, env=env)
+    view = one_bank.scenarios(ScenarioRequest(24, "MARKET_MEDIAN", None, 0.0, None)).value
     assert view.selected.competitor_rate == pytest.approx(0.0479)
     assert [(e.bank, e.term_months) for e in view.excluded_banks] == [("BNZ", 24)]
-    app = run_page("scenarios", market.database, market.now)
+    assert view.loan_coverage.eligible_banks == ("ASB",)
+    app = run_page("scenarios", market.database, market.now, env=env)
     app.button(key="scenario_run").click().run()
     assert not app.exception
     assert {m.label: m.value for m in app.metric}["Competitor mortgage assumption"] == "4.79%"
@@ -194,7 +210,7 @@ def test_scenario_for_a_newly_stale_term_is_hidden_until_explicit_rerun(
     tmp_path, make_record, remaining_live
 ):
     market = recorded_market(tmp_path, make_record, (12, 24), ())
-    app = clocked_page("scenarios", market)
+    app = clocked_page("scenarios", market, env=one_bank_config(tmp_path))
     app.button(key="scenario_run").click().run()
     assert any(
         m.label == "Home-loan · Model-best — outside policy band (review)" for m in app.metric

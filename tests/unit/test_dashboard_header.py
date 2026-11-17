@@ -32,13 +32,16 @@ def test_header_shows_title_last_update_in_nz_time_market_activity_and_fresh_ban
     # One status line per product, home loans first. This fixture has no deposit data at all.
     home, deposits = [c for c in text if c.startswith("Updated ")]
     assert home == "Updated 10 Oct 2026 13:02 NZ · 5 / 5 fresh"
-    assert deposits.endswith("· 0 / 5 fresh")
+    # No deposit run was ever recorded: unknown, never presented as a successful refresh.
+    assert deposits.endswith("· 0 / 5 fresh · No collection run recorded")
 
 
 def test_header_counts_only_banks_whose_data_is_fresh(market_factory):
     market = market_factory(stale_banks=("Westpac",))
     text = captions(render_header(market.database, market.now))
-    assert [c for c in text if c.startswith("Updated ")][0].endswith("· 4 / 5 fresh")
+    assert [c for c in text if c.startswith("Updated ")][0].endswith(
+        "· 4 / 5 fresh · Latest collection partially succeeded: 1 of 5 banks failed"
+    )
 
 
 def test_header_degrades_to_the_guidance_message_without_a_database(tmp_path):

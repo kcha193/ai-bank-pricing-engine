@@ -15,6 +15,7 @@ from balance_pricing_engine.competitor_rates.models import (
 )
 from balance_pricing_engine.competitor_rates.store import load_rate_run
 from balance_pricing_engine.competitor_rates.validate import validate_staleness
+from balance_pricing_engine.config import revalidation_payload
 
 
 class CompetitorRateResolutionError(ValueError):
@@ -58,7 +59,7 @@ def revalidate_config(
     same failure mode; ``context`` names the overlay in the raised error.
     """
     try:
-        data = config.model_dump()
+        data = revalidation_payload(config)
         if market_updates is not None:
             data["market"].update(market_updates)
         return type(config).model_validate(data)

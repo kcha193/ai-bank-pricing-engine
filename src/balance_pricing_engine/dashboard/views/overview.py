@@ -107,9 +107,10 @@ def _panel_metrics(info, overview, summary) -> None:
     )
     bottom[2].metric(
         "Fresh coverage",
-        f"{header.fresh_banks} / {header.configured_banks}",
+        f"{header.trusted_fresh_banks} / {header.configured_banks}",
         border=False,
-        help=f"Banks whose latest validated {info.noun} observation is within the freshness limit.",
+        help=f"Banks whose latest validated {info.noun} observation is within the freshness "
+        "limit and that were collected successfully in the latest attempt.",
     )
 
 
@@ -140,6 +141,7 @@ def _market_panel(services: DashboardServices, product: ProductType) -> None:
             )
         else:
             st.caption(f"{fmt_term(term)} comparable {info.rate_noun}s · latest stored data")
+            ui.benchmark_evidence(summary.coverage, product)
             _panel_metrics(info, overview, summary)
             if overview.exclusions:
                 banks = sorted({e.bank for e in overview.exclusions})
@@ -147,6 +149,11 @@ def _market_panel(services: DashboardServices, product: ProductType) -> None:
         st.caption(
             f"Last successful {info.noun} update: "
             f"{fmt_nz_datetime(overview.header.last_update)} (Pacific/Auckland)"
+            + (
+                f" · {overview.header.collection_summary}"
+                if overview.header.collection_status in ("FAILED", "DEGRADED")
+                else ""
+            )
         )
         ui.product_nav_button(
             ui.MARKET_EXPLORER,
@@ -260,6 +267,7 @@ def _detail(services: DashboardServices, product: ProductType) -> None:
         "market median to each bank's rate.",
     )
     st.caption(f"Market activity rationale: {overview.market_state_rationale}")
+    ui.benchmark_evidence(summary.coverage, product)
     with ui.chart_panel("positioning"):
         chart, panel = st.columns([5, 2])
         ui.render_chart(position_dot_plot(positions, summary.median_pct, bank), container=chart)
@@ -282,8 +290,13 @@ def _detail(services: DashboardServices, product: ProductType) -> None:
         if not overview.exclusions:
             st.caption(
                 f"✓ No stale {info.noun} rates are excluded at any term; "
-                f"{overview.header.fresh_banks} of {overview.header.configured_banks} banks "
-                "have fresh data."
+                f"{overview.header.trusted_fresh_banks} of {overview.header.configured_banks} "
+                "banks have fresh, confirmed data."
+            )
+        if overview.header.collection_status in ("FAILED", "DEGRADED"):
+            st.warning(
+                f"{info.label}: {overview.header.collection_summary}. The last stored rates are "
+                "shown; they were not refreshed by that attempt."
             )
         ui.nav_link(
             ui.OPERATIONS, "Freshness and collector health", icon=":material/arrow_forward:"

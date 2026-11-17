@@ -38,7 +38,9 @@ class Collector:
 def collect_sequence(make_record, rates):
     service = PricingIntelligenceService(
         config=PricingIntelligenceConfig(
-            collection=CollectionConfig(inter_request_delay_seconds=0)
+            collection=CollectionConfig(inter_request_delay_seconds=0),
+            # A one-bank quarantine-mechanics fixture: accept a one-bank benchmark explicitly.
+            min_banks=1,
         ),
         store=ObservationStore(":memory:"),
         collectors=[],

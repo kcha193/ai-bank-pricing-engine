@@ -607,6 +607,19 @@ Watch, Dry Run, Create Backup and Send Test Notification (see
 [Operations safety](#operations-safety)). Pricing Watch does not observe the external
 scheduler, so no page claims it is active.
 
+**Trust presentation (DATA-003, DATA-004).** The header and the Command Centre
+"Fresh coverage" figure count banks that are fresh *and* collected in the latest
+attempt; a failed or partial attempt adds its summary ("Latest collection failed:
+5 of 5 banks failed") and a Data trust warning that the stored rates were not
+refreshed. Data Health adds a "Latest collection" component row, an "Operational
+status" and "Latest attempt" column per bank, and counts "Fresh banks" the same
+way. Command Centre, Market Explorer and Pricing Studio show the backend's
+benchmark evidence (`Benchmark evidence: 5 eligible banks (minimum 3): ...; oldest
+input 24 h old`); below `min_banks` they show one warning instead, keep the observed
+rates visible, and Pricing Studio refuses market-derived scenarios (a manual
+scenario still runs, labelled as an assumption). The `OBSERVED · market rates` and
+`MODELLED · synthetic` badges are unchanged.
+
 #### Scenario semantics
 
 - **No-change assumption** uses the optimiser's recommendation under an *unchanged*
@@ -664,6 +677,45 @@ oldest confirmed record); the market snapshot applies the same limit per record.
 The two measures can disagree: a collector can be `FAILING` while its last
 observation is still within the limit, in which case that observation is still
 used.
+
+**Operational state (DATA-004).** A failed attempt never reaches
+`record_observations()`, so it writes no `collection_runs` row; only the
+`operational_runs` ledger (`RunRecord`, written by `run_operational_cycle` for
+every attempt, success, partial or total failure) records it. Freshness displays
+therefore combine three separate facts, never one:
+
+| Fact | Source | Question |
+| --- | --- | --- |
+| Observation freshness | trusted observations (`assess_observation_freshness`) | How old are the actual bank rates? |
+| Collection health | the product's latest `operational_runs` row (`run_health`, `CollectionOutcome` per bank) | Did the latest attempt succeed for this bank? |
+| Benchmark coverage | the market snapshot (`assess_benchmark_coverage`) | How many distinct eligible banks contribute? |
+
+`health.assess_operational_freshness()` is the single rule set that combines the
+first two per bank (used by `assess_system_health`, `build_freshness_frame` and
+every dashboard page), evaluated in this order:
+
+| State | When |
+| --- | --- |
+| `QUARANTINED` | a reading awaits operator review (Phase 2a, unchanged) |
+| `STALE` | the trusted observations are older than `max_observation_age_hours`; excluded from market statistics whatever the latest attempt did |
+| `UNKNOWN` | no trusted observation, **or** no operational run recorded for the product (a legacy database): old observation rows alone never prove a successful collection |
+| `DEGRADED` | usable observations remain, but the bank failed or was not attempted in the latest run, or the latest run did not reconfirm every current observation |
+| `FRESH` | fresh observations **and** the bank succeeded in the latest attempt |
+
+Example after a total term-deposit outage the day after a good run:
+`Degraded — last collection failed; latest trusted observations are 25 hours old`.
+The rates are not rewritten, re-timestamped or withdrawn (an unreachable bank is
+unknown, not withdrawn); they keep ageing and turn `STALE` at the limit.
+`SystemHealth.fresh_bank_count` still counts rate age only; the dashboard's
+"Fresh banks"/"fresh" figures use `confirmed_fresh_bank_count` (fresh **and**
+collected in the latest attempt) and show the latest attempt's outcome
+(`collection_summary`, e.g. "Latest collection failed: 5 of 5 banks failed").
+Each product has its own ledger rows: a failed term-deposit attempt never
+changes the mortgage state, and vice versa. A retried `run_id` overwrites its own
+ledger row and creates no observation, so it cannot make old rates look new.
+`build_freshness_frame()` keeps its legacy three columns unless the caller passes
+`latest_run=` (the attempt, or `None`), when `Status` becomes the operational
+label and attempt columns are added.
 
 #### Operations safety
 
@@ -942,13 +994,59 @@ diagnostics = run_baseline_diagnostics(config)   # unchanged
 `offset_bps` shifts the resolved rate, which is how "market leader minus 5 bps"
 is expressed without inventing a strategy per offset.
 
+### Minimum bank coverage and input age (DATA-003)
+
+A market statistic needs a market. Every market-derived strategy (`MARKET_MEDIAN`,
+`MARKET_MEAN`, `MARKET_LEADER`, `MARKET_SECOND_LOWEST`) requires at least
+`PricingIntelligenceConfig.min_banks` **distinct eligible banks** at the term,
+per product. Default **3** of the five tracked NZ banks: one bank is not a market,
+two cannot expose a single outlier, and three is the smallest set with a real
+median (the same floor the peer plausibility check uses before it trusts a median).
+
+*Eligible* is decided after every existing rule, never before: the snapshot already
+holds one representative per bank and term after staleness, quarantine fallbacks,
+rejected/voided readings, non-comparable and name-excluded products and the Phase 2b
+special-comparability policy; the operator's own bank (`our_bank`) is then removed.
+Five rates (tiers, payment frequencies, LVR bands) from one bank count as **one**.
+A quarantined reading contributes only through its trusted fallback, never its
+untrusted rate; an approved reading counts like any other. An uncertain or restricted
+TD special is never admitted to reach the minimum. Home loans and term deposits are
+counted separately, and a joint scenario checks each side on its own.
+
+Policy:
+
+| Caller | Below `min_banks` |
+| --- | --- |
+| Actionable assumptions: `resolve_competitor_rate`, `apply_market_strategy_to_config` / `resolve_market_overlay`, `PricingIntelligenceService.resolve_competitor_assumption`, the CLI `strategy` command, `run_triggered_scenarios` (scheduled triggers and Pricing Studio, all modes) | **Refused**: `InsufficientCoverageError` (a `MarketStrategyError`), e.g. `Insufficient competitor coverage for 12-month term deposits: 1 eligible bank; minimum required: 3.` The configured rate is never substituted. |
+| Descriptive views (Command Centre, Market Explorer) | Observed rates stay visible with one warning that they are not a trusted benchmark |
+| `MANUAL` | Unaffected: needs no snapshot, returns the same config object, and is disclosed as "manual scenario assumption; not a verified market benchmark". In Pricing Studio a manual scenario still runs when the market comparison set is refused, with a warning. |
+
+Direct helper callers get the policy by default: `min_banks=None` means
+`DEFAULT_MIN_BANKS` (3), or `config.pricing_intelligence.min_banks` for an overlay.
+Pass a smaller value explicitly to accept a thinner market (tests of unrelated
+behaviour do this deliberately). Delivery layers pass their store's own setting.
+
+Every resolved market assumption now carries `coverage` (`BenchmarkCoverage`):
+eligible banks and their names, the minimum, `evaluated_at`, the newest and **oldest**
+contributing observation, the oldest input's age and a status (`SUFFICIENT`,
+`SUFFICIENT_AGED` when an input is older than `aged_input_hours`, default 48 h, or
+`INSUFFICIENT`). `as_of` keeps its meaning (the newest input). Ages are measured
+against an explicit evaluation time: `now` for a live view, the run start for an
+`as_of_run_id` reconstruction (`MarketSnapshot.evaluated_at`), never the wall clock
+during historical reconstruction. So a view where one bank refreshed today and four
+are 145 h old reads `5 eligible banks (minimum 3): ...; oldest input 145 h old
+(older than 48 h)`, not "newly collected". Coverage is a gate, not an input: an
+overlay that passes is byte-identical to the same explicit rate, so optimiser output
+for identical assumptions does not change.
+
 **Manual assumptions still work exactly as before.** Under `MANUAL` the config
 object is returned unchanged -- not copied, not revalidated -- so every existing
 scenario, config file, and test is unaffected. This is asserted directly by
 `test_manual_leaves_the_config_completely_untouched`.
 
-Only the loan side is overlaid. Term-deposit intelligence is phase 2, so
-`market.competitor_deposit_rate` keeps whatever the config holds.
+The loan side is overlaid by default; the deposit side only when `deposit_snapshot`
+or `deposit_strategy` is passed (see
+[Feeding deposits into the optimiser](#feeding-deposits-into-the-optimiser)).
 
 ## Bank coverage
 
@@ -1374,7 +1472,17 @@ pipeline. `health.warning_after_failures`/`health.alert_after_failures`
 control collector-failure escalation (see Operations below).
 `validation.peer.*` configures the peer-market plausibility signal and
 `quarantine.escalation_after_runs` the quarantine escalation threshold (see
-[Quarantine review](#quarantine-review-data-002-data-016)).
+[Quarantine review](#quarantine-review-data-002-data-016)). `min_banks` (default 3,
+an integer of at least 1; an explicit value above the number of `selected_banks` is
+rejected at load) is the benchmark coverage minimum and `aged_input_hours` (default
+48) the age at which a still-fresh input is flagged as aged (see
+[Minimum bank coverage and input age](#minimum-bank-coverage-and-input-age-data-003)).
+
+```yaml
+pricing_intelligence:
+  min_banks: 3          # distinct eligible banks per product and term
+  aged_input_hours: 48  # flag (not exclude) inputs older than this
+```
 
 ## Pricing Intelligence Operations
 

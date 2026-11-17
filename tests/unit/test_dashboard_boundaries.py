@@ -42,6 +42,8 @@ RECOMPUTATION_TOKENS = (
     "is_stale",
     "collector_status",
     "assess_observation_freshness",
+    "assess_operational_freshness",
+    "assess_benchmark_coverage",
     "term_market_from_rates",
     "build_market_snapshot",
     "classify_market_state",

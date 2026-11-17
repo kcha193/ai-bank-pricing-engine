@@ -13,7 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from balance_pricing_engine.config import EngineConfig
+from balance_pricing_engine.config import EngineConfig, revalidation_payload
 from balance_pricing_engine.optimization.response_fn import GovernanceError
 
 _DECISION_SUPPORT_TAG = "[DECISION-SUPPORT: requires human review]"
@@ -196,7 +196,7 @@ class NLScenarioResult:
 
 def _patched_config(config: EngineConfig, proposal: PatchProposal) -> EngineConfig:
     # Dump once, patch only this detached in-memory document, validate the complete batch once.
-    data = config.model_dump()
+    data = revalidation_payload(config)
     for patch in proposal.patches:
         target = data
         for key in patch.path[:-1]:

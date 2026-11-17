@@ -78,9 +78,10 @@ from balance_pricing_engine.pricing_intelligence.snapshot import (
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore, RunRecord
 from balance_pricing_engine.pricing_intelligence.strategy import (
     CompetitorRateStrategy,
+    InsufficientCoverageError,
     MarketStrategyError,
     apply_manual_competitor_rate_to_config,
-    apply_market_strategy_to_config,
+    resolve_market_overlay,
 )
 from balance_pricing_engine.pricing_scenario_trigger import run_triggered_scenarios
 from balance_pricing_engine.scenario_reporting import diagnostic_metadata, strategy_label
@@ -283,7 +284,8 @@ class DashboardServices:
 
         def build(service: PricingIntelligenceService) -> Result[TermSummary]:
             now = self._clock()
-            market = service.get_market_snapshot(product_type=product, now=now).term(term_months)
+            snapshot = service.get_market_snapshot(product_type=product, now=now)
+            market = snapshot.term(term_months)
             if market is None:
                 return Result.empty(_no_term_message(term_months, product))
             return Result.ok(
@@ -304,6 +306,9 @@ class DashboardServices:
                     ),
                     best_pct=market.best_rate,
                     product_type=product,
+                    coverage=service.get_benchmark_coverage(
+                        term_months, product_type=product, snapshot=snapshot, now=now
+                    ),
                 )
             )
 
@@ -565,8 +570,14 @@ class DashboardServices:
                     return Result.empty(_no_term_message(deposit_term, ProductType.TERM_DEPOSIT))
             strategy = CompetitorRateStrategy(request.strategy)
             try:
-                comparison, selected_config = self._scenario_configs(
-                    base, request, strategy, loan_snapshot, deposit_snapshot
+                comparison, selected_config, evidence = self._scenario_configs(
+                    base,
+                    request,
+                    strategy,
+                    loan_snapshot,
+                    deposit_snapshot,
+                    min_banks=service.config.min_banks,
+                    now=now,
                 )
                 diagnostics = run_baseline_diagnostics(selected_config)
             except MarketStrategyError as exc:
@@ -648,22 +659,35 @@ class DashboardServices:
                     mode=mode,
                     deposit_curve=_objective_curve(diagnostics.grid_results, "deposit_rate"),
                     deposit_excluded_banks=deposit_exclusions if mode == SCENARIO_JOINT else (),
+                    loan_coverage=evidence[0],
+                    deposit_coverage=evidence[1],
+                    coverage_warning=evidence[2],
                 )
             )
 
         return self._guard(build)
 
     @staticmethod
-    def _scenario_configs(base, request, strategy, loan_snapshot, deposit_snapshot):
-        """(comparison set or None, the selected scenario's config) for the request's mode."""
+    def _scenario_configs(
+        base, request, strategy, loan_snapshot, deposit_snapshot, *, min_banks=None, now=None
+    ):
+        """(comparison set or None, the selected config, (loan coverage, deposit coverage, warning)).
+
+        Every market-derived input goes through the strategy seam's coverage policy, so an
+        under-covered benchmark raises :class:`InsufficientCoverageError` here and never reaches
+        the optimiser. A MANUAL scenario still runs without the market comparison set; the
+        warning says why the set is missing and that the manual rate is not a benchmark.
+        """
+        policy = {"min_banks": min_banks, "now": now}
         if request.mode == SCENARIO_JOINT:
             deposit_strategy = CompetitorRateStrategy(request.deposit_strategy or request.strategy)
             if CompetitorRateStrategy.MANUAL in (strategy, deposit_strategy):
                 raise MarketStrategyError(
                     "the joint scenario needs a market benchmark on both sides"
                 )
-            # No comparison set: run_triggered_scenarios varies one side at a time.
-            return None, apply_market_strategy_to_config(
+            # No comparison set: run_triggered_scenarios varies one side at a time. Each side
+            # meets the coverage minimum on its own.
+            overlay = resolve_market_overlay(
                 base,
                 strategy=strategy,
                 snapshot=loan_snapshot,
@@ -673,35 +697,56 @@ class DashboardServices:
                 deposit_strategy=deposit_strategy,
                 deposit_term_months=request.deposit_term_months,
                 deposit_offset_bps=request.deposit_offset_bps,
+                **policy,
             )
+            return None, overlay.config, (overlay.loan.coverage, overlay.deposit.coverage, "")
         is_deposit = request.mode == SCENARIO_TERM_DEPOSIT
         snapshot = deposit_snapshot if is_deposit else loan_snapshot
-        comparison = run_triggered_scenarios(
-            base, term_months=request.term_months, snapshot=snapshot
-        )
         if strategy is CompetitorRateStrategy.MANUAL:
             if request.manual_rate_pct is None:
                 raise MarketStrategyError("MANUAL needs a manual competitor rate.")
-            return comparison, apply_manual_competitor_rate_to_config(
-                base,
-                request.manual_rate_pct / 100,
-                product_type=snapshot.product_type,
+            warning = ""
+            try:
+                comparison = run_triggered_scenarios(
+                    base, term_months=request.term_months, snapshot=snapshot, **policy
+                )
+            except InsufficientCoverageError as exc:
+                comparison = None
+                warning = (
+                    f"{exc} The market comparison set is not shown; the manual competitor rate "
+                    "is a scenario assumption, not a verified market benchmark."
+                )
+            return (
+                comparison,
+                apply_manual_competitor_rate_to_config(
+                    base,
+                    request.manual_rate_pct / 100,
+                    product_type=snapshot.product_type,
+                ),
+                (None, None, warning),
             )
+        comparison = run_triggered_scenarios(
+            base, term_months=request.term_months, snapshot=snapshot, **policy
+        )
         if is_deposit:
-            return comparison, apply_market_strategy_to_config(
+            overlay = resolve_market_overlay(
                 base,
                 deposit_strategy=strategy,
                 deposit_snapshot=snapshot,
                 deposit_term_months=request.term_months,
                 deposit_offset_bps=request.offset_bps,
+                **policy,
             )
-        return comparison, apply_market_strategy_to_config(
+            return comparison, overlay.config, (None, overlay.deposit.coverage, "")
+        overlay = resolve_market_overlay(
             base,
             strategy=strategy,
             snapshot=snapshot,
             term_months=request.term_months,
             offset_bps=request.offset_bps,
+            **policy,
         )
+        return comparison, overlay.config, (overlay.loan.coverage, None, "")
 
     # -------------------------------------------------------------- changes
 
@@ -844,6 +889,9 @@ def _header_info(
         fresh_banks=health.fresh_bank_count,
         configured_banks=len(health.banks),
         product_type=product,
+        confirmed_fresh_banks=health.confirmed_fresh_bank_count,
+        collection_status=health.run_health.value,
+        collection_summary=health.collection_summary,
     )
     return header, state.rationale
 

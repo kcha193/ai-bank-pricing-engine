@@ -38,6 +38,10 @@ from balance_pricing_engine.pricing_intelligence.changes import (
     resolve_pairing,
 )
 from balance_pricing_engine.pricing_intelligence.config import PricingIntelligenceConfig
+from balance_pricing_engine.pricing_intelligence.coverage import (
+    BenchmarkCoverage,
+    assess_benchmark_coverage,
+)
 from balance_pricing_engine.pricing_intelligence.health import (
     MarketExclusion,
     comparable_records,
@@ -1225,13 +1229,15 @@ class PricingIntelligenceService:
             as_of, records = self._resolved_observations_as_of_run(
                 as_of_run_id, product_type, quarantined_keys
             )
+            evaluated_at = as_of
         else:
+            evaluated_at = now or datetime.now(timezone.utc)
             records = self.get_resolved_current_observations(
                 product_type=product_type, quarantined_keys=quarantined_keys
             )
             records = _exclude_stale(
                 records,
-                now=now or datetime.now(timezone.utc),
+                now=evaluated_at,
                 max_age_hours=self.config.max_observation_age_hours,
             )
         trusted = _exclude_suspicious(records)
@@ -1245,6 +1251,7 @@ class PricingIntelligenceService:
             as_of=as_of,
             excluded_product_names=self.config.excluded_product_names,
             quarantined_keys=quarantined_keys,
+            evaluated_at=evaluated_at,
         )
 
     def get_previous_market_snapshot(
@@ -1296,6 +1303,7 @@ class PricingIntelligenceService:
             banks=self.config.selected_banks,
             as_of=as_of,
             excluded_product_names=self.config.excluded_product_names,
+            evaluated_at=as_of,
         )
 
     def get_changes(
@@ -1721,6 +1729,34 @@ class PricingIntelligenceService:
             manual_rate=manual_rate,
             offset_bps=offset_bps,
             our_bank=self.config.our_bank,
+            min_banks=self.config.min_banks,
+            now=snapshot.evaluated_at,
+            aged_input_hours=self.config.aged_input_hours,
+        )
+
+    def get_benchmark_coverage(
+        self,
+        term_months: int,
+        *,
+        product_type: ProductType | str = ProductType.HOME_LOAN,
+        snapshot: Optional[MarketSnapshot] = None,
+        now: Optional[datetime] = None,
+    ) -> BenchmarkCoverage:
+        """Coverage and oldest-input age of one term's benchmark, under this config's policy.
+
+        The descriptive counterpart of the enforcement in :meth:`resolve_competitor_assumption`:
+        a market view may still be *shown* below ``min_banks`` (as observed data), but this says
+        so. Pass the displayed ``snapshot`` to describe exactly that view.
+        """
+        if snapshot is None:
+            snapshot = self.get_market_snapshot(product_type=product_type, now=now)
+        return assess_benchmark_coverage(
+            snapshot,
+            term_months,
+            min_banks=self.config.min_banks,
+            our_bank=self.config.our_bank,
+            now=now,
+            aged_input_hours=self.config.aged_input_hours,
         )
 
     def close(self) -> None:
