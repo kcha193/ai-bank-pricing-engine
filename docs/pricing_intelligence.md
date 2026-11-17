@@ -49,6 +49,16 @@ What was added:
 | Competitor-rate and cash-rate strategy | `pricing_intelligence/strategy.py` | New |
 | RBNZ Official Cash Rate intelligence | `pricing_intelligence/rbnz.py` | New |
 
+The dependency also runs the other way for policy only (Phase 2d). The legacy
+`competitor_rates apply` path reuses this package's term-deposit special policy
+(`deposit_specials.py`), coverage minimum (`min_banks`, `coverage.product_phrase`) and the
+collectors' deposit fence. It does not keep a second definition. It imports
+`pricing_intelligence.{config,coverage,deposit_specials}` only, so there is no import cycle and
+nothing here depends on the legacy resolver. The legacy JSON has no quarantine ledger, peer
+assessment or operational run ledger, so every legacy resolution discloses that as
+`reduced_assurance` rather than inferring it. See
+[competitor_rate_ingestion.md](competitor_rate_ingestion.md#shared-policy-with-pricing-intelligence-phase-2d).
+
 ## Architecture
 
 ```text

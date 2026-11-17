@@ -100,6 +100,17 @@ diagnostics) are unified per decision by an explicit governance layer:
   `BLOCK` gate yields `BLOCKED`; otherwise any `WARN` yields `REVIEW_REQUIRED`; a clean gate set
   is `RECOMMENDED`. The underlying optimiser recommendation is preserved for `REVIEW_REQUIRED` —
   governance withholds the "safe to act on" label, it does not discard the result.
+- `COMPETITOR_RATE_FRESHNESS` (legacy `competitor_rates` source, Phase 2d): `PricingService`
+  resolves the source once and passes the resolution to the gate. Strict validation errors still
+  `BLOCK`. Non-strict staleness, source validation issues and resolution warnings (an uncertain
+  term-deposit special, an excluded quarantined/rejected reading) `WARN`. The gate's evidence
+  always carries `competitor_source`: file name and SHA-256 (never a path), capture and evaluation
+  time, source age, `max_staleness_hours`, `stale`, `strict`, validation status, strategies,
+  contributing banks, `min_banks`, special assessments and the legacy source's
+  `reduced_assurance`. It is recorded in `decision_record.json` (`governance_gates`). A market
+  strategy below `pricing_intelligence.min_banks` distinct banks fails closed with
+  `CompetitorRateResolutionError` before any pricing. See
+  [competitor_rate_ingestion.md](competitor_rate_ingestion.md#staleness-and-warnings).
 - `governance.lineage.resolve_model_lineage()` re-derives (read-only) which response source
   (deterministic synthetic vs. an approved ML champion) drove each product's pricing, for
   recording — it does not duplicate the `GovernanceError` fail-loud check, which still lives

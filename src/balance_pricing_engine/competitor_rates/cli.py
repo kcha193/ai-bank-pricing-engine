@@ -9,10 +9,7 @@ import uuid
 
 import yaml
 
-from balance_pricing_engine.competitor_rates.apply import (
-    apply_competitor_rates_to_config,
-    load_and_resolve_competitor_rates,
-)
+from balance_pricing_engine.competitor_rates.apply import apply_competitor_rates_with_resolution
 from balance_pricing_engine.competitor_rates.collectors import (
     COLLECTORS_BY_BANK,
     BankPricingCollector,
@@ -108,7 +105,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def _apply_bank_categorisation(
     records: list[CompetitorRateRecord],
 ) -> list[CompetitorRateRecord]:
-    """Route each home-loan record through its bank's collector categorisation.
+    """Route each record through its bank's collector categorisation.
 
     ``extract_all_sources()`` calls only the generic ``parse_html_rates()`` --
     it has no per-bank knowledge of what an unmarked row means, so every
@@ -121,14 +118,21 @@ def _apply_bank_categorisation(
     ``market_median`` via the ``competitor_rates apply`` path. A collector is
     reused per bank -- constructing one has no I/O, it only builds the
     (unused) default fetcher closure.
+
+    Term-deposit records go through ``enrich_term_deposit_record()``, the same
+    step ``parse_term_deposit_html()`` applies on the collector path (DATA-006):
+    managed-fund, KiwiSaver, PIE effective-rate and savings rows become
+    ``non_comparable`` instead of ordinary term deposits. A bank without a
+    collector gets the base-class vocabulary.
     """
     collectors: dict[str, BankPricingCollector] = {}
     enriched = []
     for record in records:
-        if (
-            ProductType(record.product_type) != ProductType.HOME_LOAN
-            or record.bank not in COLLECTORS_BY_BANK
-        ):
+        if ProductType(record.product_type) == ProductType.TERM_DEPOSIT:
+            fence = COLLECTORS_BY_BANK.get(record.bank, BankPricingCollector)
+            enriched.append(fence.enrich_term_deposit_record(record))
+            continue
+        if record.bank not in COLLECTORS_BY_BANK:
             enriched.append(record)
             continue
         collector = collectors.setdefault(record.bank, COLLECTORS_BY_BANK[record.bank]())
@@ -207,10 +211,10 @@ def _apply(args: argparse.Namespace) -> int:
     if not competitor_config.enabled:
         print("Competitor rates are disabled; manual market config remains in use.")
         return 0
-    resolved = load_and_resolve_competitor_rates(competitor_config)
-    applied = apply_competitor_rates_to_config(
+    applied, resolved = apply_competitor_rates_with_resolution(
         config.model_copy(update={"competitor_rates": competitor_config})
     )
+    disclosure = _source_disclosure(resolved)
     print("Competitor assumptions to apply")
     print(
         f"Mortgage competitor reference: {resolved.mortgage_reference_rate:.2%} "
@@ -221,22 +225,59 @@ def _apply(args: argparse.Namespace) -> int:
         f"({resolved.term_deposit_strategy})"
     )
     print("Banks included: " + ", ".join(competitor_config.selected_banks))
-    print(f"Captured at UTC: {resolved.captured_at_utc.isoformat()}")
+    print("Mortgage banks contributing: " + ", ".join(resolved.mortgage_banks))
+    print("Term deposit banks contributing: " + ", ".join(resolved.term_deposit_banks))
+    print(
+        f"Captured at UTC: {resolved.captured_at_utc.isoformat()} "
+        f"(age {resolved.source_age_hours:.1f} h, max {resolved.max_staleness_hours} h"
+        f"{', STALE' if resolved.stale else ''}; "
+        f"source validation: {resolved.source_validation_status})"
+    )
     if resolved.validation_warnings:
         print("Validation warnings:")
         for warning in resolved.validation_warnings:
             print(f"  WARNING: {warning}")
+    for line in disclosure:
+        print(line)
     if args.write:
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         filename = f"with_competitor_rates_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.yaml"
         output_path = output_dir / filename
+        header = "".join(f"# {line}\n" for line in disclosure)
         output_path.write_text(
-            yaml.safe_dump(applied.model_dump(mode="json", exclude_none=True), sort_keys=False),
+            header
+            + yaml.safe_dump(applied.model_dump(mode="json", exclude_none=True), sort_keys=False),
             encoding="utf-8",
         )
         print(f"Generated config: {output_path}")
     return 0
+
+
+def _source_disclosure(resolved) -> list[str]:
+    """Plain disclosure lines when the applied rates are stale or carry warnings.
+
+    Printed, and written as YAML comments at the top of a generated config, so a reader of
+    either sees that the competitor inputs are stale or incomplete. Comments never enter the
+    numeric configuration or its hash.
+    """
+    if not resolved.stale and not resolved.validation_warnings:
+        return []
+    mode = "strict" if resolved.strict else "non-strict"
+    lines = [
+        f"WARNING: competitor rates applied in {mode} mode from a source that is "
+        + ("STALE and " if resolved.stale else "")
+        + f"carries {len(resolved.validation_warnings)} warning(s); review before use.",
+        f"WARNING: source {resolved.source_file_name} captured "
+        f"{resolved.captured_at_utc.isoformat()}, {resolved.source_age_hours:.1f} h old "
+        f"(max {resolved.max_staleness_hours} h).",
+    ]
+    if not resolved.strict:
+        lines.append(
+            "WARNING: non-strict mode is for local exploration only; it may use stale or "
+            "incomplete competitor data."
+        )
+    return lines
 
 
 def _report(args: argparse.Namespace) -> int:

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from datetime import datetime, timezone
 
 from balance_pricing_engine.competitor_rates.models import (
+    CompetitorRateRecord,
     CompetitorRateRun,
     ProductType,
     ValidationIssue,
@@ -103,30 +103,59 @@ def validate_staleness(
     ]
 
 
+def duplicate_identity(record: CompetitorRateRecord) -> str:
+    """The economic identity two records must share to be duplicates of each other.
+
+    ``observation_key()`` -- the identity the trusted pricing-intelligence validator uses: bank,
+    product, rate category, term, payment frequency, product name, balance tier and
+    eligibility condition. Two simultaneous balance tiers or payment-frequency options are
+    therefore different products, not duplicates (DATA-006).
+
+    A ``non_comparable`` row (fund returns, PIE effective-rate columns per tax band) lumps
+    heterogeneous products into one category, so its own row text is part of its identity,
+    as in ``pricing_intelligence.validation``. Two such rows from identical text with
+    different rates are still a conflict.
+    """
+    key = record.observation_key()
+    if record.rate_category == "non_comparable":
+        return f"{key}|{record.raw_text_context}"
+    return key
+
+
 def _add_duplicate_issues(run: CompetitorRateRun, issues: list[ValidationIssue]) -> None:
-    keys = [
-        (
-            record.bank,
-            str(record.product_type),
-            record.product_name,
-            record.rate_category,
-            record.term_label_raw,
-            record.term_months_normalised,
-            record.interest_payment_frequency,
-        )
-        for record in run.records
-    ]
-    for key, count in Counter(keys).items():
-        if count > 1:
-            bank, product_type, *_ = key
-            issues.append(
-                ValidationIssue(
-                    severity="error",
-                    message=f"Duplicate competitor rate records found for {key}",
-                    bank=bank,
-                    product_type=ProductType(product_type),
-                )
+    """Fail a run in which two records claim one economic identity.
+
+    A conflict (different rates) is the trusted validator's conflicting-observation rule:
+    which reading wins would depend on input order. An exact repeat is still an error here,
+    as before Phase 2d: the legacy file has no per-record rejection, so a doubled row is
+    refused rather than silently collapsed. The message says which case it is.
+    """
+    records_by_key: dict[str, list[CompetitorRateRecord]] = {}
+    for record in run.records:
+        records_by_key.setdefault(duplicate_identity(record), []).append(record)
+    for key, records in records_by_key.items():
+        if len(records) < 2:
+            continue
+        rates = sorted({record.advertised_rate_pct for record in records})
+        first = records[0]
+        if len(rates) > 1:
+            message = (
+                f"Conflicting competitor rate records for {key}: "
+                + ", ".join(f"{rate:.3f}%" for rate in rates)
             )
+        else:
+            message = (
+                f"Duplicate competitor rate records found for {key} "
+                f"({len(records)} identical readings)"
+            )
+        issues.append(
+            ValidationIssue(
+                severity="error",
+                message=message,
+                bank=first.bank,
+                product_type=ProductType(first.product_type),
+            )
+        )
 
 
 def _add_source_coverage_issues(
