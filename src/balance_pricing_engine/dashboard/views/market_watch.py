@@ -60,6 +60,7 @@ def _positions_frame(positions) -> pd.DataFrame:
                     fmt_nz_datetime(p.last_change_at) if p.last_change_at else "No recent change"
                 ),
                 "Freshness": _freshness(p),
+                "Eligibility": p.eligibility_note,
             }
             for p in positions
         ]

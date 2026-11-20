@@ -15,6 +15,12 @@ class WestpacCollector(BankPricingCollector):
     """
 
     bank: ClassVar[str] = "Westpac"
+    #: Explicit alternative names accepted in configuration (see ``bank_identity``).
+    bank_aliases: ClassVar[tuple[str, ...]] = (
+        "Westpac NZ",
+        "Westpac New Zealand",
+        "Westpac New Zealand Limited",
+    )
     home_loan_url: ClassVar[str] = "https://www.westpac.co.nz/home-loans-mortgages/interest-rates/"
     term_deposit_url: ClassVar[str] = (
         "https://www.westpac.co.nz/kiwisaver-investments/term-deposits-pie-investments/"

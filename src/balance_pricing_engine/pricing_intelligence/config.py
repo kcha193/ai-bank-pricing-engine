@@ -10,13 +10,18 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
+from balance_pricing_engine.competitor_rates.bank_identity import (
+    canonical_bank,
+    canonicalise_bank_list,
+)
 from balance_pricing_engine.competitor_rates.collection_config import CollectionConfig
 from balance_pricing_engine.pricing_intelligence.coverage import (
     DEFAULT_AGED_INPUT_HOURS,
     DEFAULT_MIN_BANKS,
 )
+from balance_pricing_engine.pricing_intelligence.deposit_reference import DepositReferencePolicy
 from balance_pricing_engine.secrets.provider import EnvSecretsProvider, SecretsProvider
 
 # Fixed home-loan terms tracked in phase 1, in months.
@@ -249,6 +254,8 @@ class PricingIntelligenceConfig(BaseModel):
     # Excluded from pricing benchmarks and competitive-position features. None
     # means "we are not one of the tracked public banks" (the default for the
     # synthetic engine), and positioning is computed against a supplied rate.
+    # Canonicalised at load ("ASB Bank" -> "ASB"); an unknown name is a validation
+    # error, never silently None (DATA-014, see competitor_rates.bank_identity).
     our_bank: Optional[str] = None
     # A bank's last-known rate stops feeding market-derived pricing once it is
     # older than this. An unreachable bank is "unknown, not withdrawn" (so it
@@ -282,6 +289,19 @@ class PricingIntelligenceConfig(BaseModel):
         default=DEFAULT_BUSY_TIMEOUT_SECONDS, gt=0, le=MAX_BUSY_TIMEOUT_SECONDS
     )
     skip_escalation: SkipEscalationPolicy = Field(default_factory=SkipEscalationPolicy)
+    # The reference depositor the default term-deposit benchmark describes (DATA-005): balance
+    # tier and payment frequency eligibility. See pricing_intelligence.deposit_reference.
+    deposit_reference: DepositReferencePolicy = Field(default_factory=DepositReferencePolicy)
+
+    @field_validator("our_bank")
+    @classmethod
+    def canonicalise_our_bank(cls, value: Optional[str]) -> Optional[str]:
+        return None if value is None else canonical_bank(value)
+
+    @field_validator("selected_banks")
+    @classmethod
+    def canonicalise_selected_banks(cls, value: list[str]) -> list[str]:
+        return canonicalise_bank_list(value)
 
     @model_validator(mode="after")
     def validate_terms(self) -> "PricingIntelligenceConfig":

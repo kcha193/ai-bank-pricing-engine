@@ -127,11 +127,20 @@ def test_strict_failed_validation_status_fails(tmp_path):
 
 def test_no_matching_records_fails_clearly():
     raw = _base_config()
-    raw["competitor_rates"]["selected_banks"] = ["Missing Bank"]
+    raw["competitor_rates"]["selected_banks"] = []
     config = EngineConfig.model_validate(raw)
 
     with pytest.raises(ValueError, match="No competitor rates matched"):
         load_and_resolve_competitor_rates(config.competitor_rates)
+
+
+def test_unknown_selected_bank_fails_at_config_load():
+    """DATA-014: an unrecognised bank name is a validation error, never an empty match."""
+    raw = _base_config()
+    raw["competitor_rates"]["selected_banks"] = ["Missing Bank"]
+
+    with pytest.raises(ValueError, match="unknown bank 'Missing Bank'"):
+        EngineConfig.model_validate(raw)
 
 
 def test_bank_specific_strategy_requires_bank():

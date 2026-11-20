@@ -18,6 +18,10 @@ from balance_pricing_engine.pricing_intelligence.alerts import (
     build_telegram_sink_from_env,
     build_webhook_sink_from_env,
 )
+from balance_pricing_engine.pricing_intelligence.deposit_reference import (
+    DepositReferencePolicy,
+    assess_reference_eligibility,
+)
 from balance_pricing_engine.pricing_intelligence.quarantine import QuarantineStatus
 from balance_pricing_engine.pricing_intelligence.store import CollectorHealth, RunRecord
 
@@ -122,16 +126,35 @@ def comparable_records(
     terms: Collection[int],
     excluded_product_names: Collection[str],
     admitted_keys: Optional[Collection[str]] = None,
+    deposit_reference: Optional[DepositReferencePolicy] = None,
 ) -> list[CompetitorRateRecord]:
     """Records eligible for the market snapshot, before the staleness check.
 
     The same filters ``build_market_snapshot`` applies (comparable tier or an
     ``admitted_keys`` term-deposit special, tracked bank and term, no ``non_comparable`` or
-    name-excluded product). Exclusion and health logic must use this, not a looser or
-    narrower record set, or they would describe records the market view never considered.
+    name-excluded product, and -- with ``deposit_reference`` -- a tier and payment frequency
+    the reference depositor can get). Exclusion and health logic must use this, not a looser
+    or narrower record set, or they would describe records the market view never considered.
     """
     markers = tuple(name.lower() for name in excluded_product_names)
     admitted = admitted_keys or ()
+    return [
+        r
+        for r in _comparable_unassessed(records, rate_category, banks, terms, markers, admitted)
+        if deposit_reference is None
+        or ProductType(r.product_type) is not ProductType.TERM_DEPOSIT
+        or assess_reference_eligibility(r, deposit_reference).eligible
+    ]
+
+
+def _comparable_unassessed(
+    records: Sequence[CompetitorRateRecord],
+    rate_category: Optional[str],
+    banks: Collection[str],
+    terms: Collection[int],
+    markers: tuple[str, ...],
+    admitted: Collection[str],
+) -> list[CompetitorRateRecord]:
     return [
         r
         for r in records
@@ -449,6 +472,7 @@ def assess_system_health(
         terms=set(config.tracked_terms_months),
         excluded_product_names=config.excluded_product_names,
         admitted_keys=service.admitted_special_keys(resolved, product, snapshot.rate_category),
+        deposit_reference=snapshot.deposit_reference,
     )
     quarantine = service.get_quarantine_status(product_type=product, now=now)
     # Raw warning rows remain visible even when a category flip resolves to another tier. A

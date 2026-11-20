@@ -149,6 +149,7 @@ def build_ranking_frame(snapshot: MarketSnapshot, term_months: int) -> pd.DataFr
                 "Rate (%)": entry.rate_pct,
                 "Product": entry.product_name,
                 "Max LVR": entry.max_lvr,
+                "Eligibility": entry.eligibility_note,
             }
             for entry in market.ranking()
         ]

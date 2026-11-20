@@ -43,6 +43,7 @@ from balance_pricing_engine.pricing_intelligence.coverage import (
     BenchmarkCoverage,
     assess_benchmark_coverage,
 )
+from balance_pricing_engine.pricing_intelligence.deposit_reference import DepositReferencePolicy
 from balance_pricing_engine.pricing_intelligence.health import (
     MarketExclusion,
     comparable_records,
@@ -1196,14 +1197,39 @@ class PricingIntelligenceService:
             )
         ]
 
+    def _deposit_reference(
+        self,
+        product_type: ProductType | str,
+        rate_category: Optional[str],
+        all_tiers: bool = False,
+    ) -> Optional[DepositReferencePolicy]:
+        """The reference depositor for a category-filtered term-deposit view (DATA-005).
+
+        ``None`` (the all-tier view) for home loans, for the unfiltered ``rate_category=None``
+        view, and when the caller explicitly asks for ``all_tiers``.
+        """
+        if all_tiers or rate_category is None:
+            return None
+        if ProductType(product_type) is not ProductType.TERM_DEPOSIT:
+            return None
+        return self.config.deposit_reference
+
     def get_market_snapshot(
         self,
         product_type: ProductType | str = ProductType.HOME_LOAN,
         rate_category: Optional[str] = _RATE_CATEGORY_OMITTED,
         as_of_run_id: Optional[str] = None,
         now: Optional[datetime] = None,
+        *,
+        all_tiers: bool = False,
     ) -> MarketSnapshot:
         """Return the currently-advertised market across tracked terms.
+
+        A term-deposit view describes the configured reference depositor
+        (``config.deposit_reference``: balance tier and payment frequency; DATA-005). Pass
+        ``all_tiers=True`` -- or ``rate_category=None`` -- for the descriptive all-tier view,
+        which takes each bank's best rate across every tier and frequency and carries
+        ``deposit_reference=None`` so it cannot be mistaken for the pricing benchmark.
 
         ``rate_category`` defaults to the product's comparable category (see
         :func:`_resolve_rate_category`) when omitted. Pass ``rate_category=None``
@@ -1263,6 +1289,7 @@ class PricingIntelligenceService:
             excluded_product_names=self.config.excluded_product_names,
             quarantined_keys=quarantined_keys,
             evaluated_at=evaluated_at,
+            deposit_reference=self._deposit_reference(product_type, rate_category, all_tiers),
         )
 
     def get_previous_market_snapshot(
@@ -1315,6 +1342,7 @@ class PricingIntelligenceService:
             as_of=as_of,
             excluded_product_names=self.config.excluded_product_names,
             evaluated_at=as_of,
+            deposit_reference=self._deposit_reference(product_type, rate_category),
         )
 
     def get_changes(
@@ -1465,6 +1493,7 @@ class PricingIntelligenceService:
                 banks=self.config.selected_banks,
                 as_of=as_of,
                 excluded_product_names=self.config.excluded_product_names,
+                deposit_reference=self._deposit_reference(product_type, rate_category),
             )
             market = snapshot.term(term_months)
             rates = {entry.bank: entry.rate_pct for entry in market.entries} if market else {}
@@ -1618,6 +1647,7 @@ class PricingIntelligenceService:
             terms=set(self.config.tracked_terms_months),
             excluded_product_names=self.config.excluded_product_names,
             admitted_keys=self.admitted_special_keys(records, product_type, rate_category),
+            deposit_reference=self._deposit_reference(product_type, rate_category),
         )
         threshold = self.config.max_observation_age_hours
         has_fresh = {

@@ -99,6 +99,9 @@ class BankPosition:
     last_change_at: Optional[datetime]
     freshness: FreshnessState
     quarantined: bool = False  # the shown rate is the last confirmed one; the latest was rejected
+    #: Backend eligibility label: published, inferred (mortgage LVR) or not established
+    #: (term-deposit reference tier/frequency). Never derived in the UI (DATA-005/013).
+    eligibility_note: str = ""
 
 
 @dataclass(frozen=True)

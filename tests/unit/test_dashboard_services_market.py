@@ -355,7 +355,9 @@ def test_quarantine_marker_belongs_to_the_selected_observation(
         rate_pct=fallback_rate,
         observed_at=old,
         max_lvr=0.6,
-        min_balance_or_deposit=20000,
+        # A distinct tier the $10k reference depositor can still get (DATA-005): a $20k
+        # minimum would be excluded from the term-deposit benchmark before any marker check.
+        min_balance_or_deposit=5000,
     )
     suspicious = confirmed.model_copy(
         update={

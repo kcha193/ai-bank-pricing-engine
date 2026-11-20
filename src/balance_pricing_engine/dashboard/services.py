@@ -350,6 +350,7 @@ class DashboardServices:
                             else FreshnessState.FRESH
                         ),
                         quarantined=(e.bank, term_months) in quarantined,
+                        eligibility_note=e.eligibility_note,
                     )
                     for e in market.ranking()
                 )

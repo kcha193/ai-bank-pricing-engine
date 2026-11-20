@@ -16,6 +16,11 @@ class ASBCollector(BankPricingCollector):
     """
 
     bank: ClassVar[str] = "ASB"
+    #: Explicit alternative names accepted in configuration (see ``bank_identity``).
+    bank_aliases: ClassVar[tuple[str, ...]] = (
+        "ASB Bank",
+        "ASB Bank Limited",
+    )
     home_loan_url: ClassVar[str] = (
         "https://www.asb.co.nz/home-loans-mortgages/interest-rates-fees.html"
     )

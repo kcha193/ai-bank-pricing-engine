@@ -437,6 +437,42 @@ def normalise_lvr_values(text: str | None) -> tuple[float | None, float | None]:
     return None, None
 
 
+_BOUND_PERCENT = r"\d+(?:\.\d+)?\s*%"
+_BOUND_MENTION = (
+    rf"(?:{_BOUND_PERCENT}\s*)?(?:(?:minimum|maximum)\s+)?(?:lvr|equity)\b"
+    rf"(?:\s*:?\s*(?:of\s+)?{_BOUND_PERCENT})?"
+)
+_NEGATED_LVR_REQUIREMENT = re.compile(
+    rf"\b(?:no|without)\s+{_BOUND_MENTION}"
+    rf"|\b{_BOUND_MENTION}\s+(?:(?:is\s+)?not\s+(?:required|a requirement)|does not apply)\b",
+    re.I,
+)
+_INVALID_EQUITY_PERCENT = re.compile(r"\b\d{3,}(?:\.\d+)?\s*%\s+equity\b", re.I)
+_PREFIXED_BOUND = re.compile(
+    r"\b(minimum equity|maximum lvr)\s*:?\s*(?:of\s+)?(\d+(?:\.\d+)?)\s*%", re.I
+)
+
+
+def published_lvr_values(text: str) -> Optional[tuple[Optional[float], Optional[float]]]:
+    """Bounds supported by source text, independently of collector defaults.
+
+    None means no explicit evidence. A pair of Nones signals text that mentions
+    an invalid or negated bound and cannot support a provenance claim.
+    """
+    if _NEGATED_LVR_REQUIREMENT.search(text) or _INVALID_EQUITY_PERCENT.search(text):
+        return None, None
+    prefixed = _PREFIXED_BOUND.search(text)
+    if prefixed:
+        label, value = prefixed.groups()
+        percent = float(value)
+        lvr = 100 - percent if label.lower() == "minimum equity" else percent
+        if 0 < lvr <= 100:
+            return round(lvr / 100, 4), round(1 - lvr / 100, 4)
+        return None, None
+    values = normalise_lvr_values(text)
+    return values if values != (None, None) else None
+
+
 def extract_cashback(text: str | None) -> str | None:
     """Return the advertised cashback/cash-contribution phrase, if any."""
     if not text:

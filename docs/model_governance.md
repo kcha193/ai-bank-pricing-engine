@@ -86,6 +86,22 @@ review](pricing_intelligence.md#quarantine-review-data-002-data-016).
 Remaining limits: REJECT/VOID are terminal; attribution is token-based; peer comparison needs at least
 three comparable banks and a prior reading to measure movement.
 
+## Benchmark comparability and eligibility disclosure (DATA-005, DATA-013, DATA-014)
+
+- **One explicit reference depositor.** The default term-deposit benchmark admits only the balance
+  tier and payment frequency `pricing_intelligence.deposit_reference` (default $10,000, at maturity)
+  can get. It is part of the effective configuration, so `config_hash` identifies the policy a
+  decision used; earlier decisions are not relabelled.
+- **Unknown is disclosed, never confirmed.** A rate with no published tier or frequency is admitted
+  only while the `admit_unstated_*` flags allow it, and every surface (rationale, coverage line,
+  Market Explorer) says "eligibility not established". An inferred mortgage LVR is flagged
+  `eligibility_inferred` and labelled "inferred from special-rate category". Historical views
+  disclose unknown provenance when the original capture is unavailable.
+- **Own bank by canonical identity.** `our_bank` resolves to one canonical collector bank or fails
+  validation; aliases cannot double-count an institution or leak it into `min_banks`.
+- **Selection, not equations.** These rules decide which observations form a benchmark. They do not
+  change optimiser mathematics; for identical resolved assumptions the output is unchanged.
+
 ## Governance Control Plane (`governance/`)
 
 The primitives below (registry approval, fail-loud artifact checks, boundary/policy-band

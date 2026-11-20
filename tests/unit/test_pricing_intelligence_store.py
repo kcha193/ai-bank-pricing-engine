@@ -1449,6 +1449,22 @@ def test_observations_as_of_does_not_return_evidence_from_a_later_touch(store, m
     assert reconstructed[0].raw_text_context != "day two snapshot"
 
 
+def test_as_of_lvr_evidence_cannot_come_from_a_later_reused_run_id(store, make_record):
+    deposit = make_record(product_type=ProductType.TERM_DEPOSIT, rate_category="term_deposit")
+    mortgage = make_record(
+        bank="Westpac", raw_text_context="1 year | 4.79%", max_lvr=0.8, min_equity=0.2
+    )
+    published = mortgage.model_copy(update={"raw_text_context": "1 year | 4.79% | 80% LVR"})
+    store.record_observations([deposit], run_id="shared", observed_at=DAY_ONE)
+    store.record_observations([mortgage], run_id="middle", observed_at=DAY_ONE)
+    _reuse_run_id_for_another_product(
+        store, "shared", [published], DAY_ONE, ProductType.HOME_LOAN
+    )
+
+    [earlier] = store.get_observations_as_of(DAY_ONE, before_run_id="middle")
+    assert earlier.lvr_eligibility_basis() == "unknown"
+
+
 def _withdraw_bnz_on_day_two(store, make_record):
     """Shared setup: ANZ+BNZ on day one, BNZ withdrawn (and recorded) on day two."""
     store.record_observations(

@@ -372,6 +372,9 @@ class BankPricingCollector(abc.ABC):
     """
 
     bank: ClassVar[str]
+    #: Exact alternative names for ``bank`` accepted in configuration (``our_bank``,
+    #: ``selected_banks``). Matched case-insensitively, never fuzzily; see ``bank_identity``.
+    bank_aliases: ClassVar[tuple[str, ...]] = ()
     home_loan_url: ClassVar[str]
     term_deposit_url: ClassVar[Optional[str]] = None
     #: Set False until a collector's output has been checked against the live page.

@@ -11,8 +11,20 @@ from datetime import datetime, timezone
 from statistics import fmean, median
 from typing import Iterable, Mapping, Optional
 
-from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
+from balance_pricing_engine.competitor_rates.bank_identity import same_bank
+from balance_pricing_engine.competitor_rates.models import (
+    CompetitorRateRecord,
+    LvrEligibilityBasis,
+    ProductType,
+)
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps, spread_bps
+from balance_pricing_engine.pricing_intelligence.deposit_reference import (
+    DepositReferencePolicy,
+    ReferenceAssessment,
+    ReferenceExclusion,
+    assess_reference_eligibility,
+    reference_exclusion,
+)
 
 
 def _better_is_lower(product_type: ProductType) -> bool:
@@ -21,16 +33,14 @@ def _better_is_lower(product_type: ProductType) -> bool:
 
 
 def _banks_match(a: str, b: str) -> bool:
-    """Case/whitespace-insensitive bank-name comparison.
+    """Whether two bank names identify one institution (DATA-014).
 
-    ``PricingIntelligenceConfig.our_bank`` accepts an arbitrary string, not
-    validated against a collector's own canonical bank name. An exact-string
-    comparison against a differently-cased or whitespace-padded ``our_bank``
-    would silently fail to exclude the tracked bank's own advertised rate
-    from market statistics, letting it influence MARKET_MEDIAN/MARKET_LEADER
-    and, through those, the resulting pricing recommendation.
+    Delegates to :func:`~balance_pricing_engine.competitor_rates.bank_identity.same_bank`, the
+    one identity policy: tracked banks compare by canonical identity (an alias is its bank), so a
+    direct caller passing an alias still excludes the bank's own advertised rate from
+    MARKET_MEDIAN/MARKET_LEADER. ``PricingIntelligenceConfig.our_bank`` is canonicalised at load.
     """
-    return a.strip().casefold() == b.strip().casefold()
+    return same_bank(a, b)
 
 
 @dataclass(frozen=True)
@@ -47,10 +57,55 @@ class BankTermRate:
     max_lvr: Optional[float] = None
     cashback_text: Optional[str] = None
     quarantined: bool = False
+    # --- Eligibility evidence (Phase 2f, additive) ----------------------------------------
+    #: Home loans: how ``max_lvr`` was established (``published``/``inferred``/``unknown``).
+    lvr_basis: Optional[LvrEligibilityBasis] = None
+    eligibility_inferred: bool = False
+    #: Term deposits: the representative's own published terms.
+    interest_payment_frequency: Optional[str] = None
+    min_balance: Optional[float] = None
+    max_balance: Optional[float] = None
+    #: Term deposits under a reference policy: how the reference depositor's balance and
+    #: payment frequency were matched. ``None`` in an all-tier view (nothing was assessed).
+    balance_basis: Optional[str] = None
+    frequency_basis: Optional[str] = None
+    min_equity: Optional[float] = None
 
     @property
     def is_leader(self) -> bool:
         return self.rank == 1
+
+    @property
+    def reference_eligibility_established(self) -> bool:
+        """True only when both the balance tier and the payment frequency were published."""
+        return self.balance_basis == "published" and self.frequency_basis == "published"
+
+    @property
+    def eligibility_note(self) -> str:
+        """A short, factual eligibility label for evidence tables and rationales."""
+        if self.balance_basis is not None or self.frequency_basis is not None:
+            if self.reference_eligibility_established:
+                return "Reference balance tier and payment frequency published"
+            gaps = []
+            if self.balance_basis == "not_stated":
+                gaps.append("balance tier not published")
+            if self.frequency_basis == "not_stated":
+                gaps.append("payment frequency not published")
+            if self.frequency_basis == "fallback":
+                gaps.append(f"fallback payment frequency ({self.interest_payment_frequency})")
+            return "Eligibility not established: " + "; ".join(gaps)
+        if self.lvr_basis is None or (self.max_lvr is None and self.min_equity is None):
+            return "Eligibility not established"
+        if self.max_lvr is not None:
+            bound = f"{self.max_lvr:.4%}".rstrip("%").rstrip("0").rstrip(".") + "% max LVR"
+        else:
+            bound = f"{self.min_equity:.4%}".rstrip("%").rstrip("0").rstrip(".") + "% min equity"
+        source = {
+            "inferred": "inferred from special-rate category",
+            "published": "published eligibility",
+            "unknown": "eligibility provenance unavailable",
+        }[self.lvr_basis]
+        return f"{bound} — {source}"
 
 
 @dataclass(frozen=True)
@@ -123,15 +178,43 @@ class TermMarket:
 
     def rate_for(self, bank: str) -> Optional[float]:
         for entry in self.entries:
-            if entry.bank == bank:
+            if _banks_match(entry.bank, bank):
                 return entry.rate_pct
         return None
 
     def rank_for(self, bank: str) -> Optional[int]:
         for entry in self.entries:
-            if entry.bank == bank:
+            if _banks_match(entry.bank, bank):
                 return entry.rank
         return None
+
+    @property
+    def inferred_eligibility_banks(self) -> tuple[str, ...]:
+        """Home-loan banks whose representative's LVR condition was inferred, not published."""
+        return tuple(entry.bank for entry in self.entries if entry.eligibility_inferred)
+
+    @property
+    def unknown_lvr_eligibility_banks(self) -> tuple[str, ...]:
+        """Home-loan banks whose representative has unknown LVR eligibility evidence."""
+        return tuple(entry.bank for entry in self.entries if entry.lvr_basis == "unknown")
+
+    @property
+    def unestablished_reference_banks(self) -> tuple[str, ...]:
+        """Term-deposit banks admitted without published reference-depositor eligibility."""
+        return tuple(
+            entry.bank
+            for entry in self.entries
+            if entry.balance_basis is not None and not entry.reference_eligibility_established
+        )
+
+    @property
+    def eligibility_caveat_banks(self) -> tuple[str, ...]:
+        """Banks whose representative rests on inferred or unestablished eligibility."""
+        return tuple(sorted({
+            *self.inferred_eligibility_banks,
+            *self.unknown_lvr_eligibility_banks,
+            *self.unestablished_reference_banks,
+        }))
 
     def ranking(self) -> tuple[BankTermRate, ...]:
         """Entries ordered most competitive first."""
@@ -160,6 +243,11 @@ class MarketSnapshot:
     #: a reconstruction. ``as_of`` is the newest input, which says nothing about the oldest; input
     #: ages are measured against this (see :mod:`.coverage`). ``None`` for legacy callers.
     evaluated_at: Optional[datetime] = None
+    #: The reference depositor this view describes (term deposits). ``None`` for an all-tier
+    #: view, which is descriptive only and never a default pricing benchmark (DATA-005).
+    deposit_reference: Optional[DepositReferencePolicy] = None
+    #: Records the reference depositor cannot get, with the reason. Kept for audit.
+    reference_exclusions: tuple[ReferenceExclusion, ...] = ()
 
     @property
     def banks(self) -> tuple[str, ...]:
@@ -219,6 +307,7 @@ def build_market_snapshot(
     quarantined_keys: Optional[set[str]] = None,
     admitted_keys: Optional[set[str]] = None,
     evaluated_at: Optional[datetime] = None,
+    deposit_reference: Optional[DepositReferencePolicy] = None,
 ) -> MarketSnapshot:
     """Build a market snapshot from a set of current observations.
 
@@ -244,6 +333,15 @@ def build_market_snapshot(
 
     ``evaluated_at`` records when the view was evaluated (see :attr:`MarketSnapshot.evaluated_at`);
     it never filters records.
+
+    ``deposit_reference`` (term deposits only) restricts each bank's candidates to records the
+    reference depositor can get and orders them by confirmed comparability before rate (see
+    :mod:`.deposit_reference`). Records it excludes are listed in
+    :attr:`MarketSnapshot.reference_exclusions`. Without it the view is all-tier: each bank's
+    best rate across every tier and frequency -- descriptive, never a default benchmark.
+
+    The representative is chosen by a total order over the record's own content, so the
+    result never depends on input (HTML row) order.
     """
     product = ProductType(product_type)
     lower_is_better = _better_is_lower(product)
@@ -251,7 +349,11 @@ def build_market_snapshot(
     allowed_terms = set(terms_months) if terms_months is not None else None
     excluded_markers = tuple(name.lower() for name in excluded_product_names or ())
 
+    reference = deposit_reference if product is ProductType.TERM_DEPOSIT else None
     best_by_term_bank: dict[int, dict[str, CompetitorRateRecord]] = {}
+    best_key: dict[tuple[int, str], tuple] = {}
+    assessments: dict[int, ReferenceAssessment] = {}
+    exclusions: list[ReferenceExclusion] = []
     latest_observed: Optional[datetime] = None
 
     for record in records:
@@ -282,20 +384,19 @@ def build_market_snapshot(
         if allowed_terms is not None and term not in allowed_terms:
             continue
 
+        assessment: Optional[ReferenceAssessment] = None
+        if reference is not None:
+            assessment = assess_reference_eligibility(record, reference)
+            if not assessment.eligible:
+                exclusions.append(reference_exclusion(record, assessment))
+                continue
+            assessments[id(record)] = assessment
+
         bucket = best_by_term_bank.setdefault(term, {})
-        incumbent = bucket.get(record.bank)
-        if (
-            incumbent is None
-            or _is_more_competitive(
-                record.advertised_rate_pct, incumbent.advertised_rate_pct, lower_is_better
-            )
-            or (
-                rate_change_bps(incumbent.advertised_rate_pct, record.advertised_rate_pct) == 0
-                and incumbent.rate_category != rate_category
-                and record.rate_category == rate_category
-            )
-        ):
+        key = _selection_key(record, assessment, rate_category, lower_is_better)
+        if record.bank not in bucket or key < best_key[(term, record.bank)]:
             bucket[record.bank] = record
+            best_key[(term, record.bank)] = key
         latest_observed = (
             record.captured_at_utc
             if latest_observed is None or record.captured_at_utc > latest_observed
@@ -323,6 +424,7 @@ def build_market_snapshot(
                 max_lvr=record.max_lvr,
                 cashback_text=record.cashback_text,
                 quarantined=record.observation_key() in (quarantined_keys or set()),
+                **_eligibility_fields(record, product, assessments.get(id(record))),
             )
             for record, rank in zip(
                 ordered, _competition_ranks([r.advertised_rate_pct for r in ordered])
@@ -336,7 +438,57 @@ def build_market_snapshot(
         terms=terms,
         rate_category=rate_category,
         evaluated_at=evaluated_at,
+        deposit_reference=reference,
+        reference_exclusions=tuple(
+            sorted(exclusions, key=lambda e: (e.term_months, e.bank, e.observation_key))
+        ),
     )
+
+
+def _selection_key(
+    record: CompetitorRateRecord,
+    assessment: Optional[ReferenceAssessment],
+    rate_category: Optional[str],
+    lower_is_better: bool,
+) -> tuple:
+    """Total order for one bank's candidates at one term; the smallest key represents the bank.
+
+    The reference payment-frequency match first (when assessed: preferred, then each approved
+    fallback, then unstated -- different frequencies are different products), then the most
+    competitive rate (exact to 1e-6 %, so float noise cannot split a tie), then the view's own
+    category, then record content -- never input order. Among balance-eligible candidates the
+    rate decides; an unstated balance tier is admitted and disclosed, not ranked down, so a
+    Phase 2b comparable special keeps its place.
+    """
+    rate = round(record.advertised_rate_pct, 6)
+    return (
+        assessment.frequency_rank if assessment is not None else 0,
+        rate if lower_is_better else -rate,
+        0 if record.rate_category == rate_category else 1,
+        record.product_name.casefold(),
+        record.observation_key(),
+    )
+
+
+def _eligibility_fields(
+    record: CompetitorRateRecord,
+    product: ProductType,
+    assessment: Optional[ReferenceAssessment],
+) -> dict:
+    if product is ProductType.HOME_LOAN:
+        basis = record.lvr_eligibility_basis()
+        return {
+            "lvr_basis": basis,
+            "eligibility_inferred": basis == "inferred",
+            "min_equity": record.min_equity,
+        }
+    return {
+        "interest_payment_frequency": record.interest_payment_frequency,
+        "min_balance": record.min_balance_or_deposit,
+        "max_balance": record.max_balance_or_deposit,
+        "balance_basis": assessment.balance_basis if assessment else None,
+        "frequency_basis": assessment.frequency_basis if assessment else None,
+    }
 
 
 def term_market_from_rates(
@@ -366,10 +518,6 @@ def term_market_from_rates(
         for (bank, rate), rank in zip(ordered, ranks)
     )
     return TermMarket(term_months=term_months, product_type=product, entries=entries)
-
-
-def _is_more_competitive(candidate: float, incumbent: float, lower_is_better: bool) -> bool:
-    return candidate < incumbent if lower_is_better else candidate > incumbent
 
 
 def _competition_ranks(sorted_rates: list[float]) -> list[int]:
