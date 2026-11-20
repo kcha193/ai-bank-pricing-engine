@@ -99,6 +99,13 @@ recorded and excluded, and uncertain ones degrade the collection (exit 2). See
 `docs/pricing_intelligence.md` -> "Term-deposit specials and extraction completeness".
 Each product's health summary reflects its own backend freshness and collector state.
 
+For legacy competitor-rate inputs with no ordinary deposit at the configured term, comparable
+specials follow the configured payment-frequency ordering and exact-before-combined matching.
+The highest advertised rate within that preference group supplies the bank reference; equal
+rates use the observation key. With no preference match, the highest comparable special wins.
+Ordinary-deposit selection and the higher-rate, same-frequency special-replacement rule remain
+unchanged. This selection rule does not alter optimiser mathematics or special eligibility policy.
+
 The selected scenario's **model-best** candidate maximises the existing objective under
 its stated assumptions. The **Median-benchmark optimum (reference)** is the existing median
 comparison run, not an additional strategy or the selected assumption's answer. Policy-band,

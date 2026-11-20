@@ -366,6 +366,13 @@ See the [audit](audits/2026-09-06-pricing-intelligence-audit.md) for evidence an
 
 Last verified against `src/balance_pricing_engine/` on 2026-09-26. Moved here from the agent instructions; `AGENTS.md` points to it.
 
+PR #75 deposit-selection correction (2026-11-20): `competitor_rates.apply._deposit_representative`
+opts into highest-rate selection only when no ordinary deposit exists. `_select_frequency`
+retains frequency preference and exact-before-combined precedence, then ranks eligible specials
+by descending advertised rate and observation key. Its default ordinary-deposit behaviour stays
+unchanged. Eligibility continues to come from `pricing_intelligence.deposit_specials`; trust and
+distinct-bank coverage checks remain at the existing resolver boundaries.
+
 - [config.py](../src/balance_pricing_engine/config.py) — Pydantic v2 `EngineConfig` + `ResponseCoefficientsConfig`, sharing `EconomicConfig` finite-number validation and validated copy updates. Loan elasticities are non-positive; deposit elasticities are non-negative. Validates that **exactly one** of `pricing_strategy` (market-relative spreads) or `products` (absolute grids) is provided. Refuses spread grids that would generate negative rates. `model_validator(mode="after")` emits `warnings.warn` for: negative `wholesale_funding_spread`, penalty dominated by funding spread, `n_*_customers < 1000`, spread band < 50 bps.
 - [market.py](../src/balance_pricing_engine/market.py) — `MarketRates`, `SpreadGridConfig`, `bps_to_rate`, `build_market_relative_grid`.
 - [rate_grids.py](../src/balance_pricing_engine/rate_grids.py) — `build_configured_rate_grids`: dispatches between market-relative spread grids and absolute fallback grids.

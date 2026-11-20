@@ -439,7 +439,7 @@ def _deposit_representative(
     preference: list[str],
 ) -> Optional[CompetitorRateRecord]:
     if not ordinary:
-        return _select_frequency(specials, preference) if specials else None
+        return _select_frequency(specials, preference, highest_rate=True) if specials else None
     representative = _select_frequency(ordinary, preference)
     better = [
         special
@@ -466,6 +466,8 @@ def _uncertain_special_warnings(
 def _select_frequency(
     records: list[CompetitorRateRecord],
     preference: list[str],
+    *,
+    highest_rate: bool = False,
 ) -> CompetitorRateRecord:
     """Pick one record per bank by frequency preference, deterministically.
 
@@ -480,7 +482,15 @@ def _select_frequency(
     tie (including no preference matching at all) is broken by
     ``observation_key()``, which depends only on the record's own content,
     not parse order.
+
+    For specials-only selection, ``highest_rate=True`` ranks equally preferred
+    matches by descending advertised rate before the observation-key tie-break.
+    The same ranking applies when no preferred frequency matches. Ordinary
+    deposits retain the default observation-key selection.
     """
+    def selection_key(record: CompetitorRateRecord) -> tuple[float, str]:
+        return (-record.advertised_rate_pct if highest_rate else 0, record.observation_key())
+
     for frequency in preference:
         matches = [
             record for record in records if frequency in record.interest_payment_frequency.split("+")
@@ -490,8 +500,8 @@ def _select_frequency(
         exact_matches = [
             record for record in matches if record.interest_payment_frequency == frequency
         ]
-        return min(exact_matches or matches, key=lambda record: record.observation_key())
-    return min(records, key=lambda record: record.observation_key())
+        return min(exact_matches or matches, key=selection_key)
+    return min(records, key=selection_key)
 
 
 def _bank_representatives(

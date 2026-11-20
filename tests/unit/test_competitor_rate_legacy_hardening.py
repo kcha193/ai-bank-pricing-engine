@@ -22,6 +22,7 @@ from balance_pricing_engine.application.pricing_service import PricingService
 from balance_pricing_engine.competitor_rates import cli
 from balance_pricing_engine.competitor_rates.apply import (
     CompetitorRateResolutionError,
+    _deposit_representative,
     _filter_term_deposit_records,
     _resolve_strategy,
     apply_competitor_rates_to_config,
@@ -672,6 +673,177 @@ def test_t19_specials_are_not_assessed_for_a_pie_benchmark(tmp_path):
     assert resolved.resolution_warnings == []
 
 
+# ------------------------------------------------------ PR #75: specials-only selection
+
+
+def _eligible_special(make_record, rate, *, name="Special A", frequency="monthly", **overrides):
+    return _deposit(
+        make_record, "ANZ", rate, product_name=name, rate_category="special",
+        interest_payment_frequency=frequency,
+        raw_text_context="12 months special. Available to all customers.",
+        **overrides,
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_pr75_t01_t02_highest_special_wins_independent_of_order(make_record, reverse):
+    records = [_eligible_special(make_record, 4.0),
+               _eligible_special(make_record, 5.0, name="Special B")]
+    if reverse:
+        records.reverse()
+
+    selected = _filter_term_deposit_records(records, _config("unused.json"))
+
+    assert len(selected) == 1
+    assert selected[0].advertised_rate_pct == 5.0
+    assert selected[0].rate_category == "special"
+
+
+@pytest.mark.parametrize("preference, expected", [
+    (["monthly", "at_maturity"], 4.0), (["at_maturity", "monthly"], 5.0),
+])
+def test_pr75_t03_special_frequency_priority_beats_rate(make_record, preference, expected):
+    records = [_eligible_special(make_record, 4.0),
+               _eligible_special(make_record, 5.0, name="Special B", frequency="at_maturity")]
+    config = _config("unused.json", term_deposit={
+        "interest_payment_frequency_preference": preference,
+    })
+
+    selected = _filter_term_deposit_records(records, config)
+
+    assert selected[0].advertised_rate_pct == expected
+
+
+@pytest.mark.parametrize("preference", [["monthly"], ["annually"]])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_pr75_t04_equal_special_rates_use_observation_key(make_record, reverse, preference):
+    records = [_eligible_special(make_record, 5.0),
+               _eligible_special(make_record, 5.0, name="Special B")]
+    expected = min(records, key=lambda record: record.observation_key())
+
+    selected = _deposit_representative([], records[::-1] if reverse else records, preference)
+
+    assert selected is expected
+
+
+@pytest.mark.parametrize("frequency", ["monthly", "at_maturity+monthly", "quarterly"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_pr75_t05_ordinary_frequency_ties_keep_observation_key(make_record, frequency, reverse):
+    records = [_deposit(make_record, "ANZ", rate, product_name=name,
+                        interest_payment_frequency=frequency)
+               for rate, name in [(4.0, "Deposit A"), (5.0, "Deposit B")]]
+    expected = min(records, key=lambda record: record.observation_key())
+
+    selected = _deposit_representative(records[::-1] if reverse else records, [], ["monthly"])
+
+    assert selected is expected
+
+
+@pytest.mark.parametrize("rate, frequency, replaces", [
+    (3.9, "monthly", False), (4.0, "monthly", False), (5.0, "monthly", True),
+    (5.0, "at_maturity", False), (5.0, "at_maturity+monthly", False),
+])
+def test_pr75_t06_special_replaces_only_higher_at_same_frequency(
+    make_record, rate, frequency, replaces,
+):
+    ordinary = _deposit(make_record, "ANZ", 4.0, interest_payment_frequency="monthly")
+    special = _eligible_special(make_record, rate, frequency=frequency)
+
+    selected = _deposit_representative([ordinary], [special], ["monthly", "at_maturity"])
+
+    assert selected is (special if replaces else ordinary)
+
+
+@pytest.mark.parametrize("evidence", [
+    "12 months special.", "12 months special. Available to all new customers.",
+])
+def test_pr75_t07_ineligible_special_cannot_be_reference(make_record, tmp_path, evidence):
+    eligible = _eligible_special(make_record, 4.0)
+    excluded = _eligible_special(make_record, 8.0, name="Special B").model_copy(
+        update={"raw_text_context": evidence},
+    )
+    others = _ordinary_td("BNZ", 4.1) + _ordinary_td("Kiwibank", 4.2)
+    source = _write(tmp_path, [eligible, excluded] + others + _hl_market())
+    config = _config(source, term_deposit={"strategy": "bank_specific", "bank": "ANZ"})
+
+    resolved = load_and_resolve_competitor_rates(config, now=T0)
+
+    assert resolved.term_deposit_reference_rate == 0.04
+    excluded_assessment = next(a for a in resolved.deposit_special_assessments
+                               if a["rate_pct"] == 8.0)
+    assert excluded_assessment["status"] in {"uncertain", "not_comparable"}
+
+
+@pytest.mark.parametrize("status", ["warning", "failed"])
+def test_pr75_t07_untrusted_special_cannot_supply_reference(make_record, tmp_path, status):
+    records = [_eligible_special(make_record, 4.0),
+               _eligible_special(make_record, 5.0, name="Special B", validation_status=status)]
+    source = _write(tmp_path, records + _ordinary_td("BNZ", 4.1)
+                    + _ordinary_td("Kiwibank", 4.2) + _hl_market())
+    config = _config(source, term_deposit={"strategy": "bank_specific", "bank": "ANZ"})
+
+    resolved = load_and_resolve_competitor_rates(config, now=T0)
+
+    assert resolved.term_deposit_reference_rate == 0.04
+    assert any("untrusted" in warning for warning in resolved.resolution_warnings)
+
+
+@pytest.mark.parametrize("strategy, expected", [
+    ("bank_specific", 0.05), ("market_max", 0.05),
+    ("market_median", 0.042), ("market_average", (5.0 + 4.1 + 4.2) / 3 / 100),
+])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_pr75_t08_selected_special_reaches_strategies(
+    make_record, tmp_path, strategy, expected, reverse,
+):
+    records = [_eligible_special(make_record, 4.0),
+               _eligible_special(make_record, 5.0, name="Special B")]
+    records += _ordinary_td("BNZ", 4.1) + _ordinary_td("Kiwibank", 4.2) + _hl_market()
+    source = _write(tmp_path, records[::-1] if reverse else records)
+    config = _config(source, term_deposit={"strategy": strategy, "bank": "ANZ"})
+
+    resolved = load_and_resolve_competitor_rates(config, now=T0)
+
+    assert resolved.term_deposit_reference_rate == expected
+    assert len(resolved.term_deposit_records) == 3
+    assert next(r for r in resolved.term_deposit_records
+                if r.bank == "ANZ").advertised_rate_pct == 5.0
+
+
+@pytest.mark.parametrize("strategy", ["market_average", "market_max", "market_median"])
+@pytest.mark.parametrize("strict", [False, True])
+def test_pr75_t09_specials_do_not_inflate_bank_coverage(make_record, tmp_path, strategy, strict):
+    records = [_eligible_special(make_record, 4.0),
+               _eligible_special(make_record, 5.0, name="Special B")]
+    source = _write(tmp_path, records + _ordinary_td("BNZ", 4.1) + _hl_market())
+    config = _config(source, strict=strict, term_deposit={"strategy": strategy})
+
+    with pytest.raises(CompetitorRateResolutionError, match="2 eligible banks; minimum required: 3"):
+        load_and_resolve_competitor_rates(config, now=T0)
+
+
+@pytest.mark.parametrize("frequencies, preference, expected_name", [
+    (("monthly", "at_maturity+monthly"), ["monthly"], "Special A"),
+    (("at_maturity+monthly", "quarterly+monthly"), ["monthly"], "Special B"),
+    (("at_maturity+monthly", "quarterly"), ["monthly", "quarterly"], "Special A"),
+    (("quarterly", "annually"), ["monthly"], "Special B"),
+    (("quarterly", "quarterly"), ["monthly"], "Special B"),
+    (("quarterly", "annually"), [], "Special B"),
+])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_pr75_t10_special_combined_frequency_and_fallback(
+    make_record, frequencies, preference, expected_name, reverse,
+):
+    records = [_eligible_special(make_record, rate, name=name, frequency=frequency)
+               for rate, name, frequency in zip(
+                   [4.0, 5.0], ["Special A", "Special B"], frequencies,
+               )]
+
+    selected = _deposit_representative([], records[::-1] if reverse else records, preference)
+
+    assert selected.product_name == expected_name
+
+
 # ---------------------------------------------------- reduced assurance and coverage
 
 
@@ -881,8 +1053,9 @@ def test_t29_one_row_per_bank_inputs_keep_their_former_rates(tmp_path):
     applied = apply_competitor_rates_to_config(config)
 
     # Exactly the values master resolved for this fixture (``sum(rates) / len(rates)``).
-    expected_loan = 0.0565
-    expected_deposit = 0.043
+    # Python 3.12 improved float summation; compare with master's arithmetic on this Python.
+    expected_loan = sum([5.5, 5.7, 5.6, 5.8]) / 4 / 100
+    expected_deposit = sum([4.1, 4.3, 4.4, 4.2, 4.5]) / 5 / 100
     assert applied.market.competitor_loan_rate == pytest.approx(expected_loan, abs=0)
     assert applied.market.competitor_deposit_rate == pytest.approx(expected_deposit, abs=0)
     assert applied.market.home_loan_reference_rate == applied.market.competitor_loan_rate

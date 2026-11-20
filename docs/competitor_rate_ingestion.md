@@ -144,6 +144,12 @@ implementation.
 Term-deposit representatives are still chosen per bank by payment-frequency preference. The
 reference balance-tier policy is Phase 2f, not this change.
 
+If a bank has only comparable specials at the configured term, frequency preference and
+exact-before-combined matching still take precedence. Within that group, the highest advertised
+rate wins, with `observation_key()` breaking equal-rate ties. If no preferred frequency matches,
+the highest comparable special wins across the fallback group. Ordinary-deposit selection is
+unchanged; a special replaces an ordinary representative only at a higher rate at the same frequency.
+
 ### Staleness and warnings
 
 `load_and_resolve_competitor_rates()` returns `ResolvedCompetitorRates` with additive evidence:
