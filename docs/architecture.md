@@ -358,6 +358,9 @@ own historical events. Clean recoveries use that trusted observation as the
 change baseline. Observation/event writes remain atomic, with chronological
 collection ordering per product. Store opening repairs legacy numeric-only
 mortgage names and flags affected events, preserving the original rate history.
+Mortgage eligibility provenance uses source text available at the historical
+cutoff. When a later capture has overwritten that evidence, the recorded LVR
+and equity bounds retain unknown provenance.
 The dashboard uses presentation helpers for observation health; entirely failed
 attempts still require the separate scheduled-run summary to be visible.
 See the [audit](audits/2026-09-06-pricing-intelligence-audit.md) for evidence and limits.

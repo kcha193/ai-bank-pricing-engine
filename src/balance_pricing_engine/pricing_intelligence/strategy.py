@@ -255,23 +255,26 @@ def _promotional_note(term_market: TermMarket) -> str:
 def _eligibility_note(term_market: TermMarket) -> str:
     """Name the banks whose representative rests on inferred or unestablished eligibility.
 
-    Home loans: an LVR condition inferred from a special-rate label rather than published
-    (DATA-013). Term deposits: a representative admitted without a published balance tier or
-    payment frequency for the reference depositor (DATA-005). Neither is a bank-confirmed fact.
+    Home loans distinguish inferred LVR conditions and unknown evidence (DATA-013).
+    Term deposits disclose missing reference-depositor evidence (DATA-005).
     """
+    notes = []
     inferred = term_market.inferred_eligibility_banks
     if inferred:
-        return (
+        notes.append(
             "; LVR eligibility inferred from special-rate category, not published: "
             + ", ".join(inferred)
         )
+    unknown = term_market.unknown_lvr_eligibility_banks
+    if unknown:
+        notes.append("; LVR eligibility not established for " + ", ".join(unknown))
     unestablished = term_market.unestablished_reference_banks
     if unestablished:
-        return (
+        notes.append(
             "; reference-depositor eligibility not established (balance tier or payment "
             "frequency not published): " + ", ".join(unestablished)
         )
-    return ""
+    return "".join(notes)
 
 
 def _resolve_market_rate(

@@ -377,8 +377,9 @@ Full promotional eligibility cannot be inferred from the normalised fields alone
   with no published tier or frequency is admitted but labelled "eligibility not
   established". No annual-equivalent conversion is made between payment frequencies.
 - **Inferred LVR (DATA-013).** An 80% LVR / 20% equity condition inferred from a
-  special-rate label is kept (values unchanged) and flagged `eligibility_inferred`; it is
-  a modelling assumption about the observed rate, not a bank-published fact.
+  special-tier rule keeps its numeric values and is flagged `eligibility_inferred`.
+  A bound with missing or conflicting source evidence has unknown provenance.
+  Historical reads use evidence available by their evaluation cutoff.
 - **Own bank (DATA-014).** `our_bank` is canonicalised against the collector registry's
   canonical names and declared aliases; unknown names fail configuration.
 

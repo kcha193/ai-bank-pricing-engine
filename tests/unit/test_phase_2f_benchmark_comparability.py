@@ -489,6 +489,181 @@ def test_t28_inferred_eligibility_visible_in_market_evidence():
     assert "inferred" in resolved.rationale and "ANZ" in resolved.rationale
 
 
+@pytest.mark.parametrize(
+    ("bank", "text", "basis"),
+    [
+        ("Westpac", "Fixed Special | 12 months | 4.89% | 80% LVR", "published"),
+        ("ANZ", "Fixed Special | 12 months | 4.89%", "inferred"),
+        ("ASB", "12 months | 4.89%", "inferred"),
+        ("Westpac", "Fixed | 12 months | 4.89%", "unknown"),
+    ],
+)
+def test_historical_lvr_recovers_original_capture(tmp_path, bank, text, basis):
+    record = hl(bank, 4.89, text)
+    path = tmp_path / "obs.db"
+    with ObservationStore(path) as store:
+        store.record_observations([record], run_id="first", observed_at=T0)
+    # Open the existing file read-only to exercise the same storage contract as the dashboard.
+    with ObservationStore.open_reader(path) as store:
+        [current] = store.get_current_observations()
+        [historical] = store.get_observations_as_of(T0, before_run_id="first")
+        [confirmed] = store.get_confirmed_observations_as_of(T0, before_run_id="first")
+        [history] = store.get_rate_history()
+        for restored in (current, historical, confirmed, history):
+            assert restored.observation_key() == record.observation_key()
+            assert restored.lvr_eligibility_basis() == basis
+            assert restored.eligibility_inferred is (basis == "inferred")
+
+
+@pytest.mark.parametrize("elapsed", [timedelta(0), timedelta(hours=1)])
+def test_historical_lvr_does_not_use_evidence_from_later_touch(tmp_path, elapsed):
+    observed = hl("ASB", 4.89, "12 months | 4.89%")
+    recapture = observed.model_copy(
+        update={"raw_text_context": "12 months | 4.89% | Maximum 80% LVR"}
+    )
+    with ObservationStore(tmp_path / "obs.db") as store:
+        store.record_observations([observed], run_id="first", observed_at=T0)
+        store.record_observations([recapture], run_id="later", observed_at=T0 + elapsed)
+        [history] = store.get_rate_history()
+        assert (history.max_lvr, history.min_equity) == (0.8, 0.2)
+        assert history.lvr_eligibility_basis() == "unknown"
+        for read_as_of in (store.get_observations_as_of, store.get_confirmed_observations_as_of):
+            [earlier] = read_as_of(T0, before_run_id="first")
+            [later] = read_as_of(T0 + elapsed, before_run_id="later")
+            [by_time] = read_as_of(T0)
+            assert earlier.lvr_eligibility_basis() == "unknown"
+            assert earlier.eligibility_inferred is False
+            assert "Maximum 80%" not in earlier.raw_text_context
+            assert earlier.captured_at_utc == later.captured_at_utc == T0
+            assert later.lvr_eligibility_basis() == "published"
+            assert by_time.lvr_eligibility_basis() == ("unknown" if elapsed else "published")
+
+
+@pytest.mark.parametrize(
+    ("bank", "notes", "basis"),
+    [("Westpac", "80% LVR", "published"), ("ANZ", "Special", "inferred")],
+)
+def test_historical_lvr_uses_recaptured_collector_text_only_at_its_cutoff(
+    tmp_path, bank, notes, basis
+):
+    html = f"""<table><tr><th>Term</th><th>Rate</th><th>Notes</th></tr>
+    <tr><td>1 year</td><td>4.89%</td><td>{notes}</td></tr></table>"""
+    collector = COLLECTORS_BY_BANK[bank](fetcher=lambda url: b"")
+    [record] = collector.parse_mortgage_html(html, T0)
+    assert record.special_conditions == record.raw_text_context
+    later = T0 + timedelta(hours=1)
+    with ObservationStore(tmp_path / "obs.db") as store:
+        store.record_observations([record], run_id="first", observed_at=T0)
+        [first] = store.get_observations_as_of(T0, before_run_id="first")
+        assert first.lvr_eligibility_basis() == basis
+        store.record_observations([record], run_id="later", observed_at=later)
+        [first] = store.get_observations_as_of(T0, before_run_id="first")
+        [recaptured] = store.get_observations_as_of(later, before_run_id="later")
+        assert first.lvr_eligibility_basis() == "unknown"
+        assert recaptured.lvr_eligibility_basis() == basis
+
+
+def test_later_text_does_not_validate_legacy_eligibility_metadata(tmp_path):
+    published = "12 months | 4.89% | Maximum 80% LVR"
+    record = hl("ASB", 4.89, "12 months | 4.89%").model_copy(
+        update={"special_conditions": published}
+    )
+    with ObservationStore(tmp_path / "obs.db") as store:
+        store.record_observations([record], run_id="first", observed_at=T0)
+        store.record_observations(
+            [record.model_copy(update={"raw_text_context": published})],
+            run_id="later",
+            observed_at=T0 + timedelta(hours=1),
+        )
+        [historical] = store.get_observations_as_of(T0, before_run_id="first")
+        assert historical.lvr_eligibility_basis() == "unknown"
+        assert published != historical.raw_text_context
+
+
+@pytest.mark.parametrize(
+    "text", ["", "Fixed | 12 months | 4.89%", "Fixed Special | 12 months | 4.89% | 75% LVR"]
+)
+def test_legacy_lvr_needs_supporting_evidence(text):
+    record = hl("Westpac", 4.89, "Fixed | 12 months | 4.89% | 80% LVR")
+    payload = record.model_dump()
+    payload.update(
+        raw_text_context=text,
+        special_conditions=record.raw_text_context,
+        lvr_basis="published",
+        lvr_eligibility_basis="published",
+        eligibility_inferred=True,
+    )
+    restored = CompetitorRateRecord.model_validate(payload)
+    assert restored.observation_key() == record.observation_key()
+    assert restored.lvr_eligibility_basis() == "unknown"
+    assert restored.eligibility_inferred is False
+
+
+@pytest.mark.parametrize(
+    ("text", "basis"),
+    [
+        ("12 months | 4.89% | Minimum equity: 20%", "published"),
+        ("12 months | 4.89% | Maximum LVR: 80%", "published"),
+        ("12 months | 4.89% | No 80% LVR requirement", "unknown"),
+        ("12 months | 4.89% | No minimum equity of 20% is required", "unknown"),
+        ("12 months | 4.89% | An LVR of 80% is not required", "unknown"),
+        ("12 months | 4.89% | 120% equity", "unknown"),
+        ("N/A", "unknown"),
+    ],
+)
+def test_lvr_distinguishes_explicit_bounds_from_placeholders_and_negations(text, basis):
+    record = hl("ASB", 4.89, "12 months | 4.89%")
+    assert record.model_copy(update={"raw_text_context": text}).lvr_eligibility_basis() == basis
+
+
+def test_published_legacy_equity_only_uses_the_stored_bound_in_the_label():
+    record = hl("Westpac", 4.89, "Fixed Special | 12 months | 4.89% | with 20% equity")
+    equity_only = record.model_copy(update={"max_lvr": None})
+    assert build_market_snapshot([equity_only])[12].entries[0].eligibility_note == (
+        "20% min equity — published eligibility"
+    )
+
+
+def test_lvr_provenance_in_previous_as_of_and_current_market_evidence(tmp_path):
+    from balance_pricing_engine.pricing_intelligence.dashboard_data import build_ranking_frame
+
+    records = [
+        hl("ASB", 4.79, "12 months | 4.79%"),
+        hl("ANZ", 4.85, "Fixed Special | 12 months | 4.85%"),
+        hl("Westpac", 4.89, "Fixed Special | 12 months | 4.89% | 80% LVR"),
+    ]
+    now = T0 + timedelta(hours=1)
+    with ObservationStore(tmp_path / "obs.db") as store:
+        store.record_observations(records, run_id="first", observed_at=T0)
+        store.record_observations([records[0]], run_id="later", observed_at=now)
+        service = PricingIntelligenceService(config=PricingIntelligenceConfig(), store=store)
+        previous = service.get_previous_market_snapshot()
+        as_of = service.get_market_snapshot(as_of_run_id="first", now=now)
+        current = service.get_market_snapshot(now=now)
+
+        assert previous == as_of
+        assert as_of.evaluated_at == T0
+        expected = {
+            "ASB": "80% max LVR — eligibility provenance unavailable",
+            "ANZ": "80% max LVR — inferred from special-rate category",
+            "Westpac": "80% max LVR — published eligibility",
+        }
+        assert {entry.bank: entry.eligibility_note for entry in as_of[12].entries} == expected
+        assert build_ranking_frame(as_of, 12).set_index("Bank")["Eligibility"].to_dict() == expected
+        assert current[12].entries[0].eligibility_inferred
+        historical_rate = resolve_competitor_rate("MARKET_MEDIAN", as_of, term_months=12)
+        current_rate = resolve_competitor_rate("MARKET_MEDIAN", current, term_months=12)
+        assert historical_rate.competitor_loan_rate == current_rate.competitor_loan_rate
+        assert historical_rate.coverage.oldest_input_age_hours == 0
+        assert historical_rate.coverage.eligible_bank_count == 3
+        assert historical_rate.coverage.eligibility_caveat_banks == ("ANZ", "ASB")
+        assert "special-rate category, not published: ANZ" in historical_rate.rationale
+        assert "LVR eligibility not established for ASB" in historical_rate.rationale
+        assert "eligibility inferred or not established for ANZ, ASB" in (
+            historical_rate.evidence_summary()
+        )
+
+
 # ---------------------------------------------------------- own-bank identity
 
 

@@ -37,7 +37,11 @@ from typing import Iterable, Iterator, Mapping, NamedTuple, Optional, Sequence
 from urllib.parse import quote
 import uuid
 
-from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
+from balance_pricing_engine.competitor_rates.models import (
+    HISTORICAL_EVIDENCE_UNAVAILABLE,
+    CompetitorRateRecord,
+    ProductType,
+)
 from balance_pricing_engine.pricing_intelligence.revision import install_revision_tracking
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange
@@ -549,8 +553,10 @@ class _AsOfCutoff(NamedTuple):
     inner: str
     eligibility: str
     withdrawal: str
+    source_evidence: str
     observation_params: tuple
     withdrawal_params: tuple
+    source_evidence_params: tuple
     #: ISO timestamp bounding which review decisions apply to this reconstruction.
     review_cutoff: str = ""
 
@@ -2924,8 +2930,10 @@ class ObservationStore:
                 inner="o2.first_observed_at <= ?",
                 eligibility="o3.first_observed_at <= ?",
                 withdrawal="rc.detected_at <= ?",
+                source_evidence="o.last_seen_at <= ?",
                 observation_params=(timestamp,),
                 withdrawal_params=(timestamp,),
+                source_evidence_params=(timestamp,),
                 review_cutoff=timestamp,
             )
         reference = self._connection.execute(
@@ -2936,8 +2944,8 @@ class ObservationStore:
             return None
         observation_params = (reference["started_at"], reference["started_at"], reference["rowid"])
         ordering = "(cr_row.started_at < ? OR (cr_row.started_at = ? AND cr_row.rowid <= ?))"
-        observation_cutoff = (
-            f"EXISTS (SELECT 1 FROM collection_runs cr_row WHERE cr_row.run_id = {{alias}}.first_seen_run_id "
+        run_cutoff = (
+            "EXISTS (SELECT 1 FROM collection_runs cr_row WHERE cr_row.run_id = {run_column} "
             f"AND {ordering})"
         )
         withdrawal_cutoff = (
@@ -2945,13 +2953,32 @@ class ObservationStore:
             "OR (NOT EXISTS (SELECT 1 FROM collection_runs cr_check WHERE cr_check.run_id = rc.run_id) "
             "AND rc.detected_at <= ?))"
         )
+        # Use the product's run ledger for evidence. Legacy cross-product reuse can
+        # give the shared collection_runs row a different timestamp or position.
+        # At a tied timestamp a migrated mixed run's relative order may be lost.
+        source_evidence = (
+            "EXISTS (SELECT 1 FROM collection_run_products anchor "
+            "WHERE anchor.run_id = ? AND anchor.product_type = o.product_type AND ("
+            "o.last_seen_at < anchor.started_at OR (o.last_seen_at = anchor.started_at AND ("
+            "o.last_seen_run_id = anchor.run_id OR EXISTS ("
+            "SELECT 1 FROM collection_run_products capture "
+            "WHERE capture.run_id = o.last_seen_run_id AND capture.product_type = o.product_type "
+            "AND capture.started_at = anchor.started_at AND capture.rowid < anchor.rowid "
+            "AND NOT EXISTS (SELECT 1 FROM collection_run_products other "
+            "WHERE other.run_id IN (anchor.run_id, capture.run_id) "
+            "AND other.product_type <> o.product_type)"
+            "))))"
+            ")"
+        )
         return _AsOfCutoff(
-            outer=observation_cutoff.format(alias="o"),
-            inner=observation_cutoff.format(alias="o2"),
-            eligibility=observation_cutoff.format(alias="o3"),
+            outer=run_cutoff.format(run_column="o.first_seen_run_id"),
+            inner=run_cutoff.format(run_column="o2.first_seen_run_id"),
+            eligibility=run_cutoff.format(run_column="o3.first_seen_run_id"),
             withdrawal=withdrawal_cutoff,
+            source_evidence=source_evidence,
             observation_params=observation_params,
             withdrawal_params=(*observation_params, timestamp),
+            source_evidence_params=(before_run_id,),
             review_cutoff=reference["started_at"],
         )
 
@@ -2997,7 +3024,8 @@ class ObservationStore:
             return []
         effective = _effective_observations(cutoff.review_cutoff)
         rows = self._connection.execute(
-            f"SELECT * FROM {effective} o WHERE product_type = ? AND {cutoff.outer} "
+            f"SELECT o.*, ({cutoff.source_evidence}) AS source_in_scope "
+            f"FROM {effective} o WHERE product_type = ? AND {cutoff.outer} "
             "AND id = ("
             f"  SELECT id FROM observations o2 WHERE o2.observation_key = o.observation_key "
             f"  AND {cutoff.inner} ORDER BY first_observed_at DESC, id DESC LIMIT 1"
@@ -3013,6 +3041,7 @@ class ObservationStore:
             )
             + "ORDER BY bank, term_months",
             (
+                *cutoff.source_evidence_params,
                 _product_value(product_type),
                 *cutoff.observation_params,
                 *cutoff.observation_params,
@@ -3020,7 +3049,10 @@ class ObservationStore:
                 *cutoff.observation_params,
             ),
         ).fetchall()
-        return [_row_to_history_record(row) for row in rows]
+        return [
+            _row_to_history_record(row, source_in_scope=bool(row["source_in_scope"]))
+            for row in rows
+        ]
 
     def get_confirmed_observations_as_of(
         self,
@@ -3048,7 +3080,8 @@ class ObservationStore:
             return []
         effective = _effective_observations(cutoff.review_cutoff)
         rows = self._connection.execute(
-            f"SELECT * FROM {effective} o WHERE product_type = ? AND {cutoff.outer} "
+            f"SELECT o.*, ({cutoff.source_evidence}) AS source_in_scope "
+            f"FROM {effective} o WHERE product_type = ? AND {cutoff.outer} "
             f"AND eff_status NOT IN {_UNTRUSTED_SQL} "
             "AND id = ("
             f"  SELECT id FROM {effective} o2 WHERE o2.observation_key = o.observation_key "
@@ -3067,6 +3100,7 @@ class ObservationStore:
             )
             + "ORDER BY bank, term_months",
             (
+                *cutoff.source_evidence_params,
                 _product_value(product_type),
                 *cutoff.observation_params,
                 *cutoff.observation_params,
@@ -3074,7 +3108,10 @@ class ObservationStore:
                 *cutoff.observation_params,
             ),
         ).fetchall()
-        return [_row_to_history_record(row) for row in rows]
+        return [
+            _row_to_history_record(row, source_in_scope=bool(row["source_in_scope"]))
+            for row in rows
+        ]
 
     def _previous_run_row(
         self,
@@ -3582,14 +3619,11 @@ def record_first_observed_at(row: sqlite3.Row) -> datetime:
 # is never all zeros) while being unmistakably a sentinel to a reader, not a
 # real digest that happens to look suspicious.
 _NO_HISTORICAL_EVIDENCE_HASH = "0" * 64
-_NO_HISTORICAL_EVIDENCE_TEXT = (
-    "(evidence unavailable: this state's stored evidence has since been "
-    "refreshed by a later, materially-unchanged collection and no longer "
-    "reflects this point in time)"
-)
 
 
-def _row_to_history_record(row: sqlite3.Row) -> CompetitorRateRecord:
+def _row_to_history_record(
+    row: sqlite3.Row, *, source_in_scope: Optional[bool] = None
+) -> CompetitorRateRecord:
     """Like :func:`_row_to_record`, but dates the state from when it began.
 
     History must reflect how long a state actually held, not when it was
@@ -3611,19 +3645,30 @@ def _row_to_history_record(row: sqlite3.Row) -> CompetitorRateRecord:
     unlike page content, a bank's URL rarely changes, and the still-current
     canonical link is more useful here than a placeholder.
 
-    The exception is a term-deposit special's ``raw_text_context``: its text is
+    One exception is a term-deposit special's ``raw_text_context``: its text is
     material (see :func:`_keeps_historical_evidence`), so the stored text is the
     evidence that held throughout this state, and a historical snapshot must
     reassess the special from it exactly as the live view did at the time.
+
+    Mortgage LVR evidence can use the row text when its capture was within
+    the as-of cutoff. A state-history listing dates each state at its start
+    and can use the text only when the original capture still occupies the
+    row. The capture hash and parser version remain unavailable in history.
     """
     record = _row_to_record(row)
+    if source_in_scope is None:
+        source_in_scope = (
+            row["first_seen_run_id"] == row["last_seen_run_id"]
+            and row["first_observed_at"] == row["last_seen_at"]
+        )
+    mortgage_text_available = record.product_type == ProductType.HOME_LOAN and source_in_scope
     return record.model_copy(
         update={
             "captured_at_utc": record_first_observed_at(row),
             "raw_text_context": (
                 record.raw_text_context
-                if _keeps_historical_evidence(row)
-                else _NO_HISTORICAL_EVIDENCE_TEXT
+                if _keeps_historical_evidence(row) or mortgage_text_available
+                else HISTORICAL_EVIDENCE_UNAVAILABLE
             ),
             "raw_html_sha256": _NO_HISTORICAL_EVIDENCE_HASH,
             "parser_version": "unavailable",

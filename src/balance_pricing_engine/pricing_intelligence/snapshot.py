@@ -12,7 +12,11 @@ from statistics import fmean, median
 from typing import Iterable, Mapping, Optional
 
 from balance_pricing_engine.competitor_rates.bank_identity import same_bank
-from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
+from balance_pricing_engine.competitor_rates.models import (
+    CompetitorRateRecord,
+    LvrEligibilityBasis,
+    ProductType,
+)
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps, spread_bps
 from balance_pricing_engine.pricing_intelligence.deposit_reference import (
     DepositReferencePolicy,
@@ -55,7 +59,7 @@ class BankTermRate:
     quarantined: bool = False
     # --- Eligibility evidence (Phase 2f, additive) ----------------------------------------
     #: Home loans: how ``max_lvr`` was established (``published``/``inferred``/``unknown``).
-    lvr_basis: Optional[str] = None
+    lvr_basis: Optional[LvrEligibilityBasis] = None
     eligibility_inferred: bool = False
     #: Term deposits: the representative's own published terms.
     interest_payment_frequency: Optional[str] = None
@@ -65,6 +69,7 @@ class BankTermRate:
     #: payment frequency were matched. ``None`` in an all-tier view (nothing was assessed).
     balance_basis: Optional[str] = None
     frequency_basis: Optional[str] = None
+    min_equity: Optional[float] = None
 
     @property
     def is_leader(self) -> bool:
@@ -89,14 +94,18 @@ class BankTermRate:
             if self.frequency_basis == "fallback":
                 gaps.append(f"fallback payment frequency ({self.interest_payment_frequency})")
             return "Eligibility not established: " + "; ".join(gaps)
-        if self.lvr_basis in ("published", "inferred") and self.max_lvr is not None:
-            source = (
-                "inferred from special-rate category"
-                if self.lvr_basis == "inferred"
-                else "published eligibility"
-            )
-            return f"{self.max_lvr * 100:.0f}% max LVR — {source}"
-        return "Eligibility not established"
+        if self.lvr_basis is None or (self.max_lvr is None and self.min_equity is None):
+            return "Eligibility not established"
+        if self.max_lvr is not None:
+            bound = f"{self.max_lvr:.4%}".rstrip("%").rstrip("0").rstrip(".") + "% max LVR"
+        else:
+            bound = f"{self.min_equity:.4%}".rstrip("%").rstrip("0").rstrip(".") + "% min equity"
+        source = {
+            "inferred": "inferred from special-rate category",
+            "published": "published eligibility",
+            "unknown": "eligibility provenance unavailable",
+        }[self.lvr_basis]
+        return f"{bound} — {source}"
 
 
 @dataclass(frozen=True)
@@ -185,6 +194,11 @@ class TermMarket:
         return tuple(entry.bank for entry in self.entries if entry.eligibility_inferred)
 
     @property
+    def unknown_lvr_eligibility_banks(self) -> tuple[str, ...]:
+        """Home-loan banks whose representative has unknown LVR eligibility evidence."""
+        return tuple(entry.bank for entry in self.entries if entry.lvr_basis == "unknown")
+
+    @property
     def unestablished_reference_banks(self) -> tuple[str, ...]:
         """Term-deposit banks admitted without published reference-depositor eligibility."""
         return tuple(
@@ -196,7 +210,11 @@ class TermMarket:
     @property
     def eligibility_caveat_banks(self) -> tuple[str, ...]:
         """Banks whose representative rests on inferred or unestablished eligibility."""
-        return tuple(sorted({*self.inferred_eligibility_banks, *self.unestablished_reference_banks}))
+        return tuple(sorted({
+            *self.inferred_eligibility_banks,
+            *self.unknown_lvr_eligibility_banks,
+            *self.unestablished_reference_banks,
+        }))
 
     def ranking(self) -> tuple[BankTermRate, ...]:
         """Entries ordered most competitive first."""
@@ -458,9 +476,11 @@ def _eligibility_fields(
     assessment: Optional[ReferenceAssessment],
 ) -> dict:
     if product is ProductType.HOME_LOAN:
+        basis = record.lvr_eligibility_basis()
         return {
-            "lvr_basis": record.lvr_eligibility_basis(),
-            "eligibility_inferred": record.eligibility_inferred,
+            "lvr_basis": basis,
+            "eligibility_inferred": basis == "inferred",
+            "min_equity": record.min_equity,
         }
     return {
         "interest_payment_frequency": record.interest_payment_frequency,

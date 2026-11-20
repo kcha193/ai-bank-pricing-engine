@@ -82,8 +82,8 @@ class BenchmarkCoverage:
     status: CoverageStatus
     #: The operator's own bank had a rate here and was removed from the benchmark.
     own_bank_excluded: bool = False
-    #: Contributing banks whose representative rests on inferred (home-loan LVR) or
-    #: unestablished (term-deposit reference tier/frequency) eligibility. Disclosure only.
+    #: Contributing banks with inferred or unknown LVR evidence or unestablished
+    #: reference-depositor eligibility. Disclosure only.
     eligibility_caveat_banks: tuple[str, ...] = ()
 
     @property

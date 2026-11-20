@@ -1361,21 +1361,21 @@ are unchanged; their provenance is now explicit:
 
 | `lvr_eligibility_basis()` | `eligibility_inferred` | Meaning |
 | --- | --- | --- |
-| `published` | `False` | The row text states the LVR or equity condition |
-| `inferred` | `True` | Set by a bank-specific rule; not stated in the row |
-| `unknown` | `False` | No condition set (`max_lvr` is `None`, never 0) |
+| `published` | `False` | The row text supports the stored LVR or equity bound |
+| `inferred` | `True` | The available row evidence supports the bank's special-tier rule |
+| `unknown` | `False` | The bound is absent or the evidence is missing or inconsistent |
 
-Both are pure functions of the record's stored fields (`raw_text_context`,
-`max_lvr`, `min_equity`): no schema change, old observations and older JSON
-artifacts answer identically, a serialised claim cannot override the evidence, and
-`observation_key()` is unchanged. A strict-source record that carries `max_lvr`
-without stating it in its text reads `inferred` (conservative). `BankTermRate`
-carries `lvr_basis`/`eligibility_inferred` and an `eligibility_note`
-("80% max LVR — inferred from special-rate category", "80% max LVR — published
-eligibility", "Eligibility not established"); a market-derived rationale names the
-banks whose LVR was inferred, and `BenchmarkCoverage.describe()` lists them. An
-inferred criterion is an inference about an observed rate, never a bank-confirmed
-fact.
+The record derives both fields at read time. Existing SQLite and JSON data use
+the same rules. A serialised provenance claim has no effect on the result.
+`observation_key()` still uses the eligibility values, with provenance excluded.
+
+An unchanged observation refreshes its capture text in place. Historical reads
+reuse mortgage text captured by the requested cutoff (including run order when
+timestamps match and run order is established). If the capture has been
+overwritten, the numeric bound remains visible with the label “eligibility
+provenance unavailable”. A missing bound reads “Eligibility not established”.
+Market Explorer uses these labels. Strategy rationales and coverage summaries
+disclose inferred or unknown evidence among the contributing banks.
 
 **Manual assumptions still work exactly as before.** Under `MANUAL` the config
 object is returned unchanged -- not copied, not revalidated -- so every existing
@@ -1777,11 +1777,11 @@ retained on every record.
 
 ## Data provenance
 
-Every observation retains `bank`, `source_url`, `captured_at_utc`,
-`raw_text_context` (the exact row text it was parsed from),
-`raw_html_sha256`, and `parser_version`. Derived eligibility fields
-(`max_lvr`, `min_equity`, `cashback_text`, `package_requirement`) are parsed
-only from that retained text, so each one can be audited back to its evidence.
+Current observations retain `bank`, `source_url`, `captured_at_utc`,
+`raw_text_context` (the exact row text), `raw_html_sha256`, and `parser_version`.
+Mortgage eligibility uses this text and the collector's special-tier rules.
+Historical reads mark the capture hash and parser version unavailable and may
+also lack the original row text.
 
 Raw HTML snapshots are written per collection under `data/raw/`, which is
 git-ignored. They are diagnostic material, not a permanent archive.

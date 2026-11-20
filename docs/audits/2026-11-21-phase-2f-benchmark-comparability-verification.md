@@ -93,5 +93,6 @@ is implemented and tested offline, not operationally verified.
 - The legacy `competitor_rates` TD path keeps its own frequency preference and has no
   reference-balance filter. It is reachable only when `competitor_rates.enabled`.
 - Market-activity counts (`get_market_changes`) still count moves across every ordinary tier.
-- A strict-source JSON record that carries `max_lvr` without stating it in its text reads as
-  `inferred`. This is conservative by design.
+- Mortgage bounds have unknown provenance when row text cannot establish their source.
+  An unchanged rate can overwrite the original capture in SQLite. Historical views
+  disclose that gap and retain the numeric bounds.

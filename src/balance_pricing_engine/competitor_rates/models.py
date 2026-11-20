@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
+import re
 from typing import Literal, Optional, get_args
 
 from pydantic import (
@@ -15,13 +16,19 @@ from pydantic import (
     model_validator,
 )
 
-from balance_pricing_engine.competitor_rates.normalise import (
-    normalise_lvr_condition,
-    normalise_lvr_values,
-)
+from balance_pricing_engine.competitor_rates.bank_identity import canonical_bank_or_none
+from balance_pricing_engine.competitor_rates.normalise import published_lvr_values
 
 
 PARSER_VERSION = "competitor-rates-v1"
+
+# Historical reads use this when the original row text cannot be recovered.
+HISTORICAL_EVIDENCE_UNAVAILABLE = (
+    "(evidence unavailable: this state's stored evidence has since been "
+    "refreshed by a later, materially-unchanged collection and no longer "
+    "reflects this point in time)"
+)
+_RATE_PERCENTAGE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*%")
 
 
 def _numeric_band(value: Optional[float]) -> str:
@@ -227,22 +234,51 @@ class CompetitorRateRecord(BaseModel):
     def lvr_eligibility_basis(self) -> LvrEligibilityBasis:
         """Where ``max_lvr``/``min_equity`` came from (DATA-013).
 
-        ``published``: the row's own captured text states the LVR or equity condition.
-        ``inferred``: a constraint is set but the row text does not state it -- the collector
-        applied a bank-specific rule (a special-rate label, or an unmarked row the bank uses for
-        its special tier). ``unknown``: no constraint is set.
-
-        Derived from stored fields only, so old observations and older JSON artifacts answer
-        it identically, and no stored or serialised claim can override the evidence.
+        Published bounds must match the row's own text. The 80%/20% default is inferred only
+        when the available text and category support the bank's rule. Missing or conflicting
+        evidence gives an unknown basis, even when a numeric bound is stored.
         """
-        if self.max_lvr is None and self.min_equity is None:
+        bounds = (self.max_lvr, self.min_equity)
+        if self.product_type != ProductType.HOME_LOAN or bounds == (None, None):
             return "unknown"
         text = self.raw_text_context
-        if normalise_lvr_values(text) != (None, None):
-            return "published"
-        if normalise_lvr_condition(text) == "min_20_percent_equity":
-            return "published"
-        return "inferred"
+        if not text.strip() or text == HISTORICAL_EVIDENCE_UNAVAILABLE:
+            return "unknown"
+        published = published_lvr_values(text)
+        if published is not None:
+            matches = all(
+                stored is None or stored == stated for stored, stated in zip(bounds, published)
+            )
+            return "published" if matches else "unknown"
+        if bounds == (0.8, 0.2) and self._matches_min_equity_rule(text.lower()):
+            return "inferred"
+        return "unknown"
+
+    def _matches_min_equity_rule(self, lowered: str) -> bool:
+        # The registry imports the record model through its collectors.
+        from balance_pricing_engine.competitor_rates.collectors import COLLECTORS_BY_BANK
+
+        bank = canonical_bank_or_none(self.bank)
+        if bank is None or not any(
+            float(match.group(1)) == self.advertised_rate_pct
+            for match in _RATE_PERCENTAGE.finditer(lowered)
+        ):
+            return False
+        collector = COLLECTORS_BY_BANK[bank]
+        if any(marker in lowered for marker in collector.min_equity_product_markers):
+            return True
+        return (
+            collector.default_fixed_category_implies_min_equity
+            and self.rate_category == collector.default_fixed_category
+            and not any(
+                marker in lowered
+                for marker in (
+                    *collector.special_product_markers,
+                    *collector.standard_product_markers,
+                    *collector.excluded_product_markers,
+                )
+            )
+        )
 
     @computed_field  # type: ignore[prop-decorator]
     @property

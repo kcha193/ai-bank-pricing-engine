@@ -95,7 +95,8 @@ three comparable banks and a prior reading to measure movement.
 - **Unknown is disclosed, never confirmed.** A rate with no published tier or frequency is admitted
   only while the `admit_unstated_*` flags allow it, and every surface (rationale, coverage line,
   Market Explorer) says "eligibility not established". An inferred mortgage LVR is flagged
-  `eligibility_inferred` and labelled "inferred from special-rate category".
+  `eligibility_inferred` and labelled "inferred from special-rate category". Historical views
+  disclose unknown provenance when the original capture is unavailable.
 - **Own bank by canonical identity.** `our_bank` resolves to one canonical collector bank or fails
   validation; aliases cannot double-count an institution or leak it into `min_banks`.
 - **Selection, not equations.** These rules decide which observations form a benchmark. They do not
