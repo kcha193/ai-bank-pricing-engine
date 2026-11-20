@@ -465,3 +465,25 @@ def test_simultaneous_backup_requests_cannot_both_pass_the_rate_limit(tmp_path):
 
     assert sorted(results) == ["RATE_LIMITED", "SUCCESS"]
     assert len(list((tmp_path / "backups").glob("*.db"))) == 1
+
+
+@pytest.mark.parametrize("timeout_seconds", [actions.DEFAULT_TIMEOUT_SECONDS, 300])
+def test_live_run_deadline_lands_before_the_dashboard_kills_the_supervisor(
+    settings, timeout_seconds
+):
+    """DATA-008: the dashboard's subprocess timeout SIGKILLs the workflow supervisor, which
+    cannot clean up after SIGKILL -- its worker (own session) would be orphaned holding the
+    lock. The workflow's own run deadline, plus its kill grace and failure write, must
+    therefore expire first."""
+    from balance_pricing_engine.pricing_intelligence.supervisor import DEFAULT_GRACE_SECONDS
+
+    calls = []
+    actions.run_live(
+        settings, runner=fake_runner(0, SUMMARY, calls), clock=clock,
+        timeout_seconds=timeout_seconds,
+    )  # fmt: skip
+    for command, kwargs in calls:
+        assert "--no-supervisor" not in command
+        run_deadline = float(command[command.index("--run-timeout-seconds") + 1])
+        assert kwargs["timeout"] == timeout_seconds
+        assert run_deadline + DEFAULT_GRACE_SECONDS + 20 <= timeout_seconds

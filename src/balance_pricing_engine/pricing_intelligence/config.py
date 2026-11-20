@@ -28,6 +28,15 @@ DEFAULT_TRACKED_TERMS_MONTHS: tuple[int, ...] = (6, 12, 18, 24, 36, 48, 60)
 DATABASE_PATH_SECRET_NAME = "PRICING_INTELLIGENCE_DB_PATH"
 
 
+#: Default SQLite busy timeout (DATA-009). A writer waits this long for another
+#: connection's write lock before failing with "database is locked". Long enough to ride
+#: out the other product's commit, a backup or a brief manual session; short enough that a
+#: genuinely stuck holder surfaces as a classified failure well inside the run deadline.
+DEFAULT_BUSY_TIMEOUT_SECONDS = 30.0
+#: Upper bound on the configurable busy timeout: waits stay bounded.
+MAX_BUSY_TIMEOUT_SECONDS = 300.0
+
+
 class PeerPlausibilityThresholds(BaseModel):
     """Peer-market sanity signal for a moving rate (DATA-016).
 
@@ -203,6 +212,30 @@ class DepositSpecialPolicy(BaseModel):
         return self
 
 
+class SkipEscalationPolicy(BaseModel):
+    """Escalation for consecutive scheduled runs skipped because another run held the
+    product's lock (exit code 3; DATA-008).
+
+    One skip is routine (a slow run overlapping the next slot). A streak means a stuck
+    collector, a hung browser or a stale process. Mirrors :class:`HealthThresholds`: at
+    ``warning_after_consecutive_skips`` a structured warning is logged; at
+    ``alert_after_consecutive_skips`` one operational alert is delivered per streak to each
+    configured channel. Counts are per product and survive process restarts (see
+    ``pricing_intelligence.skip_escalation``).
+    """
+
+    warning_after_consecutive_skips: int = Field(default=2, ge=1)
+    alert_after_consecutive_skips: int = Field(default=3, ge=1)
+
+    @model_validator(mode="after")
+    def validate_monotonic(self) -> "SkipEscalationPolicy":
+        if self.alert_after_consecutive_skips < self.warning_after_consecutive_skips:
+            raise ValueError(
+                "alert_after_consecutive_skips must be >= warning_after_consecutive_skips"
+            )
+        return self
+
+
 class PricingIntelligenceConfig(BaseModel):
     """Top-level pricing-intelligence settings."""
 
@@ -243,6 +276,12 @@ class PricingIntelligenceConfig(BaseModel):
     health: HealthThresholds = Field(default_factory=HealthThresholds)
     quarantine: QuarantinePolicy = Field(default_factory=QuarantinePolicy)
     deposit_specials: DepositSpecialPolicy = Field(default_factory=DepositSpecialPolicy)
+    # SQLite busy timeout for the writable observation store (DATA-009); see
+    # ObservationStore. Bounded so a stuck writer surfaces as a classified failure.
+    sqlite_busy_timeout_seconds: float = Field(
+        default=DEFAULT_BUSY_TIMEOUT_SECONDS, gt=0, le=MAX_BUSY_TIMEOUT_SECONDS
+    )
+    skip_escalation: SkipEscalationPolicy = Field(default_factory=SkipEscalationPolicy)
 
     @model_validator(mode="after")
     def validate_terms(self) -> "PricingIntelligenceConfig":

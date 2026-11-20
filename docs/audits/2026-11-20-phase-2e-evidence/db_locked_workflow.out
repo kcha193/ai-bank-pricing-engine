@@ -1,0 +1,13 @@
+market collection failed on the observation store
+exit code: 1 after 2.1s (busy timeout 2.0 s)
+summary file written: True
+  failure_type: 'database_locked'
+  error_type: 'database_locked'
+  run_id: 'db-locked-replay'
+  product_type: 'term_deposit'
+  run_record_persisted: False
+  run_record_note: 'the observation store was locked by another writer past the busy timeout; no observations were committed by this run'
+  banks_failed: ['*']
+operational_runs after: [('92d8b84b55c147538553699d94647997', 'SUCCESS')]
+observations rows unchanged by the locked run: True
+journal_mode: wal

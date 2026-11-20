@@ -34,6 +34,7 @@ import uuid
 from zoneinfo import ZoneInfo
 
 from balance_pricing_engine.competitor_rates.models import ProductType
+from balance_pricing_engine.competitor_rates.run_deadline import RunDeadline
 from balance_pricing_engine.pricing_intelligence.alerts import (
     Alert,
     AlertSink,
@@ -629,6 +630,103 @@ def build_summary(
             _escalation_failure(e) for e in quarantine.escalated
         ]
     return summary
+
+
+def build_failure_summary(
+    product_type: ProductType | str,
+    *,
+    error_type: str,
+    error: str,
+    failure_type: str,
+    run_id: Optional[str] = None,
+    run_record_persisted: bool = False,
+    run_record_note: Optional[str] = None,
+    collected_at_utc: Optional[datetime] = None,
+    **extra: object,
+) -> dict:
+    """Summary for a run that ended before a collection outcome existed (DATA-008/009).
+
+    Carries every key :func:`build_summary` produces, so a consumer of the summary file
+    (collector canary, launchd/cron alerting) never has to special-case its shape: an empty
+    run, ``banks_failed == ["*"]`` (no bank result exists, but "nothing failed" must not be
+    implied) and one synthetic failure entry. Adds ``failure_type`` (stable
+    classification), ``error_type``, ``run_id`` and ``run_record_persisted`` -- the latter
+    False whenever the operational ledger could not be written, so the summary never claims
+    a RunRecord that does not exist.
+    """
+    summary: dict = {
+        "product_type": ProductType(product_type).value,
+        "collected_at_utc": (collected_at_utc or datetime.now(timezone.utc)).isoformat(),
+        "banks_succeeded": [],
+        "banks_failed": ["*"],
+        "rates_accepted": 0,
+        "rates_rejected": 0,
+        "rows_skipped": 0,
+        "validation_errors": 0,
+        "validation_warnings": 0,
+        "new_states_stored": 0,
+        "unchanged_states": 0,
+        "changes_detected": 0,
+        "suspicious_changes": 0,
+        "changes": [],
+        "alerts_sent": 0,
+        "failures": [{"bank": None, "error_type": error_type, "error": error}],
+        "status": _STATUS_BY_CODE[EXIT_TOTAL_FAILURE],
+        "failure_type": failure_type,
+        "error_type": error_type,
+        "run_id": run_id,
+        "run_record_persisted": run_record_persisted,
+    }
+    if run_record_note is not None:
+        summary["run_record_note"] = run_record_note
+    summary.update(extra)
+    return summary
+
+
+def record_failed_attempt(
+    store,
+    *,
+    run_id: str,
+    product_type: ProductType | str,
+    started_at: datetime,
+    banks_attempted: tuple[str, ...],
+    error_summary: str,
+) -> tuple[bool, str]:
+    """Write a FAILED :class:`~.store.RunRecord` for an attempt that produced no outcome.
+
+    Used after a timeout or a supervised worker failure. Written only when this run_id
+    left no trace at all: if a RunRecord already exists, or the run committed observations
+    before it was stopped, the existing evidence is authoritative and is never overwritten
+    with a guessed classification (the same rule ``run_operational_cycle`` applies to an
+    already-recorded retry). Returns ``(persisted, note)``.
+    """
+    product_type = ProductType(product_type)
+    if store.get_run_record(run_id) is not None:
+        return False, "run record already present for this run_id; left unchanged"
+    if store.has_run_participation(run_id, product_type):
+        return False, (
+            "observations were committed for this run_id before it stopped; "
+            "run record left for the committed evidence, not overwritten"
+        )
+    store.write_run_record(
+        RunRecord(
+            run_id=run_id,
+            started_at=started_at,
+            completed_at=datetime.now(timezone.utc),
+            status=_STATUS_BY_CODE[EXIT_TOTAL_FAILURE],
+            product_type=product_type,
+            banks_attempted=tuple(banks_attempted),
+            banks_successful=(),
+            banks_failed=tuple(banks_attempted),
+            rates_observed=0,
+            rates_changed=0,
+            validation_failures=0,
+            suspicious_observations=0,
+            market_state=None,
+            error_summary=error_summary,
+        )
+    )
+    return True, "failed run record written"
 
 
 def exit_code_for(
@@ -1265,8 +1363,16 @@ def run_operational_cycle(
     alert_sinks: Optional[Mapping[str, AlertSink]] = None,
     webhook_text_field: str = "text",
     scenario_trigger_fn: Optional[ScenarioTriggerFn] = None,
+    deadline: Optional[RunDeadline] = None,
+    persist_snapshot: Optional[bool] = None,
 ) -> OperationalRunResult:
     """Run one full collect -> validate -> persist -> detect -> alert cycle.
+
+    ``deadline`` bounds the collection end to end (DATA-008); see
+    :meth:`~.service.PricingIntelligenceService.collect`. A run past it raises
+    :class:`~..competitor_rates.run_deadline.CollectionTimeoutError` before anything is
+    persisted; the caller classifies it. ``persist_snapshot`` overrides whether raw HTML
+    snapshots are written (default: whenever the run persists).
 
     ``alert_sinks`` maps a channel name (``"webhook"``, ``"telegram"``, ...)
     to the :class:`~.alerts.AlertSink` to deliver on; omit to build the
@@ -1324,9 +1430,12 @@ def run_operational_cycle(
     outcome = service.collect(
         captured_at_utc=captured_at_utc,
         persist=not dry_run,
-        persist_snapshot=not dry_run,
+        persist_snapshot=(not dry_run) if persist_snapshot is None else (
+            persist_snapshot and not dry_run
+        ),
         product_type=product_type,
         run_id=operational_run_id,
+        deadline=deadline,
     )
 
     code = exit_code_for(outcome, product_type)

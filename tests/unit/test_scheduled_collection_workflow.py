@@ -671,6 +671,7 @@ def test_config_flag_loads_pricing_intelligence_settings(
 
     code = workflow.main(
         [
+            "--no-supervisor",
             "--config",
             str(engine_config_path),
             "--lock-file",
@@ -709,6 +710,7 @@ def test_config_flag_preserves_env_db_path_when_yaml_omits_it(
 
     code = workflow.main(
         [
+            "--no-supervisor",
             "--config",
             str(engine_config_path),
             "--lock-file",
@@ -964,6 +966,7 @@ def test_webhook_text_field_is_threaded_through_the_cli(
 
     code = workflow.main(
         [
+            "--no-supervisor",
             "--database",
             str(tmp_path / "obs.db"),
             "--lock-file",
@@ -1161,6 +1164,7 @@ def test_a_reprice_auto_triggers_pricing_scenarios_end_to_end(
 
     code = workflow.main(
         [
+            "--no-supervisor",
             "--config",
             str(engine_config_path),
             "--lock-file",
@@ -1251,6 +1255,7 @@ def test_scenario_trigger_fn_isolates_a_failing_term_from_the_others(
     try:
         workflow.main(
             [
+                "--no-supervisor",
                 "--config",
                 str(engine_config_path),
                 "--lock-file",
@@ -1314,6 +1319,7 @@ def test_no_config_means_no_scenario_trigger(workflow, fixture_fetcher, tmp_path
 
     code = workflow.main(
         [
+            "--no-supervisor",
             "--database",
             str(custom_db),
             "--lock-file",

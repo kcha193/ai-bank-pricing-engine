@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 import logging
+import math
 import re
 import os
 from pathlib import Path
@@ -39,7 +40,11 @@ import uuid
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange
-from balance_pricing_engine.pricing_intelligence.config import ValidationThresholds
+from balance_pricing_engine.pricing_intelligence.config import (
+    DEFAULT_BUSY_TIMEOUT_SECONDS,
+    MAX_BUSY_TIMEOUT_SECONDS,
+    ValidationThresholds,
+)
 from balance_pricing_engine.pricing_intelligence.deposit_specials import SPECIAL_CATEGORY
 from balance_pricing_engine.pricing_intelligence import quarantine_store
 from balance_pricing_engine.pricing_intelligence.quarantine import (
@@ -598,11 +603,37 @@ def _collector_health_from_row(row: sqlite3.Row) -> "CollectorHealth":
     )
 
 
-class ObservationStore:
-    """Repository over historical rate observations and detected changes."""
+def _validated_busy_timeout(seconds: float) -> float:
+    if not (math.isfinite(seconds) and 0 < seconds <= MAX_BUSY_TIMEOUT_SECONDS):
+        raise ValueError(
+            f"busy_timeout_seconds must be > 0 and <= {MAX_BUSY_TIMEOUT_SECONDS:g}, got {seconds!r}"
+        )
+    return float(seconds)
 
-    def __init__(self, database_path: str | Path = ":memory:", *, read_only: bool = False) -> None:
+
+class ObservationStore:
+    """Repository over historical rate observations and detected changes.
+
+    A file-backed writable store runs in SQLite WAL mode with a bounded busy timeout
+    (DATA-009): readers (dashboard, CLI queries, backups) no longer block behind a
+    collection's write, and a writer waits up to ``busy_timeout_seconds`` for another
+    writer instead of failing immediately. WAL does not remove writer/writer contention --
+    the home-loan and term-deposit runs still serialise their commits -- so a holder that
+    outlasts the timeout still raises ``sqlite3.OperationalError("database is locked")``,
+    which callers classify via :mod:`.sqlite_errors`. In-memory stores and dry-run preview
+    copies keep SQLite's default journal.
+    """
+
+    def __init__(
+        self,
+        database_path: str | Path = ":memory:",
+        *,
+        read_only: bool = False,
+        busy_timeout_seconds: float = DEFAULT_BUSY_TIMEOUT_SECONDS,
+    ) -> None:
+        busy_timeout_seconds = _validated_busy_timeout(busy_timeout_seconds)
         self.database_path = str(database_path)
+        self.busy_timeout_seconds = busy_timeout_seconds
         self._temp_database_path: Optional[str] = None
         connect_path = self.database_path
         if read_only and self.database_path != ":memory:":
@@ -635,11 +666,15 @@ class ObservationStore:
                 # loudly. See backup_database()'s own read-only URI fix for
                 # the identical race.
                 source_uri = f"file:{quote(str(Path(self.database_path).resolve()))}?mode=ro"
-                source = sqlite3.connect(source_uri, uri=True)
+                source = sqlite3.connect(source_uri, uri=True, timeout=busy_timeout_seconds)
                 try:
                     destination = sqlite3.connect(temp_path)
                     try:
                         source.backup(destination)
+                        # The backup copies the source header, including WAL mode. A
+                        # private preview copy needs no WAL sidecars; DELETE mode keeps
+                        # it one file that close() removes completely.
+                        destination.execute("PRAGMA journal_mode=DELETE")
                     finally:
                         destination.close()
                 finally:
@@ -651,12 +686,38 @@ class ObservationStore:
         if connect_path != ":memory:":
             Path(connect_path).parent.mkdir(parents=True, exist_ok=True)
         # A single shared connection keeps an in-memory store usable across
-        # calls, which is what the tests and the CLI both want.
-        self._connection = sqlite3.connect(connect_path)
+        # calls, which is what the tests and the CLI both want. Never shared across
+        # stores or threads (sqlite3's check_same_thread default stays on).
+        self._connection = sqlite3.connect(connect_path, timeout=busy_timeout_seconds)
         self._connection.row_factory = sqlite3.Row
+        self._connection.execute(f"PRAGMA busy_timeout = {int(busy_timeout_seconds * 1000)}")
         self._connection.execute("PRAGMA foreign_keys = ON")
+        if connect_path != ":memory:" and self._temp_database_path is None:
+            # Only the real, writable database file: a preview copy is private and
+            # short-lived, and an in-memory database cannot use WAL.
+            self._enable_wal()
+        self.journal_mode = str(
+            self._connection.execute("PRAGMA journal_mode").fetchone()[0]
+        ).lower()
         self._transaction_depth = 0
         self._create_schema()
+
+    def _enable_wal(self) -> None:
+        """Switch the database to WAL mode where SQLite supports it.
+
+        The mode is persistent in the file, so this is a no-op after the first run. Some
+        filesystems (certain network mounts) cannot host WAL; SQLite then reports the mode
+        it kept, which is logged rather than treated as fatal -- the store still works,
+        with rollback-journal contention behaviour. A lock while switching is not
+        swallowed: it propagates for the caller to classify.
+        """
+        mode = str(self._connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower()
+        if mode != "wal":
+            logger.warning(
+                "SQLite kept journal_mode=%s for %s; WAL unavailable on this filesystem",
+                mode,
+                self.database_path,
+            )
 
     # ------------------------------------------------------------- lifecycle
 

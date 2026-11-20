@@ -244,3 +244,37 @@ def test_env_example_leaves_the_api_key_var_genuinely_unset_when_sourced():
     assert result.stdout.strip() == "UNSET", (
         "sourcing .env.example must not export PRICING_ENGINE_API_KEYS as an empty string"
     )
+
+
+def test_every_schedule_applies_the_supervised_run_deadline():
+    """DATA-008: both scheduling mechanisms, both products, carry an explicit end-to-end
+    deadline above the computed worst case, and none disables the supervisor."""
+    from balance_pricing_engine.competitor_rates.collection_config import (
+        CollectionConfig,
+        estimated_worst_case_run_seconds,
+    )
+    from balance_pricing_engine.pricing_intelligence.supervisor import DEFAULT_GRACE_SECONDS
+
+    worst_case = estimated_worst_case_run_seconds(CollectionConfig(), bank_count=5)
+    scheduling = REPO_ROOT / "deploy" / "scheduling"
+    for name in (
+        "nz.pricing-intelligence.collect.plist",
+        "nz.pricing-intelligence.collect-term-deposit.plist",
+    ):
+        with (scheduling / name).open("rb") as handle:
+            data = plistlib.load(handle)
+        args = data["ProgramArguments"]
+        assert "--no-supervisor" not in args, name
+        timeout = float(args[args.index("--run-timeout-seconds") + 1])
+        assert worst_case < timeout <= 3600, name
+        # launchd's stop sequence (SIGTERM, then SIGKILL after ExitTimeOut) must leave the
+        # supervisor time to terminate its worker and browser processes first.
+        assert data["ExitTimeOut"] > DEFAULT_GRACE_SECONDS, name
+
+    crontab = (scheduling / "crontab.example").read_text(encoding="utf-8")
+    job_lines = [line for line in crontab.splitlines() if "collect_market_rates_workflow" in line]
+    assert len(job_lines) == 2
+    for line in job_lines:
+        assert "--no-supervisor" not in line
+        timeout = float(re.search(r"--run-timeout-seconds (\S+)", line).group(1))
+        assert worst_case < timeout <= 3600

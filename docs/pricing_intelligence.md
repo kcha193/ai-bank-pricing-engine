@@ -147,6 +147,22 @@ Kiwibank  SUCCESS  4 rates
 One bank failing never stops the others, and never writes partial nonsense: a
 failed bank simply contributes no records that run.
 
+`collect` shares the scheduled workflow's concurrency and ledger rules (DATA-010):
+
+- A persisting `collect` takes the product's single-instance lock (the same file
+  `run` and `scripts/collect_market_rates_workflow.py` use; override with
+  `--lock-file`) **before** it opens a writable store. If another collection for
+  that product holds it, `collect` prints `Skipped: ...` and exits 3 without
+  fetching anything. The other product's lock is independent.
+- It goes through `run_operational_cycle`, so it writes an `operational_runs`
+  record and exits 0 / 1 / 2 on the same classification as `run` and the
+  scheduled workflow, including term-deposit partial extraction and quarantine
+  escalation. It never runs pricing scenarios and never delivers alerts
+  (`--alerts` prints them).
+- `--no-persist` is a **preview**: a read-only copy of the store (nothing is
+  written, and a missing database is not created), no lock, no run record. The
+  output ends with `Preview: nothing persisted ...`.
+
 ### Scheduled collection
 
 Observation history **cannot be backfilled** -- a day not collected is gone --
@@ -164,9 +180,9 @@ and exit codes worth alerting on.
 | Exit | Meaning |
 | --- | --- |
 | 0 | Every bank fetched, and every accepted row passed validation with adequate coverage |
-| 1 | Nothing usable was stored -- either no bank could be fetched, or every fetched row was rejected by validation (`rate_count == 0`) |
+| 1 | Nothing usable was stored -- either no bank could be fetched, or every fetched row was rejected by validation (`rate_count == 0`) -- or the run failed as a whole: timeout, locked or failing database, crashed worker (see `failure_type`) |
 | 2 | Partial: at least one bank failed to fetch, at least one row was rejected by validation (`validation.rejected`), or a bank matched too few of its previously known rate lines to trust (`low_coverage_banks`, below `min_bank_coverage_ratio`) |
-| 3 | Skipped, another collection was already running |
+| 3 | Skipped, another collection was already running (escalated when repeated, see below) |
 
 Exit codes are not solely about fetch success: a bank whose page fetches and
 parses cleanly can still push the run to exit 1 or 2 if what it returned fails
@@ -220,6 +236,212 @@ Ready-made schedules are in [`deploy/scheduling/`](../deploy/scheduling/):
 - `crontab.example` -- the equivalent cron entries for both products.
 
 All three need their `REPLACE_ME` / `/path/to` paths edited before use.
+
+### Browser readiness (DATA-007)
+
+Every tracked bank builds its rate table client-side, so "the page loaded" is
+not "the rates are there". With `--render-javascript`, each fetch polls the
+rendered page and runs **the bank's own parser** on it until the page is ready
+for the product being collected:
+
+- **Product evidence**: the page's title, headings or table captions name the
+  product (`home loan`/`mortgage`, or `term deposit`/`term investment`/
+  `investment`/`term PIE`). A page that yields rate rows but names only the
+  other product is `WRONG_PRODUCT`, never ready -- visible term-deposit rates
+  cannot mark a home-loan run ready, or the reverse.
+- **Row evidence**: at least the bank's `readiness_min_rate_rows` comparable rows
+  parse. Defaults are per bank and product, about half the rows each bank's
+  saved live renders have shown (`data/raw/competitor_rates`, Sep-Nov 2026):
+
+  | Bank | Home loan | Term deposit |
+  | --- | --- | --- |
+  | ANZ | 7 | 15 |
+  | ASB | 5 | 6 |
+  | BNZ | 5 | 15 |
+  | Kiwibank | 7 | 11 |
+  | Westpac | 8 | 14 |
+
+  Override per bank in config: `collection.readiness_min_rate_rows:
+  {ANZ: {term_deposit: 12}}`.
+
+Outcomes are classified, per bank, never silently ignored:
+
+| `error_type` | Meaning |
+| --- | --- |
+| `NavigationError` | the page could not be loaded (DNS, TLS, HTTP failure, navigation timeout) |
+| `ReadinessTimeoutError` | loaded, but no rate rows (or no product evidence) before the readiness timeout |
+| `PartialRenderError` | some rows rendered, fewer than the readiness minimum |
+| `ParserError` | the rendered page did not parse into rates |
+| (success) | ready: product named and enough rows |
+
+`collection.browser_readiness_timeout_seconds` (default: the request timeout) and
+`collection.browser_readiness_poll_seconds` (default 0.5) tune the wait. Each
+bank keeps its own retries and failure; one bank's timeout never stops the
+others. No step bypasses a CAPTCHA, login, bot check or HTTP 403: such a page has
+no rate rows, so it times out as `ReadinessTimeoutError` and the bank fails.
+
+### Collection deadline (DATA-008)
+
+A hung browser call can block forever, and a blocked run holds its product's
+lock, so every later schedule exits 3. Each product's collection therefore has an
+end-to-end deadline: `collection.collection_run_timeout_seconds` (default 1800 s),
+or `--run-timeout-seconds` per invocation.
+
+**Default derivation.** `estimated_worst_case_run_seconds()` sums, per bank, every
+retry attempt's request timeout and readiness wait, the backoff between attempts
+and the inter-bank delay, plus browser start-up and a post-collection allowance.
+With the defaults and five banks that is about 1264 s (21 min). 1800 s sits above
+it, so the deadline targets genuine hangs and never cuts off a slow but
+progressing run.
+
+**Enforcement.** The workflow takes the lock, then runs the collection in a
+**supervised worker process** that inherits the lock descriptor:
+
+1. The worker checks a cooperative deadline (monotonic clock) before each bank
+   and before the database write. That deadline is up to 60 s (at most 10 %)
+   earlier than the hard one, so a merely slow run stops cleanly and writes its
+   own `collection_timeout` summary and FAILED run record.
+2. At the hard deadline the supervisor snapshots the worker's process tree
+   (Chromium included, which Playwright starts in its own session), sends SIGTERM,
+   then SIGKILL after 10 s, and reaps the worker. No orphan keeps the lock.
+3. A killed worker cannot commit: SQLite rolls back its open transaction, so the
+   store holds either the whole run or none of it.
+4. The supervisor then writes the summary file atomically, records a FAILED
+   `operational_runs` row when the database allows (with a 10 s busy timeout), and
+   releases the lock. Exit code 1.
+
+This is portable: no GNU `timeout` (macOS ships none), only `ps` and POSIX
+signals. If launchd or cron stops the supervisor itself, SIGTERM is turned into a
+clean exit that terminates the worker tree first; the plists set `ExitTimeOut` to
+30 s for that. `--no-supervisor` runs in-process with only the cooperative check,
+for tests and debugging. Schedules must not use it.
+
+A timeout summary carries:
+
+```json
+{
+  "status": "FAILED",
+  "failure_type": "collection_timeout",
+  "error_type": "collection_timeout",
+  "run_id": "...",
+  "product_type": "term_deposit",
+  "started_at_utc": "...",
+  "deadline_at_utc": "...",
+  "timeout_seconds": 1800,
+  "elapsed_seconds": 1810.4,
+  "run_record_persisted": true,
+  "run_record_note": "...",
+  "supervisor": {"worker_terminated": true, "worker_exit_code": -15, "...": "..."}
+}
+```
+
+`run_record_persisted` is `false` (with the reason in `run_record_note`) whenever
+the database did not take the row. The summary never claims a record that was not
+written. Other classified total failures use the same shape: `database_locked`,
+`database_error`, `clock_regression`, `worker_failed` (the worker crashed or left
+no summary of its own) and `unexpected_error`.
+
+### Repeated exit 3 (DATA-008)
+
+One skip is routine. A streak means a stuck run. Each product keeps a streak
+counter in a sidecar beside its lock file (`<lock file>.skips.json`), never in
+SQLite, because the stuck run may hold the database:
+
+- Each distinct skipped invocation counts once. A retried `--run-id` is not
+  counted twice.
+- At `pricing_intelligence.skip_escalation.warning_after_consecutive_skips`
+  (default 2) a structured warning is logged.
+- At `alert_after_consecutive_skips` (default 3) one alert goes to each
+  configured channel (webhook, Telegram), once per streak.
+- The next run that acquires the lock resets the streak. It also sends one
+  recovery notice to any channel that was alerted.
+
+The exit code stays 3 regardless. The sidecar holds counts, timestamps, run ids
+and channel names only, never URLs or tokens.
+
+### SQLite reliability (DATA-009)
+
+Every file-backed, writable store connection enables **WAL** journal mode and a
+bounded **busy timeout** (`pricing_intelligence.sqlite_busy_timeout_seconds`,
+default 30 s, maximum 300 s). WAL lets dashboards and read-only snapshots read
+while a collection writes. The busy timeout makes a second writer wait instead of
+failing immediately. In-memory stores and read-only preview copies keep their
+existing mode. Each process opens its own connections; there is no shared global
+connection.
+
+WAL does **not** remove write contention: SQLite allows one writer at a time. A
+writer that waits longer than the busy timeout fails. That failure is classified
+`database_locked` (SQLite `BUSY`/`LOCKED` only). Corruption, a full disk, a
+read-only file, a missing schema and SQL errors keep their own names
+(`DatabaseError`, `OperationalError`, ...). Either way the transaction rolls back,
+the run exits 1 with a summary that states no observations were committed, and
+nothing retries without bound. Opening a store runs schema checks under a write
+lock, so even opening waits up to the busy timeout.
+
+Backups (`backup.py`) copy through SQLite's online backup API and then switch
+the copy to `journal_mode=DELETE`, so a backup is one self-contained file with no
+`-wal`/`-shm` sidecars to lose.
+
+### Product isolation
+
+Home loans and term deposits never share a lock, deadline, skip streak, summary
+file or run record. Each has its own lock file (`default_lock_file_path()`), its
+own `--summary-file`, its own `operational_runs` rows and its own
+`<lock>.skips.json`. A hung home-loan run times out on its own deadline and does
+not block the 07:35 term-deposit run, and the reverse. They do share one SQLite
+file, so their writes serialise through the busy timeout.
+
+### Recovery procedures
+
+**Collection timeout (exit 1, `failure_type: collection_timeout`).**
+
+1. Read the summary file: `stage` (which bank or step was running) and
+   `supervisor.killed_after_grace`.
+2. Check for leftovers: `pgrep -fl collect_market_rates_workflow` and
+   `pgrep -fl chrom`. There should be none. If one remains, stop it (`kill <pid>`).
+3. Re-run that product once by hand, using the schedule's command with a
+   `--summary-file` of its own. If the same bank stalls again, follow
+   [Troubleshooting a broken parser](#troubleshooting-a-broken-parser).
+4. History for the missed day cannot be backfilled. Record the gap.
+
+**Repeated exit 3.**
+
+1. `pgrep -fl collect_market_rates_workflow`: is a run actually alive?
+2. If it is, and has run longer than the deadline plus a minute, the supervisor
+   itself was stopped abnormally. Kill the worker (`kill <pid>`, then
+   `kill -9 <pid>` if needed). The lock is released when it exits.
+3. If no process holds it, the lock is already free (flock locks do not outlive
+   their process). Delete nothing: the next run acquires it, clears the streak
+   and sends the recovery notice.
+
+**SQLite lock contention (exit 1, `failure_type: database_locked`).**
+
+1. Find the other writer: another product's run, a backup, a dashboard action, or
+   a manual `sqlite3` shell left inside a transaction (`lsof <database>`).
+2. Let it finish or close it. Nothing from the failed run was committed.
+3. Re-run the product. If contention recurs at the same time each day, move one
+   schedule, or raise `sqlite_busy_timeout_seconds` (at most 300).
+4. Any other `failure_type: database_error` is not contention. Follow
+   [Database problem](#database-problem).
+
+**Partially rendered term-deposit page (exit 2, `PartialRenderError` or
+`ReadinessTimeoutError` for one bank).**
+
+1. The other banks' rows were stored and the run is partial. The bank's previous
+   rates were **not** withdrawn: a failed bank is unknown, not withdrawn.
+2. Open the bank's page in a browser. Fewer rate rows than its
+   `readiness_min_rate_rows`? Then the bank changed its page or the render is
+   slow. Raise `browser_readiness_timeout_seconds` first.
+3. Only if the bank genuinely now lists fewer terms, lower that bank's
+   `readiness_min_rate_rows` for `term_deposit` in config, with a note of the
+   evidence.
+
+### Live verification
+
+The Phase 2e readiness thresholds come from saved live renders, and every
+readiness, deadline and lock test runs offline. **LIVE VERIFICATION PENDING**: no
+live collection has been run with Phase 2e code. Phase 2b term-deposit live
+verification is a separate item and is also still pending.
 
 ### Where history lives
 
@@ -1492,6 +1714,15 @@ rejected at load) is the benchmark coverage minimum and `aged_input_hours` (defa
 pricing_intelligence:
   min_banks: 3          # distinct eligible banks per product and term
   aged_input_hours: 48  # flag (not exclude) inputs older than this
+  sqlite_busy_timeout_seconds: 30      # DATA-009; bounded at 300
+  skip_escalation:                     # DATA-008, repeated exit 3
+    warning_after_consecutive_skips: 2
+    alert_after_consecutive_skips: 3
+  collection:
+    collection_run_timeout_seconds: 1800     # DATA-008 end-to-end deadline
+    browser_readiness_timeout_seconds: null  # DATA-007; null = request timeout
+    browser_readiness_poll_seconds: 0.5
+    readiness_min_rate_rows: {}              # per-bank overrides, e.g. {ASB: {home_loan: 4}}
 ```
 
 ## Pricing Intelligence Operations
@@ -1862,6 +2093,9 @@ considers non-suspicious changes. A quarantine left unreviewed for
    delivery's existing safety guarantee).
 
 ### Database problem
+
+A `database_locked` failure is contention, not damage: see
+[Recovery procedures](#recovery-procedures).
 
 1. `health` -- read which integrity check failed.
 2. Restore from the most recent backup:

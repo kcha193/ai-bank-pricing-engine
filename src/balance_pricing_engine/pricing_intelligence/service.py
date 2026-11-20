@@ -30,6 +30,7 @@ from balance_pricing_engine.competitor_rates.models import (
     ProductType,
     split_skipped_row_key,
 )
+from balance_pricing_engine.competitor_rates.run_deadline import RunDeadline
 from balance_pricing_engine.pricing_intelligence.changes import (
     ChangeType,
     RateChange,
@@ -671,8 +672,15 @@ class PricingIntelligenceService:
         persist_snapshot: bool = True,
         product_type: ProductType | str = ProductType.HOME_LOAN,
         run_id: Optional[str] = None,
+        deadline: Optional[RunDeadline] = None,
     ) -> CollectionOutcome:
         """Run a full collection: fetch, validate, store, and detect changes.
+
+        ``deadline`` (DATA-008) is checked before each bank and once more immediately
+        before the atomic observation/change write. A run past its deadline raises
+        :class:`~..competitor_rates.run_deadline.CollectionTimeoutError` with nothing
+        written; once the write has begun it is allowed to commit, so a timeout can never
+        leave half a collection behind.
 
         A failing bank is isolated into a FAILED entry in the report; the run
         continues and the remaining banks are still stored. Records failing
@@ -734,6 +742,7 @@ class PricingIntelligenceService:
             captured_at_utc=captured_at_utc,
             persist_snapshot=persist_snapshot,
             inter_request_delay_seconds=self.config.collection.inter_request_delay_seconds,
+            deadline=deadline,
         )
 
         # Captured before this run's own storage write, per bank: an empty
@@ -860,6 +869,8 @@ class PricingIntelligenceService:
             for record in validation.accepted
         ]
 
+        if deadline is not None and persist:
+            deadline.check("persist")
         # Observations and changes commit together so a failed event write
         # cannot advance the next run's baseline and lose a movement.
         with self.store.atomic():

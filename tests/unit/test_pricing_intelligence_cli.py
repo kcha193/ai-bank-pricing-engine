@@ -553,7 +553,10 @@ def test_collect_handler_reports_validation_issues(tmp_path, fixture_fetcher, ca
         exit_code = cli._collect(service, args)
 
     output = capsys.readouterr().out
-    assert exit_code == 0
+    # 2, not 0 (DATA-010): `collect` now shares run_operational_cycle's classification
+    # with `run` and the scheduled workflow, which treat a bank whose rows were rejected
+    # by validation as a partial collection -- the same input already exited 2 there.
+    assert exit_code == 2
     assert "Validation issues:" in output
     assert "rate_out_of_range" in output
 

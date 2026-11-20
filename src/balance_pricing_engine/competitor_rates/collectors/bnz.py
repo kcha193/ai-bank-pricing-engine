@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import ClassVar, Optional
+from typing import ClassVar, Mapping, Optional
 
 from balance_pricing_engine.competitor_rates.collectors.base import BankPricingCollector
 from balance_pricing_engine.competitor_rates.extractors import parse_html_rates
@@ -40,6 +40,14 @@ class BNZCollector(BankPricingCollector):
     #: 6/12/18m -- same numbers as the pre-rename "Classic" tier.
     #: Requires --render-javascript; the rate table is client-rendered.
     live_verified: ClassVar[bool] = True
+
+    #: Browser readiness (DATA-007): about half the comparable rows seen on every fully
+    #: rendered saved snapshot 2026-08-25..2026-11-16 (11 home-loan and 31 term-deposit rows), so a
+    #: half-rendered table or a single stray table never passes as ready.
+    readiness_min_rate_rows: ClassVar[Mapping[str, int]] = {
+        "home_loan": 5,
+        "term_deposit": 15,
+    }
 
     special_product_markers: ClassVar[tuple[str, ...]] = ("classic", "special")
     # Empty, not ("standard",): BNZ's sole published column header is now the
