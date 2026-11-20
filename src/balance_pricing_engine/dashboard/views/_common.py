@@ -24,18 +24,21 @@ CACHE_TTL_SECONDS = 60
 
 
 @st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
-def _cached(_services: DashboardServices, method: str, db_stamp: tuple, args: tuple) -> Result:
+def _cached(_services: DashboardServices, method: str, db_stamp: object, args: tuple) -> Result:
     return getattr(_services, method)(*args)
 
 
 def cached(services: DashboardServices, method: str, *args) -> Result:
-    """Cached read of stored state, for up to 60 s (and until the database file changes).
+    """Cached read of stored state, for up to 60 s (and until committed database content changes).
 
     Some of these views depend on the current time (e.g. "changes today"), so they can lag by up
     to a minute. Health and freshness are never routed through here: they are evaluated on every
     render. "Refresh Dashboard" clears this cache.
     """
-    return _cached(services, method, services.db_stamp(), args)
+    stamp = services.db_stamp()
+    if stamp is None:
+        return getattr(services, method)(*args)
+    return _cached(services, method, stamp, args)
 
 
 def unwrap(result: Result[T]) -> Optional[T]:

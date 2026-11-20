@@ -38,6 +38,7 @@ from urllib.parse import quote
 import uuid
 
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
+from balance_pricing_engine.pricing_intelligence.revision import install_revision_tracking
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
 from balance_pricing_engine.pricing_intelligence.changes import ChangeType, RateChange
 from balance_pricing_engine.pricing_intelligence.config import (
@@ -721,6 +722,33 @@ class ObservationStore:
 
     # ------------------------------------------------------------- lifecycle
 
+    @classmethod
+    def open_reader(
+        cls, database_path: str | Path, *, busy_timeout_seconds: float = 0.1
+    ) -> "ObservationStore":
+        """Open existing live data read-only, without migrations or a snapshot copy.
+
+        Dashboard reads must not initialise schema, enable WAL or create missing databases.
+        SQLite may manage WAL/SHM coordination files. ``read_only=True`` on the constructor
+        retains its separate preview semantics: a private copy that can run migrations.
+        """
+        timeout = _validated_busy_timeout(busy_timeout_seconds)
+        uri = Path(database_path).resolve().as_uri() + "?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=timeout)
+        try:
+            instance = cls.__new__(cls)
+            instance.database_path = str(database_path)
+            instance.busy_timeout_seconds = timeout
+            instance._temp_database_path = None
+            instance._transaction_depth = 0
+            instance._connection = connection
+            connection.row_factory = sqlite3.Row
+            instance.journal_mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0])
+            return instance
+        except Exception:
+            connection.close()
+            raise
+
     def close(self) -> None:
         self._connection.close()
         if self._temp_database_path is not None:
@@ -808,6 +836,8 @@ class ObservationStore:
                 connection.execute(
                     "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
                 )
+
+            install_revision_tracking(connection)
 
     def _migrate_rate_named_mortgages(self, connection: sqlite3.Connection) -> None:
         """Repair old rate-first mortgage identities, preserving history.

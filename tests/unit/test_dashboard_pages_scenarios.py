@@ -201,15 +201,16 @@ def test_a_result_says_when_it_was_computed(market_factory):
 def test_a_result_is_hidden_when_the_market_data_changes_underneath_it(market_factory):
     """Review finding: after a new collection the old result kept rendering. Phase 1f (UX-002):
     it is now hidden until an explicit rerun, not merely captioned."""
-    import os
+    from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 
     market = market_factory()
     app = run_page("scenarios", market.database, market.now)
     app.button(key="scenario_run").click().run()
     assert not any("Market data has changed" in w.value for w in app.warning)
     assert app.dataframe and app.metric
-    stat = market.database.stat()
-    os.utime(market.database, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
+    with ObservationStore(market.database) as writer:
+        writer._connection.execute("UPDATE observations SET observation_count=observation_count+1")
+        writer._connection.commit()
     app.run()
     assert any("Market data has changed since this result" in w.value for w in app.warning)
     assert not app.dataframe and not app.metric  # the old recommendation is hidden, not captioned

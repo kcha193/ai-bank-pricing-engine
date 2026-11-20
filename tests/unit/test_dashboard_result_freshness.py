@@ -5,7 +5,6 @@ Pure-logic tests for ``dashboard.freshness`` plus AppTests that assert the stale
 a notice appeared.
 """
 
-import os
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -20,10 +19,12 @@ from balance_pricing_engine.dashboard.models import (
     SCENARIO_TERM_DEPOSIT,
     ScenarioRequest,
 )
+from balance_pricing_engine.pricing_intelligence.revision import DatabaseStamp
+from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 from balance_pricing_engine.pricing_scenario_trigger import run_triggered_scenarios
 
 NOW = datetime(2026, 10, 11, tzinfo=timezone.utc)
-STAMP = ("market.db", 1)
+STAMP = DatabaseStamp("market.db", 1, 2, 3, "1" * 32)
 CONFIG = "config-hash"
 REQUEST = ScenarioRequest(12, "MARKET_MEDIAN", None, 0.0, None)
 
@@ -188,8 +189,9 @@ def test_t06_changing_the_current_advertised_rate_hides_dependent_output(market_
 def test_t07_a_changed_database_stamp_hides_the_previous_result(market_factory):
     market = market_factory()
     app = _run(run_page("scenarios", market.database, market.now))
-    stat = market.database.stat()
-    os.utime(market.database, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
+    with ObservationStore(market.database) as writer:
+        writer._connection.execute("UPDATE observations SET observation_count=observation_count+1")
+        writer._connection.commit()
     app.run()
     _assert_modelled_output_absent(app)
     assert "Market data has changed" in _hidden_notice(app)
@@ -340,3 +342,54 @@ def test_computed_at_is_read_only_from_a_well_formed_entry():
     assert stored_computed_at(_stored()) == NOW
     assert stored_computed_at((REQUEST, object(), STAMP, "not a time", CONFIG)) is None
     assert stored_computed_at((REQUEST,)) is None and stored_computed_at(None) is None
+
+
+@pytest.mark.parametrize("stamp", [None, ("market.db", 1), ("market.db", 0)])
+def test_unknown_or_legacy_database_provenance_is_never_current(stamp):
+    assert _assess(_stored(stamp=stamp), stamp=stamp).status is ResultFreshness.MARKET_DATA_CHANGED
+
+
+@pytest.mark.parametrize(
+    "mode,run_key",
+    [
+        (SCENARIO_HOME_LOAN, "scenario_run"),
+        (SCENARIO_TERM_DEPOSIT, "scenario_run_term_deposit"),
+        (SCENARIO_JOINT, "scenario_run_joint"),
+    ],
+)
+def test_wal_commit_hides_each_scenario_mode_with_writer_open(dual_market_factory, mode, run_key):
+    market = dual_market_factory()
+    with ObservationStore(market.database) as writer:
+        writer._connection.execute("PRAGMA wal_autocheckpoint=0")
+        app = run_page("scenarios", market.database, market.now)
+        app.segmented_control(key="scenario_mode").set_value(mode).run()
+        _run(app, run_key)
+        assert app.metric, [(e.type, e.value) for e in (*app.error, *app.warning, *app.info)]
+        before = market.database.stat().st_mtime_ns
+        writer._connection.execute("UPDATE observations SET observation_count=observation_count+1")
+        writer._connection.commit()
+        assert market.database.stat().st_mtime_ns == before
+        app.run()
+        assert not app.exception
+        _assert_modelled_output_absent(app)
+        assert "Market data has changed" in _hidden_notice(app)
+
+
+def test_commit_during_scenario_computation_never_labels_result_current(market_factory):
+    market = market_factory()
+    with ObservationStore(market.database):
+        original = services_module.DashboardServices.scenarios
+
+        def concurrent_commit(services, request):
+            result = original(services, request)
+            with ObservationStore(market.database) as other:
+                other._connection.execute(
+                    "UPDATE observations SET observation_count=observation_count+1"
+                )
+                other._connection.commit()
+            return result
+
+        with patch.object(services_module.DashboardServices, "scenarios", concurrent_commit):
+            app = _run(run_page("scenarios", market.database, market.now))
+        _assert_modelled_output_absent(app)
+        assert "Market data has changed" in _hidden_notice(app)

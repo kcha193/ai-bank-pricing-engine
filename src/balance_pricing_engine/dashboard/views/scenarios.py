@@ -624,10 +624,12 @@ def _scenarios_tab(services: DashboardServices) -> None:
         "Run scenario", type="primary", key=_key(mode, "run"), icon=":material/play_arrow:"
     ):
         with st.spinner("Running the optimiser…"):
+            # Bind to inputs before calculation; a commit during the run must hide it.
+            stamp = services.db_stamp()
             st.session_state[state_key] = (
                 request,
                 services.scenarios(request),
-                services.db_stamp(),
+                stamp,
                 datetime.now(timezone.utc),
                 services.config_fingerprint(),
             )

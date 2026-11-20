@@ -20,6 +20,7 @@ from enum import Enum
 from typing import Any, Optional
 
 from balance_pricing_engine.dashboard.models import ScenarioRequest
+from balance_pricing_engine.pricing_intelligence.revision import DatabaseStamp
 
 _RERUN = "Click Run scenario to calculate a new result."
 
@@ -123,7 +124,12 @@ def assess_result(
         return _outcome(ResultFreshness.CONFIG_CHANGED)
     if not terms_available:
         return _outcome(ResultFreshness.TERM_UNAVAILABLE)
-    if stored[2] != db_stamp:
+    if (
+        not isinstance(db_stamp, DatabaseStamp)
+        or not isinstance(stored[2], DatabaseStamp)
+        or db_stamp.format_version != 1
+        or stored[2] != db_stamp
+    ):
         return _outcome(ResultFreshness.MARKET_DATA_CHANGED)
     if request is None:
         return _outcome(ResultFreshness.INPUT_UNAVAILABLE)
