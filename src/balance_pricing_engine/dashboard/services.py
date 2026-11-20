@@ -60,6 +60,7 @@ from balance_pricing_engine.dashboard.models import (
 )
 from balance_pricing_engine.dashboard.results import Result
 from balance_pricing_engine.dashboard.settings import DashboardSettings
+from balance_pricing_engine.pricing_intelligence.revision import DatabaseStamp, read_database_stamp
 from balance_pricing_engine.pricing_intelligence.bps import rate_change_bps
 from balance_pricing_engine.pricing_intelligence.health import (
     FreshnessState,
@@ -149,13 +150,9 @@ class DashboardServices:
 
     # ------------------------------------------------------------ plumbing
 
-    def db_stamp(self) -> tuple[str, int]:
-        """(path, mtime_ns) -- a cache key that changes when the store changes."""
-        path = Path(self.settings.intelligence.database_path)
-        try:
-            return (str(path), path.stat().st_mtime_ns)
-        except OSError:
-            return (str(path), 0)
+    def db_stamp(self) -> Optional[DatabaseStamp]:
+        """Committed database provenance, or unknown (never safe for stored results)."""
+        return read_database_stamp(self.settings.intelligence.database_path)
 
     def config_fingerprint(self) -> str:
         """Content provenance for the exact loaded YAML used by ``scenarios``."""
@@ -167,7 +164,7 @@ class DashboardServices:
         if not path.exists():  # ObservationStore would silently create it
             raise _MissingDatabase(str(path))
         service = PricingIntelligenceService(
-            config=self.settings.intelligence, store=ObservationStore(path)
+            config=self.settings.intelligence, store=ObservationStore.open_reader(path)
         )
         try:
             yield service

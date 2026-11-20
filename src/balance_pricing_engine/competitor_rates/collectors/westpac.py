@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, Mapping
 
 from balance_pricing_engine.competitor_rates.collectors.base import BankPricingCollector
 
@@ -23,6 +23,14 @@ class WestpacCollector(BankPricingCollector):
     #: Verified live 2026-08-25: 17 rates, specials 4.75/4.99/5.35 at 6/12/18m.
     #: Requires --render-javascript; the rate table is client-rendered.
     live_verified: ClassVar[bool] = True
+
+    #: Browser readiness (DATA-007): about half the comparable rows seen on every fully
+    #: rendered saved snapshot 2026-08-25..2026-11-16 (17 home-loan and 28 term-deposit rows), so a
+    #: half-rendered table or a single stray table never passes as ready.
+    readiness_min_rate_rows: ClassVar[Mapping[str, int]] = {
+        "home_loan": 8,
+        "term_deposit": 14,
+    }
 
     special_product_markers: ClassVar[tuple[str, ...]] = ("special",)
     standard_product_markers: ClassVar[tuple[str, ...]] = ("standard", "choices")

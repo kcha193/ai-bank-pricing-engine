@@ -20,9 +20,23 @@
 # update these two paths to match (or drop --lock-file entirely and let both
 # invocations compute the same default from that path instead).
 #
+# End-to-end deadline (DATA-008): --run-timeout-seconds 1800 bounds each
+# product's whole collection. The workflow runs it in a supervised worker
+# process -- no GNU `timeout` needed, which macOS does not ship -- and past the
+# deadline terminates the worker and its Chromium processes, writes a
+# collection_timeout summary, records a FAILED run when the database allows,
+# releases the lock and exits 1. 30 minutes sits above the ~21-minute worst
+# case of a slow-but-progressing five-bank run (docs/pricing_intelligence.md,
+# "Collection deadline"), so it targets genuine hangs.
+#
+# Repeated exit 3 is escalated per product: a warning at 2 consecutive skips,
+# one alert per configured channel at 3, and a recovery notice once the lock
+# is acquired again (state: <lock file>.skips.json).
+#
 # Exit codes:
 #   0  every selected bank collected
-#   1  no bank collected -- the run produced nothing
+#   1  no bank collected -- the run produced nothing; also a timeout, a locked
+#      or failing database, or a crashed worker (see the summary's failure_type)
 #   2  partial: at least one bank failed, market view incomplete
 #   3  skipped, another collection was already running
 #
@@ -67,9 +81,9 @@
 # so it does not depend on TZ being set in its environment either.)
 CRON_TZ=Pacific/Auckland
 
-30 7 * * * cd /path/to/ai-bank-pricing-engine && mkdir -p data/processed/pricing_intelligence && ( .venv/bin/python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --render-javascript --quiet --lock-file data/processed/pricing_intelligence/collection-home-loan-observations.lock --summary-file data/processed/pricing_intelligence/last_run_home_loan.json >> data/processed/pricing_intelligence/collect.log 2>&1; code=$?; [ "$code" -eq 0 ] || echo "NZ home-loan rate collection exited $code $(date)" >> data/processed/pricing_intelligence/collect.err.log; exit "$code" )
+30 7 * * * cd /path/to/ai-bank-pricing-engine && mkdir -p data/processed/pricing_intelligence && ( .venv/bin/python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --render-javascript --quiet --run-timeout-seconds 1800 --lock-file data/processed/pricing_intelligence/collection-home-loan-observations.lock --summary-file data/processed/pricing_intelligence/last_run_home_loan.json >> data/processed/pricing_intelligence/collect.log 2>&1; code=$?; [ "$code" -eq 0 ] || echo "NZ home-loan rate collection exited $code $(date)" >> data/processed/pricing_intelligence/collect.err.log; exit "$code" )
 
-35 7 * * * cd /path/to/ai-bank-pricing-engine && mkdir -p data/processed/pricing_intelligence && ( .venv/bin/python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --product term_deposit --render-javascript --quiet --lock-file data/processed/pricing_intelligence/collection-term-deposit-observations.lock --summary-file data/processed/pricing_intelligence/last_run_term_deposit.json >> data/processed/pricing_intelligence/collect.log 2>&1; code=$?; [ "$code" -eq 0 ] || echo "NZ term-deposit rate collection exited $code $(date)" >> data/processed/pricing_intelligence/collect.err.log; exit "$code" )
+35 7 * * * cd /path/to/ai-bank-pricing-engine && mkdir -p data/processed/pricing_intelligence && ( .venv/bin/python3 scripts/collect_market_rates_workflow.py --config configs/base.yaml --product term_deposit --render-javascript --quiet --run-timeout-seconds 1800 --lock-file data/processed/pricing_intelligence/collection-term-deposit-observations.lock --summary-file data/processed/pricing_intelligence/last_run_term_deposit.json >> data/processed/pricing_intelligence/collect.log 2>&1; code=$?; [ "$code" -eq 0 ] || echo "NZ term-deposit rate collection exited $code $(date)" >> data/processed/pricing_intelligence/collect.err.log; exit "$code" )
 
 # A daily brief right after the morning run, and an optional second
 # collection later in the day, are both opt-in operator choices -- see

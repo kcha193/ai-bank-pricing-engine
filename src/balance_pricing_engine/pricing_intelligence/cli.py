@@ -28,12 +28,19 @@ from datetime import datetime, timedelta, timezone
 import logging
 import math
 from pathlib import Path
+import sqlite3
 from typing import Optional
+import uuid
 from zoneinfo import ZoneInfo
 
 from balance_pricing_engine.competitor_rates.collection_config import CollectionConfig
 from balance_pricing_engine.config import load_config
 from balance_pricing_engine.competitor_rates.models import ProductType
+from balance_pricing_engine.competitor_rates.run_deadline import (
+    COLLECTION_TIMEOUT,
+    CollectionTimeoutError,
+    RunDeadline,
+)
 from balance_pricing_engine.pricing_intelligence.alerts import (
     ConsoleAlertSink,
     build_telegram_sink_from_env,
@@ -52,9 +59,13 @@ from balance_pricing_engine.pricing_intelligence.health import CollectorStatus, 
 from balance_pricing_engine.pricing_intelligence.locking import AlreadyRunningError, SingleInstanceLock
 from balance_pricing_engine.pricing_intelligence.orchestration import (
     EXIT_ALREADY_RUNNING,
+    EXIT_TOTAL_FAILURE,
     default_lock_file_path,
+    exit_code_for,
+    record_failed_attempt,
     run_operational_cycle,
 )
+from balance_pricing_engine.pricing_intelligence.sqlite_errors import classify_sqlite_error
 from balance_pricing_engine.pricing_intelligence.service import PricingIntelligenceService
 from balance_pricing_engine.pricing_intelligence.store import ObservationStore
 from balance_pricing_engine.pricing_intelligence.rbnz import fetch_ocr_series
@@ -113,6 +124,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             # independence.
             return _ocr(config.collection)
 
+        if args.command == "collect":
+            # Same single-instance lock and run ledger as `run` and the scheduled
+            # workflow (DATA-010), taken before any writable store is opened.
+            return _collect_command(config, args)
+
         if args.command == "run":
             # Takes its own single-instance lock (see locking.py) before
             # entering the service/store context below, the same as
@@ -154,6 +170,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 parser.print_help()
                 return 1
             return handler(service, args)
+    except sqlite3.Error as exc:
+        # Classified (DATA-009): "database_locked" is transient contention; anything else
+        # (corruption, full disk, read-only file, schema) keeps its own name.
+        print(f"ERROR [{classify_sqlite_error(exc)}]: {exc}")
+        return 1
     except Exception as exc:  # noqa: BLE001 - CLI boundary
         print(f"ERROR: {exc}")
         return 1
@@ -214,6 +235,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-snapshot", action="store_true", help="Do not save raw HTML snapshots"
     )
     collect.add_argument("--alerts", action="store_true", help="Print alerts for changes")
+    collect.add_argument(
+        "--lock-file",
+        default=None,
+        help=(
+            "Single-instance lock path (default: derived from --product and the database, "
+            "the same lock `run` and the scheduled workflow take). Not used with --no-persist."
+        ),
+    )
     collect.add_argument(
         "--render-javascript",
         action="store_true",
@@ -376,12 +405,95 @@ def _default_category(args: argparse.Namespace) -> str:
     return "special"
 
 
+def _collect_command(config: PricingIntelligenceConfig, args: argparse.Namespace) -> int:
+    """Lock-and-store wrapper for ``collect`` (DATA-010).
+
+    A persisting collect takes the product's shared single-instance lock *before* the
+    writable store is opened, so it can never interleave with ``run`` or the scheduled
+    workflow on the same database; on contention it exits 3 having fetched nothing.
+    ``--no-persist`` is a preview: a read-only store copy (nothing written, nothing
+    created for a missing database) and no lock, since it cannot race a writer.
+    """
+    product = _product(args)
+    if args.no_persist:
+        with PricingIntelligenceService(
+            config=config,
+            store=ObservationStore(
+                config.database_path,
+                read_only=True,
+                busy_timeout_seconds=config.sqlite_busy_timeout_seconds,
+            ),
+            render_javascript=args.render_javascript,
+        ) as service:
+            return _collect(service, args)
+
+    lock_file = args.lock_file or default_lock_file_path(product, config.database_path)
+    try:
+        with SingleInstanceLock(Path(lock_file)):
+            with PricingIntelligenceService(
+                config=config,
+                store=ObservationStore(
+                    config.database_path,
+                    busy_timeout_seconds=config.sqlite_busy_timeout_seconds,
+                ),
+                render_javascript=args.render_javascript,
+            ) as service:
+                return _collect(service, args)
+    except AlreadyRunningError as exc:
+        print(f"Skipped: {exc}")
+        return EXIT_ALREADY_RUNNING
+
+
 def _collect(service: PricingIntelligenceService, args: argparse.Namespace) -> int:
-    outcome = service.collect(
-        persist=not args.no_persist,
-        persist_snapshot=not args.no_snapshot,
-        product_type=_product(args),
-    )
+    """Collect one product and report it -- collection only: no pricing scenarios, no
+    real alert delivery (``--alerts`` prints to the console).
+
+    A persisting collect goes through :func:`~.orchestration.run_operational_cycle`, so it
+    writes the same RunRecord, collector-health update and success / partial (2) / total
+    failure (1) classification -- including term-deposit partial extraction and
+    quarantine escalation -- as ``run`` and the scheduled workflow. ``--no-persist`` keeps
+    its preview semantics: the same classification, but nothing stored and no RunRecord.
+    """
+    product = _product(args)
+    run_record = None
+    status = None
+    if args.no_persist:
+        outcome = service.collect(
+            persist=False,
+            persist_snapshot=False,
+            product_type=product,
+        )
+        code = exit_code_for(outcome, product)
+    else:
+        started_at = datetime.now(timezone.utc)
+        run_id = uuid.uuid4().hex
+        try:
+            result = run_operational_cycle(
+                service,
+                product_type=product,
+                run_id=run_id,
+                alert_sinks={},
+                persist_snapshot=not args.no_snapshot,
+                deadline=RunDeadline(service.config.collection.collection_run_timeout_seconds),
+            )
+        except CollectionTimeoutError as exc:
+            persisted, note = record_failed_attempt(
+                service.store,
+                run_id=run_id,
+                product_type=product,
+                started_at=started_at,
+                banks_attempted=tuple(service.config.selected_banks),
+                error_summary=f"{COLLECTION_TIMEOUT}: {exc}",
+            )
+            print(f"ERROR [{COLLECTION_TIMEOUT}]: {exc}")
+            print(f"Run id:      {run_id} ({note})")
+            return EXIT_TOTAL_FAILURE
+        outcome, code, run_record, status = (
+            result.outcome,
+            result.code,
+            result.run_record,
+            result.status,
+        )
     print(outcome.render())
 
     if outcome.validation.issues:
@@ -406,10 +518,10 @@ def _collect(service: PricingIntelligenceService, args: argparse.Namespace) -> i
             snapshot, previous_snapshot = None, None
         else:
             snapshot = service.get_market_snapshot(
-                product_type=_product(args), rate_category=_default_category(args)
+                product_type=product, rate_category=_default_category(args)
             )
             previous_snapshot = service.get_previous_market_snapshot(
-                product_type=_product(args), rate_category=_default_category(args)
+                product_type=product, rate_category=_default_category(args)
             )
         dispatch_alerts(
             format_alerts(
@@ -420,22 +532,14 @@ def _collect(service: PricingIntelligenceService, args: argparse.Namespace) -> i
             ConsoleAlertSink(),
         )
 
-    # A run where every bank failed to fetch is a failure, and so is one where
-    # pages parsed but validation rejected every record -- either way nothing
-    # usable was stored, and a scheduler must not treat that as success. Not
-    # sufficient on its own, though: a term-deposit run can validation-accept
-    # only non_comparable audit-only rows, or a real but off-default category
-    # like pie_term_deposit, while missing every ordinary term_deposit row --
-    # rate_count is positive but the default market snapshot this same
-    # invocation just queried above is empty. Mirrors
-    # scripts/collect_market_rates_workflow.py's _comparable_rate_count().
-    comparable_category = _default_category(args)
-    comparable_count = sum(
-        1 for record in outcome.validation.accepted if record.rate_category == comparable_category
-    )
-    if not outcome.report.any_success or outcome.rate_count == 0 or comparable_count == 0:
-        return 1
-    return 0
+    print()
+    if args.no_persist:
+        print("Preview: nothing persisted to the observation store; no run record written.")
+    else:
+        print(f"Status:      {status}")
+        if run_record is not None:
+            print(f"Run id:      {run_record.run_id}")
+    return code
 
 
 def _run(
@@ -468,7 +572,11 @@ def _run(
         with lock:
             with PricingIntelligenceService(
                 config=config,
-                store=ObservationStore(config.database_path, read_only=args.dry_run),
+                store=ObservationStore(
+                    config.database_path,
+                    read_only=args.dry_run,
+                    busy_timeout_seconds=config.sqlite_busy_timeout_seconds,
+                ),
                 render_javascript=args.render_javascript,
             ) as service:
                 result = run_operational_cycle(

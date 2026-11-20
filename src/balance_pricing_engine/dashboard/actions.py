@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 WORKFLOW_SCRIPT = Path("scripts") / "collect_market_rates_workflow.py"
 WORKER_MODULE = "balance_pricing_engine.dashboard.run_worker"
 DEFAULT_TIMEOUT_SECONDS = 1800
+#: Seconds of a live run's subprocess timeout reserved for the workflow supervisor to stop
+#: its worker (10 s grace) and write the timeout summary before this module's own timeout
+#: SIGKILLs the supervisor -- which would orphan the worker while it holds the lock (DATA-008).
+LIVE_RUN_DEADLINE_MARGIN_SECONDS = 60
 
 # Limits that stop a repeated click (or a visitor) from abusing an operation. Backups are pruned
 # to the newest 30, so unlimited "Create Backup" clicks would rotate real history out; collections
@@ -295,6 +299,8 @@ def run_live(
                 ProductType(product).value,
                 "--render-javascript",
                 "--quiet",
+                "--run-timeout-seconds",
+                str(max(timeout_seconds - LIVE_RUN_DEADLINE_MARGIN_SECONDS, timeout_seconds / 2)),
                 "--summary-file",
                 str(result_path),
             ]

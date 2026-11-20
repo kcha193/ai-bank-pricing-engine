@@ -44,9 +44,16 @@ class SingleInstanceLock:
             raise
         return self
 
+    def fileno(self) -> int:
+        """Descriptor holding the lock, for a supervised worker to inherit (DATA-008)."""
+        if self._handle is None:
+            raise RuntimeError("lock is not held")
+        return self._handle.fileno()
+
     def __exit__(self, *exc_info: object) -> None:
         if self._handle is not None:
             import fcntl
 
             fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
             self._handle.close()
+            self._handle = None

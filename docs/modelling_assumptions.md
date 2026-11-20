@@ -10,6 +10,15 @@ Comparison runs retain their own assumptions. Model-best rates, expected volumes
 remain synthetic model outputs. These provenance labels change no response, pricing or financial
 calculation and grant no pricing approval.
 
+### Stored scenario provenance under WAL
+
+A Pricing Studio result is displayable only while its pre-calculation committed database
+revision, request, configuration and available terms still match. SQLite trigger revisions
+track committed observations, trust decisions and operational evidence even before WAL
+checkpointing. Unknown or legacy provenance hides the result. Dashboard data/schema access
+is read-only; native SQLite coordination files are allowed. This changes display eligibility,
+not any economic assumption, optimiser selection, response function or pricing approval.
+
 ### Benchmark coverage and input age (DATA-003, Phase 2c)
 
 A market-derived competitor assumption (median, mean, leader, second-best) is only formed from

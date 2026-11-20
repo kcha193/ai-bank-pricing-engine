@@ -67,6 +67,21 @@
   ~/Library/LaunchAgents/ should carry real values. Leave a variable unset
   (the default) for no delivery on that channel; nothing else about
   collection changes either way, and a broken channel never fails the run.
+  End-to-end deadline (DATA-008): the run-timeout-seconds argument below
+  (1800 s = 30 min) bounds this product's whole collection. The workflow
+  runs the collection in a supervised worker process; past the deadline the
+  supervisor terminates the worker and its Chromium processes (SIGTERM, then
+  SIGKILL after a 10 s grace), writes a collection_timeout summary to the
+  summary file, records a FAILED run when the database allows, releases the
+  lock, and exits 1. The default worst case for five banks that never hang
+  is about 21 minutes (docs/pricing_intelligence.md, "Collection deadline"),
+  so 30 minutes targets genuine hangs only. ExitTimeOut gives that
+  supervisor time to stop its worker if launchd itself stops the job.
+
+  Repeated exit 3 (already running) is escalated per product: a warning at 2
+  consecutive skips, one alert per configured channel at 3, and a recovery
+  notice once the lock is acquired again. State lives beside the lock file
+  (lock file name + ".skips.json").
 -->
 <plist version="1.0">
 <dict>
@@ -86,6 +101,8 @@
         <string>term_deposit</string>
         <string>--render-javascript</string>
         <string>--quiet</string>
+        <string>--run-timeout-seconds</string>
+        <string>1800</string>
         <string>--lock-file</string>
         <string>data/processed/pricing_intelligence/collection-term-deposit-observations.lock</string>
         <string>--summary-file</string>
@@ -97,6 +114,11 @@
         <key>Hour</key><integer>7</integer>
         <key>Minute</key><integer>35</integer>
     </dict>
+
+    <!-- Seconds launchd waits after SIGTERM before SIGKILL when stopping this job:
+         longer than the supervisor's 10 s grace for its worker. -->
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
 
     <!-- Catch up if the machine was asleep at the scheduled time. -->
     <key>RunAtLoad</key>

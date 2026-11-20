@@ -84,6 +84,11 @@ def backup_database(
             destination = sqlite3.connect(str(temp_path))
             try:
                 source.backup(destination)
+                # The live store runs in WAL mode (DATA-009) and the backup copies its
+                # header. A backup must be one self-contained file: an operator copies or
+                # restores *.db alone, and a WAL-mode copy can leave committed pages in a
+                # -wal sidecar that would not travel with it.
+                destination.execute("PRAGMA journal_mode=DELETE")
             finally:
                 destination.close()
         except BaseException:

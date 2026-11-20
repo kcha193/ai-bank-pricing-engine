@@ -18,12 +18,19 @@ import logging
 from pathlib import Path
 import re
 import time
-from typing import Callable, ClassVar, Optional, Sequence
+from typing import Any, Callable, ClassVar, ContextManager, Mapping, Optional, Sequence
 from urllib.request import Request, urlopen
 
 from balance_pricing_engine.competitor_rates.collection_config import CollectionConfig
 from balance_pricing_engine.competitor_rates.extractors import parse_html_rates
 from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord, ProductType
+from balance_pricing_engine.competitor_rates.run_deadline import RunDeadline
+from balance_pricing_engine.competitor_rates.readiness import (
+    ReadinessAssessment,
+    ReadinessState,
+    any_rate_cell,
+    assess_readiness,
+)
 from balance_pricing_engine.competitor_rates.normalise import (
     detect_new_business_only,
     extract_cashback,
@@ -48,6 +55,32 @@ class ParserError(CollectorError):
 
 class FetchError(CollectorError):
     """The page could not be retrieved."""
+
+
+class NavigationError(FetchError):
+    """The browser could not load the page (DNS, connection, HTTP or load-event timeout)."""
+
+
+class BrowserReadinessError(FetchError):
+    """The page loaded, but its rate table did not become usable before the deadline.
+
+    Raised instead of returning the incomplete DOM: a loaded page is not proof of a rate
+    table, and parsing a half-rendered one would let it pass as a successful extraction.
+    """
+
+
+class ReadinessTimeoutError(BrowserReadinessError):
+    """No comparable rate rows for the requested product rendered before the deadline
+    (nothing rendered, only unrelated percentages, or only the other product's table)."""
+
+
+class PartialRenderError(BrowserReadinessError):
+    """Some comparable rows rendered, but fewer than the bank's minimum by the deadline."""
+
+
+#: Called by the browser fetcher with each rendered DOM snapshot; returns whether the page
+#: is usable yet. Supplied per product by :meth:`BankPricingCollector.assess_page_readiness`.
+ReadinessCheck = Callable[[str], ReadinessAssessment]
 
 
 class CollectionStatus(str, Enum):
@@ -185,90 +218,135 @@ def _fetch_with_retries(config: CollectionConfig, url: str, attempt: Callable[[]
                     backoff,
                 )
                 time.sleep(backoff)
-    raise FetchError(f"could not fetch {url}: {last_error}") from last_error
+    attempts = config.max_retries + 1
+    # Keep the classification of the final failure (navigation vs readiness timeout vs
+    # partial render): collapsing every exhausted retry into a bare FetchError would erase
+    # exactly the distinction an operator needs to tell a dead site from a slow table.
+    error_class = type(last_error) if isinstance(last_error, FetchError) else FetchError
+    raise error_class(
+        f"could not fetch {url} after {attempts} attempt(s): {last_error}"
+    ) from last_error
 
 
-#: Browser readiness: some table cell shows a percentage. ``parse_html_rates`` reads rates only
-#: from ``td``/``th`` cells, so this is the earliest point a parse can succeed.
-RATE_TABLE_READY_JS = (
-    "() => Array.from(document.querySelectorAll('td, th'))"
-    ".some((cell) => /\\d+(?:\\.\\d+)?\\s*%/.test(cell.textContent))"
-)
+PlaywrightFactory = Callable[[], ContextManager[Any]]
 
 
-def build_browser_fetcher(config: CollectionConfig) -> Fetcher:
+def _require_playwright() -> None:
+    """Fail once, clearly and without retrying, when the optional extra is missing."""
+    try:
+        import playwright.sync_api  # noqa: F401
+    except ImportError as exc:  # pragma: no cover - depends on the optional extra
+        raise FetchError(
+            "JavaScript rendering was requested but playwright is not installed. "
+            "Install the optional extra: pip install -e '.[browser]' "
+            "&& python3 -m playwright install chromium"
+        ) from exc
+
+
+def _default_playwright_factory() -> ContextManager[Any]:
+    from playwright.sync_api import sync_playwright
+
+    return sync_playwright()
+
+
+def _fallback_readiness(html: str) -> ReadinessAssessment:
+    """Readiness when no collector supplied a product-specific check (see any_rate_cell)."""
+    found = any_rate_cell(html)
+    return ReadinessAssessment(
+        state=ReadinessState.READY if found else ReadinessState.NOT_READY,
+        product_type=ProductType.HOME_LOAN,
+        rate_rows=int(found),
+        required_rows=1,
+    )
+
+
+def _await_rate_table(
+    page: Any,
+    url: str,
+    readiness: ReadinessCheck,
+    config: CollectionConfig,
+    clock: Callable[[], float],
+) -> str:
+    """Re-read the rendered DOM until ``readiness`` passes or the readiness deadline ends.
+
+    Polling ``page.content()`` (rather than one ``wait_for_function`` on a DOM predicate)
+    lets the check be the bank's own parser, and covers both a table already in the
+    document and one an XHR fills in after "load" (BNZ). Raises a classified
+    :class:`BrowserReadinessError` on timeout -- never returns an incomplete page.
+    """
+    deadline = clock() + config.effective_readiness_timeout_seconds
+    poll_ms = config.browser_readiness_poll_seconds * 1000
+    while True:
+        html = page.content()
+        assessment = readiness(html)
+        if assessment.ready:
+            return html
+        if clock() >= deadline:
+            detail = (
+                f"{url}: rate table not ready after "
+                f"{config.effective_readiness_timeout_seconds:g}s ({assessment.describe()})"
+            )
+            if assessment.state is ReadinessState.PARTIAL:
+                raise PartialRenderError(detail)
+            if assessment.state is ReadinessState.WRONG_PRODUCT:
+                raise ReadinessTimeoutError(
+                    f"{detail}; the requested product is not named on the page"
+                )
+            raise ReadinessTimeoutError(detail)
+        page.wait_for_timeout(poll_ms)
+
+
+def build_browser_fetcher(
+    config: CollectionConfig,
+    *,
+    playwright_factory: Optional[PlaywrightFactory] = None,
+    clock: Callable[[], float] = time.monotonic,
+) -> Fetcher:
     """Return a fetcher that renders the page in a headless browser first.
 
-    Every tracked bank now builds its rate table client-side, so the static HTML
-    contains the page furniture but not the rates. This path is opt-in and needs
-    the optional ``playwright`` dependency; without it the caller gets a clear
-    :class:`FetchError` rather than a silent empty parse. A missing dependency
-    is not retried (retrying will not install it); a transient launch,
-    navigation, or timeout failure is, via :func:`_fetch_with_retries`.
+    Every tracked bank builds its rate table client-side, so the static HTML contains the
+    page furniture but not the rates. This path is opt-in and needs the optional
+    ``playwright`` dependency; without it the caller gets a clear :class:`FetchError`.
+
+    The returned fetcher accepts an optional ``readiness`` check (its
+    ``supports_readiness`` attribute advertises this). Navigation waits for "load" only --
+    not "networkidle", which these pages' analytics/chat chatter can keep from ever
+    settling -- and then the DOM is polled until the check passes (see
+    :func:`_await_rate_table`). Navigation failures raise :class:`NavigationError`; an
+    unusable table raises :class:`ReadinessTimeoutError` or :class:`PartialRenderError`.
+    All three are retried via :func:`_fetch_with_retries`, which keeps the final class.
+    A missing dependency is not retried. The browser is closed on every path.
+
+    ``playwright_factory`` and ``clock`` exist for deterministic offline tests.
     """
+    factory = playwright_factory or _default_playwright_factory
 
-    def fetch(url: str) -> bytes:
-        try:
-            from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-            from playwright.sync_api import sync_playwright
-        except ImportError as exc:  # pragma: no cover - depends on optional extra
-            raise FetchError(
-                "JavaScript rendering was requested but playwright is not installed. "
-                "Install the optional extra: pip install -e '.[browser]' "
-                "&& python3 -m playwright install chromium"
-            ) from exc
+    def fetch(url: str, readiness: Optional[ReadinessCheck] = None) -> bytes:
+        check = readiness or _fallback_readiness
 
-        def attempt() -> bytes:  # pragma: no cover - exercised only against live pages
-            with sync_playwright() as playwright:
+        def attempt() -> bytes:
+            with factory() as playwright:
                 browser = playwright.chromium.launch(headless=True)
-                page = browser.new_page(user_agent=config.user_agent)
-                # Not "networkidle": these marketing pages carry persistent
-                # background chatter (chat widgets, analytics beacons) that
-                # can keep the network from ever going idle, so "networkidle"
-                # either times out (FetchError) or -- worse -- returns
-                # inconsistently, sometimes before the rate table has
-                # rendered (ParserError).
-                page.goto(
-                    url,
-                    wait_until="load",
-                    timeout=int(config.request_timeout_seconds * 1000),
-                )
-                # "load" alone is not sufficient for every bank: BNZ's rate
-                # table is populated by a client-side XHR
-                # (api.bnz.co.nz/v1/ratesfeed/home/xml) fired after the
-                # "load" event, not present in the initial document -- a
-                # 2026-09-17 change dropped "networkidle" without accounting
-                # for this and broke BNZ's live collection (confirmed via the
-                # collector canary and a live re-check 2026-09-18). Waiting
-                # for an actual advertised-rate percentage to appear in the
-                # rendered text is a universal readiness signal across every
-                # bank's markup, unlike a bank-specific CSS selector: it
-                # resolves near-instantly for a bank whose table is already
-                # in the initial document (ASB confirmed 2026-09-17; Westpac
-                # too, though it can still fail downstream for unrelated
-                # reasons -- see ParserError), and gives an async-rendering
-                # bank like BNZ the time its XHR actually needs. The
-                # percentage must be in a table cell (RATE_TABLE_READY_JS),
-                # the only place the parser reads rates from: a promotional
-                # banner ("Earn 4.85% p.a.") in the page text would otherwise
-                # satisfy the wait before the rate table renders. A timeout
-                # here is not re-raised: the page still loaded, so this falls
-                # through to the ordinary "no rates confidently extracted"
-                # ParserError downstream rather than masking that outcome as
-                # a FetchError.
                 try:
-                    page.wait_for_function(
-                        RATE_TABLE_READY_JS,
-                        timeout=int(config.request_timeout_seconds * 1000),
-                    )
-                except PlaywrightTimeoutError:
-                    pass
-                html = page.content()
-                browser.close()
+                    page = browser.new_page(user_agent=config.user_agent)
+                    try:
+                        page.goto(
+                            url,
+                            wait_until="load",
+                            timeout=int(config.request_timeout_seconds * 1000),
+                        )
+                    except Exception as exc:  # noqa: BLE001 - classified and re-raised
+                        raise NavigationError(f"navigation to {url} failed: {exc}") from exc
+                    html = _await_rate_table(page, url, check, config, clock)
+                finally:
+                    browser.close()
             return html.encode("utf-8")
 
+        if playwright_factory is None:
+            _require_playwright()
         return _fetch_with_retries(config, url, attempt)
 
+    fetch.supports_readiness = True  # type: ignore[attr-defined]
     return fetch
 
 
@@ -387,6 +465,16 @@ class BankPricingCollector(abc.ABC):
     #: row matches no marker, keeps the generic "term_deposit" category, and
     #: can outrank every genuinely advertised rate for MARKET_LEADER.
     excluded_deposit_product_word_markers: ClassVar[tuple[str, ...]] = ("pir",)
+
+    #: Minimum comparable rate rows (per product) the rendered page must show before the
+    #: browser path treats it as ready -- see :mod:`..readiness`. Bank collectors override
+    #: this with evidence from saved live snapshots; the conservative default applies to a
+    #: bank without its own evidence. Overridable per run via
+    #: ``CollectionConfig.readiness_min_rate_rows``.
+    readiness_min_rate_rows: ClassVar[Mapping[str, int]] = {
+        ProductType.HOME_LOAN.value: 3,
+        ProductType.TERM_DEPOSIT.value: 3,
+    }
 
     def __init__(
         self,
@@ -584,7 +672,60 @@ class BankPricingCollector(abc.ABC):
             }
         )
 
+    def required_rate_rows(self, product_type: ProductType | str) -> int:
+        """Comparable rows this bank's page must show for ``product_type`` to be ready."""
+        product = ProductType(product_type).value
+        configured = self.config.readiness_min_rate_rows.get(self.bank, {})
+        if product in configured:
+            return configured[product]
+        return self.readiness_min_rate_rows.get(product, 3)
+
+    def assess_page_readiness(
+        self, html: str, product_type: ProductType | str
+    ) -> ReadinessAssessment:
+        """Judge a rendered DOM snapshot with this bank's own parser (DATA-007).
+
+        Counts only comparable rows: ``non_comparable`` and ``pie_term_deposit`` audit rows
+        (fund returns, PIE effective-rate columns, subsidised or closed products) prove
+        nothing about the
+        rate table the collection needs. A parser exception counts as zero rows -- the
+        page may simply not have finished rendering.
+        """
+        product = ProductType(product_type)
+        parser = (
+            self.parse_mortgage_html
+            if product is ProductType.HOME_LOAN
+            else self.parse_term_deposit_html
+        )
+        try:
+            records = parser(html, datetime.now(timezone.utc))
+        except Exception:  # noqa: BLE001 - an unparseable partial DOM is "not ready yet"
+            records = []
+        comparable = sum(
+            1
+            for record in records
+            if record.rate_category not in {"non_comparable", "pie_term_deposit"}
+        )
+        return assess_readiness(
+            html,
+            product,
+            rate_rows=comparable,
+            required_rows=self.required_rate_rows(product),
+        )
+
     # ----------------------------------------------------------------- private
+
+    def _fetch(self, url: str, product_type: ProductType) -> bytes:
+        """Fetch ``url``, giving a readiness-aware fetcher this product's check.
+
+        Injected plain fetchers (``Callable[[str], bytes]``) keep their one-argument
+        contract; only a fetcher advertising ``supports_readiness`` receives the check.
+        """
+        if getattr(self._fetcher, "supports_readiness", False):
+            return self._fetcher(  # type: ignore[call-arg]
+                url, readiness=lambda html: self.assess_page_readiness(html, product_type)
+            )
+        return self._fetcher(url)
 
     def _collect(
         self,
@@ -596,7 +737,7 @@ class BankPricingCollector(abc.ABC):
     ) -> BankCollectionResult:
         captured_at_utc = captured_at_utc or datetime.now(timezone.utc)
         try:
-            body = self._fetcher(url)
+            body = self._fetch(url, product_type)
         except Exception as exc:  # noqa: BLE001 - isolated into a FAILED result
             logger.warning("%s %s fetch failed: %s", self.bank, product_type.value, exc)
             return BankCollectionResult(
@@ -680,11 +821,17 @@ def collect_all_rates(
     captured_at_utc: Optional[datetime] = None,
     persist_snapshot: bool = True,
     inter_request_delay_seconds: Optional[float] = None,
+    deadline: Optional[RunDeadline] = None,
 ) -> CollectionReport:
     """Collect mortgage rates from every collector, isolating per-bank failures.
 
     A collector raising or returning nothing produces a FAILED entry in the
     report; the remaining banks still run.
+
+    ``deadline`` (DATA-008) is checked before each bank: once the run's end-to-end budget
+    is spent, :class:`~..run_deadline.CollectionTimeoutError` propagates and no further
+    bank is fetched. It is deliberately not isolated like a bank failure -- a timed-out
+    run must not go on to persist a partial view as if it had completed.
     """
     # Coerced, not compared as given: the dispatch below is an identity test
     # against ProductType.HOME_LOAN, which a plain "home_loan" string never
@@ -694,6 +841,8 @@ def collect_all_rates(
     captured_at_utc = captured_at_utc or datetime.now(timezone.utc)
     results: list[BankCollectionResult] = []
     for index, collector in enumerate(collectors):
+        if deadline is not None:
+            deadline.check(f"before {collector.bank}")
         if index and inter_request_delay_seconds:
             time.sleep(inter_request_delay_seconds)
         collect = (
