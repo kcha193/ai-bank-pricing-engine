@@ -248,3 +248,24 @@ def test_a_locked_database_is_reported_as_database_locked(tmp_path, stub_banks, 
     assert code == EXIT_TOTAL_FAILURE
     assert "database_locked" in capsys.readouterr().out
     assert _runs(database) == []
+
+
+def test_no_persist_preview_never_writes_raw_html(tmp_path, monkeypatch):
+    from balance_pricing_engine.competitor_rates.collectors import ANZCollector
+    from balance_pricing_engine.competitor_rates.collection_config import CollectionConfig
+
+    raw = tmp_path / "raw"
+    collector = ANZCollector(
+        config=CollectionConfig(),
+        raw_root=raw,
+        fetcher=lambda url: (
+            b"<h1>Home loan rates</h1><table><tr><th>Term</th><th>Rate</th>"
+            b"</tr><tr><td>1 year</td><td>4.89%</td></tr></table>"
+        ),
+    )
+    monkeypatch.setattr(
+        "balance_pricing_engine.pricing_intelligence.service.build_collectors",
+        lambda **kwargs: [collector],
+    )
+    cli.main(["--database", str(tmp_path / "missing.db"), "collect", "--no-persist"])
+    assert not raw.exists()

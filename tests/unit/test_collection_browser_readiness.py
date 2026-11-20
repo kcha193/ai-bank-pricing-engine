@@ -489,3 +489,19 @@ def test_real_chromium_classifies_a_table_that_never_renders(local_site):
     result = collector.collect_mortgage_rates(captured_at_utc=CAPTURED, persist_snapshot=False)
     assert result.status is CollectionStatus.FAILED
     assert result.error_type == "ReadinessTimeoutError"
+
+
+@pytest.mark.parametrize("collector_class", [ANZCollector, BNZCollector, WestpacCollector])
+def test_pie_return_table_cannot_complete_ordinary_deposit_readiness(collector_class):
+    rows = "".join(f"<tr><td>{term}</td><td>5.50%</td><td>Quarterly</td></tr>" for term in TERMS)
+    html = (
+        f"<title>{DEPOSIT_TITLE}</title><h2>PIE term deposit</h2>"
+        "<table><tr><th>Term</th><th>Rate of return</th><th>Return Frequency</th></tr>"
+        f"{rows}</table>"
+    )
+    collector = collector_class(config=_config(), fetcher=lambda url: b"")
+    parsed = collector.parse_term_deposit_html(html, CAPTURED)
+    assert parsed and all(row.rate_category == "pie_term_deposit" for row in parsed)
+    assessment = collector.assess_page_readiness(html, ProductType.TERM_DEPOSIT)
+    assert assessment.rate_rows == 0
+    assert assessment.state is ReadinessState.NOT_READY

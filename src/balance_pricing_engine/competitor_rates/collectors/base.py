@@ -685,8 +685,9 @@ class BankPricingCollector(abc.ABC):
     ) -> ReadinessAssessment:
         """Judge a rendered DOM snapshot with this bank's own parser (DATA-007).
 
-        Counts only comparable rows: ``non_comparable`` audit rows (fund returns, PIE
-        effective-rate columns, subsidised or closed products) prove nothing about the
+        Counts only comparable rows: ``non_comparable`` and ``pie_term_deposit`` audit rows
+        (fund returns, PIE effective-rate columns, subsidised or closed products) prove
+        nothing about the
         rate table the collection needs. A parser exception counts as zero rows -- the
         page may simply not have finished rendering.
         """
@@ -700,7 +701,11 @@ class BankPricingCollector(abc.ABC):
             records = parser(html, datetime.now(timezone.utc))
         except Exception:  # noqa: BLE001 - an unparseable partial DOM is "not ready yet"
             records = []
-        comparable = sum(1 for record in records if record.rate_category != "non_comparable")
+        comparable = sum(
+            1
+            for record in records
+            if record.rate_category not in {"non_comparable", "pie_term_deposit"}
+        )
         return assess_readiness(
             html,
             product,

@@ -39,6 +39,7 @@ See docs/pricing_intelligence.md for scheduling recipes.
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 import json
 import logging
@@ -79,6 +80,7 @@ from balance_pricing_engine.pricing_intelligence.orchestration import (
     _comparable_rate_count,  # noqa: F401
     _validation_only_failures,  # noqa: F401
     build_failure_summary,
+    build_replay_summary,
     build_summary,
     default_lock_file_path,
     exit_code_for,  # noqa: F401
@@ -244,19 +246,40 @@ def _database_failure(
     run_id: str,
     database_path: str,
 ) -> tuple[int, dict]:
-    """A locked or failing observation store: classified, summarised, never committed.
+    """Classify a database failure without claiming earlier transactions rolled back.
 
-    The store's own transactions roll back on error, so no partial observation/change
-    write survives. No RunRecord is attempted here -- the database is the failing
-    component -- and the summary says so instead of claiming one.
+    Collection and later bookkeeping commit independently. Inspect committed participation
+    through a bounded read-only connection; an unreadable database leaves evidence unknown.
     """
     error_type = classify_sqlite_error(error) or type(error).__name__
     failure_type = DATABASE_LOCKED if error_type == DATABASE_LOCKED else "database_error"
+    committed = None
+    record_present = False
+    counts = None
+    try:
+        uri = Path(database_path).resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=0.1)) as reader:
+            reader.execute("BEGIN")
+            counts = reader.execute(
+                "SELECT inserted_count, unchanged_count FROM collection_run_products "
+                "WHERE run_id = ? AND product_type = ?",
+                (run_id, product_type.value),
+            ).fetchone()
+            committed = counts is not None
+            record_present = (
+                reader.execute(
+                    "SELECT 1 FROM operational_runs WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
+                is not None
+            )
+    except (sqlite3.Error, OSError):
+        logger.warning("Could not establish committed run evidence after database failure")
     note = (
-        "the observation store was locked by another writer past the busy timeout; "
-        "no observations were committed by this run"
-        if failure_type == DATABASE_LOCKED
-        else "the observation store failed; no observations were committed by this run"
+        "database failure; earlier observation commits remain recorded"
+        if committed
+        else "database failure; committed observation evidence is "
+        + ("absent" if committed is False else "unknown")
     )
     summary = build_failure_summary(
         product_type,
@@ -264,8 +287,12 @@ def _database_failure(
         error=str(error),
         failure_type=failure_type,
         run_id=run_id,
-        run_record_persisted=False,
+        run_record_persisted=record_present,
         run_record_note=note,
+        observations_committed=committed,
+        rates_accepted=sum(counts) if counts else (0 if committed is False else None),
+        new_states_stored=counts[0] if counts else (0 if committed is False else None),
+        unchanged_states=counts[1] if counts else (0 if committed is False else None),
     )
     log_event(
         logger,
@@ -425,7 +452,11 @@ def run_collection(
         _write_summary(summary_path, summary)
         return EXIT_TOTAL_FAILURE, summary
 
-    summary = build_summary(outcome, product_type, quarantine=result.quarantine)
+    summary = (
+        build_replay_summary(outcome, result.run_record, product_type)
+        if outcome.already_recorded
+        else build_summary(outcome, product_type, quarantine=result.quarantine)
+    )
     summary["alerts_sent"] = result.alerts_sent
     code = result.code
     # Additive fields: the run id ties this file to the operational ledger, and
@@ -434,6 +465,10 @@ def run_collection(
     summary["status"] = result.status
     summary["failure_type"] = None
     summary["run_record_persisted"] = result.run_record is not None
+    if outcome.already_recorded and result.run_record is None:
+        code = EXIT_TOTAL_FAILURE
+        summary["status"] = "FAILED"
+        summary["failure_type"] = "incomplete_run_record"
 
     if code == EXIT_TOTAL_FAILURE:
         completion_level = logging.ERROR
@@ -465,7 +500,7 @@ def run_collection(
             )
         },
     )
-    for change in outcome.changes:
+    for change in (() if outcome.already_recorded else outcome.changes):
         log_event(
             logger,
             "market change detected",

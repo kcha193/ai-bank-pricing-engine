@@ -460,7 +460,7 @@ def _collect(service: PricingIntelligenceService, args: argparse.Namespace) -> i
     if args.no_persist:
         outcome = service.collect(
             persist=False,
-            persist_snapshot=not args.no_snapshot,
+            persist_snapshot=False,
             product_type=product,
         )
         code = exit_code_for(outcome, product)

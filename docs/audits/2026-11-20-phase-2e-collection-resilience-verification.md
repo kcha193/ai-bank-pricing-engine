@@ -38,7 +38,7 @@ term-deposit live verification is a separate item and also remains pending.
 | Timeout evidence | none | atomic summary with `failure_type=collection_timeout`, run id, start, deadline, elapsed; FAILED RunRecord when the DB allows; `run_record_persisted` states which |
 | Repeated exit 3 | silent | per-product sidecar streak: warning at 2, one alert per channel at 3, recovery notice, reset |
 | SQLite | rollback journal, 5 s | WAL on file-backed writable stores; bounded busy timeout (30 s default, max 300) |
-| Lock error | uncaught traceback | `database_locked` (BUSY/LOCKED only) or the SQLite class name; exit 1; summary says nothing committed |
+| Lock error | uncaught traceback | `database_locked` (BUSY/LOCKED only) or the SQLite class name; exit 1; summary checks committed evidence, preserving earlier transactions |
 | Summary writes | `write_text` | temp file, fsync, `os.replace` |
 | CLI collect | no lock, no ledger | shared product lock before a writable store opens; exit 3 with no fetch; `run_operational_cycle`; `--no-persist` lock-free read-only preview |
 | Dashboard live run | subprocess timeout 1800 s, no run deadline | passes `--run-timeout-seconds` 60 s below its own timeout so the supervisor, not a SIGKILL, ends a hung run |
@@ -153,8 +153,9 @@ machine without Playwright the two real-Chromium tests skip and must be reported
 - Exit codes 0/1/2/3 keep their meanings; 1 now also covers classified whole-run failures.
 - Summary files keep every existing key; added keys are additive (`run_id`, `status`,
   `failure_type`, `run_record_persisted`, and the timeout fields).
-- No schema migration. WAL is a connection pragma: an existing database converts on first
-  writable open and stays readable by older code.
+- WAL remains a persistent journal-mode setting. PR review adds an additive revision table
+  and triggers on writable initialisation; existing observation/review evidence is preserved.
+  Dashboard reads do not install or migrate schema.
 - Existing CLI flags are unchanged. `collect --no-persist` output now ends with a `Preview:` line.
 - `--no-supervisor` restores in-process execution with only the cooperative deadline.
 - No pricing mathematics, response model, optimiser or governance gate changed.
@@ -172,3 +173,89 @@ machine without Playwright the two real-Chromium tests skip and must be reported
 - WAL does not remove single-writer contention. Two products writing at once still serialise
   through the busy timeout.
 - LIVE VERIFICATION PENDING for Phase 2e and, separately, for Phase 2b term deposits.
+
+## PR #76 review remediation (2026-11-20)
+
+### Finding inventory
+
+Initial head: `d78fa821cf39746548af89d3c8da67dc9c1f8acf`. Live GitHub inspection included
+all files/diff, submitted reviews, top-level comments, resolved/outdated inline threads and
+check runs. Pagination reported no additional threads. One actionable GitHub thread existed;
+an independent whole-branch review found the additional issues below.
+
+| Severity / source | Location and root cause | Correction | Regression evidence |
+|---|---|---|---|
+| P1, [comment 4639633384](https://github.com/kcha193/ai-bank-pricing-engine/pull/76#discussion_r4639633384), thread `PRRT_kwDOSMlm-s654Rnx` | `DashboardServices.db_stamp`: main-file mtime misses WAL commits | Transactional revision triggers; read-only live readers; unknown/legacy provenance hidden; capture before calculation | `test_dashboard_database_stamp.py`, `test_dashboard_result_freshness.py`: real WAL visibility with writer open, unchanged main mtime, stale outcome and absent Studio output in all three modes |
+| P2, independent review | `assess_page_readiness`: PIE return rows counted towards ordinary deposit readiness | Exclude `pie_term_deposit` alongside `non_comparable`; uncertain-special collection semantics unchanged | Real ANZ, BNZ and Westpac parsers on local PIE tables; all remain NOT_READY |
+| P2, independent review | `run_collection`: reused original status combined with retry fetch evidence | Original RunRecord drives top-level evidence; retry evidence is separate; unavailable original details are null | Successful original / failed retry, partial original / successful retry, committed observations without original RunRecord |
+| P2, independent review | `_database_failure`: a later bookkeeping error falsely claimed earlier observations rolled back | Read-only committed-participation probe; true/false/unknown evidence and surviving counts | Injected RunRecord lock error after a real observation commit; exit 1 preserves committed count |
+| P2, boundary verification | CLI preview: `persist=False` still permitted raw HTML snapshots | Disable snapshot persistence for `collect --no-persist` | Real collector with injected local HTML leaves no raw directory |
+
+All five corrections passed their focused regression checks. The independent reviewer then
+reported no remaining actionable findings. GitHub thread closure and fresh-head review are
+tracked on the PR itself; this local record does not claim a pending remote review completed.
+
+### Reproduction and design
+
+The initial regression opened a real temporary WAL ObservationStore, committed an observation,
+checkpointed, captured the dashboard stamp, and committed a second observation while keeping
+the writer open. A second SQLite connection saw both collection rows; the main database mtime
+was unchanged. The original stamp failed with:
+
+```text
+AssertionError: committed WAL data must invalidate the dashboard stamp
+1 failed
+```
+
+The expanded initial file gave 6 failed / 3 passed against the old stamp. A separate offline
+mutation check restored the exact baseline `db_stamp` and freshness functions in memory:
+the core WAL regression and all three Studio modes failed (4 failed, 39 deselected), with
+stale metrics still present. No production file was replaced for that check.
+
+Approaches considered: main/WAL metadata cannot identify committed state across rollback and
+reuse; a fresh `data_version` is connection-local; retained global connections violate the
+lifecycle boundary; full database hashes/copies cost too much per rerender; raw WAL parsing
+would duplicate SQLite's concurrency/recovery machinery. The selected additive schema is one
+singleton row and three row triggers per application table. SQLite commits the random token
+atomically with data. Exact trigger coverage is checked in the same short read transaction as
+the token and schema version. Device/inode/path identify database replacement. A writer installs
+tracking after migrations; dashboard reads never migrate the source.
+
+Checkpoint, reset, reuse, truncation and removal do not erase the committed token. Uncommitted
+and rolled-back tokens are invisible to readers. Missing/invalid tracking or unreadable data
+is unknown, never CURRENT and never a reusable cache key. Results remain in session state but
+are hidden until explicitly recalculated against current inputs.
+
+SQLite `mode=ro` may create/manage WAL/SHM coordination files. The owner explicitly authorised
+that native coordination while requiring database data and schema to remain read-only. Both
+stamp and actual dashboard reads use short-lived read-only connections, bounded at 100 ms;
+there is no per-render database copy, migration, checkpoint or global connection.
+
+Limitations: tracking updates once per mutated row; invalidation is conservative across the
+shared store; 128-bit random-token collision risk is negligible rather than impossible;
+an administrator deliberately rewriting data and tracking together is outside this mechanism.
+Freshness is checked at render time, not locked for the lifetime of an already displayed page.
+No pricing economics, governance policy, response models or product data boundaries changed.
+
+### Review verification
+
+Commands use the existing `.venv` (system Python has no pytest). No public bank website was
+contacted. Both deployment plists pass `plutil -lint`; baseline and response-model examples
+complete successfully. Ruff and `git diff --check` pass. New provenance files pass Ruff format.
+
+The first broad run stopped after one outdated test simulated collection with `os.utime`:
+1 failed, 1,643 passed, 1 skipped before interruption. A focused reproduction identified
+`test_a_result_is_hidden_when_the_market_data_changes_underneath_it`; it now commits a real
+observation update. The corrected test passes. The complete offline suite is rerun below.
+
+| Final command/check | Actual result |
+|---|---|
+| `.venv/bin/python -m pytest -q tests/unit/test_dashboard_database_stamp.py tests/unit/test_dashboard_result_freshness.py tests/unit/test_collection_browser_readiness.py tests/unit/test_collection_resilience_workflow.py tests/unit/test_pricing_intelligence_cli_collect_locking.py` | 139 passed in 58.91 s |
+| `.venv/bin/python -m pytest -m "not live_rates" --cov --cov-fail-under=95 -q --durations=10` | 3,402 passed, 2 skipped; 98.04% whole-run coverage; 434.94 s |
+| `.venv/bin/python -m coverage report --precision=2 --include='src/balance_pricing_engine/*'` | Package coverage 97.05%; `revision.py` 100% |
+| `.venv/bin/python -m ruff check .` | All checks passed |
+| `.venv/bin/python -m ruff format --check src/balance_pricing_engine/pricing_intelligence/revision.py tests/unit/test_dashboard_database_stamp.py` | Both files formatted |
+| `git diff --check` | Clean |
+| Baseline and response-model examples; both launchd plist checks | Passed |
+
+Live collection remains unauthorised and unverified. PR #76 has not been merged.

@@ -768,3 +768,114 @@ def test_t38_retrying_a_run_id_after_a_timeout_record_stays_idempotent(
     assert [(run["run_id"], run["status"]) for run in _operational_runs(path)] == [
         ("same-run", "FAILED")
     ]
+
+
+def test_retry_summary_preserves_original_committed_evidence(
+    workflow, tmp_path, make_record, monkeypatch
+):
+    collector = StubCollector("ANZ", make_record())
+    monkeypatch.setattr(
+        "balance_pricing_engine.pricing_intelligence.service.build_collectors",
+        lambda **kwargs: [collector],
+    )
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "market.db"), selected_banks=["ANZ"]
+    )
+    code, original = workflow.run_collection(config, False, run_id="replayed")
+    assert code == 0 and original["rates_accepted"] == 1
+
+    def failed(**kwargs):
+        return BankCollectionResult(
+            bank="ANZ",
+            product_type=ProductType.HOME_LOAN,
+            status=CollectionStatus.FAILED,
+            source_url="https://example.com/rates",
+            error_type="FetchError",
+            error="offline failure",
+        )
+
+    monkeypatch.setattr(collector, "collect_mortgage_rates", failed)
+    code, retry = workflow.run_collection(config, False, run_id="replayed")
+    assert code == 0 and retry["status"] == "SUCCESS"
+    assert retry["banks_succeeded"] == ["ANZ"]
+    assert retry["banks_failed"] == []
+    assert retry["rates_accepted"] == 1
+    assert retry["already_recorded"] is True
+    assert retry["retry_fetch"]["banks_failed"] == ["ANZ"]
+
+
+def test_database_failure_after_collection_preserves_commit_evidence(
+    workflow, tmp_path, make_record, monkeypatch
+):
+    monkeypatch.setattr(
+        "balance_pricing_engine.pricing_intelligence.service.build_collectors",
+        lambda **kwargs: [StubCollector("ANZ", make_record())],
+    )
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(ObservationStore, "write_run_record", locked)
+    path = tmp_path / "market.db"
+    config = PricingIntelligenceConfig(database_path=str(path), selected_banks=["ANZ"])
+    code, summary = workflow.run_collection(config, False, run_id="committed-before-error")
+    assert code == 1 and summary["failure_type"] == "database_locked"
+    with sqlite3.connect(path) as reader:
+        assert reader.execute("SELECT count(*) FROM observations").fetchone()[0] == 1
+    assert "no observations were committed" not in summary["run_record_note"]
+    assert summary["observations_committed"] is True
+    assert summary["rates_accepted"] == 1
+
+
+def test_replayed_partial_run_keeps_original_failure_evidence(
+    workflow, tmp_path, make_record, monkeypatch
+):
+    good = StubCollector("ANZ", make_record())
+    bad = StubCollector("BNZ", make_record())
+    normal = bad.collect_mortgage_rates
+
+    def failed(**kwargs):
+        return BankCollectionResult(
+            bank="BNZ",
+            product_type=ProductType.HOME_LOAN,
+            status=CollectionStatus.FAILED,
+            source_url="https://example.com/rates",
+            error_type="FetchError",
+            error="offline failure",
+        )
+
+    monkeypatch.setattr(bad, "collect_mortgage_rates", failed)
+    monkeypatch.setattr(
+        "balance_pricing_engine.pricing_intelligence.service.build_collectors",
+        lambda **kwargs: [good, bad],
+    )
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "market.db"), selected_banks=["ANZ", "BNZ"]
+    )
+    assert workflow.run_collection(config, False, run_id="partial-replay")[0] == 2
+    monkeypatch.setattr(bad, "collect_mortgage_rates", normal)
+    code, retry = workflow.run_collection(config, False, run_id="partial-replay")
+    assert code == 2 and retry["status"] == "PARTIAL_SUCCESS"
+    assert retry["banks_failed"] == ["BNZ"]
+    assert retry["retry_fetch"]["banks_failed"] == []
+    assert retry["validation_warnings"] is None  # original details cannot be reconstructed
+
+
+def test_replay_without_original_run_record_is_incomplete_not_successful(
+    workflow, tmp_path, make_record, monkeypatch
+):
+    monkeypatch.setattr(
+        "balance_pricing_engine.pricing_intelligence.service.build_collectors",
+        lambda **kwargs: [StubCollector("ANZ", make_record())],
+    )
+    config = PricingIntelligenceConfig(
+        database_path=str(tmp_path / "market.db"), selected_banks=["ANZ"]
+    )
+    with PricingIntelligenceService(config=config) as service:
+        service.collect(run_id="crashed-after-commit")
+    code, summary = workflow.run_collection(config, False, run_id="crashed-after-commit")
+    assert code == 1 and summary["failure_type"] == "incomplete_run_record"
+    assert summary["observations_committed"] is True
+    assert summary["run_record_persisted"] is False
+    assert summary["rates_accepted"] is None
+    assert _operational_runs(config.database_path) == []

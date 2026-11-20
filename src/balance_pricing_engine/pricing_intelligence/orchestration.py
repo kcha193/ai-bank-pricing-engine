@@ -632,6 +632,46 @@ def build_summary(
     return summary
 
 
+def build_replay_summary(
+    outcome: CollectionOutcome,
+    run_record: Optional[RunRecord],
+    product_type: ProductType | str,
+) -> dict:
+    """Describe the original committed run, keeping retry fetch evidence separate.
+
+    A RunRecord cannot reconstruct every detail of the original validation/report. Those
+    fields remain unknown, rather than borrowing potentially contradictory retry evidence.
+    """
+    retry = build_summary(outcome, product_type)
+    summary = dict.fromkeys(retry)
+    summary.update(
+        product_type=ProductType(product_type).value,
+        already_recorded=True,
+        observations_committed=True,
+        retry_fetch=retry,
+        summary_evidence="original_run_record" if run_record else "incomplete_original_run",
+        run_record_note=(
+            "Original committed run evidence; unavailable original details are null. "
+            "The retry fetch is reported separately and did not replace the original run."
+        ),
+    )
+    if run_record is not None:
+        summary.update(
+            collected_at_utc=run_record.started_at.isoformat(),
+            banks_succeeded=list(run_record.banks_successful),
+            banks_failed=list(run_record.banks_failed),
+            rates_accepted=run_record.rates_observed,
+            rates_rejected=run_record.validation_failures,
+            changes_detected=run_record.rates_changed,
+        )
+    else:
+        summary["run_record_note"] = (
+            "Observations were previously committed, but the original RunRecord is missing. "
+            "Original outcome is unknown; collect under a new run id."
+        )
+    return summary
+
+
 def build_failure_summary(
     product_type: ProductType | str,
     *,

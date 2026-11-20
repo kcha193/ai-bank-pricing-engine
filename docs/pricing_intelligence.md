@@ -373,14 +373,64 @@ WAL does **not** remove write contention: SQLite allows one writer at a time. A
 writer that waits longer than the busy timeout fails. That failure is classified
 `database_locked` (SQLite `BUSY`/`LOCKED` only). Corruption, a full disk, a
 read-only file, a missing schema and SQL errors keep their own names
-(`DatabaseError`, `OperationalError`, ...). Either way the transaction rolls back,
-the run exits 1 with a summary that states no observations were committed, and
-nothing retries without bound. Opening a store runs schema checks under a write
-lock, so even opening waits up to the busy timeout.
+(`DatabaseError`, `OperationalError`, ...). The failing transaction rolls back and the run
+exits 1; earlier collection commits can survive a later bookkeeping failure. The failure
+summary checks committed product participation through a bounded read-only connection,
+reports `observations_committed` as true/false/unknown, and preserves known committed counts.
+It never claims that earlier transactions rolled back. Nothing retries without bound.
+Opening a writable store runs schema checks, so even opening waits up to the busy timeout.
 
 Backups (`backup.py`) copy through SQLite's online backup API and then switch
 the copy to `journal_mode=DELETE`, so a backup is one self-contained file with no
 `-wal`/`-shm` sidecars to lose.
+
+### Dashboard provenance under WAL
+
+The main database file's mtime does not identify committed WAL content. WAL/SHM metadata
+also includes uncommitted work and file reuse; a new connection's `PRAGMA data_version` is
+not a database generation counter ([SQLite PRAGMA documentation](https://www.sqlite.org/pragma.html#pragma_data_version)).
+
+`revision.py` installs one `content_revision` row plus INSERT/UPDATE/DELETE triggers on every
+application table after writable store migrations. Each changed row updates a random 128-bit
+token in the same transaction as the data. This covers inserts, unchanged re-observations,
+trust-ledger decisions, health/run records and scenario/notification bookkeeping, including
+writes outside Python wrapper methods. Rolled-back and uncommitted revisions are invisible
+to other connections. A schema's exact trigger definitions must cover every application
+table; a missing/altered trigger or untracked new table makes provenance unknown until a
+writable store installs valid tracking. Existing observation and review rows are not rewritten.
+
+`DashboardServices.db_stamp()` reads the token and schema version in one short read-only
+transaction, verifies tracking, and includes resolved path plus filesystem device/inode.
+It checks file identity before and after reading. No database hashing, WAL parsing,
+checkpoint, persistent global connection or database copy occurs on a stamp read. Lock waits
+are bounded at 100 ms. `ObservationStore.open_reader()` also keeps actual dashboard data
+reads read-only, without migrations, WAL-mode changes or source database creation. An older
+schema that cannot answer a query is unavailable until a writable collector upgrades it.
+SQLite may create/manage WAL/SHM coordination files, as authorised by the owner; application
+data and schema remain read-only ([SQLite read-only WAL](https://www.sqlite.org/wal.html#read_only_databases)).
+
+A checkpoint, WAL reset, same-size reuse, truncation or removal cannot hide a commit because
+SQLite resolves the committed token. Checkpoints without content writes preserve provenance.
+Rollback-journal databases use the same mechanism. Missing, corrupt, busy, incompatible or
+unreadable data returns unknown: cached reads are bypassed and stored results are hidden.
+Legacy timestamp stamps also require an explicit rerun. The scenario page captures provenance
+before calculation and compares it after calculation and on every rerender; intervening commits
+hide the result without automatic recomputation.
+
+Trade-offs: one token update per mutated row and three triggers per application table; reads
+inspect only the singleton and small schema catalogue. The stamp is deliberately store-wide,
+so a commit for either product can invalidate all scenario modes without mixing product data.
+Random-token collision risk is negligible, not mathematical impossibility. This is provenance,
+not protection against an administrator rewriting data/tracking together. It establishes
+freshness at the read instant; it does not freeze the database while a browser displays output.
+
+### Replayed run summaries
+
+For an already committed run ID, the original RunRecord supplies status, bank outcomes and
+available counts. Unrecoverable original report/validation details are JSON null; the retry's
+fetch evidence is nested under `retry_fetch` and cannot replace original evidence. A committed
+run missing its original RunRecord exits 1 with `incomplete_run_record`; collect under a new ID.
+A preview (`collect --no-persist`) disables raw HTML snapshots as well as database persistence.
 
 ### Product isolation
 
