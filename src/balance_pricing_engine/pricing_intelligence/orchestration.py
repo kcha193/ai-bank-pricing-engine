@@ -734,39 +734,41 @@ def record_failed_attempt(
 ) -> tuple[bool, str]:
     """Write a FAILED :class:`~.store.RunRecord` for an attempt that produced no outcome.
 
-    Used after a timeout or a supervised worker failure. Written only when this run_id
-    left no trace at all: if a RunRecord already exists, or the run committed observations
-    before it was stopped, the existing evidence is authoritative and is never overwritten
-    with a guessed classification (the same rule ``run_operational_cycle`` applies to an
-    already-recorded retry). Returns ``(persisted, note)``.
+    A timeout/worker failure is evidence about the operational attempt even if collection
+    already committed. Preserve those counts and their collection link without rewriting
+    observations. Failed banks describe the end-to-end attempt, so health cannot mistake a
+    completed collection phase for successful completion of the whole run. Existing records
+    are never overwritten. Returns ``(persisted, note)``.
     """
     product_type = ProductType(product_type)
-    if store.get_run_record(run_id) is not None:
-        return False, "run record already present for this run_id; left unchanged"
-    if store.has_run_participation(run_id, product_type):
-        return False, (
-            "observations were committed for this run_id before it stopped; "
-            "run record left for the committed evidence, not overwritten"
+    # Reuse the store's reentrant write lock so the check cannot race INSERT OR REPLACE.
+    with store._write_transaction():
+        if store.get_run_record(run_id) is not None:
+            return False, "run record already present for this run_id; left unchanged"
+        committed = store.get_run_write_result(run_id, product_type)
+        store.write_run_record(
+            RunRecord(
+                run_id=run_id,
+                started_at=started_at,
+                completed_at=datetime.now(timezone.utc),
+                status=_STATUS_BY_CODE[EXIT_TOTAL_FAILURE],
+                product_type=product_type,
+                banks_attempted=tuple(banks_attempted),
+                banks_successful=(),
+                banks_failed=tuple(banks_attempted),
+                rates_observed=committed.total if committed is not None else 0,
+                rates_changed=0,
+                validation_failures=0,
+                suspicious_observations=0,
+                market_state=None,
+                error_summary=error_summary,
+                collection_run_id=run_id if committed is not None else None,
+            )
         )
-    store.write_run_record(
-        RunRecord(
-            run_id=run_id,
-            started_at=started_at,
-            completed_at=datetime.now(timezone.utc),
-            status=_STATUS_BY_CODE[EXIT_TOTAL_FAILURE],
-            product_type=product_type,
-            banks_attempted=tuple(banks_attempted),
-            banks_successful=(),
-            banks_failed=tuple(banks_attempted),
-            rates_observed=0,
-            rates_changed=0,
-            validation_failures=0,
-            suspicious_observations=0,
-            market_state=None,
-            error_summary=error_summary,
-        )
-    )
-    return True, "failed run record written"
+    note = "failed run record written"
+    if committed is not None:
+        note += "; committed observation evidence preserved"
+    return True, note
 
 
 def exit_code_for(

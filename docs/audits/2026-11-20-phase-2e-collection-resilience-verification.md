@@ -259,3 +259,55 @@ observation update. The corrected test passes. The complete offline suite is rer
 | Baseline and response-model examples; both launchd plist checks | Passed |
 
 Live collection remains unauthorised and unverified. PR #76 has not been merged.
+
+### Fresh-head review: timeout after collection commit (2026-11-21)
+
+Fresh Codex review of `a1c49bc` raised [P1 comment 4640557591](https://github.com/kcha193/ai-bank-pricing-engine/pull/76#discussion_r4640557591), thread `PRRT_kwDOSMlm-s656cPi`, in `orchestration.record_failed_attempt()`. The existing guard refused to write a timeout attempt once observations had committed, leaving health to read an older successful operational run.
+
+Two deterministic product-specific tests reproduced the missing ledger row. An in-process
+timeout and a real supervised worker killed after a SQLite commit reproduced the summary
+and supervision paths. All four tests failed against `a1c49bc` and pass with the correction.
+
+The helper now records the known operational failure after a collection commit, retaining
+immutable product counts and `collection_run_id`. Requested banks are operationally failed
+(successful membership stays empty), which makes health DEGRADED without changing any observed
+rate, confirmation timestamp, quarantine decision or other product's ledger. Existing records
+remain byte-for-byte equivalent; a reentrant BEGIN IMMEDIATE transaction protects the check
+and insert against replacement races. Both timeout summaries carry committed counts through
+the same bounded read-only evidence probe as database failures.
+
+Independent review also identified the same missing-ledger failure through the generic
+`run_collection()` exception handler: its own exit-1 summary prevented supervisor recovery.
+Two product-specific regressions failed with `run_record_persisted == False` after a real
+reconfirmation commit. The handler now makes a bounded attempt to record the failure and
+reports immutable committed counts, preserving observation rows exactly. The write-lock
+regression uses another real SQLite connection with zero timeout to prove the existence check
+runs under BEGIN IMMEDIATE. No sleeps or filesystem timestamp assumptions are involved.
+
+| Severity / source | Root cause and correction | Regression / status |
+|---|---|---|
+| P1, [comment 4640557591](https://github.com/kcha193/ai-bank-pricing-engine/pull/76#discussion_r4640557591) | Committed collection wrongly suppressed FAILED operational attempt; preserve counts/link and insert transactionally | Both product health tests, in-process timeout and real supervised post-commit timeout; all four fail with the original helper and pass with the fix |
+| P2, independent review | Generic post-commit exception wrote no operational attempt and claimed zero counts; recover through the same helper and bounded evidence probe | Two product-specific reconfirmation tests fail before correction and pass afterwards; exact observation rows preserved |
+
+The original WAL defect was independently reproduced again with the original stamp/freshness
+functions restored in memory: the core WAL test and all three Studio modes fail (4 failed,
+39 deselected). The corrected provenance and timeout code passed 204 focused checks. A fresh
+independent whole-branch reviewer reported no remaining actionable findings after the generic
+handler correction. All checks used temporary local data; no bank site was contacted.
+
+Ruff format checking reports existing drift in the four modified Python files; the same
+check fails on their unchanged `a1c49bc` versions. No broad formatting rewrite was made.
+The two new provenance files still pass format checking. Both CI examples and deployment
+plist checks pass. The prior head's GitHub CI passed. Updated full-suite verification for
+this follow-up is recorded below.
+
+| Follow-up verification | Actual result |
+|---|---|
+| `.venv/bin/python -m pytest -q -m 'not live_rates' --cov --cov-fail-under=95` | 3,409 passed, 2 skipped; 98.03% whole-run coverage; 327.09 s |
+| `.venv/bin/python -m coverage report --precision=2 --include='src/balance_pricing_engine/*'` | Package coverage 97.10%; `revision.py` 100% |
+| `.venv/bin/python -m ruff check .`; `git diff --check` | Both passed |
+| Baseline/response-model examples; both deployment plists | Passed |
+
+No live collection, production deployment, pricing action or merge was performed. Remote
+review/check state is reported against the pushed head on PR #76, rather than assumed from
+these offline results.

@@ -879,3 +879,214 @@ def test_replay_without_original_run_record_is_incomplete_not_successful(
     assert summary["run_record_persisted"] is False
     assert summary["rates_accepted"] is None
     assert _operational_runs(config.database_path) == []
+
+
+@pytest.mark.parametrize("product", [ProductType.HOME_LOAN, ProductType.TERM_DEPOSIT])
+def test_postcommit_timeout_records_failed_attempt_and_degrades_health(
+    dual_market_factory, make_record, product
+):
+    from balance_pricing_engine.pricing_intelligence.health import (
+        OperationalState,
+        RunHealth,
+        assess_system_health,
+        run_health,
+    )
+    from balance_pricing_engine.pricing_intelligence.orchestration import record_failed_attempt
+
+    market = dual_market_factory()
+    when = market.now + timedelta(minutes=1)
+    with PricingIntelligenceService(config=market.config) as service:
+        other = (
+            ProductType.TERM_DEPOSIT if product is ProductType.HOME_LOAN else ProductType.HOME_LOAN
+        )
+        other_before = service.store.get_latest_run_record(other)
+        assert run_health(service.store.get_latest_run_record(product)) is RunHealth.HEALTHY
+        record = make_record(
+            bank="ANZ",
+            product_type=product,
+            rate_category="standard" if product is ProductType.HOME_LOAN else "term_deposit",
+            observed_at=when,
+        )
+        write = service.store.record_observations(
+            [record],
+            run_id="postcommit-timeout",
+            observed_at=when,
+            product_type=product,
+        )
+        before = service.store._connection.execute(
+            "SELECT * FROM observations ORDER BY id"
+        ).fetchall()
+        persisted, note = record_failed_attempt(
+            service.store,
+            run_id="postcommit-timeout",
+            product_type=product,
+            started_at=when,
+            banks_attempted=tuple(market.banks),
+            error_summary="collection_timeout: stopped during scenario calculation",
+        )
+        assert persisted is True, "a committed observation must not suppress the failed attempt"
+        failed = service.store.get_latest_run_record(product)
+        assert failed.run_id == "postcommit-timeout" and failed.status == "FAILED"
+        assert failed.collection_run_id == "postcommit-timeout"
+        assert failed.rates_observed == write.total
+        assert set(failed.banks_failed) == set(market.banks)
+        assert service.store.get_latest_run_record(other) == other_before
+        health = assess_system_health(
+            service, product_type=product, now=when + timedelta(minutes=1)
+        )
+        assert run_health(health.latest_run) is RunHealth.FAILED
+        assert health.confirmed_fresh_bank_count == 0
+        assert all(bank.operational.state is OperationalState.DEGRADED for bank in health.banks)
+        assert (
+            service.store._connection.execute("SELECT * FROM observations ORDER BY id").fetchall()
+            == before
+        )
+        again = record_failed_attempt(
+            service.store,
+            run_id="postcommit-timeout",
+            product_type=product,
+            started_at=when,
+            banks_attempted=(),
+            error_summary="retry must not replace evidence",
+        )
+        assert again[0] is False
+        assert service.store.get_run_record("postcommit-timeout") == failed
+
+
+def test_in_process_timeout_summary_keeps_previously_committed_counts(
+    workflow, tmp_path, make_record
+):
+    path = tmp_path / "market.db"
+    with ObservationStore(path) as store:
+        store.record_observations([make_record()], run_id="late-timeout", observed_at=NOW)
+        code, summary = workflow._timeout_failure(
+            CollectionTimeoutError("scenario", 11, 10),
+            store=store,
+            product_type=ProductType.HOME_LOAN,
+            summary_path=None,
+            run_id="late-timeout",
+            started_at=NOW,
+            banks=("ANZ",),
+        )
+        assert code == 1
+        assert summary["run_record_persisted"] is True
+        assert summary["observations_committed"] is True
+        assert summary["rates_accepted"] == 1 and summary["new_states_stored"] == 1
+        assert store.get_run_record("late-timeout").collection_run_id == "late-timeout"
+
+
+def test_supervisor_timeout_after_real_commit_records_failed_attempt(
+    workflow, tmp_path, make_record, monkeypatch
+):
+    database = tmp_path / "market.db"
+    summary_path = tmp_path / "summary.json"
+    record_json = make_record(observed_at=NOW).model_dump_json()
+
+    def command(argv, *, run_id, soft_deadline_seconds):
+        script = textwrap.dedent(f"""
+            import time
+            from datetime import datetime
+            from balance_pricing_engine.competitor_rates.models import CompetitorRateRecord
+            from balance_pricing_engine.pricing_intelligence.store import ObservationStore
+            with ObservationStore({str(database)!r}) as store:
+                record = CompetitorRateRecord.model_validate_json({record_json!r})
+                store.record_observations([record], run_id={run_id!r},
+                                          observed_at=datetime.fromisoformat({NOW.isoformat()!r}))
+                time.sleep(120)
+        """)
+        return [PYTHON, "-c", script]
+
+    monkeypatch.setattr(workflow, "_worker_command", command)
+    code = workflow.main(
+        [
+            "--database",
+            str(database),
+            "--lock-file",
+            str(tmp_path / "collect.lock"),
+            "--summary-file",
+            str(summary_path),
+            "--quiet",
+            "--run-id",
+            "supervised-postcommit",
+            "--run-timeout-seconds",
+            "5",
+        ]
+    )
+    assert code == 1
+    summary = json.loads(summary_path.read_text())
+    with ObservationStore.open_reader(database) as store:
+        assert len(store.get_current_observations()) == 1
+        failed = store.get_run_record("supervised-postcommit")
+        assert failed is not None and failed.status == "FAILED"
+        assert failed.rates_observed == 1
+        assert failed.collection_run_id == "supervised-postcommit"
+    assert summary["failure_type"] == "collection_timeout"
+    assert summary["run_record_persisted"] is True
+    assert summary["observations_committed"] is True and summary["rates_accepted"] == 1
+
+
+@pytest.mark.parametrize("product", [ProductType.HOME_LOAN, ProductType.TERM_DEPOSIT])
+def test_unexpected_postcommit_failure_keeps_counts_and_records_failed_attempt(
+    workflow, tmp_path, make_record, monkeypatch, product
+):
+    path = tmp_path / "market.db"
+    config = PricingIntelligenceConfig(database_path=str(path), selected_banks=["ANZ"])
+    record = make_record(
+        product_type=product,
+        rate_category="standard" if product is ProductType.HOME_LOAN else "term_deposit",
+        observed_at=NOW,
+    )
+    with ObservationStore(path) as store:
+        store.record_observations([record], run_id="previous", observed_at=NOW)
+    committed_rows = []
+
+    def fail_after_commit(service, **kwargs):
+        service.store.record_observations(
+            [record], run_id=kwargs["run_id"], observed_at=NOW, product_type=product
+        )
+        committed_rows.extend(
+            service.store._connection.execute("SELECT * FROM observations").fetchall()
+        )
+        raise RuntimeError("bookkeeping failed after commit")
+
+    monkeypatch.setattr(workflow, "run_operational_cycle", fail_after_commit)
+    code, summary = workflow.run_collection(
+        config, False, product_type=product, run_id="unexpected-postcommit"
+    )
+    assert code == 1 and summary["failure_type"] == "unexpected_error"
+    assert summary["run_record_persisted"] is True
+    assert summary["observations_committed"] is True
+    assert summary["rates_accepted"] == summary["unchanged_states"] == 1
+    assert summary["new_states_stored"] == 0
+    with ObservationStore.open_reader(path) as store:
+        failed = store.get_run_record("unexpected-postcommit")
+        assert failed is not None and failed.status == "FAILED"
+        assert failed.product_type == product and failed.banks_failed == ("ANZ",)
+        assert failed.rates_observed == 1
+        assert failed.collection_run_id == "unexpected-postcommit"
+        assert store._connection.execute("SELECT * FROM observations").fetchall() == committed_rows
+
+
+def test_failed_attempt_checks_existing_record_under_sqlite_write_lock(tmp_path, monkeypatch):
+    from balance_pricing_engine.pricing_intelligence.orchestration import record_failed_attempt
+
+    path = tmp_path / "market.db"
+    with ObservationStore(path) as store:
+        original_get = store.get_run_record
+
+        def check_locked(run_id):
+            with sqlite3.connect(path, timeout=0) as other:
+                with pytest.raises(sqlite3.OperationalError, match="locked"):
+                    other.execute("BEGIN IMMEDIATE")
+            return original_get(run_id)
+
+        monkeypatch.setattr(store, "get_run_record", check_locked)
+        persisted, _ = record_failed_attempt(
+            store,
+            run_id="exclusive-check",
+            product_type=ProductType.HOME_LOAN,
+            started_at=NOW,
+            banks_attempted=("ANZ",),
+            error_summary="worker_failed",
+        )
+        assert persisted is True

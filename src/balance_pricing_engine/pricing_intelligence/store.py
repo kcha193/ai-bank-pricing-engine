@@ -1618,6 +1618,17 @@ class ObservationStore:
         )
         return WriteResult(run_id=run_id, inserted=inserted, unchanged=unchanged)
 
+    def get_run_write_result(
+        self, run_id: str, product_type: ProductType | str
+    ) -> Optional[WriteResult]:
+        """Immutable committed counts for one product/run, including reconfirmed rows."""
+        row = self._connection.execute(
+            "SELECT inserted_count, unchanged_count FROM collection_run_products "
+            "WHERE run_id = ? AND product_type = ?",
+            (run_id, ProductType(product_type).value),
+        ).fetchone()
+        return WriteResult(run_id, row[0], row[1]) if row is not None else None
+
     def has_run_participation(self, run_id: str, product_type: ProductType | str) -> bool:
         """True when ``run_id`` already has recorded participation for
         ``product_type`` -- i.e. :meth:`record_observations` would

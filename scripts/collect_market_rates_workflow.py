@@ -220,6 +220,17 @@ def _timeout_failure(
         deadline_at_utc=(started_at + timedelta(seconds=error.timeout_seconds)).isoformat(),
         timeout_seconds=error.timeout_seconds,
         elapsed_seconds=round(error.elapsed_seconds, 3),
+        **(
+            _read_run_evidence(store.database_path, run_id, product_type)
+            if store is not None
+            else {
+                "observations_committed": None,
+                "rates_accepted": None,
+                "new_states_stored": None,
+                "unchanged_states": None,
+                "run_record_exists": None,
+            }
+        ),
         stage=error.stage,
     )
     log_event(
@@ -238,23 +249,10 @@ def _timeout_failure(
     return EXIT_TOTAL_FAILURE, summary
 
 
-def _database_failure(
-    error: sqlite3.Error,
-    *,
-    product_type: ProductType,
-    summary_path: Optional[Path],
-    run_id: str,
-    database_path: str,
-) -> tuple[int, dict]:
-    """Classify a database failure without claiming earlier transactions rolled back.
-
-    Collection and later bookkeeping commit independently. Inspect committed participation
-    through a bounded read-only connection; an unreadable database leaves evidence unknown.
-    """
-    error_type = classify_sqlite_error(error) or type(error).__name__
-    failure_type = DATABASE_LOCKED if error_type == DATABASE_LOCKED else "database_error"
+def _read_run_evidence(database_path: str, run_id: str, product_type: ProductType) -> dict:
+    """Committed collection evidence after a failure; never infer a rollback from exit code."""
     committed = None
-    record_present = False
+    record_present = None
     counts = None
     try:
         uri = Path(database_path).resolve().as_uri() + "?mode=ro"
@@ -275,6 +273,32 @@ def _database_failure(
             )
     except (sqlite3.Error, OSError):
         logger.warning("Could not establish committed run evidence after database failure")
+    return {
+        "observations_committed": committed,
+        "rates_accepted": sum(counts) if counts else (0 if committed is False else None),
+        "new_states_stored": counts[0] if counts else (0 if committed is False else None),
+        "unchanged_states": counts[1] if counts else (0 if committed is False else None),
+        "run_record_exists": record_present,
+    }
+
+
+def _database_failure(
+    error: sqlite3.Error,
+    *,
+    product_type: ProductType,
+    summary_path: Optional[Path],
+    run_id: str,
+    database_path: str,
+) -> tuple[int, dict]:
+    """Classify a database failure without claiming earlier transactions rolled back.
+
+    Collection and later bookkeeping commit independently. Inspect committed participation
+    through a bounded read-only connection; an unreadable database leaves evidence unknown.
+    """
+    error_type = classify_sqlite_error(error) or type(error).__name__
+    failure_type = DATABASE_LOCKED if error_type == DATABASE_LOCKED else "database_error"
+    evidence = _read_run_evidence(database_path, run_id, product_type)
+    committed = evidence["observations_committed"]
     note = (
         "database failure; earlier observation commits remain recorded"
         if committed
@@ -287,12 +311,9 @@ def _database_failure(
         error=str(error),
         failure_type=failure_type,
         run_id=run_id,
-        run_record_persisted=record_present,
+        run_record_persisted=evidence["run_record_exists"] is True,
         run_record_note=note,
-        observations_committed=committed,
-        rates_accepted=sum(counts) if counts else (0 if committed is False else None),
-        new_states_stored=counts[0] if counts else (0 if committed is False else None),
-        unchanged_states=counts[1] if counts else (0 if committed is False else None),
+        **evidence,
     )
     log_event(
         logger,
@@ -440,14 +461,34 @@ def run_collection(
         )
     except Exception as exc:  # noqa: BLE001 - classified, logged with traceback, summarised
         logger.exception("market collection failed unexpectedly (run %s)", run_id)
+        persisted, note = False, "run record not attempted"
+        try:
+            with ObservationStore(
+                config.database_path,
+                busy_timeout_seconds=min(
+                    SUPERVISOR_RECORD_BUSY_TIMEOUT_SECONDS, config.sqlite_busy_timeout_seconds
+                ),
+            ) as store:
+                persisted, note = _record_failure_safely(
+                    store,
+                    run_id=run_id,
+                    product_type=product_type,
+                    started_at=started_at,
+                    banks=tuple(config.selected_banks),
+                    error_summary=f"unexpected_error: {exc}",
+                )
+        except (sqlite3.Error, OSError) as record_error:
+            logger.exception("could not record unexpected failure (run %s)", run_id)
+            note = f"run record not written: {type(record_error).__name__}"
         summary = build_failure_summary(
             product_type,
             error_type=type(exc).__name__,
             error=str(exc),
             failure_type="unexpected_error",
             run_id=run_id,
-            run_record_persisted=False,
-            run_record_note="the run stopped before its run record was written",
+            run_record_persisted=persisted,
+            run_record_note=note,
+            **_read_run_evidence(config.database_path, run_id, product_type),
         )
         _write_summary(summary_path, summary)
         return EXIT_TOTAL_FAILURE, summary
@@ -854,6 +895,7 @@ def _supervise(
         timeout_seconds=hard_timeout,
         elapsed_seconds=round(outcome.elapsed_seconds, 3),
         supervisor=supervisor,
+        **_read_run_evidence(config.database_path, run_id, product_type),
     )
     log_event(
         logger,

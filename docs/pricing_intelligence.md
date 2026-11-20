@@ -304,11 +304,20 @@ progressing run.
 2. At the hard deadline the supervisor snapshots the worker's process tree
    (Chromium included, which Playwright starts in its own session), sends SIGTERM,
    then SIGKILL after 10 s, and reaps the worker. No orphan keeps the lock.
-3. A killed worker cannot commit: SQLite rolls back its open transaction, so the
-   store holds either the whole run or none of it.
+3. A killed worker cannot commit its open transaction: SQLite rolls it back. Earlier
+   collection commits survive a timeout during scenario or alert work; the whole operational
+   cycle is not one transaction.
 4. The supervisor then writes the summary file atomically, records a FAILED
    `operational_runs` row when the database allows (with a 10 s busy timeout), and
-   releases the lock. Exit code 1.
+   releases the lock. Exit code 1. A committed collection without an operational record
+   does not suppress this failed attempt: its accepted count and collection link are retained,
+   observation timestamps stay unchanged, and requested banks are marked operationally failed
+   so health cannot report the previous success as the latest attempt. The check/insert is
+   protected by the store's bounded write transaction; an existing RunRecord is never replaced.
+   Timeout summaries retain committed counts and distinguish a record written by this attempt
+   (`run_record_persisted`) from a record that exists (`run_record_exists`).
+   Unexpected Python failures use the same bounded failure-record recovery and committed-count
+   probe, so an exit-1 summary cannot conceal a missing operational attempt after a commit.
 
 This is portable: no GNU `timeout` (macOS ships none), only `ps` and POSIX
 signals. If launchd or cron stops the supervisor itself, SIGTERM is turned into a
