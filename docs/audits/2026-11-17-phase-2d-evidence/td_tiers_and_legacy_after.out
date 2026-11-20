@@ -1,0 +1,13 @@
+(a) exit 0 ASB 12m rows: [(10000.0, 499999.0, 4.0), (500000.0, 5000000.0, 4.25)]
+    snapshot 12m: [('ASB', 4.25, 1), ('BNZ', 4.05, 2), ('Kiwibank', 4.05, 2), ('ANZ', 4.0, 4), ('Westpac', 4.0, 4)] -> ASB represented by its $500k+ tier; leader 4.25
+(b) legacy-path BNZ TD records: [('term_deposit', 6, 3.55, '6 months | 3.55% | Rate'), ('term_deposit', 12, 4.05, '1 year | 4.05% | Rate'), ('term_deposit', 24, 4.2, '2 years | 4.20% | Rate'), ('non_comparable', 12, 12.47, '1 year | 12.47% | 15.28% | Gro'), ('non_comparable', 12, 9.76, '1 year | 9.76% | 15.28% | Bala'), ('non_comparable', 36, 8.12, '3 years (per annum) | 8.12% | ')]
+    legacy TD selection for BNZ 12m: [(4.05, '1 year | 4.05% | Rate')] -> market_average 4.05
+    legacy validate (strict): failed []
+(c) legacy mortgage records used: [('ANZ', 'special', 4.79), ('ASB', 'special', 4.89), ('ANZ', 'special', 4.69)] market_average 4.79 (per-bank average would be 4.815 or best-per-bank 4.79 )
+Traceback (most recent call last):
+  File "<repo>/docs/audits/2026-11-13-evidence/ingest/td_tiers_and_legacy.py", line 42, in <module>
+    print("(b2) legacy non-strict BNZ 36m TD benchmark:", [(x.advertised_rate_pct, x.raw_text_context[:45]) for x in sel36], "->", _resolve_strategy(sel36, "market_average", None))
+                                                                                                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<repo>/src/balance_pricing_engine/competitor_rates/apply.py", line 549, in _resolve_strategy
+    raise CompetitorRateResolutionError("No competitor rates matched the configured strategy")
+balance_pricing_engine.competitor_rates.apply.CompetitorRateResolutionError: No competitor rates matched the configured strategy

@@ -76,16 +76,20 @@ def evaluate_gates(
     model_lineage: dict[str, "ModelLineage"],
     feature_lineage: dict[str, "FeatureLineage"],
     competitor_rate_issues: list["ValidationIssue"] | None = None,
+    competitor_rate_provenance: dict[str, Any] | None = None,
 ) -> list[GateResult]:
     """Evaluate the full governance gate set for a completed scenario.
 
     ``competitor_rate_issues`` is the (possibly empty) staleness/validation
     issue list already computed by the caller when
     ``config.competitor_rates.enabled`` is true; pass ``None`` when disabled.
+    ``competitor_rate_provenance`` is the resolution's evidence (source age,
+    threshold, validation status, contributing banks, reduced assurance); it is
+    recorded on the gate under ``competitor_source`` whatever the gate status.
     """
     gates: list[GateResult] = [
         _config_validity_gate(config),
-        _competitor_rate_gate(config, competitor_rate_issues),
+        _competitor_rate_gate(config, competitor_rate_issues, competitor_rate_provenance),
         *_model_gates(model_lineage),
         *_feature_gates(feature_lineage),
         _boundary_warning_gate(diagnostics),
@@ -116,6 +120,7 @@ def _config_validity_gate(config: "EngineConfig") -> GateResult:
 def _competitor_rate_gate(
     config: "EngineConfig",
     issues: list["ValidationIssue"] | None,
+    provenance: dict[str, Any] | None = None,
 ) -> GateResult:
     competitor_rates = config.competitor_rates
     if competitor_rates is None or not competitor_rates.enabled:
@@ -128,13 +133,14 @@ def _competitor_rate_gate(
     issues = issues or []
     errors = [issue for issue in issues if issue.severity == "error"]
     warnings = [issue for issue in issues if issue.severity == "warning"]
+    source = {"competitor_source": provenance} if provenance is not None else {}
     if errors:
         return GateResult(
             code="COMPETITOR_RATE_FRESHNESS",
             status=GateStatus.BLOCK,
             message=f"Competitor-rate strict validation failed with {len(errors)} error(s).",
             severity="critical",
-            evidence={"errors": [issue.message for issue in errors]},
+            evidence={"errors": [issue.message for issue in errors], **source},
             remediation="Re-fetch competitor rates or disable strict mode with explicit sign-off.",
         )
     if warnings:
@@ -143,7 +149,7 @@ def _competitor_rate_gate(
             status=GateStatus.WARN,
             message=f"Competitor-rate validation raised {len(warnings)} warning(s).",
             severity="warning",
-            evidence={"warnings": [issue.message for issue in warnings]},
+            evidence={"warnings": [issue.message for issue in warnings], **source},
             remediation="Review competitor-rate staleness/movement warnings before sign-off.",
         )
     return GateResult(
@@ -151,6 +157,7 @@ def _competitor_rate_gate(
         status=GateStatus.PASS,
         message="Competitor rates passed freshness and validation checks.",
         severity="info",
+        evidence=source,
     )
 
 

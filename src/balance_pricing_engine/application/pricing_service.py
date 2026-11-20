@@ -39,8 +39,11 @@ from balance_pricing_engine.application.contracts import (
     PricingDecision,
     PricingScenarioRequest,
 )
-from balance_pricing_engine.competitor_rates.apply import apply_competitor_rates_to_config
-from balance_pricing_engine.competitor_rates.models import ValidationIssue
+from balance_pricing_engine.competitor_rates.apply import apply_competitor_rates_with_resolution
+from balance_pricing_engine.competitor_rates.models import (
+    ResolvedCompetitorRates,
+    ValidationIssue,
+)
 from balance_pricing_engine.competitor_rates.store import load_rate_run
 from balance_pricing_engine.competitor_rates.validate import validate_staleness
 from balance_pricing_engine.config import EngineConfig, revalidation_payload
@@ -101,19 +104,26 @@ class PricingService:
     def run_scenario(self, request: PricingScenarioRequest) -> PricingDecision:
         revalidated = EngineConfig.model_validate(revalidation_payload(request.config))
         request = replace(request, config=revalidated)
-        request = replace(request, config=apply_competitor_rates_to_config(request.config))
+        # The resolution travels with the request so its warnings and provenance (source age,
+        # threshold, validation status, contributing banks) reach the governance gate and the
+        # decision record; the overlay itself changes only numeric market fields.
+        applied, competitor_resolution = apply_competitor_rates_with_resolution(request.config)
+        request = replace(request, config=applied)
         materialized_config_path = _materialize_effective_config(
             request.config, request.config_path
         )
         effective_config_path = materialized_config_path or request.config_path
         try:
-            return self._run_scenario(request, effective_config_path)
+            return self._run_scenario(request, effective_config_path, competitor_resolution)
         finally:
             if materialized_config_path is not None:
                 materialized_config_path.unlink(missing_ok=True)
 
     def _run_scenario(
-        self, request: PricingScenarioRequest, effective_config_path: str | Path | None
+        self,
+        request: PricingScenarioRequest,
+        effective_config_path: str | Path | None,
+        competitor_resolution: ResolvedCompetitorRates | None = None,
     ) -> PricingDecision:
         # Provenance of the caller's original file; never the temporary effective overlay.
         source_config_file_sha256 = file_sha256_if_present(request.config_path)
@@ -182,13 +192,16 @@ class PricingService:
                 shadow_evaluations = self._evaluate_shadow(request, diagnostics)
 
         with stage_timer(metrics, "governance_evaluation"):
-            competitor_issues = _competitor_rate_issues(request.config)
+            competitor_issues = _competitor_rate_issues(request.config, competitor_resolution)
             gates = evaluate_gates(
                 config=request.config,
                 diagnostics=diagnostics,
                 model_lineage=model_lineage,
                 feature_lineage=feature_lineage,
                 competitor_rate_issues=competitor_issues,
+                competitor_rate_provenance=(
+                    competitor_resolution.provenance() if competitor_resolution else None
+                ),
             )
             status = decision_status_from_gates(gates)
             blocking = tuple(gate.message for gate in gates if gate.status is GateStatus.BLOCK)
@@ -528,7 +541,15 @@ def _run_sensitivity_safely(config: EngineConfig) -> Any:
         return None
 
 
-def _competitor_rate_issues(config: EngineConfig) -> list[ValidationIssue] | None:
+def _competitor_rate_issues(
+    config: EngineConfig, resolution: ResolvedCompetitorRates | None = None
+) -> list[ValidationIssue] | None:
+    """Source staleness/validation issues, plus warnings raised while resolving.
+
+    ``resolution`` warnings (an uncertain term-deposit special, an untrusted reading
+    excluded) are degraded states that need review, never failures, so they are warnings in
+    strict and non-strict mode alike.
+    """
     competitor_rates = config.competitor_rates
     if competitor_rates is None or not competitor_rates.enabled:
         return None
@@ -553,8 +574,14 @@ def _competitor_rate_issues(config: EngineConfig) -> list[ValidationIssue] | Non
                 message="Competitor-rate source file failed validation.",
             )
         )
-    return validation_issues + validate_staleness(
-        run, competitor_rates.max_staleness_hours, competitor_rates.strict
+    resolution_issues = [
+        ValidationIssue(severity="warning", message=message)
+        for message in (resolution.resolution_warnings if resolution else [])
+    ]
+    return (
+        validation_issues
+        + validate_staleness(run, competitor_rates.max_staleness_hours, competitor_rates.strict)
+        + resolution_issues
     )
 
 

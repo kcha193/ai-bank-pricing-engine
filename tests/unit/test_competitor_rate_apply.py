@@ -198,7 +198,9 @@ def test_term_deposit_frequency_selection_falls_back_to_first_available():
     ]
     config = EngineConfig.model_validate(raw)
 
-    resolved = load_and_resolve_competitor_rates(config.competitor_rates)
+    # One selected bank is below the market-coverage minimum (DATA-003); a deliberately
+    # single-bank view opts out explicitly.
+    resolved = load_and_resolve_competitor_rates(config.competitor_rates, min_banks=1)
 
     assert resolved.term_deposit_records[0].bank == "Kiwibank"
     assert resolved.term_deposit_records[0].interest_payment_frequency == "monthly"
@@ -271,7 +273,9 @@ def test_mortgage_filter_can_exclude_special_rates():
     raw["competitor_rates"]["mortgage"]["require_min_20_percent_equity"] = False
     config = EngineConfig.model_validate(raw)
 
-    resolved = load_and_resolve_competitor_rates(config.competitor_rates)
+    # Only Westpac qualifies, below the market-coverage minimum (DATA-003); this test is
+    # about the special filter, so it opts out of the minimum explicitly.
+    resolved = load_and_resolve_competitor_rates(config.competitor_rates, min_banks=1)
 
     assert [record.bank for record in resolved.mortgage_records] == ["Westpac"]
     assert resolved.mortgage_reference_rate == pytest.approx(0.059)

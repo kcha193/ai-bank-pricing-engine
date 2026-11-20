@@ -494,20 +494,26 @@ class BankPricingCollector(abc.ABC):
         )
         return [self.enrich_term_deposit_record(record) for record in records]
 
+    @classmethod
     def enrich_term_deposit_record(
-        self, record: CompetitorRateRecord
+        cls, record: CompetitorRateRecord
     ) -> CompetitorRateRecord:
         """Fence non-deposit products out of the comparable term-deposit set.
 
         Kept with full provenance under ``non_comparable`` rather than dropped,
         mirroring the mortgage treatment of subsidised and closed products.
+
+        A classmethod because it reads only class-level marker vocabularies: the
+        legacy ``competitor_rates`` path applies the same fence to stored records
+        (including a bank with no collector, via this base class) without
+        constructing a collector.
         """
         lowered = record.raw_text_context.lower()
         excluded = any(
-            marker in lowered for marker in self.excluded_deposit_product_markers
+            marker in lowered for marker in cls.excluded_deposit_product_markers
         ) or any(
             re.search(rf"\b{re.escape(marker)}\b", lowered)
-            for marker in self.excluded_deposit_product_word_markers
+            for marker in cls.excluded_deposit_product_word_markers
         )
         if excluded:
             return record.model_copy(update={"rate_category": "non_comparable"})

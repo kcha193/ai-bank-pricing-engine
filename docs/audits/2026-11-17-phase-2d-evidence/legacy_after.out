@@ -1,0 +1,13 @@
+Competitor rates applied from latest.json (strict=False, age 100.0 h, max 48 h, stale=True) with warnings: Competitor-rate file is stale: 100.0 hours old (max 48)
+== B. strict validation
+ audit run (BNZ TD only, no source attempts): failed ['Missing expected source']
+ complete 5-bank HL+TD fixture run (287 records): valid errors: 0
+== D. mortgage market_average, one representative per bank
+ cheaper extra ANZ row 4.69: rows=[('ANZ', 4.79), ('ASB', 4.89), ('ANZ', 4.69)] row-weighted=4.7900 per-bank=4.7900
+ dearer extra ANZ row 4.99: rows=[('ANZ', 4.79), ('ASB', 4.89), ('ANZ', 4.99)] row-weighted=4.8900 per-bank=4.8400
+== H. non-strict stale legacy source
+ resolution: stale True age_h 100.0 max_h 48 status valid
+ overlay: competitor_loan_rate 0.057 | provenance stale True | warnings ['Competitor-rate file is stale: 100.0 hours old (max 48)']
+== SEC-010. latest.csv neutralisation
+ csv product_name cell: ANZ,home_loan,"'=HYPERLINK(""https://example.invalid"")",special,1 year,12,,5.5,
+ json keeps original: =HYPERLINK("https://example.invalid")

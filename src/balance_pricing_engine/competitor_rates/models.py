@@ -400,3 +400,50 @@ class ResolvedCompetitorRates(BaseModel):
     term_deposit_records: list[CompetitorRateRecord]
     captured_at_utc: datetime
     validation_warnings: list[str] = Field(default_factory=list)
+    # --- Phase 2d provenance (additive; defaults keep older constructions valid) ---------
+    #: The one record per bank each market statistic used (DATA-018).
+    mortgage_bank_representatives: list[CompetitorRateRecord] = Field(default_factory=list)
+    mortgage_banks: list[str] = Field(default_factory=list)
+    term_deposit_banks: list[str] = Field(default_factory=list)
+    #: File name only and a content hash: a decision record never carries a server path.
+    source_file_name: Optional[str] = None
+    source_sha256: Optional[str] = None
+    strict: bool = True
+    evaluated_at_utc: Optional[datetime] = None
+    source_age_hours: Optional[float] = None
+    max_staleness_hours: Optional[int] = None
+    stale: bool = False
+    source_validation_status: Optional[str] = None
+    min_banks: Optional[int] = None
+    #: Warnings raised while resolving (uncertain specials, untrusted records excluded),
+    #: as opposed to the source file's own staleness and validation issues.
+    resolution_warnings: list[str] = Field(default_factory=list)
+    deposit_special_assessments: list[dict] = Field(default_factory=list)
+    #: Trust evidence the legacy JSON source cannot carry (it is never invented).
+    reduced_assurance: list[str] = Field(default_factory=list)
+
+    def provenance(self) -> dict:
+        """JSON-safe evidence for a decision record: what was used, how old it was, and why."""
+        return {
+            "source_file_name": self.source_file_name,
+            "source_sha256": self.source_sha256,
+            "captured_at_utc": self.captured_at_utc.isoformat(),
+            "evaluated_at_utc": (
+                self.evaluated_at_utc.isoformat() if self.evaluated_at_utc else None
+            ),
+            "source_age_hours": self.source_age_hours,
+            "max_staleness_hours": self.max_staleness_hours,
+            "stale": self.stale,
+            "strict": self.strict,
+            "source_validation_status": self.source_validation_status,
+            "mortgage_strategy": self.mortgage_strategy,
+            "term_deposit_strategy": self.term_deposit_strategy,
+            "mortgage_reference_rate": self.mortgage_reference_rate,
+            "term_deposit_reference_rate": self.term_deposit_reference_rate,
+            "mortgage_banks": list(self.mortgage_banks),
+            "term_deposit_banks": list(self.term_deposit_banks),
+            "min_banks": self.min_banks,
+            "resolution_warnings": list(self.resolution_warnings),
+            "deposit_special_assessments": list(self.deposit_special_assessments),
+            "reduced_assurance": list(self.reduced_assurance),
+        }

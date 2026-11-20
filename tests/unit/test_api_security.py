@@ -393,10 +393,12 @@ def test_effective_competitor_temp_config_is_private_and_cleaned(tmp_path, monke
     raw["competitor_rates"]["enabled"] = True
     config = EngineConfig.model_validate(raw)
     monkeypatch.setattr(pricing_service.tempfile, "tempdir", str(tmp_path))
-    monkeypatch.setattr(pricing_service, "apply_competitor_rates_to_config", lambda config: config)
+    monkeypatch.setattr(
+        pricing_service, "apply_competitor_rates_with_resolution", lambda config: (config, None)
+    )
     observed = []
 
-    def finish(self, request, effective_path):
+    def finish(self, request, effective_path, competitor_resolution=None):
         observed.append(effective_path)
         assert effective_path.parent == tmp_path
         assert stat.S_IMODE(effective_path.stat().st_mode) == 0o600
