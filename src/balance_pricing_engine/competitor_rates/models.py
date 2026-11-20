@@ -6,7 +6,19 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal, Optional, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
+
+from balance_pricing_engine.competitor_rates.normalise import (
+    normalise_lvr_condition,
+    normalise_lvr_values,
+)
 
 
 PARSER_VERSION = "competitor-rates-v1"
@@ -41,6 +53,19 @@ ValidationStatus = Literal["unvalidated", "valid", "warning", "failed"]
 #: JSON or a third-party collector ("montly") can't slip past the field's
 #: str type and silently defeat _select_frequency()'s preference matching.
 _CANONICAL_INTEREST_FREQUENCIES = frozenset(get_args(InterestPaymentFrequency))
+
+
+def offers_frequency(interest_payment_frequency: str, frequency: str) -> bool:
+    """Whether an as-observed frequency value explicitly offers ``frequency``.
+
+    A combined value ("at_maturity+monthly") offers each of its options. ``"unknown"`` offers
+    nothing: an unpublished frequency is never evidence of any particular one.
+    """
+    return frequency != "unknown" and frequency in interest_payment_frequency.split("+")
+
+
+#: How a mortgage record's LVR/equity eligibility was established (DATA-013).
+LvrEligibilityBasis = Literal["published", "inferred", "unknown"]
 
 
 def category_agnostic_key(
@@ -198,6 +223,36 @@ class CompetitorRateRecord(BaseModel):
         if len(value) != 64:
             raise ValueError("raw_html_sha256 must be a SHA-256 hex digest")
         return value.lower()
+
+    def lvr_eligibility_basis(self) -> LvrEligibilityBasis:
+        """Where ``max_lvr``/``min_equity`` came from (DATA-013).
+
+        ``published``: the row's own captured text states the LVR or equity condition.
+        ``inferred``: a constraint is set but the row text does not state it -- the collector
+        applied a bank-specific rule (a special-rate label, or an unmarked row the bank uses for
+        its special tier). ``unknown``: no constraint is set.
+
+        Derived from stored fields only, so old observations and older JSON artifacts answer
+        it identically, and no stored or serialised claim can override the evidence.
+        """
+        if self.max_lvr is None and self.min_equity is None:
+            return "unknown"
+        text = self.raw_text_context
+        if normalise_lvr_values(text) != (None, None):
+            return "published"
+        if normalise_lvr_condition(text) == "min_20_percent_equity":
+            return "published"
+        return "inferred"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def eligibility_inferred(self) -> bool:
+        """True when at least one LVR/equity constraint was inferred, not published.
+
+        Not part of :meth:`observation_key` and never stored: a pure function of the record's
+        own evidence (see :meth:`lvr_eligibility_basis`).
+        """
+        return self.lvr_eligibility_basis() == "inferred"
 
     def observation_key(self) -> str:
         """Stable identity for this advertised rate line across collection runs.
@@ -364,6 +419,11 @@ class MortgageStrategyConfig(BaseModel):
     include_specials: bool = True
     require_min_20_percent_equity: bool = False
 
+    @field_validator("bank")
+    @classmethod
+    def canonicalise_bank(cls, value: Optional[str]) -> Optional[str]:
+        return None if value is None else _canonical_bank(value)
+
 
 class TermDepositStrategyConfig(BaseModel):
     strategy: Literal["bank_specific", "market_average", "market_max", "market_median"] = (
@@ -376,6 +436,11 @@ class TermDepositStrategyConfig(BaseModel):
         default_factory=lambda: ["at_maturity", "annually", "quarterly", "monthly"]
     )
 
+    @field_validator("bank")
+    @classmethod
+    def canonicalise_bank(cls, value: Optional[str]) -> Optional[str]:
+        return None if value is None else _canonical_bank(value)
+
 
 class CompetitorRatesConfig(BaseModel):
     enabled: bool = False
@@ -387,6 +452,20 @@ class CompetitorRatesConfig(BaseModel):
     strict: bool = True
     mortgage: MortgageStrategyConfig = Field(default_factory=MortgageStrategyConfig)
     term_deposit: TermDepositStrategyConfig = Field(default_factory=TermDepositStrategyConfig)
+
+    @field_validator("selected_banks")
+    @classmethod
+    def canonicalise_selected_banks(cls, value: list[str]) -> list[str]:
+        from balance_pricing_engine.competitor_rates.bank_identity import canonicalise_bank_list
+
+        return canonicalise_bank_list(value)
+
+
+def _canonical_bank(value: str) -> str:
+    """Canonical tracked-bank name (DATA-014); imported lazily to avoid an import cycle."""
+    from balance_pricing_engine.competitor_rates.bank_identity import canonical_bank
+
+    return canonical_bank(value)
 
 
 class ResolvedCompetitorRates(BaseModel):

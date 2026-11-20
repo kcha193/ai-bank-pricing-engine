@@ -500,7 +500,9 @@ file, so their writes serialise through the busy timeout.
 The Phase 2e readiness thresholds come from saved live renders, and every
 readiness, deadline and lock test runs offline. **LIVE VERIFICATION PENDING**: no
 live collection has been run with Phase 2e code. Phase 2b term-deposit live
-verification is a separate item and is also still pending.
+verification is a separate item and is also still pending. Phase 2f was verified
+offline only: live balance tiers and published payment frequencies have not been
+re-checked against the bank sites (**LIVE VERIFICATION PENDING**).
 
 ### Where history lives
 
@@ -1297,7 +1299,9 @@ median (the same floor the peer plausibility check uses before it trusts a media
 *Eligible* is decided after every existing rule, never before: the snapshot already
 holds one representative per bank and term after staleness, quarantine fallbacks,
 rejected/voided readings, non-comparable and name-excluded products and the Phase 2b
-special-comparability policy; the operator's own bank (`our_bank`) is then removed.
+special-comparability policy, and -- for term deposits -- the reference-depositor
+balance tier and payment frequency (DATA-005, below); the operator's own bank
+(`our_bank`, canonicalised, DATA-014) is then removed.
 Five rates (tiers, payment frequencies, LVR bands) from one bank count as **one**.
 A quarantined reading contributes only through its trusted fallback, never its
 untrusted rate; an approved reading counts like any other. An uncertain or restricted
@@ -1329,6 +1333,49 @@ are 145 h old reads `5 eligible banks (minimum 3): ...; oldest input 145 h old
 (older than 48 h)`, not "newly collected". Coverage is a gate, not an input: an
 overlay that passes is byte-identical to the same explicit rate, so optimiser output
 for identical assumptions does not change.
+
+### Own-bank identity (DATA-014)
+
+`our_bank` and `selected_banks` (in both `PricingIntelligenceConfig` and the legacy
+`CompetitorRatesConfig`, plus the legacy `bank_specific` `bank`) are canonicalised at
+load by `competitor_rates.bank_identity`. The registry is the collector registry:
+each collector declares its canonical `bank` and explicit `bank_aliases` ("ASB Bank",
+"ANZ Bank New Zealand", "Bank of New Zealand", "Westpac New Zealand", "Kiwibank
+Limited", ...). Matching is exact after case-folding and whitespace collapsing -- no
+fuzzy or prefix matching. An unknown or ambiguous name is a Pydantic validation
+error (never silently `None`); two aliases of one institution in `selected_banks`
+are rejected as a duplicate. `our_bank=None` still means "not a tracked bank".
+Every exclusion (`TermMarket.excluding_bank`, coverage counting, competitive
+positioning, each side of a joint overlay) uses the same `same_bank` rule, so
+`our_bank="ASB"` and `"ASB Bank"` give identical external-competitor statistics and
+ASB never counts toward `min_banks` when it is the operator's bank. Descriptive
+all-bank views still show it.
+
+### Mortgage eligibility provenance (DATA-013)
+
+Collectors fill `max_lvr`/`min_equity` from the row's own text when it states an
+LVR or equity condition, and otherwise -- for a special-rate label (ANZ, ASB,
+Kiwibank, Westpac "special", BNZ "classic") or an unmarked row a bank uses for its
+special tier (ASB, BNZ) -- **infer** the 80% LVR / 20% equity condition. The values
+are unchanged; their provenance is now explicit:
+
+| `lvr_eligibility_basis()` | `eligibility_inferred` | Meaning |
+| --- | --- | --- |
+| `published` | `False` | The row text states the LVR or equity condition |
+| `inferred` | `True` | Set by a bank-specific rule; not stated in the row |
+| `unknown` | `False` | No condition set (`max_lvr` is `None`, never 0) |
+
+Both are pure functions of the record's stored fields (`raw_text_context`,
+`max_lvr`, `min_equity`): no schema change, old observations and older JSON
+artifacts answer identically, a serialised claim cannot override the evidence, and
+`observation_key()` is unchanged. A strict-source record that carries `max_lvr`
+without stating it in its text reads `inferred` (conservative). `BankTermRate`
+carries `lvr_basis`/`eligibility_inferred` and an `eligibility_note`
+("80% max LVR — inferred from special-rate category", "80% max LVR — published
+eligibility", "Eligibility not established"); a market-derived rationale names the
+banks whose LVR was inferred, and `BenchmarkCoverage.describe()` lists them. An
+inferred criterion is an inference about an observed rate, never a bank-confirmed
+fact.
 
 **Manual assumptions still work exactly as before.** Under `MANUAL` the config
 object is returned unchanged -- not copied, not revalidated -- so every existing
@@ -1512,6 +1559,73 @@ Known limitations:
   is alerted, but it does not trigger a term-deposit scenario.
 - Footnote text outside the table is not read.
 - The Playwright collection path is not covered by unit tests.
+
+### Reference depositor: balance tier and payment frequency (DATA-005)
+
+A bank's page can quote several rates for one term (balance tiers, monthly versus
+at-maturity interest). Before Phase 2f the snapshot took each bank's highest rate
+across all of them, so a $500k+ tier could set the market leader for a $10,000
+depositor. The default term-deposit view now describes one explicit reference
+depositor, `pricing_intelligence.deposit_reference`:
+
+```yaml
+pricing_intelligence:
+  deposit_reference:
+    balance_amount: 10000            # strictly positive, finite
+    interest_payment_frequency: at_maturity   # at_maturity | monthly | quarterly | annually
+    fallback_frequencies: []         # explicitly approved substitutes, in order
+    admit_unstated_balance: true     # admit (and disclose) rates with no published tier
+    admit_unstated_frequency: true   # admit (and disclose) rates with no published frequency
+```
+
+The default ($10,000, at maturity) is a policy proposal: the ordinary retail tier
+and the first peer-plausibility balance edge. Changing it changes the effective
+configuration hash, so decision records identify which policy they used; an old
+decision is never relabelled.
+
+Rules (`pricing_intelligence/deposit_reference.py`, applied inside
+`build_market_snapshot` for every term-deposit view the service builds -- live,
+previous-run, `as_of_run_id`, history series, stale exclusions and health):
+
+- **Balance.** `min <= balance_amount` when a minimum is published and
+  `balance_amount <= max` when a maximum is published, both inclusive. A missing
+  bound is not zero. A record with no published bound is the bank's general
+  advertised rate as far as the page shows: admitted while `admit_unstated_balance`
+  is true, and always labelled "Eligibility not established: balance tier not
+  published".
+- **Payment frequency.** A record offering the preferred frequency, alone or as one
+  option of a combined value (`at_maturity+monthly`), is `published`. A known
+  incompatible frequency (monthly-only) is excluded unless listed in
+  `fallback_frequencies`, and then labelled `fallback`. `unknown` is never treated
+  as at maturity: admitted while `admit_unstated_frequency` is true and labelled
+  "payment frequency not published". No annual-equivalent rate is computed.
+- **One representative per bank.** Frequency match first (preferred, fallbacks in
+  order, unstated), then the most competitive rate among balance-eligible records,
+  then the view's own category, then product name and observation identity -- never
+  HTML row order. Highest-is-best for deposits is unchanged.
+- **Specials.** A Phase 2b `comparable` special must still satisfy the reference
+  tier and frequency; a $500k+ special never represents a $10,000 depositor. Its
+  `rate_category` stays `special`.
+- **Nothing is deleted.** Excluded records are listed in
+  `MarketSnapshot.reference_exclusions` with a reason (`balance_below_minimum`,
+  `balance_above_maximum`, `balance_not_stated`, `frequency_incompatible`,
+  `frequency_not_stated`). `get_market_snapshot(all_tiers=True)` (or
+  `rate_category=None`) returns the descriptive all-tier view with
+  `deposit_reference=None`, which is never the default pricing benchmark.
+
+Each `BankTermRate` carries the representative's frequency, balance bounds,
+`balance_basis`/`frequency_basis` and an `eligibility_note`; Market Explorer shows
+it in an Eligibility column, the strategy rationale names banks whose eligibility is
+not established, and `BenchmarkCoverage.describe()` lists them. On the 2026-10-30
+captures ANZ and BNZ publish neither tier nor frequency and ASB no frequency, so at
+the default they are admitted with "Eligibility not established"; setting both
+`admit_unstated_*` flags to false would leave two eligible banks at 12 months and
+refuse every market-derived deposit strategy under `min_banks=3`.
+
+Audit reproduction (`docs/audits/2026-11-21-phase-2f-evidence/`): with the audit's
+tiered ASB page, 12 months moves from `ASB 4.25` leading to BNZ/Kiwibank 4.05
+leading with ASB at 4.00 for $10,000; at $500,000 ASB's 4.25 tier is eligible and
+leads on the computed ranking.
 
 ### Feeding deposits into the optimiser
 

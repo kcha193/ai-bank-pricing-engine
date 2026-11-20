@@ -15,6 +15,11 @@ class KiwibankCollector(BankPricingCollector):
     """
 
     bank: ClassVar[str] = "Kiwibank"
+    #: Explicit alternative names accepted in configuration (see ``bank_identity``).
+    bank_aliases: ClassVar[tuple[str, ...]] = (
+        "Kiwibank Limited",
+        "Kiwi Bank",
+    )
     home_loan_url: ClassVar[str] = (
         "https://www.kiwibank.co.nz/personal-banking/home-loans/rates-and-fees/"
     )

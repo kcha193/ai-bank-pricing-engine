@@ -82,6 +82,9 @@ class BenchmarkCoverage:
     status: CoverageStatus
     #: The operator's own bank had a rate here and was removed from the benchmark.
     own_bank_excluded: bool = False
+    #: Contributing banks whose representative rests on inferred (home-loan LVR) or
+    #: unestablished (term-deposit reference tier/frequency) eligibility. Disclosure only.
+    eligibility_caveat_banks: tuple[str, ...] = ()
 
     @property
     def eligible_bank_count(self) -> int:
@@ -117,6 +120,11 @@ class BenchmarkCoverage:
             text += f" (older than {self.aged_input_hours:.0f} h)"
         if self.own_bank_excluded:
             text += "; own bank excluded"
+        if self.eligibility_caveat_banks:
+            text += (
+                "; eligibility inferred or not established for "
+                + ", ".join(self.eligibility_caveat_banks)
+            )
         return text
 
 
@@ -140,7 +148,8 @@ def assess_benchmark_coverage(
     evaluated_at = now or snapshot.evaluated_at or snapshot.as_of
     market = snapshot.term(term_months)
     entries = market.entries if market is not None else ()
-    remaining = market.excluding_bank(our_bank).entries if market is not None else ()
+    remaining_market = market.excluding_bank(our_bank) if market is not None else None
+    remaining = remaining_market.entries if remaining_market is not None else ()
     banks = tuple(sorted({entry.bank for entry in remaining}))
     observed = [entry.observed_at for entry in remaining]
     oldest = min(observed, default=None)
@@ -164,4 +173,7 @@ def assess_benchmark_coverage(
         aged_input_hours=aged_input_hours,
         status=status,
         own_bank_excluded=len(remaining) < len(entries),
+        eligibility_caveat_banks=(
+            remaining_market.eligibility_caveat_banks if remaining_market is not None else ()
+        ),
     )

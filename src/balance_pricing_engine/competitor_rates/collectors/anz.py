@@ -15,6 +15,13 @@ class ANZCollector(BankPricingCollector):
     """
 
     bank: ClassVar[str] = "ANZ"
+    #: Explicit alternative names accepted in configuration (see ``bank_identity``).
+    bank_aliases: ClassVar[tuple[str, ...]] = (
+        "ANZ Bank",
+        "ANZ Bank New Zealand",
+        "ANZ Bank New Zealand Limited",
+        "ANZ New Zealand",
+    )
     home_loan_url: ClassVar[str] = "https://www.anz.co.nz/rates-fees-agreements/home-loans/"
     term_deposit_url: ClassVar[str] = "https://www.anz.co.nz/rates-fees-agreements/term-deposits/"
     #: Verified live 2026-08-25: 15 rates, specials 4.79/4.99/5.45/5.49/5.59 at 6/12/18/24/36m.

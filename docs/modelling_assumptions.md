@@ -368,6 +368,23 @@ Special-rate snapshots are a tier-specific, term-specific universe. On the audit
 date, BNZ advertised a Standard column, so the default 12-month special benchmark
 contained ANZ, ASB, Kiwibank and Westpac: median 4.99%, minimum 4.95%, mean 4.98%.
 Full promotional eligibility cannot be inferred from the normalised fields alone.
+
+### Benchmark comparability assumptions (Phase 2f, 2026-11-21)
+
+- **Reference depositor (DATA-005).** The default term-deposit benchmark describes a
+  $10,000 deposit with interest at maturity (`pricing_intelligence.deposit_reference`).
+  Only balance tiers and payment frequencies that depositor can get are candidates; a rate
+  with no published tier or frequency is admitted but labelled "eligibility not
+  established". No annual-equivalent conversion is made between payment frequencies.
+- **Inferred LVR (DATA-013).** An 80% LVR / 20% equity condition inferred from a
+  special-rate label is kept (values unchanged) and flagged `eligibility_inferred`; it is
+  a modelling assumption about the observed rate, not a bank-published fact.
+- **Own bank (DATA-014).** `our_bank` is canonicalised against the collector registry's
+  canonical names and declared aliases; unknown names fail configuration.
+
+These change which observations qualify for a benchmark, never the pricing equations. A
+different benchmark rate legitimately changes a market-derived scenario's output; for an
+identical resolved competitor assumption the optimiser output is unchanged.
 Repeated suspicious values are not corroboration, and stale trusted fallback
 rates retain their original age. Dashboard freshness describes the selected trusted rate,
 not a bank's oldest observation at another term. System Health remains bank-wide: its age

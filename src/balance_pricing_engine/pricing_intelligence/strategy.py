@@ -208,6 +208,7 @@ def resolve_competitor_rate(
 
     base_pct, rationale = _resolve_market_rate(strategy, term_market)
     rationale += _promotional_note(term_market)
+    rationale += _eligibility_note(term_market)
     rate_pct = base_pct + bps_to_percent(offset_bps)
     if rate_pct <= 0:
         raise MarketStrategyError(
@@ -249,6 +250,28 @@ def _promotional_note(term_market: TermMarket) -> str:
     if not banks:
         return ""
     return f"; includes comparable promotional special rate(s): {', '.join(banks)}"
+
+
+def _eligibility_note(term_market: TermMarket) -> str:
+    """Name the banks whose representative rests on inferred or unestablished eligibility.
+
+    Home loans: an LVR condition inferred from a special-rate label rather than published
+    (DATA-013). Term deposits: a representative admitted without a published balance tier or
+    payment frequency for the reference depositor (DATA-005). Neither is a bank-confirmed fact.
+    """
+    inferred = term_market.inferred_eligibility_banks
+    if inferred:
+        return (
+            "; LVR eligibility inferred from special-rate category, not published: "
+            + ", ".join(inferred)
+        )
+    unestablished = term_market.unestablished_reference_banks
+    if unestablished:
+        return (
+            "; reference-depositor eligibility not established (balance tier or payment "
+            "frequency not published): " + ", ".join(unestablished)
+        )
+    return ""
 
 
 def _resolve_market_rate(
