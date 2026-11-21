@@ -292,10 +292,11 @@ within disjoint segments and scores uptake on the original prospect features.
 The raw amount still assigns an individual balance tier. Gross bookings
 can include new money, retained maturities, internal transfers and existing
 balances. Only eligible new money and explicit avoided runoff can add
-usable funding relative to the opening-book reference.
+usable funding. The opening book funds assets outside the new-business
+horizon. It is disclosed but never offset against new loans.
 
-Joint and segmented simulation pricing use the active usable funding base
-once for wholesale cost, surplus income and shortfall steering. Offered
+Joint and segmented simulation pricing use the recognised incremental
+funding once for wholesale cost, surplus income and shortfall steering. Offered
 interest, displaced source interest, acquisition costs and any concentration
 penalty are reported separately. The Phase 4a canonical configuration and
 prospect-based economics still operate in the governed pricing path.

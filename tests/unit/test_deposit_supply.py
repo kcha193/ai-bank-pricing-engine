@@ -275,7 +275,8 @@ def test_financial_flow_and_funding_reconcile_by_hand():
     assert evidence.counterfactual_runoff == 100
     assert evidence.actual_runoff == 50
     assert evidence.active_funding == 500
-    assert evidence.usable_funding == 485
+    # Only the recognised increment funds new loans: 50 x 0.8 external + 50 avoided x 0.9.
+    assert evidence.usable_funding == 85
     assert evidence.gross_interest_cost == pytest.approx(12.6)
     assert evidence.counterfactual_source_interest_cost == pytest.approx(2.5)
     assert evidence.incremental_interest_cost == pytest.approx(10.1)
@@ -284,12 +285,18 @@ def test_financial_flow_and_funding_reconcile_by_hand():
     assert evidence.acquisition_cost == pytest.approx(2.5)
     assert evidence.unsupported_funding == 15
 
-    assert expected_wholesale_funding_cost(600, evidence.usable_funding, 0.05) == 5.75
+    position = supply.portfolio(
+        offer.gross, offer.incremental, offer.interest_cost, offer.acquisition_cost
+    )
+    assert position.usable_funding == 85
+    # The objective carries incremental interest only; the opening book's 12.2 stays out.
+    assert position.deposit_cost == pytest.approx(10.1)
+    assert expected_wholesale_funding_cost(600, evidence.usable_funding, 0.05) == 25.75
     funding = calculate_funding_result(600, evidence.usable_funding, 0.9, 0.02)
-    assert funding.funding_shortfall == 55
-    assert funding.funding_penalty == pytest.approx(1.1)
+    assert funding.funding_shortfall == 455
+    assert funding.funding_penalty == pytest.approx(9.1)
     assert calculate_funding_result(600, evidence.usable_funding, 0, 0.02).funding_penalty == 0
-    assert expected_excess_deposit_income(400, evidence.usable_funding, 0.04) == pytest.approx(3.4)
+    assert expected_excess_deposit_income(50, evidence.usable_funding, 0.04) == pytest.approx(1.4)
 
 
 def test_retention_without_runoff_evidence_cannot_add_funding():
@@ -302,7 +309,7 @@ def test_retention_without_runoff_evidence_cannot_add_funding():
     assert estimate.gross_bookings == 100_000
     assert estimate.net_incremental_funding == 0
     assert estimate.eligible_incremental_funding == 0
-    assert estimate.usable_funding == 100_000
+    assert estimate.usable_funding == 0
     assert estimate.unsupported_funding == 100_000
     assert estimate.active_interest_cost == 5_000
 
@@ -427,7 +434,7 @@ def test_maturity_mismatch_disclosed_for_term_shorter_than_horizon():
     assert supply.estimate([supply.offer(rows, np.ones(1), 0.04)]).maturity_mismatch
 
 
-def test_multi_tier_full_conversion_stays_within_pool_and_active_interest_is_nonnegative():
+def test_multi_tier_full_conversion_stays_within_pool_and_migration_adds_no_funding():
     rng = np.random.default_rng(122)
     # This fixed sample exposes a one-ULP excess when ten tier sums are rounded.
     rows = sample(*rng.uniform(1, 1e6, (5, 5000))[-1])
@@ -441,7 +448,7 @@ def test_multi_tier_full_conversion_stays_within_pool_and_active_interest_is_non
     estimate = supply.estimate(offers)
     assert estimate.gross_bookings == estimate.eligible_opportunity == 200_000_000
     assert estimate.active_interest_cost == 0
-    assert estimate.usable_funding == 200_000_000
+    assert estimate.usable_funding == 0
     position = supply.portfolio(
         np.array([200_000_000.00000003, 190_000_000]),
         np.zeros(2),
@@ -449,7 +456,9 @@ def test_multi_tier_full_conversion_stays_within_pool_and_active_interest_is_non
         np.zeros(2),
     )
     np.testing.assert_array_equal(position.gross, [200_000_000, 190_000_000])
-    np.testing.assert_array_equal(position.deposit_cost, [0, 500_000])
+    # Repricing displaced 5% balances at 0% is a signed incremental saving.
+    np.testing.assert_array_equal(position.deposit_cost, [-10_000_000.000000002, -9_500_000])
+    np.testing.assert_array_equal(position.usable_funding, [0, 0])
 
 
 def test_ineligible_external_inflow_has_expense_and_no_usable_funding_credit():
@@ -463,8 +472,30 @@ def test_ineligible_external_inflow_has_expense_and_no_usable_funding_credit():
     evidence = supply.estimate([supply.offer(rows, np.ones(1), 0.05)])
     assert evidence.net_incremental_funding == 100
     assert evidence.active_funding == 300
-    assert evidence.usable_funding == 200
+    assert evidence.usable_funding == 0
     assert evidence.unsupported_funding == 100
     assert evidence.reference_interest_cost == 6
     assert evidence.active_interest_cost == 11
     assert evidence.acquisition_cost == 1
+
+
+def test_opening_book_does_not_fund_new_lending():
+    """Review fix: the opening book funds assets outside the new-business horizon."""
+    rows = sample(100)
+    inputs = profile(
+        segment(opportunity_nzd=100),
+        opening_funding_nzd=300,
+        opening_unallocated_interest_rate=0.03,
+    )
+    supply = DepositSupply(inputs, rows)
+    nothing = supply.portfolio(0.0, 0.0, 0.0, 0.0)
+    assert nothing.usable_funding == 0
+    assert nothing.deposit_cost == 0
+    evidence = supply.estimate([supply.offer(rows, np.full(1, 0.4), 0.05)])
+    # The opening position stays disclosed but never reaches the loan-side funding terms.
+    assert evidence.reference_funding == 300
+    assert evidence.active_funding == 340
+    assert evidence.usable_funding == 40
+    assert evidence.reference_interest_cost == pytest.approx(9)
+    assert evidence.active_interest_cost == pytest.approx(11)
+    assert evidence.incremental_interest_cost == pytest.approx(2)

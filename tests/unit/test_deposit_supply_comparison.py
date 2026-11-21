@@ -100,14 +100,21 @@ def test_legacy_capacity_expands_with_count_and_supply_does_not(report):
 def test_funding_value_and_management_penalty_reconcile_separately(report):
     row = report["scenarios"]["concentration_cap"]["fixed_offer"]
     market = report["matched_inputs"]["market"]
-    extra_usable = row["usable_funding"] - row["reference_funding"]
+    # Funding value is measured against no incremental funding; the opening book is excluded.
+    extra_usable = row["usable_funding"]
     assert row["usable_funding"] < row["active_funding"] < row["expected_loan_volume"]
     assert row["economic_funding_value"] == pytest.approx(
         extra_usable * (market["cash_rate"] + market["wholesale_funding_spread"])
     )
     control = report["scenarios"]["fixed_market_base"]["fixed_offer"]
-    assert row["shortfall_penalty_avoided"] == pytest.approx(
-        control["shortfall_penalty_avoided"]
-    )
+    policy = report["matched_inputs"]["balance_sheet"]
+    for case in (row, control):
+        # Both stay below the requirement, so each recognised NZD relieves the penalty once.
+        required = case["expected_loan_volume"] * policy["required_deposit_funding_ratio"]
+        assert case["usable_funding"] < required
+        assert case["shortfall_penalty_avoided"] == pytest.approx(
+            case["usable_funding"] * policy["funding_shortfall_penalty_rate"]
+        )
+    assert row["shortfall_penalty_avoided"] < control["shortfall_penalty_avoided"]
     assert row["gross_interest_cost"] == control["gross_interest_cost"]
     assert row["concentration_comparison"]["objective_delta"] < 0

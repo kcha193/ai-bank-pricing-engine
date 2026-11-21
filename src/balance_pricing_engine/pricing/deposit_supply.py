@@ -446,13 +446,20 @@ class DepositSupply:
         interest_cost: FloatOrArray,
         acquisition_cost: FloatOrArray,
     ) -> DepositPortfolio:
-        """Apply the opening reference and any cap once, after all tiers have been pooled."""
+        """Apply any cap once, after all tiers have been pooled.
+
+        The loan side is one horizon of new business with no opening asset book,
+        so the opening deposit position and its interest are not offset against
+        it. Only recognised incremental funding reaches the wholesale, surplus and
+        shortfall terms, and only incremental interest reaches the objective. The
+        signed incremental interest can be negative when an offer reprices
+        displaced source balances downward.
+        """
         # Summing separately rounded tier candidates can produce a one-ULP overrun.
         gross = np.minimum(gross, self.eligible_opportunity)
         incremental = np.minimum(incremental, self._eligible_incremental_opportunity)
-        active_interest = non_negative_part(self._reference_interest + interest_cost)
-        if not np.all(np.isfinite(active_interest)):
-            raise ValueError("Active deposit interest expense must be finite.")
+        if not np.all(np.isfinite(interest_cost)):
+            raise ValueError("Incremental deposit interest expense must be finite.")
         policy = self._profile.concentration
         excess = non_negative_part(incremental - policy.limit_nzd) if policy else 0.0
         hard_limit = policy is not None and policy.mode == ConcentrationMode.HARD_LIMIT
@@ -461,8 +468,8 @@ class DepositSupply:
         penalty = excess * policy.penalty_rate if policy else 0.0
         return DepositPortfolio(
             gross=gross,
-            usable_funding=self._reference_funding + recognised,
-            deposit_cost=active_interest,
+            usable_funding=recognised,
+            deposit_cost=interest_cost,
             acquisition_cost=acquisition_cost,
             concentration_penalty=penalty,
             concentration_excess=excess,
@@ -517,7 +524,8 @@ class DepositSupply:
             ),
             incremental_interest_cost=interest,
             reference_interest_cost=self._reference_interest,
-            active_interest_cost=float(portfolio.deposit_cost),
+            # Bank-level disclosure: the opening book's interest plus the offer's change.
+            active_interest_cost=float(non_negative_part(self._reference_interest + interest)),
             acquisition_cost=acquisition,
             unsupported_funding=_finite_sum([flow.unsupported_funding for flow in flows]),
             concentration_excess=float(portfolio.concentration_excess),

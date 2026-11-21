@@ -99,7 +99,7 @@ class ConcentrationComparison:
 
 @dataclass(frozen=True)
 class FundingValue:
-    """Annual effects against the no-bookings reference at the selected loan volume."""
+    """Annual effects against no incremental deposit funding at the selected loan volume."""
 
     wholesale_cost_avoided: float
     additional_surplus_income: float
@@ -220,7 +220,8 @@ def _funding_value(
     result = diagnostics.best_result
     market = MarketState(**config.market.model_dump())
     loans = result.expected_loan_volume
-    reference = estimate.reference_funding
+    # The opening book funds assets outside the horizon, so the reference is zero.
+    reference = 0.0
     policy = config.balance_sheet
     reference_penalty = calculate_funding_result(
         loans,

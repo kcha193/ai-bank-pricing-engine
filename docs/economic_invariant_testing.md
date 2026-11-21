@@ -96,8 +96,9 @@ population, metric definitions and approval requirements.
 The deposit supply tests reconcile eligible segment capacity, raw balance
 tiers, sample opportunity weights and expected bookings. They cover zero
 and full conversion, replicated samples, independent draws and invalid
-market profiles. Hand-calculated cases check opening funds, retention
-counterfactuals, internal migration, incremental costs, concentration
+market profiles. Hand-calculated cases check that opening funds stay out
+of new-loan funding (a change in the opening balance cannot move the
+selected offer), retention counterfactuals, internal migration, incremental costs, concentration
 controls and portfolio funding. Joint and catch-all tier pricing share
 the same objective, and small multi-tier grids are checked against
 independent enumeration. Audit comparisons hold the loan population and

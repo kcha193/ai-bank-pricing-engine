@@ -42,35 +42,47 @@ The legacy model has no explicit incremental-funding attribution.
 | Scenario | Mortgage / deposit | Eligible opportunity | Gross bookings | Net incremental | Usable funding | Objective | Model ROE |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Legacy, 5,000 | 6.19% / 4.05% | 556.487 | 328.903 | — | 328.903 | 5.921 | 45.17% |
-| Fixed opportunity | 6.14% / 3.60% | 540.000 | 142.962 | 123.554 | 366.912 | 9.572 | 59.76% |
-| Low market opportunity | 6.19% / 3.70% | 324.000 | 98.809 | 75.991 | 324.056 | 8.986 | 62.34% |
-| High market opportunity | 6.09% / 3.60% | 756.000 | 201.880 | 182.471 | 419.938 | 10.048 | 56.81% |
-| Low reachable share | 6.19% / 3.70% | 338.400 | 103.427 | 80.609 | 328.212 | 9.041 | 62.65% |
-| High reachable share | 6.14% / 3.50% | 655.200 | 146.336 | 130.049 | 372.804 | 9.823 | 61.01% |
-| Low conversion | 6.19% / 3.60% | 540.000 | 101.374 | 81.965 | 329.482 | 9.196 | 63.52% |
-| High conversion | 6.14% / 3.55% | 540.000 | 150.253 | 132.444 | 374.938 | 9.729 | 60.54% |
-| High renewal | 6.14% / 3.60% | 540.000 | 149.894 | 127.366 | 370.153 | 9.584 | 59.82% |
-| High cannibalisation | 6.19% / 3.50% | 540.000 | 119.969 | 82.050 | 329.605 | 9.153 | 63.28% |
-| Hard concentration cap | 6.19% / 3.40% | 540.000 | 99.445 | 85.944 | 333.151 | 9.474 | 65.08% |
-| Supply stress and 85% funding target | 6.34% / 3.45% | 324.000 | 64.305 | 49.454 | 300.290 | 7.849 | 75.47% |
+| Fixed opportunity | 6.34% / 3.85% | 540.000 | 208.456 | 180.156 | 161.724 | 2.903 | 35.47% |
+| Low market opportunity | 6.34% / 3.70% | 324.000 | 98.809 | 75.991 | 68.056 | 2.024 | 28.37% |
+| High market opportunity | 6.34% / 3.80% | 756.000 | 275.015 | 248.576 | 223.328 | 3.781 | 42.58% |
+| Low reachable share | 6.34% / 3.75% | 338.400 | 111.540 | 86.932 | 77.876 | 2.081 | 28.83% |
+| High reachable share | 6.34% / 3.85% | 655.200 | 254.274 | 225.974 | 202.960 | 3.384 | 39.36% |
+| Low conversion | 6.34% / 3.75% | 540.000 | 128.531 | 103.923 | 93.168 | 2.276 | 30.41% |
+| High conversion | 6.34% / 3.85% | 540.000 | 238.777 | 210.477 | 189.012 | 3.221 | 38.05% |
+| High renewal | 6.34% / 3.80% | 540.000 | 204.196 | 173.507 | 155.507 | 2.895 | 35.41% |
+| High cannibalisation | 6.34% / 3.60% | 540.000 | 142.963 | 97.777 | 87.714 | 2.208 | 29.85% |
+| Hard concentration cap | 6.34% / 3.50% | 540.000 | 119.968 | 103.681 | 93.073 | 2.667 | 33.57% |
+| Supply stress and 85% funding target | 6.69% / 3.70% | 324.000 | 98.809 | 75.991 | 68.056 | 1.199 | 36.85% |
+
+Usable funding in the supply rows is recognised incremental funding only.
+The NZ$300m illustrative opening book and its interest are disclosed in
+the JSON (`reference_funding`, `active_funding`, `active_interest_cost`) but
+never offset against new loans. Every selected mortgage is inside the
+common grid and no run reports a boundary warning. The legacy model counts
+every booked deposit as usable funding. The supply simulation recognises
+less funding and selects higher mortgage rates. The objective difference
+against legacy therefore reflects the funding basis. It is not evidence
+that either model is better calibrated.
 
 At the fixed 6.19% / 4.05% offer, the base profile has NZ$263.309m of gross
-bookings, NZ$227.563m of incremental principal and NZ$460.280m of usable
-funding. The objective is NZ$7.426m and model ROE is 53.60%. At the same
-offer, shifting NZ$140m of addressable external opportunity to internal
-migration leaves gross bookings near NZ$263.3m and reduces
-net incremental principal to NZ$180.087m. The high-renewal case holds the
-runoff counterfactual fixed and changes conversion. Supply stress raises
-the fixed-offer shortfall from zero to NZ$70.877m under the lower-opportunity
-profile. The [machine-readable comparison](phase_4c_evidence/comparison.json)
+bookings, NZ$227.563m of incremental principal and NZ$204.280m of usable
+funding. The objective is NZ$2.576m and model ROE is 26.43%. At the same
+offer, the high-cannibalisation profile shifts NZ$140m of addressable
+external opportunity to internal migration. Gross bookings stay near
+NZ$263.3m and net incremental principal falls to NZ$180.087m. The
+high-renewal case holds the runoff counterfactual fixed and changes
+conversion. At the fixed offer, the supply stress raises the funding
+shortfall from NZ$127.215m to NZ$326.877m, and the objective falls to
+−NZ$0.182m. The stress profile has lower opportunity and an 85% funding
+target. The [machine-readable comparison](phase_4c_evidence/comparison.json)
 records every fixed and reoptimised scenario, including deposit expense,
 wholesale cost, shortfall, funding value, original bands and gate outcomes.
 
 The hard threshold is NZ$100m of newly recognised funding. It excludes
 NZ$104.280m of eligible funding at the fixed legacy offer and lowers that
-offer's objective by NZ$3.858m. Reoptimisation changes the offers from
-6.14% / 3.60% to 6.19% / 3.40%. The new pair raises less incremental
-funding and falls below the cap. Its objective is NZ$97,914 lower
+offer's objective by NZ$5.735m. Reoptimisation changes the offers from
+6.34% / 3.85% to 6.34% / 3.50%. The new pair raises less incremental
+funding and falls below the cap. Its objective is NZ$235,713 lower
 than the uncapped winner. A constraint can change the selected portfolio
 even when its final winner has no excess volume.
 
@@ -87,7 +99,7 @@ seed. The legacy opportunity is the sum of generated balances.
 
 The fixed profile has NZ$800m of addressable annual flow and NZ$540m of
 eligible opportunity at every sample count. The three seeded supply runs
-all select 6.14% / 3.60%. The legacy sample sweep selects 6.34%, 6.19% and
+all select 6.34% / 3.85%. The legacy sample sweep selects 6.34%, 6.19% and
 5.79% mortgages as capacity grows with the number of generated prospects.
 The eight-draw comparison measures the spread in numerical estimates
 at matched offers. It supplies no empirical confidence interval and does
@@ -99,7 +111,7 @@ Reconcile the disjoint booked flows before testing funding. External inflows
 and evidenced avoided maturity runoff can contribute incremental funding.
 Internal migrations and bookings of existing funding change attribution
 and may change expense. Their principal cannot create new consolidated
-liquidity. Compare active usable funding against the loan portfolio once
+liquidity. Compare recognised incremental funding against the new loans once
 for wholesale cost, surplus income and the shortfall penalty. Check a
 binding concentration scenario for its impact on recognised funds and
 the objective, and disclose the constrained volume.
@@ -144,9 +156,63 @@ the grid, top results, sensitivity, counterfactuals, cohort attribution,
 summary and effective configuration byte for byte. The combined Phase
 4b/4c fixed-offer check reconciled the ECL change to the objective
 change, held supply and expected loan volume fixed, and retained both
-simulation review gates.
+simulation review gates. `test_credit_loss_profile_changes_only_the_loss_line_at_a_fixed_offer`
+now covers that check.
 
-<!-- Add final offline verification counts here. -->
+Final offline verification on 22 November 2026 used Python 3.12.13. The
+commands were run from the Phase 4c worktree.
+
+- `ruff check .`: clean.
+- `pytest -q -m "not live_rates"` with coverage: 3,846 passed, 2 skipped,
+  0 failed. Total coverage is 97.19%, against a 95% minimum.
+  `deposit_supply.py` has 99% coverage and `deposit_supply_simulation.py`
+  has 100%.
+- The 4a, 4b and 4c evidence regenerated byte for byte after the review
+  fix. `configs/base.yaml` is unchanged.
+- The canonical result is unchanged: 6.19% / 4.05%, objective
+  NZ$5,920,859, model ROE 45.17%, `REVIEW_REQUIRED`, policy band breached,
+  `config_hash` `cf725ba5…`.
+
+## Codex-to-Claude handoff
+
+Codex built Phase 4c up to the evidence step and ran out of tokens
+before final verification. Claude Code recovered the staged work from the
+`feat/phase-4c-deposit-supply` worktree. It committed that work unchanged
+as its own commit, so Codex's part stays separable in history.
+
+**Codex completed:**
+
+- The supply and simulation modules.
+- The optimiser, runner, diagnostics and gate integration.
+- 53 tests.
+- The comparison script and evidence.
+- This document and the model documentation.
+
+**Claude completed:**
+
+1. Recovery and a check of all 26 acceptance categories against the
+   tests.
+2. Tests for the gaps: a governed configuration cannot carry a supply
+   profile; unsupported horizons and fixed offers are rejected; the
+   Phase 4b and 4c paths compose correctly.
+3. An independent whole-branch review. It found one critical issue: the
+   opening deposit book was counted as funding for new loans at no cost.
+   Raising only the invented opening balance moved the selected mortgage
+   from 6.29% to 5.89%.
+4. The fix for that issue. Usable funding for new loans is now
+   recognised incremental funding only. The opening book is disclosed,
+   not offset. The fix also removed a funding-eligibility asymmetry on
+   renewals.
+5. Regenerated evidence and tables, the final verification above, and
+   the PR.
+
+The corrected basis lowers the published simulation objectives. In
+the base fixed-opportunity case the objective falls from NZ$9.572m to
+NZ$2.903m, and the selected mortgage rises from 6.14% to 6.34%. Under
+the earlier draft, most of that headline came from the invented opening
+book.
+
+The review's minor findings are deferred and recorded in the PR.
 
 ## Empirical evidence and approval
 

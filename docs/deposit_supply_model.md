@@ -82,21 +82,38 @@ Each booked amount belongs to one disjoint flow class.
 
 Gross bookings reconcile across the four classes. The opening funding
 position already includes existing balances. The reference subtracts
-counterfactual maturity runoff and treats the remaining opening funds as
-usable. Counterfactual runoff equals the full available retained maturity
+counterfactual maturity runoff from the opening funds. The reference is
+disclosed bank-level evidence only. The loan side prices one horizon of
+new business and has no opening asset book. The opening deposits already
+fund assets outside the model, so they are never offset against new
+loans. Counterfactual runoff equals the full available retained maturity
 pool times its stated runoff probability. Changing offer reach or participation changes
 retention under the offer while the reference runoff stays fixed. Actual
 runoff is the counterfactual runoff less the portion avoided through the
 offer. The avoided portion equals retained gross bookings times the stated
 runoff probability. Missing runoff evidence gives zero incremental credit
 and appears in the unsupported attribution. The report distinguishes principal increment,
-eligible increment and closing usable funding.
+eligible increment, usable funding for new lending and the closing
+bank-level funding position.
 
 ```text
 net incremental principal = external bookings + avoided maturity runoff
-reference funding         = opening funding − counterfactual maturity runoff
-usable funding            = reference funding + recognised eligible increment
+reference funding         = opening funding − counterfactual maturity runoff   (disclosed)
+closing bank funding      = reference funding + net incremental principal       (disclosed)
+usable funding            = recognised eligible increment                       (new lending)
 ```
+
+Phase 4c review (2026-11-22) corrected an earlier draft that added the
+reference funding to usable funding. That draft let an invented opening
+book fund new loans at no cost. Raising only the unallocated opening
+balance moved the selected mortgage from 6.29% to 5.89%, which repeats
+the FIN-001 symptom through a different input. With the correction, a
+change in the opening balance leaves the selected offer and objective
+unchanged. A test checks this:
+`test_opening_funding_cannot_move_the_selected_offer`. The same change
+removes an asymmetry: a renewal pool's opening balance was counted at full
+value, while avoided runoff from that pool took the funding-eligibility
+haircut.
 
 An offer displaces source principal on migration and existing-balance
 bookings, and on the share of renewed principal that would have stayed
@@ -106,9 +123,13 @@ interest on remaining source balances after counterfactual runoff and
 on any unallocated opening balance at its own stated rate.
 
 ```text
-incremental interest = gross offered interest − displaced source expense
-active deposit expense = reference interest + incremental interest + acquisition costs
+incremental interest     = gross offered interest − displaced source expense   (objective)
+bank-level interest      = reference interest + incremental interest            (disclosed)
 ```
+
+The objective carries the incremental interest and acquisition costs
+only. The incremental interest is signed. It is negative when an offer
+reprices displaced source balances below their source rate.
 
 Booked interest remains an expense where the portfolio cannot recognise the
 booked funding. Interest is annualised on the scenario balances. The model
@@ -117,14 +138,14 @@ Acquisition and retention costs are disclosed separately.
 The gross-to-eligible reconciliation also shows incremental principal
 disallowed by funding eligibility.
 
-The active usable funding basis feeds three portfolio-level terms once.
+The usable funding for new lending feeds three portfolio-level terms once.
 Wholesale funding cost applies to positive loans less usable deposits.
 Surplus deposits earn the synthetic cash rate. The shortfall penalty
 applies to positive required deposits less usable deposits, with required
 deposits calculated as expected loans times the configured ratio.
 At the selected loan volume, the funding-value comparison reports
-wholesale cost avoided and additional surplus income against the reference
-balance. Shortfall-penalty relief is a separate steering effect.
+wholesale cost avoided and additional surplus income against zero
+incremental deposit funding. Shortfall-penalty relief is a separate steering effect.
 Wholesale funding cost and the management shortfall penalty remain
 separate. The report distinguishes both terms from deposit interest and
 acquisition costs. A zero funding ratio removes the shortfall penalty.
@@ -176,8 +197,8 @@ The separate request binds the full profile, engine assumptions and
 simulation controls into canonical JSON and a SHA-256 hash. The output
 includes the selected pricing diagnostics and a detailed supply estimate.
 The joint and segmented optimisers each use the same funding treatment.
-The simulation grid reports gross bookings and active usable funding
-separately, with additional acquisition-cost and concentration-penalty
+The simulation grid reports gross bookings and usable funding for new
+lending separately, with additional acquisition-cost and concentration-penalty
 components. The existing search and gates supply boundary, policy-band
 and ROE-floor evidence. The one-tier segmented result uses the same
 objective as joint pricing. Larger coordinate-descent runs report

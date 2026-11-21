@@ -1,25 +1,29 @@
 """FIN-001 integration and financial invariants for the isolated simulation."""
 
-from dataclasses import replace
+from dataclasses import fields, replace
 from itertools import product
 
 import numpy as np
 
 import pytest
 
+from balance_pricing_engine.application.contracts import PricingScenarioRequest
 from balance_pricing_engine.config import (
     DepositTierConfig,
+    EngineConfig,
     GridConfig,
     LoanTierConfig,
     SegmentedPricingConfig,
     load_config,
 )
+from balance_pricing_engine.config_identity import effective_config_hash
 from balance_pricing_engine.governance.gates import (
     DecisionStatus,
     decision_status_from_gates,
     evaluate_gates,
 )
 from balance_pricing_engine.optimization.segmented import SolverSettings
+from balance_pricing_engine.pricing.credit_loss import illustrative_profile
 from balance_pricing_engine.pricing.deposit_supply import (
     ConcentrationMode,
     DepositConcentrationPolicy,
@@ -341,7 +345,7 @@ def test_supply_artifacts_report_reconciled_costs_and_skip_legacy_cohort_metric(
 
 def test_nonfinite_simulated_roe_cannot_qualify_as_a_floor_pass(inputs):
     loan_grid = _grid((0.05, 2.0))
-    deposit_grid = GridConfig(start=0.04, stop=0.04, step=0.005)
+    deposit_grid = GridConfig(start=0.0, stop=0.0, step=0.005)
     engine = inputs.engine_config.model_copy(
         update={
             "pricing_strategy": None,
@@ -356,8 +360,8 @@ def test_nonfinite_simulated_roe_cannot_qualify_as_a_floor_pass(inputs):
     )
     profile = inputs.profile.model_copy(
         update={
-            "opening_funding_nzd": 1e308,
-            "segments": (DepositOpportunitySegment(segment_id="external", opportunity_nzd=0),),
+            # Near-overflow incremental funding drives ROE beyond float range.
+            "segments": (DepositOpportunitySegment(segment_id="external", opportunity_nzd=1e308),),
             "concentration": None,
         }
     )
@@ -379,3 +383,91 @@ def test_nonfinite_simulated_roe_cannot_qualify_as_a_floor_pass(inputs):
     assert joint.best_result.loan_rate == tiered.best_result.loan_rate == 0.05
     assert joint.roe_constraint_relaxed is tiered.roe_constraint_relaxed is False
     assert joint.selected_return_on_equity == pytest.approx(tiered.selected_return_on_equity)
+
+
+def test_governed_config_cannot_carry_a_supply_profile(inputs):
+    # The governed schema has no supply field: a smuggled key never reaches the
+    # effective configuration, its hash or the canonical recommendation.
+    governed = inputs.engine_config
+    payload = governed.model_dump(mode="json")
+    payload["deposit_supply"] = inputs.profile.model_dump(mode="json")
+    smuggled = EngineConfig.model_validate(payload)
+    assert "deposit_supply" not in EngineConfig.model_fields
+    assert "deposit_supply" not in smuggled.model_dump()
+    assert effective_config_hash(smuggled) == effective_config_hash(governed)
+    assert "deposit_supply" not in {field.name for field in fields(PricingScenarioRequest)}
+
+
+def test_simulation_scope_rejects_unsupported_horizons_and_fixed_offers(inputs):
+    segment = inputs.profile.segments[0]
+    with pytest.raises(ValueError, match="12-month horizon"):
+        inputs.model_copy(
+            update={"profile": inputs.profile.model_copy(update={"horizon_months": 24})}
+        )
+    with pytest.raises(ValueError, match="12-month horizon"):
+        inputs.model_copy(
+            update={
+                "profile": inputs.profile.model_copy(
+                    update={"segments": (segment.model_copy(update={"term_months": 6}),)}
+                )
+            }
+        )
+    with pytest.raises(ValueError, match="non-negative"):
+        inputs.model_copy(update={"fixed_rates": (0.0619, -0.01)})
+    grid = GridConfig(start=0.04, stop=0.04, step=0.005)
+    tiered = inputs.engine_config.model_copy(
+        update={
+            "pricing_strategy": None,
+            "products": None,
+            "segmented_pricing": SegmentedPricingConfig(
+                loan_tiers=[LoanTierConfig(name="all", rate_grid=_grid((0.06, 0.065)))],
+                deposit_tiers=[DepositTierConfig(name="all", rate_grid=grid)],
+            ),
+        }
+    )
+    with pytest.raises(ValueError, match="joint pricing"):
+        inputs.model_copy(update={"engine_config": tiered, "fixed_rates": (0.06, 0.04)})
+
+
+def test_credit_loss_profile_changes_only_the_loss_line_at_a_fixed_offer(inputs):
+    # Phase 4b and 4c compose: the loss profile moves ECL (and so the objective)
+    # while deposit supply, loan volume and every funding term stay fixed.
+    fixed = inputs.model_copy(update={"fixed_rates": (0.0619, 0.0405)})
+    plain = run_deposit_supply_simulation(fixed)
+    with_loss = run_deposit_supply_simulation(
+        fixed.model_copy(update={"credit_loss_profile": illustrative_profile()})
+    )
+    base, lossy = plain.diagnostics.best_result, with_loss.diagnostics.best_result
+    assert with_loss.estimate == plain.estimate
+    assert lossy.expected_loan_volume == pytest.approx(base.expected_loan_volume)
+    for name in ("deposit_interest_cost", "wholesale_funding_cost", "funding_shortfall_penalty"):
+        assert getattr(lossy, name) == pytest.approx(getattr(base, name))
+    assert lossy.expected_credit_loss != pytest.approx(base.expected_credit_loss)
+    assert lossy.total_objective - base.total_objective == pytest.approx(
+        base.expected_credit_loss - lossy.expected_credit_loss
+    )
+    gates = evaluate_gates(
+        config=fixed.engine_config,
+        diagnostics=with_loss.diagnostics,
+        model_lineage={},
+        feature_lineage={},
+    )
+    codes = {gate.code for gate in gates}
+    assert {"CREDIT_LOSS_SIMULATION_ONLY", "DEPOSIT_SUPPLY_SIMULATION_ONLY"} <= codes
+    assert with_loss.governance_status is not DecisionStatus.RECOMMENDED
+    assert with_loss.config_hash != plain.config_hash
+
+
+def test_opening_funding_cannot_move_the_selected_offer(inputs):
+    # FIN-001 review: an invented opening book must not fund new loans for free.
+    def run(opening):
+        profile = inputs.profile.model_copy(
+            update={"opening_funding_nzd": opening, "opening_unallocated_interest_rate": 0.027}
+        )
+        return run_deposit_supply_simulation(inputs.model_copy(update={"profile": profile}))
+
+    without, with_book = run(0.0), run(600e6)
+    assert with_book.estimate.reference_funding == 600e6
+    assert with_book.estimate.usable_funding == without.estimate.usable_funding
+    assert with_book.diagnostics.best_result == without.diagnostics.best_result
+    assert with_book.funding_value == without.funding_value
