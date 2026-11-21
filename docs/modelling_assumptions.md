@@ -265,6 +265,14 @@ discounted full active-book contribution; its values changed because the back bo
 adds the new/surviving/total volumes, objective attribution, every component, the shortfall and
 the discount factor. `cohort_summary()` lists each active cohort per period at its booked terms.
 
+## Financial calibration evidence (Phase 4a)
+
+The [Phase 4a baseline](audits/2026-11-21-phase-4a-calibration-baseline.md) reproduces
+the canonical synthetic configuration. The loss proxy and the ratio of the generated
+deposit and loan opportunity pools materially affect the rate pair. The report
+quantifies those effects alongside funding and capital sensitivities. Proposed credit loss,
+deposit supply, FTP and capital methods require independent evidence and SME validation.
+
 ## Deliberate simplifications
 
 Economic inputs must be finite: NaN and ±infinity are rejected in YAML, direct models, copy

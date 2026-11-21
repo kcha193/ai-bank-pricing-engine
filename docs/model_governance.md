@@ -353,6 +353,12 @@ Before any production use, replace synthetic assumptions with governed calibrati
 Each calibration update should record source data, sample window, transformations, validation
 results, approval owner, and effective date.
 
+The [Phase 4a evidence matrix](audits/phase_4a_evidence/evidence-matrix.csv) records
+public context, gaps, sensitivity and conceptual validation owners. A scenario gate
+status describes a run under the existing model. Calibration approval requires a separate,
+documented evidence and validation decision. See the
+[Phase 4a SME checklist](audits/phase_4a_evidence/methodology.md#sme-validation-checklist).
+
 ## Calibration Cadence and Approval Process
 
 The list above defines *what* must be calibrated and *what evidence* each update records. This
