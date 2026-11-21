@@ -2,8 +2,24 @@
 
 from __future__ import annotations
 
+from typing import Union
+
 import numpy as np
 import pandas as pd
+
+# Portfolio-level terms accept a scalar or a NumPy array of candidate portfolios. Scalar
+# inputs keep returning plain Python floats; arrays are evaluated element by element with
+# the same arithmetic, so a vectorised search ranks candidates on identical values.
+FloatOrArray = Union[float, np.ndarray]
+
+TIER1_CAPITAL_RATIO = 0.10
+
+
+def non_negative_part(value: FloatOrArray) -> FloatOrArray:
+    """Return ``max(value, 0)`` for a scalar, or elementwise for an array."""
+    if np.ndim(value) == 0:
+        return max(value, 0.0)
+    return np.maximum(value, 0.0)
 
 
 def expected_loan_income_after_losses(
@@ -37,11 +53,11 @@ def expected_credit_loss(customers: pd.DataFrame, acceptance_probability: np.nda
 
 
 def expected_capital_charge(
-    loan_volume: float,
+    loan_volume: FloatOrArray,
     rwa_weight: float,
     capital_hurdle_rate: float,
-    tier1_capital_ratio: float = 0.10,
-) -> float:
+    tier1_capital_ratio: float = TIER1_CAPITAL_RATIO,
+) -> FloatOrArray:
     """Calculate annual cost of capital tied up in loan-book RWA."""
     rwa = loan_volume * rwa_weight
     required_capital = rwa * tier1_capital_ratio
@@ -82,20 +98,55 @@ def expected_deposit_volume(customers: pd.DataFrame, uptake_probability: np.ndar
 
 
 def expected_wholesale_funding_cost(
-    loan_volume: float,
-    deposit_volume: float,
+    loan_volume: FloatOrArray,
+    deposit_volume: FloatOrArray,
     wholesale_funding_rate: float,
-) -> float:
+) -> FloatOrArray:
     """Calculate funding cost for loans not funded by term deposits."""
-    wholesale_funded_volume = max(loan_volume - deposit_volume, 0.0)
+    wholesale_funded_volume = non_negative_part(loan_volume - deposit_volume)
     return wholesale_funded_volume * wholesale_funding_rate
 
 
 def expected_excess_deposit_income(
-    loan_volume: float,
-    deposit_volume: float,
+    loan_volume: FloatOrArray,
+    deposit_volume: FloatOrArray,
     cash_rate: float,
-) -> float:
+) -> FloatOrArray:
     """Calculate cash-rate income earned on deposits raised above loan volume."""
-    excess_deposit_volume = max(deposit_volume - loan_volume, 0.0)
+    excess_deposit_volume = non_negative_part(deposit_volume - loan_volume)
     return excess_deposit_volume * cash_rate
+
+
+def portfolio_return_on_equity(
+    loan_interest_income: FloatOrArray,
+    credit_loss: FloatOrArray,
+    deposit_interest_cost: FloatOrArray,
+    wholesale_funding_cost: FloatOrArray,
+    funding_shortfall_penalty: FloatOrArray,
+    excess_deposit_income: FloatOrArray,
+    loan_volume: FloatOrArray,
+    rwa_weight: float,
+    tier1_capital_ratio: float = TIER1_CAPITAL_RATIO,
+) -> FloatOrArray:
+    """Return profit before the capital charge over required tier-1 capital.
+
+    Zero required capital (no loan volume) gives 0.0, matching the joint grid search.
+    """
+    required_capital = loan_volume * rwa_weight * tier1_capital_ratio
+    profit_before_capital = (
+        loan_interest_income
+        - credit_loss
+        - deposit_interest_cost
+        - wholesale_funding_cost
+        - funding_shortfall_penalty
+        + excess_deposit_income
+    )
+    if np.ndim(required_capital) == 0 and np.ndim(profit_before_capital) == 0:
+        return profit_before_capital / required_capital if required_capital > 0 else 0.0
+    required_capital, profit_before_capital = np.broadcast_arrays(
+        required_capital, profit_before_capital
+    )
+    roe = np.zeros(required_capital.shape, dtype=float)
+    positive = required_capital > 0
+    roe[positive] = profit_before_capital[positive] / required_capital[positive]
+    return roe

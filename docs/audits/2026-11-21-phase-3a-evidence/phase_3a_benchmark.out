@@ -1,0 +1,106 @@
+{
+ "python": "3.12.13",
+ "machine": "arm64",
+ "cases": {
+  "1x1_121x81_exact": {
+   "seconds": 0.0004,
+   "method": "EXACT",
+   "search_space_size": 9801,
+   "candidate_evaluations": 19602,
+   "converged": true,
+   "iterations": 0,
+   "starts": 0,
+   "objective": 1272935
+  },
+  "2x2_3_rates_exact": {
+   "seconds": 0.0001,
+   "method": "EXACT",
+   "search_space_size": 81,
+   "candidate_evaluations": 90,
+   "converged": true,
+   "iterations": 0,
+   "starts": 0,
+   "objective": 2158791
+  },
+  "3x3_4_rates_exact": {
+   "seconds": 0.0002,
+   "method": "EXACT",
+   "search_space_size": 4096,
+   "candidate_evaluations": 4112,
+   "converged": true,
+   "iterations": 0,
+   "starts": 0,
+   "objective": 3653165
+  },
+  "2x2_10_rates_exact": {
+   "seconds": 0.0002,
+   "method": "EXACT",
+   "search_space_size": 10000,
+   "candidate_evaluations": 10100,
+   "converged": true,
+   "iterations": 0,
+   "starts": 0,
+   "objective": 2888313
+  },
+  "2x2_32_rates_exact": {
+   "seconds": 0.0083,
+   "method": "EXACT",
+   "search_space_size": 1048576,
+   "candidate_evaluations": 1049600,
+   "converged": true,
+   "iterations": 0,
+   "starts": 0,
+   "objective": 3030693
+  },
+  "2x2_32_rates_descent": {
+   "seconds": 0.0024,
+   "method": "COORDINATE_DESCENT",
+   "search_space_size": 1048576,
+   "candidate_evaluations": 3333,
+   "converged": true,
+   "iterations": 18,
+   "starts": 5,
+   "objective": 3025548
+  },
+  "3x3_11_rates_exact": {
+   "seconds": 0.0123,
+   "method": "EXACT",
+   "search_space_size": 1771561,
+   "candidate_evaluations": 1771682,
+   "converged": true,
+   "iterations": 0,
+   "starts": 0,
+   "objective": 4294083
+  },
+  "3x3_11_rates_descent": {
+   "seconds": 0.003,
+   "method": "COORDINATE_DESCENT",
+   "search_space_size": 1771561,
+   "candidate_evaluations": 1182,
+   "converged": true,
+   "iterations": 16,
+   "starts": 5,
+   "objective": 4281540
+  },
+  "3x3_61_rates_descent": {
+   "seconds": 0.0066,
+   "method": "COORDINATE_DESCENT",
+   "search_space_size": 51520374361,
+   "candidate_evaluations": 16536,
+   "converged": true,
+   "iterations": 35,
+   "starts": 5,
+   "objective": 4410382
+  },
+  "5x5_121_rates_descent": {
+   "seconds": 0.0298,
+   "method": "COORDINATE_DESCENT",
+   "search_space_size": 672749994932560009201,
+   "candidate_evaluations": 119916,
+   "converged": true,
+   "iterations": 87,
+   "starts": 5,
+   "objective": 7840012
+  }
+ }
+}

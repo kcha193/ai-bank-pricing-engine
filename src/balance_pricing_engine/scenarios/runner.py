@@ -34,9 +34,13 @@ from balance_pricing_engine.optimization.grid_search import (
 )
 from balance_pricing_engine.optimization.segmented import (
     SegmentedOptimizationResult,
+    SolverSettings,
     optimize_segmented_rates,
 )
-from balance_pricing_engine.pricing.profit import maturity_adjusted_rwa_weight
+from balance_pricing_engine.pricing.profit import (
+    maturity_adjusted_rwa_weight,
+    portfolio_return_on_equity,
+)
 from balance_pricing_engine.rate_grids import build_configured_rate_grids
 from balance_pricing_engine.synthetic.customers import (
     generate_deposit_customers,
@@ -48,6 +52,10 @@ from balance_pricing_engine.synthetic.response import (
     loan_acceptance_probability,
 )
 from balance_pricing_engine.utils.random import make_rng
+
+# Search controls for segmented runs (exact below the combination threshold, bounded
+# multi-start coordinate descent above it). Module-level so tests can tighten them.
+SEGMENTED_SOLVER_SETTINGS = SolverSettings()
 
 
 @dataclass(frozen=True)
@@ -72,6 +80,8 @@ class ScenarioDiagnostics:
     # in the final selected grid and selection fell back (OPT-001). Additive field.
     roe_constraint_relaxed: bool = False
     selected_return_on_equity: float | None = None
+    # Segmented runs only: how the tier-rate search was performed (additive, OPT-002).
+    segmented_solver: dict[str, object] | None = None
 
     def top_results(self, n: int = 5) -> pd.DataFrame:
         """Return the top objective rows for reporting."""
@@ -168,6 +178,8 @@ class ScenarioDiagnostics:
                 json.dumps(self.segmented_tier_rates, indent=2, sort_keys=True),
                 encoding="utf-8",
             )
+        if self.segmented_solver is not None:
+            summary["segmented_solver"] = self.segmented_solver
         (path / "summary.json").write_text(
             json.dumps(summary, indent=2, sort_keys=True),
             encoding="utf-8",
@@ -324,7 +336,10 @@ def _evaluate_adaptive_segmented_rates(
         config.balance_sheet.average_loan_tenor_years,
     )
 
+    incumbent_tier_rates: dict[str, dict[str, float]] | None = None
     while True:
+        # Each round is re-optimised jointly on the full objective; the previous
+        # round's winner stays a candidate so expansion never lowers the objective.
         result = optimize_segmented_rates(
             loan_customers=loan_customers,
             deposit_customers=deposit_customers,
@@ -339,6 +354,11 @@ def _evaluate_adaptive_segmented_rates(
             loan_rwa_weight=effective_rwa_weight,
             capital_hurdle_rate=config.balance_sheet.capital_hurdle_rate,
             response_coefficients=config.response.coefficients,
+            min_return_on_equity=config.balance_sheet.min_return_on_equity,
+            home_loan_reference_rate=config.market.home_loan_reference_rate,
+            term_deposit_reference_rate=config.market.term_deposit_reference_rate,
+            solver_settings=SEGMENTED_SOLVER_SETTINGS,
+            incumbent_tier_rates=incumbent_tier_rates,
         )
         diagnostics = _segmented_diagnostics(
             result,
@@ -388,6 +408,7 @@ def _evaluate_adaptive_segmented_rates(
                 original_config=original_segmented_config,
                 expansion_capped=diagnostics.boundary_diagnostics.has_warning,
             )
+        incumbent_tier_rates = _tier_rates(result)
         expansion_rounds += 1
 
 
@@ -419,6 +440,12 @@ def _segmented_diagnostics(
         return_on_equity=return_on_equity,
     )
     roe_is_finite = math.isfinite(return_on_equity)
+    roe_constraint_relaxed = (
+        result.roe_constraint_relaxed
+        if result.solver is not None
+        else min_return_on_equity is not None
+        and not (roe_is_finite and return_on_equity >= min_return_on_equity)
+    )
     return ScenarioDiagnostics(
         best_result=best_result,
         grid_results=grid_results,
@@ -430,18 +457,20 @@ def _segmented_diagnostics(
             result,
             original_config or config,
         ),
-        segmented_tier_rates={
-            "loan_tiers": {tier.tier_name: tier.rate for tier in result.loan_tiers},
-            "deposit_tiers": {tier.tier_name: tier.rate for tier in result.deposit_tiers},
-        },
-        # The tier-wise optimiser has no constrained alternative: a configured floor
-        # that the single segmented result misses is, by definition, relaxed.
-        roe_constraint_relaxed=(
-            min_return_on_equity is not None
-            and not (roe_is_finite and return_on_equity >= min_return_on_equity)
-        ),
+        segmented_tier_rates=_tier_rates(result),
+        # The joint search prefers candidates meeting a configured floor; it is relaxed
+        # only when no evaluated candidate met it (exhaustive search: none exists).
+        roe_constraint_relaxed=bool(roe_constraint_relaxed),
         selected_return_on_equity=return_on_equity if roe_is_finite else None,
+        segmented_solver=None if result.solver is None else result.solver.to_dict(),
     )
+
+
+def _tier_rates(result: SegmentedOptimizationResult) -> dict[str, dict[str, float]]:
+    return {
+        "loan_tiers": {tier.tier_name: tier.rate for tier in result.loan_tiers},
+        "deposit_tiers": {tier.tier_name: tier.rate for tier in result.deposit_tiers},
+    }
 
 
 def _segmented_boundary_diagnostics(
@@ -488,8 +517,8 @@ def _segmented_boundary_diagnostics(
             (
                 f"Selected segmented portfolio return on equity {return_on_equity:.2%} "
                 f"is below the configured minimum return on equity "
-                f"{min_return_on_equity:.2%}; no segmented alternative is available "
-                "from the tier-wise optimizer."
+                f"{min_return_on_equity:.2%}; no evaluated segmented candidate meets it, "
+                "so the floor was relaxed."
             )
         )
     return BoundaryDiagnostics(warnings=tuple(warnings))
@@ -624,20 +653,15 @@ def _grid_results_from_segmented_result(
     # Segmented grid rows are synthetic decomposition rows, not independent alternatives.
     # total_objective is always the actual portfolio value so rows never dominate the winner.
     rows: list[dict[str, float]] = []
-    tier1_capital_ratio = 0.10
-    required_capital = result.expected_loan_volume * loan_rwa_weight * tier1_capital_ratio
-    return_on_equity = (
-        (
-            result.loan_interest_income
-            - result.expected_credit_loss
-            - result.deposit_interest_cost
-            - result.wholesale_funding_cost
-            - result.funding_shortfall_penalty
-            + result.excess_deposit_income
-        )
-        / required_capital
-        if required_capital > 0.0
-        else 0.0
+    return_on_equity = portfolio_return_on_equity(
+        result.loan_interest_income,
+        result.expected_credit_loss,
+        result.deposit_interest_cost,
+        result.wholesale_funding_cost,
+        result.funding_shortfall_penalty,
+        result.excess_deposit_income,
+        result.expected_loan_volume,
+        loan_rwa_weight,
     )
     for tier in segmented_result.loan_tiers:
         rows.append(
@@ -685,6 +709,9 @@ def _grid_results_from_segmented_result(
 
 
 def _volume_weighted_average_rate(tiers) -> float:
+    if len(tiers) == 1:
+        # Exact for one catch-all tier, so it reports the joint optimiser's grid rate.
+        return tiers[0].rate
     total_volume = sum(tier.volume for tier in tiers)
     if total_volume <= 0:
         return 0.0
