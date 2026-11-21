@@ -273,6 +273,17 @@ deposit and loan opportunity pools materially affect the rate pair. The report
 quantifies those effects alongside funding and capital sensitivities. Proposed credit loss,
 deposit supply, FTP and capital methods require independent evidence and SME validation.
 
+## Annual mortgage credit loss simulation (Phase 4b, FIN-001)
+
+The [credit loss model](credit_loss_model.md) adds explicit annual PD, LGD and EAD
+for an opt-in synthetic comparison. It uses right-closed origination LVR bands and
+a separate unknown band. Candidate ECL is the acceptance-weighted sum of facility
+losses in NZD. Loan interest, funding and capital still use booked principal.
+The annual loss assumption and profile are held at origination for cohort runoff.
+The [matched comparison](audits/phase_4b_evidence/comparison.json) reports both fixed-offer
+and reoptimised results. Canonical pricing retains the Phase 4a legacy formula and
+configuration. The Phase 4a methodology and descriptive LVR bands remain historical evidence.
+
 ## Deliberate simplifications
 
 Economic inputs must be finite: NaN and ±infinity are rejected in YAML, direct models, copy

@@ -3,6 +3,23 @@
 This project is a synthetic retail bank balance-sheet pricing prototype. It is not a production
 pricing approval system.
 
+## Mortgage credit loss simulation (FIN-001)
+
+The [Phase 4b simulation](credit_loss_model.md) accepts illustrative profiles in
+a separate request. The governed service, API and LLM patch interface retain the
+legacy synthetic loss formula. Simulated diagnostics carry
+`CREDIT_LOSS_SIMULATION_ONLY` at WARN level. That requires `REVIEW_REQUIRED` unless
+an existing blocker applies. Multiperiod projections retain the same review
+requirement and the versioned profile attached to each booked cohort.
+
+The simulation config hash binds the static engine inputs and full loss profile
+or period schedule. A hash proves identity. Validation metadata records the
+state of synthetic testing. Empirical validation requires authorised comparable
+outcomes and independent Model Risk assessment against agreed criteria. Pricing
+activation requires verifiable Credit Risk, Model Risk and authorised Pricing
+approvals bound to the reviewed version and scope. Phase 4a recorded no such
+approvals, and Phase 4b supports synthetic use only.
+
 ## Financial inputs and LLM scenario patches (OPT-003, GOV-007)
 
 Economic configuration rejects NaN and both infinities, including rates, response coefficients,

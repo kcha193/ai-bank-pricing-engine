@@ -125,6 +125,22 @@ New packages supporting this flow:
   approved compatible champion through `ModelScoringAgent`; otherwise the deterministic synthetic
   response functions remain in use.
 
+## Annual credit loss simulation (Phase 4b, FIN-001)
+
+[Credit loss modelling](credit_loss_model.md) runs through a separate validated
+simulation request in `scenarios.credit_loss_simulation`. It generates the same
+seeded prospects and supplies annual NZD losses to `pricing.profit.expected_credit_loss`,
+the common joint and segmented pricing seam. The other economics use the original
+principal. The interface accepts static market inputs and uses synthetic response.
+Its configuration hash binds the complete profile and simulation inputs. Its
+diagnostics carry a simulation-only governance warning. The governed pricing
+service and APIs retain their existing request schema and legacy loss path.
+
+The multi-period simulation attaches the origination profile and annual ECL to
+each booked cohort. The existing runoff and aggregate funding routines remain the
+calculation path. Offline validation consumes scored outcome records separately from
+pricing and the workflow never invokes validation or approval when scoring an offer.
+
 ## Extension Boundaries
 
 `EngineConfig` is the validated input contract for scenario intent. It should remain a boundary for
@@ -393,6 +409,7 @@ distinct-bank coverage checks remain at the existing resolver boundaries.
 - [rate_grids.py](../src/balance_pricing_engine/rate_grids.py) — `build_configured_rate_grids`: dispatches between market-relative spread grids and absolute fallback grids.
 - [synthetic/](../src/balance_pricing_engine/synthetic/) — `customers.py` (loan + deposit generators), `market.py` (`MarketState`), `response.py` (`loan_acceptance_probability`, `deposit_uptake_probability`).
 - [pricing/](../src/balance_pricing_engine/pricing/) — `profit.py` (loan income, ECL, deposit cost, wholesale funding) + `balance_sheet.py` (`calculate_funding_result`, shortfall + penalty).
+- [pricing/credit_loss.py](../src/balance_pricing_engine/pricing/credit_loss.py) and [pricing/credit_loss_validation.py](../src/balance_pricing_engine/pricing/credit_loss_validation.py) — synthetic annual PD/LGD/EAD profiles and vectorised estimates, plus offline diagnostics for scored outcomes. The explicit [simulation entry point](../src/balance_pricing_engine/scenarios/credit_loss_simulation.py) supplies annual NZD loss through the existing pricing functions and retains the full profile as evidence.
 - [optimization/grid_search.py](../src/balance_pricing_engine/optimization/grid_search.py) — `evaluate_joint_rate_grid`, `select_best_result` (and `select_best_result_with_disclosure` → `SelectionResult`, which reports `roe_constraint_relaxed` when no row meets `min_return_on_equity` and selection falls back), `optimize_joint_rates`, `optimize_joint_market_relative_rates`. Returns `OptimizationResult` dataclass with backward-compat aliases (`objective_value`, `deposit_cost`, `funding_penalty`, `loan_income_after_losses`). Accepts optional `loan_response_fn` / `deposit_response_fn` callables so an approved ML champion can drive acceptance/uptake instead of the synthetic response.
 - [optimization/segmented.py](../src/balance_pricing_engine/optimization/segmented.py) — segmented (tier) pricing, jointly optimised against the full portfolio objective (OPT-002, Phase 3a). `precompute_loan_tier_candidates` / `precompute_deposit_tier_candidates` score each tier once per rate; `evaluate_segmented_portfolio` is the canonical full decomposition for one tier-rate combination (it calls the `pricing/` functions, which accept scalars or candidate arrays); `solve_segmented_portfolio` searches exhaustively up to `SolverSettings.exact_search_max_combinations` (default 2,000,000; always for one tier per side, so a single catch-all tier reproduces `optimize_joint_rates` exactly) and otherwise runs deterministic multi-start coordinate descent (`run_coordinate_descent`), which reports a best-known, never proven, optimum. Selection order matches `select_best_result_with_disclosure`: ROE-floor qualifiers first, then objective, lower shortfall, smaller market-spread distance, enumeration order. `SolverDiagnostics` reaches `summary.json` as the additive `segmented_solver` key. Don't reintroduce a per-tier objective, a sequential deposit benefit, or a per-tier ROE floor.
 - [optimization/response_fn.py](../src/balance_pricing_engine/optimization/response_fn.py) — pluggable response interface that decouples the optimiser from the response source: `ResponseFn` Protocol, `SyntheticLoanResponseFn` / `SyntheticDepositResponseFn` adapters, `MLResponseFnAdapter` (wraps a scored ML model), and the governance guards `GovernanceError` / `require_approved`.

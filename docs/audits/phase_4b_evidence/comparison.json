@@ -1,0 +1,504 @@
+{
+  "schema_version": 1,
+  "classification": "SYNTHETIC / UNCALIBRATED",
+  "empirically_validated": false,
+  "approved_for_pricing": false,
+  "config_hash_basis": "effective_config_canonical_json_sha256",
+  "source_config_file_sha256": "da6bfe40235799a08f66fbf458d7a5b9334fa7d3f72007be123ead9473c56fda",
+  "matched_inputs": {
+    "random_seed": 42,
+    "population": {
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000
+    },
+    "market": {
+      "cash_rate": 0.025,
+      "wholesale_funding_spread": 0.012,
+      "competitor_loan_rate": 0.0499,
+      "competitor_deposit_rate": 0.039,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039
+    },
+    "balance_sheet": {
+      "required_deposit_funding_ratio": 0.65,
+      "funding_shortfall_penalty_rate": 0.018,
+      "loan_rwa_weight": 0.35,
+      "capital_hurdle_rate": 0.12,
+      "average_loan_tenor_years": null,
+      "min_return_on_equity": null
+    },
+    "response": {
+      "loan_rate_elasticity": -170.0,
+      "loan_competitor_gap_elasticity": -130.0,
+      "deposit_rate_elasticity": 140.0,
+      "deposit_competitor_gap_elasticity": 110.0,
+      "coefficients": {
+        "loan": {
+          "intercept": 2.39,
+          "rate_anchor": 0.0499,
+          "risk_score_coef": -1.2,
+          "credit_score_coef": 0.35,
+          "lvr_coef": -0.25
+        },
+        "deposit": {
+          "intercept": -0.44,
+          "rate_anchor": 0.039,
+          "rate_sensitivity_coef": 0.6,
+          "relationship_coef": 0.04,
+          "digital_coef": -0.2
+        }
+      }
+    },
+    "initial_loan_grid": [
+      0.0449,
+      0.0454,
+      0.0459,
+      0.0464,
+      0.0469,
+      0.0474,
+      0.0479,
+      0.0484,
+      0.0489,
+      0.0494,
+      0.0499,
+      0.0504,
+      0.0509,
+      0.0514,
+      0.0519,
+      0.0524,
+      0.0529,
+      0.0534,
+      0.0539,
+      0.0544,
+      0.0549
+    ],
+    "initial_deposit_grid": [
+      0.035,
+      0.0355,
+      0.036,
+      0.0365,
+      0.037,
+      0.0375,
+      0.038,
+      0.0385,
+      0.039,
+      0.0395,
+      0.04,
+      0.0405,
+      0.041,
+      0.0415,
+      0.042,
+      0.0425,
+      0.043
+    ],
+    "max_boundary_expansions": 2
+  },
+  "profile": {
+    "version": "illustrative-mortgage-v1",
+    "effective_date": "2026-11-22",
+    "bands": [
+      {
+        "name": "lvr_le_60",
+        "upper_lvr": 0.6
+      },
+      {
+        "name": "lvr_gt_60_le_80",
+        "upper_lvr": 0.8
+      },
+      {
+        "name": "lvr_gt_80_le_90",
+        "upper_lvr": 0.9
+      },
+      {
+        "name": "lvr_gt_90",
+        "upper_lvr": null
+      }
+    ],
+    "unknown_band_name": "unknown",
+    "scenarios": [
+      {
+        "name": "base",
+        "weight": 0.8,
+        "assumptions": [
+          {
+            "band_name": "lvr_le_60",
+            "pd": 0.006,
+            "lgd": 0.2,
+            "ead_multiplier": 0.97
+          },
+          {
+            "band_name": "lvr_gt_60_le_80",
+            "pd": 0.01,
+            "lgd": 0.25,
+            "ead_multiplier": 0.97
+          },
+          {
+            "band_name": "lvr_gt_80_le_90",
+            "pd": 0.016,
+            "lgd": 0.35,
+            "ead_multiplier": 0.97
+          },
+          {
+            "band_name": "lvr_gt_90",
+            "pd": 0.024,
+            "lgd": 0.45,
+            "ead_multiplier": 0.97
+          },
+          {
+            "band_name": "unknown",
+            "pd": 0.024,
+            "lgd": 0.45,
+            "ead_multiplier": 0.97
+          }
+        ]
+      },
+      {
+        "name": "collateral_stress",
+        "weight": 0.2,
+        "assumptions": [
+          {
+            "band_name": "lvr_le_60",
+            "pd": 0.009,
+            "lgd": 0.3,
+            "ead_multiplier": 1.0
+          },
+          {
+            "band_name": "lvr_gt_60_le_80",
+            "pd": 0.015,
+            "lgd": 0.35,
+            "ead_multiplier": 1.0
+          },
+          {
+            "band_name": "lvr_gt_80_le_90",
+            "pd": 0.024,
+            "lgd": 0.45,
+            "ead_multiplier": 1.0
+          },
+          {
+            "band_name": "lvr_gt_90",
+            "pd": 0.036,
+            "lgd": 0.55,
+            "ead_multiplier": 1.0
+          },
+          {
+            "band_name": "unknown",
+            "pd": 0.036,
+            "lgd": 0.55,
+            "ead_multiplier": 1.0
+          }
+        ]
+      }
+    ],
+    "model_basis": "annual_economic_loss",
+    "pd_horizon_months": 12,
+    "lgd_definition": "fractional_economic_loss_conditional_on_default",
+    "ead_basis": "booked_principal_times_scenario_multiplier_nzd",
+    "lvr_basis": "origination",
+    "evidence_classification": "illustrative",
+    "validation_status": "validation_pending",
+    "review_note": "Invented for numerical checks and sensitivity analysis. Empirical review pending.",
+    "evidence_label": "SYNTHETIC / UNCALIBRATED"
+  },
+  "fixed_offer_basis": "Legacy optimiser winner evaluated under both loss models.",
+  "fixed_offer_governance_basis": "Fixed offers are economic counterfactuals.",
+  "alternate_simulation_governance_status": "REVIEW_REQUIRED",
+  "fixed_offer": {
+    "legacy_synthetic": {
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.0405,
+      "loan_interest_income": 31568485.710339,
+      "expected_credit_loss": 3438163.9061083416,
+      "deposit_interest_cost": 13320584.209421102,
+      "wholesale_funding_cost": 6700269.978302658,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 46643.14314491522,
+      "total_objective": 5920859.368621694,
+      "expected_loan_volume": 509991691.6048304,
+      "expected_deposit_volume": 328903313.8128667,
+      "funding_shortfall": 2591285.730273068,
+      "home_loan_spread_to_market_bps": 120.0,
+      "term_deposit_spread_to_market_bps": 15.0,
+      "capital_charge": 2141965.1047402876,
+      "return_on_equity": 0.45170620878100226,
+      "config_hash": "cf725ba53fd0be8f2f9afef254f890c47fba044c33513deba33853fa956e7ac3",
+      "governance_status": "NOT_ASSESSED",
+      "policy_band_breached": true,
+      "loss": {
+        "mean_annual_loss_rate": 0.007878386772855912,
+        "opportunity_balance_weighted_annual_loss_rate": 0.007983321131449254,
+        "booked_balance_weighted_annual_loss_rate": 0.0067416076824491095,
+        "lvr_bands": [
+          {
+            "band": "lvr_le_60",
+            "prospect_count": 1164,
+            "loan_opportunity_volume": 685818479.4281912,
+            "expected_loan_volume": 189863053.91867438,
+            "expected_credit_loss": 960716.1225206957,
+            "booked_balance_weighted_annual_loss_rate": 0.005060047769653001
+          },
+          {
+            "band": "lvr_gt_60_le_80",
+            "prospect_count": 2095,
+            "loan_opportunity_volume": 1230839279.763617,
+            "expected_loan_volume": 212303251.1675783,
+            "expected_credit_loss": 1492553.4498392572,
+            "booked_balance_weighted_annual_loss_rate": 0.007030290123353471
+          },
+          {
+            "band": "lvr_gt_80_le_90",
+            "prospect_count": 1148,
+            "loan_opportunity_volume": 674353792.4052528,
+            "expected_loan_volume": 77672045.189126,
+            "expected_credit_loss": 682687.9697074889,
+            "booked_balance_weighted_annual_loss_rate": 0.008789365183383436
+          },
+          {
+            "band": "lvr_gt_90",
+            "prospect_count": 593,
+            "loan_opportunity_volume": 345632637.38666177,
+            "expected_loan_volume": 30153341.32945168,
+            "expected_credit_loss": 302206.36404089985,
+            "booked_balance_weighted_annual_loss_rate": 0.01002231761777345
+          },
+          {
+            "band": "unknown",
+            "prospect_count": 0,
+            "loan_opportunity_volume": 0.0,
+            "expected_loan_volume": 0.0,
+            "expected_credit_loss": 0.0,
+            "booked_balance_weighted_annual_loss_rate": null
+          }
+        ]
+      }
+    },
+    "pd_lgd_ead": {
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.0405,
+      "loan_interest_income": 31568485.710339,
+      "expected_credit_loss": 1791532.8577770884,
+      "deposit_interest_cost": 13320584.209421102,
+      "wholesale_funding_cost": 6700269.978302658,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 46643.14314491522,
+      "total_objective": 7567490.416952947,
+      "expected_loan_volume": 509991691.6048304,
+      "expected_deposit_volume": 328903313.8128667,
+      "funding_shortfall": 2591285.730273068,
+      "home_loan_spread_to_market_bps": 120.0,
+      "term_deposit_spread_to_market_bps": 15.0,
+      "capital_charge": 2141965.1047402876,
+      "return_on_equity": 0.5439559496205986,
+      "config_hash": "ff4360c46eaef0277d31f0ed832b38d3de3e685dde03c30c92d42da578fa4b63",
+      "governance_status": "NOT_ASSESSED",
+      "policy_band_breached": true,
+      "loss": {
+        "mean_annual_loss_rate": 0.00455261,
+        "opportunity_balance_weighted_annual_loss_rate": 0.004543160157709814,
+        "booked_balance_weighted_annual_loss_rate": 0.0035128667530632375,
+        "lvr_bands": [
+          {
+            "band": "lvr_le_60",
+            "prospect_count": 1164,
+            "loan_opportunity_volume": 685818479.4281912,
+            "expected_loan_volume": 189863053.91867438,
+            "expected_credit_loss": 279326.5249251538,
+            "booked_balance_weighted_annual_loss_rate": 0.0014712000000000004
+          },
+          {
+            "band": "lvr_gt_60_le_80",
+            "prospect_count": 2095,
+            "loan_opportunity_volume": 1230839279.763617,
+            "expected_loan_volume": 212303251.1675783,
+            "expected_credit_loss": 634786.7209910591,
+            "booked_balance_weighted_annual_loss_rate": 0.0029899999999999996
+          },
+          {
+            "band": "lvr_gt_80_le_90",
+            "prospect_count": 1148,
+            "loan_opportunity_volume": 674353792.4052528,
+            "expected_loan_volume": 77672045.189126,
+            "expected_credit_loss": 505303.2571823782,
+            "booked_balance_weighted_annual_loss_rate": 0.006505600000000001
+          },
+          {
+            "band": "lvr_gt_90",
+            "prospect_count": 593,
+            "loan_opportunity_volume": 345632637.38666177,
+            "expected_loan_volume": 30153341.32945168,
+            "expected_credit_loss": 372116.3546784973,
+            "booked_balance_weighted_annual_loss_rate": 0.0123408
+          },
+          {
+            "band": "unknown",
+            "prospect_count": 0,
+            "loan_opportunity_volume": 0.0,
+            "expected_loan_volume": 0.0,
+            "expected_credit_loss": 0.0,
+            "booked_balance_weighted_annual_loss_rate": null
+          }
+        ]
+      }
+    },
+    "pd_lgd_ead_minus_legacy": {
+      "expected_loan_volume": 0.0,
+      "expected_credit_loss": -1646631.0483312532,
+      "total_objective": 1646631.0483312532
+    }
+  },
+  "reoptimised_shared_final_grid": true,
+  "reoptimised": {
+    "legacy_synthetic": {
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.0405,
+      "loan_interest_income": 31568485.710339,
+      "expected_credit_loss": 3438163.9061083416,
+      "deposit_interest_cost": 13320584.209421102,
+      "wholesale_funding_cost": 6700269.978302658,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 46643.14314491522,
+      "total_objective": 5920859.368621694,
+      "expected_loan_volume": 509991691.6048304,
+      "expected_deposit_volume": 328903313.8128667,
+      "funding_shortfall": 2591285.730273068,
+      "home_loan_spread_to_market_bps": 120.0,
+      "term_deposit_spread_to_market_bps": 15.0,
+      "capital_charge": 2141965.1047402876,
+      "return_on_equity": 0.45170620878100226,
+      "config_hash": "cf725ba53fd0be8f2f9afef254f890c47fba044c33513deba33853fa956e7ac3",
+      "governance_status": "REVIEW_REQUIRED",
+      "policy_band_breached": true,
+      "loss": {
+        "mean_annual_loss_rate": 0.007878386772855912,
+        "opportunity_balance_weighted_annual_loss_rate": 0.007983321131449254,
+        "booked_balance_weighted_annual_loss_rate": 0.0067416076824491095,
+        "lvr_bands": [
+          {
+            "band": "lvr_le_60",
+            "prospect_count": 1164,
+            "loan_opportunity_volume": 685818479.4281912,
+            "expected_loan_volume": 189863053.91867438,
+            "expected_credit_loss": 960716.1225206957,
+            "booked_balance_weighted_annual_loss_rate": 0.005060047769653001
+          },
+          {
+            "band": "lvr_gt_60_le_80",
+            "prospect_count": 2095,
+            "loan_opportunity_volume": 1230839279.763617,
+            "expected_loan_volume": 212303251.1675783,
+            "expected_credit_loss": 1492553.4498392572,
+            "booked_balance_weighted_annual_loss_rate": 0.007030290123353471
+          },
+          {
+            "band": "lvr_gt_80_le_90",
+            "prospect_count": 1148,
+            "loan_opportunity_volume": 674353792.4052528,
+            "expected_loan_volume": 77672045.189126,
+            "expected_credit_loss": 682687.9697074889,
+            "booked_balance_weighted_annual_loss_rate": 0.008789365183383436
+          },
+          {
+            "band": "lvr_gt_90",
+            "prospect_count": 593,
+            "loan_opportunity_volume": 345632637.38666177,
+            "expected_loan_volume": 30153341.32945168,
+            "expected_credit_loss": 302206.36404089985,
+            "booked_balance_weighted_annual_loss_rate": 0.01002231761777345
+          },
+          {
+            "band": "unknown",
+            "prospect_count": 0,
+            "loan_opportunity_volume": 0.0,
+            "expected_loan_volume": 0.0,
+            "expected_credit_loss": 0.0,
+            "booked_balance_weighted_annual_loss_rate": null
+          }
+        ]
+      },
+      "final_grid_size": 697,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "roe_constraint_relaxed": false
+    },
+    "pd_lgd_ead": {
+      "loan_rate": 0.0609,
+      "deposit_rate": 0.042,
+      "loan_interest_income": 39013552.53528842,
+      "expected_credit_loss": 2283657.9956273083,
+      "deposit_interest_cost": 15828157.53445831,
+      "wholesale_funding_cost": 9758962.103152439,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 711718.4402875645,
+      "total_objective": 7740466.631742912,
+      "expected_loan_volume": 640616626.1952122,
+      "expected_deposit_volume": 376860893.6775788,
+      "funding_shortfall": 39539913.34930915,
+      "home_loan_spread_to_market_bps": 110.0,
+      "term_deposit_spread_to_market_bps": 30.0,
+      "capital_charge": 2690589.8300198913,
+      "return_on_equity": 0.46522393024962955,
+      "config_hash": "ff4360c46eaef0277d31f0ed832b38d3de3e685dde03c30c92d42da578fa4b63",
+      "governance_status": "REVIEW_REQUIRED",
+      "policy_band_breached": true,
+      "loss": {
+        "mean_annual_loss_rate": 0.00455261,
+        "opportunity_balance_weighted_annual_loss_rate": 0.004543160157709814,
+        "booked_balance_weighted_annual_loss_rate": 0.0035647810285389303,
+        "lvr_bands": [
+          {
+            "band": "lvr_le_60",
+            "prospect_count": 1164,
+            "loan_opportunity_volume": 685818479.4281912,
+            "expected_loan_volume": 232176831.294341,
+            "expected_credit_loss": 341578.5542002345,
+            "booked_balance_weighted_annual_loss_rate": 0.0014712
+          },
+          {
+            "band": "lvr_gt_60_le_80",
+            "prospect_count": 2095,
+            "loan_opportunity_volume": 1230839279.763617,
+            "expected_loan_volume": 268714658.4675319,
+            "expected_credit_loss": 803456.8288179204,
+            "booked_balance_weighted_annual_loss_rate": 0.00299
+          },
+          {
+            "band": "lvr_gt_80_le_90",
+            "prospect_count": 1148,
+            "loan_opportunity_volume": 674353792.4052528,
+            "expected_loan_volume": 100373140.78136158,
+            "expected_credit_loss": 652987.5046672259,
+            "booked_balance_weighted_annual_loss_rate": 0.006505599999999999
+          },
+          {
+            "band": "lvr_gt_90",
+            "prospect_count": 593,
+            "loan_opportunity_volume": 345632637.38666177,
+            "expected_loan_volume": 39351995.65197779,
+            "expected_credit_loss": 485635.1079419276,
+            "booked_balance_weighted_annual_loss_rate": 0.012340800000000002
+          },
+          {
+            "band": "unknown",
+            "prospect_count": 0,
+            "loan_opportunity_volume": 0.0,
+            "expected_loan_volume": 0.0,
+            "expected_credit_loss": 0.0,
+            "booked_balance_weighted_annual_loss_rate": null
+          }
+        ]
+      },
+      "final_grid_size": 697,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "roe_constraint_relaxed": false
+    },
+    "pd_lgd_ead_minus_legacy": {
+      "expected_loan_volume": 130624934.59038186,
+      "expected_credit_loss": -1154505.9104810334,
+      "total_objective": 1819607.2631212184
+    }
+  }
+}
