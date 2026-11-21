@@ -1,0 +1,388 @@
+{
+ "01_fin002_zero_runoff": {
+  "multiperiod": {
+   "n_periods": 2,
+   "loan_runoff_rate": 0.0,
+   "deposit_runoff_rate": 0.0,
+   "discount_rate": 0.0
+  },
+  "npv": 11270926.82,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": -570791.92,
+    "period_contribution_undiscounted": 5350067.45,
+    "discounted_contribution": 5350067.45
+   }
+  ]
+ },
+ "02_full_runoff": {
+  "multiperiod": {
+   "n_periods": 2,
+   "loan_runoff_rate": 1.0,
+   "deposit_runoff_rate": 1.0,
+   "discount_rate": 0.0
+  },
+  "npv": 11841718.74,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37
+   }
+  ]
+ },
+ "03_loan_runoff_gt_deposit": {
+  "multiperiod": {
+   "n_periods": 3,
+   "loan_runoff_rate": 0.5,
+   "deposit_runoff_rate": 0.1,
+   "discount_rate": 0.0
+  },
+  "npv": -1066906.32,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": -5613629.64,
+    "period_contribution_undiscounted": 307229.73,
+    "discounted_contribution": 307229.73
+   },
+   {
+    "period": 2,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": -13215854.78,
+    "period_contribution_undiscounted": -7294995.41,
+    "discounted_contribution": -7294995.41
+   }
+  ]
+ },
+ "04_deposit_runoff_gt_loan": {
+  "multiperiod": {
+   "n_periods": 3,
+   "loan_runoff_rate": 0.1,
+   "deposit_runoff_rate": 0.5,
+   "discount_rate": 0.0
+  },
+  "npv": 34388805.72,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 4814520.96,
+    "period_contribution_undiscounted": 10735380.33,
+    "discounted_contribution": 10735380.33
+   },
+   {
+    "period": 2,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 11811706.66,
+    "period_contribution_undiscounted": 17732566.03,
+    "discounted_contribution": 17732566.03
+   }
+  ]
+ },
+ "05_rising_rates": {
+  "multiperiod": {
+   "n_periods": 3,
+   "loan_runoff_rate": 0.3,
+   "deposit_runoff_rate": 0.5,
+   "discount_rate": 0.0,
+   "market_cash_rate_drift_bps": 50,
+   "competitor_loan_rate_drift_bps": 50,
+   "competitor_deposit_rate_drift_bps": 50
+  },
+  "npv": 30793368.44,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0644,
+    "deposit_rate": 0.042,
+    "new_business_objective": 5389681.82,
+    "implied_back_book": 4049533.42,
+    "period_contribution_undiscounted": 9439215.24,
+    "discounted_contribution": 9439215.24
+   },
+   {
+    "period": 2,
+    "loan_rate": 0.0664,
+    "deposit_rate": 0.0445,
+    "new_business_objective": 4882144.34,
+    "implied_back_book": 10551149.49,
+    "period_contribution_undiscounted": 15433293.83,
+    "discounted_contribution": 15433293.83
+   }
+  ]
+ },
+ "06_falling_rates": {
+  "multiperiod": {
+   "n_periods": 3,
+   "loan_runoff_rate": 0.3,
+   "deposit_runoff_rate": 0.5,
+   "discount_rate": 0.0,
+   "market_cash_rate_drift_bps": -50,
+   "competitor_loan_rate_drift_bps": -50,
+   "competitor_deposit_rate_drift_bps": -50
+  },
+  "npv": 19742380.82,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0594,
+    "deposit_rate": 0.039,
+    "new_business_objective": 6480978.97,
+    "implied_back_book": 479591.58,
+    "period_contribution_undiscounted": 6960570.55,
+    "discounted_contribution": 6960570.55
+   },
+   {
+    "period": 2,
+    "loan_rate": 0.0554,
+    "deposit_rate": 0.0355,
+    "new_business_objective": 7517123.02,
+    "implied_back_book": -656172.12,
+    "period_contribution_undiscounted": 6860950.9,
+    "discounted_contribution": 6860950.9
+   }
+  ]
+ },
+ "07_funding_shortfall": {
+  "multiperiod": {
+   "n_periods": 3,
+   "loan_runoff_rate": 0.0,
+   "deposit_runoff_rate": 1.0,
+   "discount_rate": 0.0
+  },
+  "npv": 56011954.98,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 12749792.29,
+    "period_contribution_undiscounted": 18670651.66,
+    "discounted_contribution": 18670651.66
+   },
+   {
+    "period": 2,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 25499584.58,
+    "period_contribution_undiscounted": 31420443.95,
+    "discounted_contribution": 31420443.95
+   }
+  ]
+ },
+ "08_excess_deposits": {
+  "multiperiod": {
+   "n_periods": 4,
+   "loan_runoff_rate": 1.0,
+   "deposit_runoff_rate": 0.0,
+   "discount_rate": 0.0
+  },
+  "npv": -56240067.78,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": -13320584.21,
+    "period_contribution_undiscounted": -7399724.84,
+    "discounted_contribution": -7399724.84
+   },
+   {
+    "period": 2,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": -26641168.42,
+    "period_contribution_undiscounted": -20720309.05,
+    "discounted_contribution": -20720309.05
+   },
+   {
+    "period": 3,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": -39961752.63,
+    "period_contribution_undiscounted": -34040893.26,
+    "discounted_contribution": -34040893.26
+   }
+  ]
+ },
+ "09_four_vintages": {
+  "multiperiod": {
+   "n_periods": 4,
+   "loan_runoff_rate": 0.3,
+   "deposit_runoff_rate": 0.5,
+   "discount_rate": 0.0
+  },
+  "npv": 39019735.04,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 2264562.5,
+    "period_contribution_undiscounted": 8185421.87,
+    "discounted_contribution": 8185421.87
+   },
+   {
+    "period": 2,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 5181814.67,
+    "period_contribution_undiscounted": 11102674.04,
+    "discounted_contribution": 11102674.04
+   },
+   {
+    "period": 3,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 7889920.4,
+    "period_contribution_undiscounted": 13810779.77,
+    "discounted_contribution": 13810779.77
+   }
+  ]
+ },
+ "10_positive_discount": {
+  "multiperiod": {
+   "n_periods": 3,
+   "loan_runoff_rate": 0.3,
+   "deposit_runoff_rate": 0.5,
+   "discount_rate": 0.08
+  },
+  "npv": 21313617.73,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5482277.19
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 2264562.5,
+    "period_contribution_undiscounted": 8185421.87,
+    "discounted_contribution": 7017679.93
+   },
+   {
+    "period": 2,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 5181814.67,
+    "period_contribution_undiscounted": 11102674.04,
+    "discounted_contribution": 8813660.61
+   }
+  ]
+ }
+}

@@ -71,11 +71,11 @@ authorise no automatic pricing action.
   logistic regression, histogram gradient boosting, optional LightGBM, optional XGBoost, and an
   optional survival/hazard adapter. The survival adapter reports event probability to match binary
   target metrics where `1` means churn/event observed.
-- Multi-period scenario rolls are available for portfolio-level diagnostics. They rerun the baseline
-  scenario for `n_periods`, apply `loan_runoff_rate` and `deposit_runoff_rate` to prior-period
-  back-book economics, apply `reinvestment_spread_bps` to surviving loan balances, discount period
-  contributions with `discount_rate`, and can shift future cash rates with
-  `market_cash_rate_drift_bps`.
+- Multi-period scenario rolls are available for portfolio-level diagnostics. They price new
+  business each period at that period's market, carry earlier cohorts at their booked contractual
+  terms with `loan_runoff_rate` / `deposit_runoff_rate` runoff, evaluate the whole active book, and
+  discount period contributions with `discount_rate`. See
+  [Multi-period cohort accounting](#multi-period-cohort-accounting-fin-002-phase-3b-2026-11-21).
 
 ## Segmented tier pricing (OPT-002, Phase 3a, 2026-11-21)
 
@@ -166,6 +166,105 @@ combinations on Apple arm64). Each descent pass costs O(sum of tier grid sizes).
 **Unchanged.** Elasticities, ECL, funding-rate and capital calibration, the single-period economic
 formula, and the joint optimiser are unchanged; calibration remains Phase 4 work.
 
+## Multi-period cohort accounting (FIN-002, Phase 3b, 2026-11-21)
+
+`run_multiperiod_diagnostics()` is a **rolling annual scenario projection** on synthetic data, not
+a calibrated production ALM forecast, a contractual discounted-cash-flow model or a globally
+optimised lifetime NPV. Each period's new business is priced myopically by the standard
+single-period engine; nothing optimises across periods.
+
+**Why it changed.** Before Phase 3b the surviving book earned `cash_rate + reinvestment_spread_bps`
+on its loan balances (not the booked loan rate), carried no ECL, capital, wholesale funding,
+shortfall penalty or excess-deposit income, and kept only its deposit interest. In the audit case
+(base config, two periods, zero runoff, zero discount) a book worth +$5.92m in period 0 was worth
+-$0.57m in period 1 with no change in its contracts.
+
+**Cohorts.** The winning single-period result in period `c` is booked as a `BookedCohort`
+(`scenarios/cohort_accounting.py`): origination period, loan rate, deposit rate, original loan and
+deposit balances, booked ECL, and the effective RWA weight and capital hurdle used to price it.
+Booking checks that the result's interest income, deposit cost and capital charge reconcile to
+`rate x balance` and `expected_capital_charge`; an untraceable result is rejected. A segmented
+cohort is booked at its volume-weighted average rates, which reproduce its income exactly.
+
+**Timing and survival.** A cohort contributes its full economics in its own period. At the start
+of each later period `t` its balances are the originals times `(1 - runoff) ** (t - c)`, with
+independent loan and deposit runoff. `loan_tenor_years` overrides the loan runoff with
+`min(1, 1 / tenor)` (an approximation; contractual term, repricing date and amortisation are not
+modelled separately). A runoff of 1 removes the cohort's balance after its own period; a cohort
+whose loan and deposit balances are both zero contributes nothing.
+
+**Period equations.** For the active cohorts `k` (every earlier survivor plus the new cohort) at
+the period-`t` market:
+
+```text
+loan_interest_income  = sum_k  surviving_loan_k    x booked_loan_rate_k
+expected_credit_loss  = sum_k  booked_ECL_k        x loan_survival_k
+capital_charge        = sum_k  expected_capital_charge(surviving_loan_k, rwa_k, hurdle_k)
+deposit_interest_cost = sum_k  surviving_deposit_k x booked_deposit_rate_k
+L_t = sum_k surviving_loan_k        D_t = sum_k surviving_deposit_k
+wholesale_funding_cost    = expected_wholesale_funding_cost(L_t, D_t, cash_t + spread)
+excess_deposit_income     = expected_excess_deposit_income(L_t, D_t, cash_t)
+funding_shortfall_penalty = calculate_funding_result(L_t, D_t, ratio, penalty).funding_penalty
+active_portfolio_objective = income - ECL - capital - deposit cost - wholesale - penalty + excess
+```
+
+This is the single-period objective formula applied to the whole book: one cohort at full
+survival reproduces its single-period objective (checked for every new cohort at run time).
+
+- *Contractual rates.* A surviving fixed-rate loan keeps its booked rate; a rate move changes only
+  new business and the period funding terms. The roll has no maturity, rollover or reinvestment
+  event. `reinvestment_spread_bps` is retained for configuration compatibility, reported on the
+  diagnostics, and **not applied**; a non-zero value warns.
+- *ECL.* The booked loss rate is carried on surviving balances (constant loss rate). This is not
+  lifetime or IFRS 9 ECL: no staging, PD/LGD term structure or migration.
+- *Capital.* `expected_capital_charge` on each cohort's surviving loans with its booked effective
+  RWA weight (`maturity_adjusted_rwa_weight` from `balance_sheet.average_loan_tenor_years`, as in
+  the single-period engine) and hurdle. Capital is linear in balances, so the cohort sum equals the
+  charge on the total book; nothing is counted twice.
+- *Funding.* Wholesale funding, excess-deposit income and the shortfall penalty are calculated once
+  on the aggregate balances at the period's market. They are not calculated per cohort and summed:
+  a deposit-rich cohort funds a loan-heavy one. Surviving loans are not assumed wholesale funded,
+  nor surviving deposits assumed surplus. Wholesale funding and surplus cash reprice each period.
+
+**New business versus back book.** `new_business_objective` is the period's optimised objective
+(the new cohort alone). `back_book_incremental_contribution = active_portfolio_objective -
+new_business_objective` is a portfolio attribution: it includes the change in the nonlinear
+funding terms that the surviving book causes, so it is not a standalone contractual profit of the
+earlier cohorts. In the zero-runoff, zero-drift audit case every term is homogeneous of degree
+one, so the period-1 back book equals the period-0 objective and the period-1 total is twice it.
+
+**Market drift.** Period `t` applies `t x drift` once, from the period-0 values, to `cash_rate`,
+`competitor_loan_rate` and `competitor_deposit_rate`. With `reference_rate_drift:
+track_competitor` (default) `home_loan_reference_rate` and `term_deposit_reference_rate` move by
+the same competitor drift, so a `pricing_strategy` spread grid keeps quoting spreads to the market
+benchmark. Use `reference_rate_drift: hold` when the reference rates are an independently sourced
+benchmark that should not move. Zero drift leaves the period-0 market unchanged. A drift that makes
+a drifted market rate negative fails with a `ValueError` naming the period and field, and every
+period's config is revalidated (including the `pricing_strategy` negative-rate check). Cash-rate
+drift without competitor drift still warns because competitor gaps shift mechanically. Drift never
+reprices a booked cohort.
+
+**Discounting.** End-of-period: `discount_factor[t] = 1 / (1 + discount_rate) ** (t + 1)` and
+`NPV = sum_t active_portfolio_objective[t] x discount_factor[t]`. No terminal value; balances still
+outstanding after the last period are not valued. The NPV is a simplified annual risk-adjusted
+contribution, without amortisation, prepayment, tax or operating cost.
+
+**Synthetic cohorts.** Every period re-simulates the same seeded prospect population
+(`random_seed`), so with unchanged market inputs each period's expected new business is identical.
+Volumes are expectations over a stationary prospect pool, not distinct observed acquisitions; a
+cohort's identity is its origination period, never individual customers.
+
+**Provenance.** `MultiPeriodDiagnostics.provenance` records the projection type, response model
+(`synthetic`: the roll calls the single-period engine without a model registry, so no ML champion
+drives it), pricing mode, effective config hash, population policy, runoff basis, reference-rate
+policy and discount convention.
+
+**Outputs.** `period_summary()` keeps `period`, `best_loan_rate`, `best_deposit_rate`,
+`total_objective` (still the period's new-business objective) and `discounted_contribution` (the
+discounted full active-book contribution; its values changed because the back book was wrong), then
+adds the new/surviving/total volumes, objective attribution, every component, the shortfall and
+the discount factor. `cohort_summary()` lists each active cohort per period at its booked terms.
+
 ## Deliberate simplifications
 
 Economic inputs must be finite: NaN and ±infinity are rejected in YAML, direct models, copy
@@ -182,7 +281,10 @@ a warning. LLM patches cannot alter elasticities or coefficients; see
   with deterministic synthetic fallback when no approved compatible champion is available.
 - No prepayment or behavioural maturity modelling yet.
 - Multi-period cash-rate drift does not automatically drift competitor loan or deposit rates; the
-  implementation warns because competitor gaps will shift mechanically.
+  implementation warns because competitor gaps will shift mechanically. Competitor drift moves the
+  reference rates too unless `reference_rate_drift: hold`.
+- The multi-period roll carries booked cohorts at constant loss rates with geometric runoff; no
+  amortisation schedule, rollover, terminal value or lifetime ECL.
 - Rates are annualized assumptions within each scenario period.
 
 ## Dashboard interpretation

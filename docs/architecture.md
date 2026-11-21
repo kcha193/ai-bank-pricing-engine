@@ -112,7 +112,10 @@ New packages supporting this flow:
 - `src/balance_pricing_engine/scenarios/runner.py`: orchestrates baseline scenario diagnostics and
   artifact persistence.
 - `src/balance_pricing_engine/scenarios/multiperiod.py`: rolls baseline diagnostics across multiple
-  future periods and discounts the resulting objective contributions.
+  future periods, books each period's winner as a cohort, evaluates the full active book and
+  discounts the period contributions.
+- `src/balance_pricing_engine/scenarios/cohort_accounting.py`: pure cohort accounting for the
+  roll (`BookedCohort`, runoff survival, `evaluate_active_portfolio`).
 - `src/balance_pricing_engine/run_ledger/`: creates governed pricing-run ledgers by wrapping
   diagnostics artifacts with metadata, configuration snapshots, pricing memos, and governance
   checklists.
@@ -179,18 +182,27 @@ boundary issue should remain open for review.
 
 ## Multi-Period Scenario Roll
 
-`MultiPeriodConfig` enables a portfolio-level scenario roll through
-`run_multiperiod_diagnostics()`. Each period runs the standard baseline diagnostics with the period's
-market assumptions, carries prior-period loan income and deposit cost as back-book economics, applies
-`loan_runoff_rate` and `deposit_runoff_rate` to that back book each period, and reports a discounted
-NPV using `discount_rate`.
+`MultiPeriodConfig` enables a portfolio-level rolling annual scenario projection through
+`run_multiperiod_diagnostics()` (FIN-002, Phase 3b). Each period:
 
-The key configuration fields are `n_periods`, `loan_runoff_rate`, `deposit_runoff_rate`,
-`discount_rate`, `reinvestment_spread_bps`, and `market_cash_rate_drift_bps`. Surviving back-book
-loan balances earn a reinvestment rate of cash rate plus `reinvestment_spread_bps`. The cash-rate
-drift shifts the cash rate used in later periods; competitor loan and deposit rates remain fixed, so
-a warning is emitted when cash-rate drift is configured because competitor gaps will move
-mechanically.
+1. builds the period config from the period-0 config: `t x drift` on the cash rate, competitor
+   rates and (under `reference_rate_drift: track_competitor`, the default) the reference rates;
+   the result is revalidated and a negative drifted rate fails;
+2. prices new business myopically with `run_baseline_diagnostics()` (no model registry: synthetic
+   response);
+3. books the winner as a `BookedCohort` and checks it reconciles to its booked rates and to the
+   single-period objective;
+4. positions every earlier cohort with geometric runoff (`(1 - runoff) ** age`) at its booked
+   loan rate, deposit rate, ECL rate and capital basis;
+5. evaluates the whole active book with `cohort_accounting.evaluate_active_portfolio()`: cohort
+   terms summed, funding terms (wholesale, excess deposits, shortfall penalty) once on the
+   aggregate balances at the period market;
+6. discounts the active-book objective at the end of the period.
+
+`PeriodEconomics` reports new-business, surviving and total volumes, the new-business objective,
+the active-book objective, the back-book incremental attribution (their difference) and every
+component. `reinvestment_spread_bps` is retained but not applied: the roll has no rollover event.
+Equations and limitations: [modelling_assumptions.md](modelling_assumptions.md#multi-period-cohort-accounting-fin-002-phase-3b-2026-11-21).
 
 ## Artifact Flow
 
@@ -386,6 +398,7 @@ distinct-bank coverage checks remain at the existing resolver boundaries.
 - [optimization/response_fn.py](../src/balance_pricing_engine/optimization/response_fn.py) — pluggable response interface that decouples the optimiser from the response source: `ResponseFn` Protocol, `SyntheticLoanResponseFn` / `SyntheticDepositResponseFn` adapters, `MLResponseFnAdapter` (wraps a scored ML model), and the governance guards `GovernanceError` / `require_approved`.
 - [diagnostics.py](../src/balance_pricing_engine/diagnostics.py) — `BoundaryDiagnostics`, `ObjectiveDecomposition`, `evaluate_adaptive_joint_rate_grid` (boundary-expansion wrapper), `run_sensitivity_analysis` (returns `delta_loan_rate_bps`, `delta_deposit_rate_bps`, `delta_objective_pct`, `parameter_family`; accepts `n_seeds` for Monte Carlo cohort uncertainty). Default sensitivity cases perturb all four elasticities and two customer-feature coefficients by ±25%.
 - [scenarios/runner.py](../src/balance_pricing_engine/scenarios/runner.py) — `run_baseline_diagnostics` (revalidates incoming economic config), `ScenarioDiagnostics` dataclass, `write_artifacts()` persistence. `ScenarioDiagnostics` also exposes `counterfactual_decompositions(top_n)` and `cohort_attribution()`.
+- [scenarios/multiperiod.py](../src/balance_pricing_engine/scenarios/multiperiod.py) / [scenarios/cohort_accounting.py](../src/balance_pricing_engine/scenarios/cohort_accounting.py) — multi-period rolling projection (FIN-002, Phase 3b). Surviving cohorts keep their booked loan rate, deposit rate, ECL rate and capital basis; drift never reprices them. Funding terms are computed once on aggregate active balances, never per cohort and summed. `back_book_incremental_contribution` is `active - new_business`, a portfolio attribution. `period_summary()` keeps its first five columns' meaning (`total_objective` = new-business objective). `reinvestment_spread_bps` is not applied.
 - [scenarios/experiments.py](../src/balance_pricing_engine/scenarios/experiments.py) — small scenario helpers (e.g. `run_higher_funding_penalty_scenario`).
 - [run_ledger/](../src/balance_pricing_engine/run_ledger/) — governed pricing-run ledger layer. Single `write_run_ledger()` entry point (re-exported from `__init__.py`) orchestrates: `directory.py` (timestamped `data/outputs/runs/{timestamp}_{scenario_name}/` directory), `metadata.py` (`RunMetadata` dataclass + `build_run_metadata` + `write_run_metadata`), `config_snapshot.py` (YAML copy), `memo.py` (`write_pricing_memo` — markdown recommendation/decomposition/risk memo), `checklist.py` (`write_governance_checklist` — markdown approval checklist). Wraps `ScenarioDiagnostics.write_artifacts()` and adds new artifacts on top.
 - [api/app.py](../src/balance_pricing_engine/api/app.py) — optional FastAPI delivery layer: original `POST /run-scenario`, governed `POST /v1/pricing/scenarios` through `PricingService`, and open `/health`/`/ready` probes. Both POST routes share `require_api_key` and [api/limits.py](../src/balance_pricing_engine/api/limits.py): streamed body cap, bounded YAML construction, customer/grid/expansion/sensitivity budgets and rejection of client file-path overrides. Limits remain outside the domain config so trusted CLI capacity is unchanged. API errors are sanitised, `run_dir` is relative and readiness reports a basename. Submitted YAML uses exclusive private temporary files with deterministic cleanup; the application service also securely materialises resolved competitor overlays without changing snapshot/hash provenance. [api/server.py](../src/balance_pricing_engine/api/server.py) is the only supported launcher, including Docker: loopback default, valid rotating keys required for all other bindings, validated TLS settings and uvicorn concurrency cap. Raw uvicorn launching is unsupported because it bypasses launcher policy. [api/auth.py](../src/balance_pricing_engine/api/auth.py) reads keys through `SecretsProvider`, rejects malformed entries and compares keys in constant time. See [deployment.md](deployment.md) for limits, compatibility restrictions and remote-access requirements.

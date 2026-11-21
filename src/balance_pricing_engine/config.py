@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping, Optional, TypeVar
+from typing import Any, Literal, Mapping, Optional, TypeVar
 import warnings
 
 import yaml
@@ -132,8 +132,14 @@ class MultiPeriodConfig(EconomicConfig):
     market_cash_rate_drift_bps: float = 0.0
     competitor_loan_rate_drift_bps: float = Field(default=0.0)
     competitor_deposit_rate_drift_bps: float = Field(default=0.0)
+    # Retained for compatibility. Not applied: surviving loans keep their booked contractual
+    # rate and the roll has no rollover event to price (FIN-002, Phase 3b).
     reinvestment_spread_bps: float = 0.0
     loan_tenor_years: Optional[float] = Field(default=None, gt=0)
+    # How the pricing reference rates move when competitor rates drift. "track_competitor"
+    # moves each reference rate with its competitor drift (the same market benchmark);
+    # "hold" keeps independently sourced reference rates fixed.
+    reference_rate_drift: Literal["track_competitor", "hold"] = "track_competitor"
 
 
 class LoanResponseCoefficientsConfig(EconomicConfig):
