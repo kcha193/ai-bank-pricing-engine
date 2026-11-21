@@ -9,14 +9,16 @@ scenario projection, not a globally optimised lifetime NPV and not a calibrated 
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 import warnings
 
 import pandas as pd
+from pydantic import model_validator
 
 from balance_pricing_engine.config import EngineConfig, revalidation_payload
 from balance_pricing_engine.config_identity import effective_config_hash
+from balance_pricing_engine.pricing.credit_loss import CreditLossProfile
 from balance_pricing_engine.pricing.profit import maturity_adjusted_rwa_weight
 from balance_pricing_engine.scenarios.cohort_accounting import (
     ActiveCohort,
@@ -25,6 +27,11 @@ from balance_pricing_engine.scenarios.cohort_accounting import (
     evaluate_active_portfolio,
     position_at,
     reconciles,
+)
+from balance_pricing_engine.scenarios.credit_loss_simulation import (
+    CreditLossSimulationConfig,
+    _CreditLossSimulationInputs,
+    run_credit_loss_simulation,
 )
 from balance_pricing_engine.scenarios.runner import ScenarioDiagnostics, run_baseline_diagnostics
 from balance_pricing_engine.synthetic.market import MarketState
@@ -122,7 +129,7 @@ class MultiPeriodDiagnostics:
 
     def cohort_summary(self) -> pd.DataFrame:
         """Return one row per active cohort per period, at its booked contractual terms."""
-        return pd.DataFrame(
+        summary = pd.DataFrame(
             [
                 {
                     "period": economics.period,
@@ -143,6 +150,13 @@ class MultiPeriodDiagnostics:
             ],
             columns=_COHORT_SUMMARY_COLUMNS,
         )
+        if "credit_loss_profiles" in self.provenance:
+            summary["credit_loss_profile_version"] = [
+                position.cohort.credit_loss_profile.version
+                for economics in self.period_economics
+                for position in economics.active_cohorts
+            ]
+        return summary
 
 
 _PERIOD_SUMMARY_FIELDS = (
@@ -191,6 +205,54 @@ def run_multiperiod_diagnostics(
 ) -> MultiPeriodDiagnostics:
     """Roll the portfolio forward ``n_periods`` annual periods with cohort accounting."""
     config = EngineConfig.model_validate(revalidation_payload(config))
+    return _roll_portfolio(config, max_boundary_expansions=max_boundary_expansions)
+
+
+class CreditLossMultiPeriodSimulationConfig(_CreditLossSimulationInputs):
+    """Explicitly select an illustrative profile for each annual booking period."""
+
+    profiles: tuple[CreditLossProfile, ...]
+
+    @model_validator(mode="after")
+    def validate_profile_schedule(self) -> CreditLossMultiPeriodSimulationConfig:
+        mp = self.engine_config.multiperiod
+        if mp is None or len(self.profiles) != mp.n_periods:
+            raise ValueError("A multi-period credit loss simulation requires one profile per period.")
+        versions: dict[str, CreditLossProfile] = {}
+        for profile in self.profiles:
+            if versions.setdefault(profile.version, profile) != profile:
+                raise ValueError(f"Credit loss profile version {profile.version!r} is ambiguous.")
+        return self
+
+
+def run_multiperiod_credit_loss_simulation(
+    config: CreditLossMultiPeriodSimulationConfig,
+) -> MultiPeriodDiagnostics:
+    """Project synthetic bookings using the assigned period profile and booked cohort loss."""
+    config = CreditLossMultiPeriodSimulationConfig.model_validate(config)
+    result = _roll_portfolio(
+        config.engine_config,
+        max_boundary_expansions=config.max_boundary_expansions,
+        profiles=config.profiles,
+    )
+    return replace(
+        result,
+        provenance={
+            **result.provenance,
+            "config_hash": effective_config_hash(config),
+            "loss_model": config.loss_model,
+            "governance_status": "REVIEW_REQUIRED",
+            "credit_loss_profiles": [profile.model_dump(mode="json") for profile in config.profiles],
+        },
+    )
+
+
+def _roll_portfolio(
+    config: EngineConfig,
+    *,
+    max_boundary_expansions: int,
+    profiles: tuple[CreditLossProfile, ...] | None = None,
+) -> MultiPeriodDiagnostics:
     mp = config.multiperiod
     if mp is None:
         raise ValueError("config.multiperiod is required for multi-period diagnostics.")
@@ -216,16 +278,25 @@ def run_multiperiod_diagnostics(
     for period in range(mp.n_periods):
         scenario_config = _build_period_config(config, period)
         market = MarketState(**scenario_config.market.model_dump())
-        diagnostics = run_baseline_diagnostics(
-            scenario_config,
-            max_boundary_expansions=max_boundary_expansions,
-        )
+        if profiles is None:
+            diagnostics = run_baseline_diagnostics(
+                scenario_config, max_boundary_expansions=max_boundary_expansions
+            )
+        else:
+            diagnostics = run_credit_loss_simulation(
+                CreditLossSimulationConfig(
+                    engine_config=scenario_config,
+                    profile=profiles[period],
+                    max_boundary_expansions=max_boundary_expansions,
+                )
+            ).diagnostics
         best = diagnostics.best_result
         new_cohort = BookedCohort.from_result(
             best,
             origination_period=period,
             loan_rwa_weight=loan_rwa_weight,
             capital_hurdle_rate=scenario_config.balance_sheet.capital_hurdle_rate,
+            credit_loss_profile=diagnostics.credit_loss_profile,
         )
         new_position = position_at(
             new_cohort, period, effective_loan_runoff, mp.deposit_runoff_rate

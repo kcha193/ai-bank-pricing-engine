@@ -102,6 +102,18 @@ def evaluate_gates(
         _volume_nonzero_gate(diagnostics),
         _roe_floor_gate(config, diagnostics),
     ]
+    loss_profile = getattr(diagnostics, "credit_loss_profile", None)
+    if loss_profile is not None:
+        gates.append(
+            GateResult(
+                code="CREDIT_LOSS_SIMULATION_ONLY",
+                status=GateStatus.WARN,
+                message="Annual mortgage loss assumptions are synthetic and uncalibrated.",
+                severity="warning",
+                evidence={"profile_version": loss_profile.version},
+                remediation="Obtain independent Credit Risk and Model Risk review and approval.",
+            )
+        )
     return gates
 
 

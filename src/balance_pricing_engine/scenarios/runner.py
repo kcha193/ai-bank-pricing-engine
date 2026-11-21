@@ -37,6 +37,7 @@ from balance_pricing_engine.optimization.segmented import (
     SolverSettings,
     optimize_segmented_rates,
 )
+from balance_pricing_engine.pricing.credit_loss import SYNTHETIC_LABEL, CreditLossProfile
 from balance_pricing_engine.pricing.profit import (
     maturity_adjusted_rwa_weight,
     portfolio_return_on_equity,
@@ -82,6 +83,7 @@ class ScenarioDiagnostics:
     selected_return_on_equity: float | None = None
     # Segmented runs only: how the tier-rate search was performed (additive, OPT-002).
     segmented_solver: dict[str, object] | None = None
+    credit_loss_profile: CreditLossProfile | None = None
 
     def top_results(self, n: int = 5) -> pd.DataFrame:
         """Return the top objective rows for reporting."""
@@ -180,6 +182,12 @@ class ScenarioDiagnostics:
             )
         if self.segmented_solver is not None:
             summary["segmented_solver"] = self.segmented_solver
+        if self.credit_loss_profile is not None:
+            summary["credit_loss_simulation"] = {
+                "use": SYNTHETIC_LABEL,
+                "review_required": True,
+                "profile": self.credit_loss_profile.model_dump(mode="json"),
+            }
         (path / "summary.json").write_text(
             json.dumps(summary, indent=2, sort_keys=True),
             encoding="utf-8",
@@ -222,9 +230,32 @@ def run_baseline_diagnostics(
 ) -> ScenarioDiagnostics:
     """Run the baseline scenario and keep all evaluated pricing candidates."""
     config = EngineConfig.model_validate(revalidation_payload(config))
+    loan_customers, deposit_customers = _generate_pricing_population(config)
+    return _evaluate_pricing_population(
+        config,
+        loan_customers,
+        deposit_customers,
+        max_boundary_expansions=max_boundary_expansions,
+        registry=registry,
+    )
+
+
+def _generate_pricing_population(config: EngineConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     rng = make_rng(config.random_seed)
-    loan_customers = generate_loan_customers(config.simulation.n_loan_customers, rng)
-    deposit_customers = generate_deposit_customers(config.simulation.n_deposit_customers, rng)
+    return (
+        generate_loan_customers(config.simulation.n_loan_customers, rng),
+        generate_deposit_customers(config.simulation.n_deposit_customers, rng),
+    )
+
+
+def _evaluate_pricing_population(
+    config: EngineConfig,
+    loan_customers: pd.DataFrame,
+    deposit_customers: pd.DataFrame,
+    *,
+    max_boundary_expansions: int,
+    registry: object | None = None,
+) -> ScenarioDiagnostics:
     market = MarketState(**config.market.model_dump())
 
     if config.segmented_pricing is not None:

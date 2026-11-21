@@ -30,6 +30,7 @@ from typing import Sequence
 from balance_pricing_engine.config import BalanceSheetConfig
 from balance_pricing_engine.optimization.grid_search import OptimizationResult
 from balance_pricing_engine.pricing.balance_sheet import calculate_funding_result
+from balance_pricing_engine.pricing.credit_loss import CreditLossProfile
 from balance_pricing_engine.pricing.profit import (
     expected_capital_charge,
     expected_excess_deposit_income,
@@ -78,6 +79,7 @@ class BookedCohort:
     booked_credit_loss: float
     loan_rwa_weight: float
     capital_hurdle_rate: float
+    credit_loss_profile: CreditLossProfile | None = None
 
     def __post_init__(self) -> None:
         if self.origination_period < 0:
@@ -102,6 +104,7 @@ class BookedCohort:
         origination_period: int,
         loan_rwa_weight: float,
         capital_hurdle_rate: float,
+        credit_loss_profile: CreditLossProfile | None = None,
     ) -> "BookedCohort":
         """Book the winning single-period result, checking it is traceable to its rates."""
         for name in (
@@ -121,6 +124,7 @@ class BookedCohort:
             booked_credit_loss=result.expected_credit_loss,
             loan_rwa_weight=loan_rwa_weight,
             capital_hurdle_rate=capital_hurdle_rate,
+            credit_loss_profile=credit_loss_profile,
         )
         checks = (
             (

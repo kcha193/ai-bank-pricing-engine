@@ -68,6 +68,29 @@ Mutation runs use explicit and generated examples and skip shrinking. Each desig
 detector must fail with an assertion. The historical runner verifies the specific
 economic assertion on each pre-fix revision and all three anchors on current code.
 
+## Annual credit loss verification (FIN-001, Phase 4b)
+
+`test_credit_loss.py` verifies finite and bounded inputs, exact LVR endpoints,
+missing LVR, acceptance-independent facility loss and EAD scaling. The
+simulation tests check acceptance-weighted ECL, funding and interest on
+principal, joint/segmented parity, profile lineage, governance and cohort
+runoff. Validation tests include a controlled poor fit with predicted PD
+37.5% versus observed 75%, AUC 0, and matched NZ$46 predicted versus NZ$30
+realised. Sparse defaults and missing recoveries remain visible. The comparison
+tests reconcile the fixed-offer and reoptimised results to their loss bands
+and objective components. All inputs are synthetic.
+
+```bash
+python -m pytest -q tests/unit/test_credit_loss*.py
+python -m scripts.run_calibration_baseline --output /tmp/phase-4a-baseline.json
+cmp /tmp/phase-4a-baseline.json docs/audits/phase_4a_evidence/calibration-report.json
+python -m scripts.run_credit_loss_comparison --output /tmp/phase-4b-comparison.json
+cmp /tmp/phase-4b-comparison.json docs/audits/phase_4b_evidence/comparison.json
+```
+
+See the [model documentation](credit_loss_model.md) for the validation
+population, metric definitions and approval requirements.
+
 ## Known limitations
 
 - `portfolio_return_on_equity` overflows to `inf` when 0 < required capital < ~1e-290

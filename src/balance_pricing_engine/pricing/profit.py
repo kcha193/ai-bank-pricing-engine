@@ -7,6 +7,12 @@ from typing import Union
 import numpy as np
 import pandas as pd
 
+from balance_pricing_engine.pricing.credit_loss import (
+    ANNUAL_EXPECTED_LOSS_COLUMN,
+    _numeric_array,
+    _require_range,
+)
+
 # Portfolio-level terms accept a scalar or a NumPy array of candidate portfolios. Scalar
 # inputs keep returning plain Python floats; arrays are evaluated element by element with
 # the same arithmetic, so a vectorised search ranks candidates on identical values.
@@ -47,6 +53,20 @@ def expected_loan_interest_income(
 
 def expected_credit_loss(customers: pd.DataFrame, acceptance_probability: np.ndarray) -> float:
     """Calculate expected annualized credit loss for accepted home loans."""
+    if ANNUAL_EXPECTED_LOSS_COLUMN in customers:
+        annual_loss = _numeric_array("Annual expected loss", customers[ANNUAL_EXPECTED_LOSS_COLUMN])
+        probabilities = _numeric_array("Acceptance probabilities", acceptance_probability)
+        if annual_loss.ndim != 1 or probabilities.shape != annual_loss.shape:
+            raise ValueError("Acceptance probabilities must align with facility losses.")
+        _require_range("Acceptance probabilities", probabilities, 1)
+        _require_range("Annual expected loss", annual_loss)
+        with np.errstate(over="ignore"):
+            total = float(np.sum(probabilities * annual_loss))
+        if not np.isfinite(total):
+            raise ValueError("Portfolio expected credit loss must be finite.")
+        return total
+
+    # Preserve the original order of multiplication for legacy economic artifacts.
     balances = customers["loan_amount"].to_numpy()
     expected_loss = customers["expected_loss_rate"].to_numpy()
     return float(np.sum(acceptance_probability * balances * expected_loss))

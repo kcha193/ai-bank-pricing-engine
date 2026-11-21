@@ -3,7 +3,8 @@
 Two different questions, two different hashes -- never conflate them:
 
 * :func:`effective_config_hash` -- identity of the *validated* ``EngineConfig``
-  that actually drove pricing. Independent of YAML layout, key order, file name
+  that actually drove pricing (or the validated input envelope for an explicit
+  simulation). Independent of YAML layout, key order, file name
   and temp paths. This is the ``config_hash`` recorded in decision records and
   run-ledger metadata.
 * :func:`file_sha256` -- SHA-256 of a caller's original source file bytes. This
@@ -21,13 +22,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from balance_pricing_engine.config import EngineConfig
+    from pydantic import BaseModel
 
 CONFIG_HASH_BASIS = "effective_config_canonical_json_sha256"
 """Label recorded next to ``config_hash`` so readers can tell it from legacy file-byte hashes."""
 
 
-def canonical_config_bytes(config: "EngineConfig") -> bytes:
+def canonical_config_bytes(config: "BaseModel") -> bytes:
     """Canonical UTF-8 JSON encoding of the validated config.
 
     ``effective_config.json`` in a run ledger holds exactly these bytes, so
@@ -39,7 +40,7 @@ def canonical_config_bytes(config: "EngineConfig") -> bytes:
     ).encode("utf-8")
 
 
-def effective_config_hash(config: "EngineConfig") -> str:
+def effective_config_hash(config: "BaseModel") -> str:
     """SHA-256 hex digest of :func:`canonical_config_bytes`."""
     return hashlib.sha256(canonical_config_bytes(config)).hexdigest()
 
