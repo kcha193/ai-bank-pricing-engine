@@ -1,0 +1,748 @@
+{
+ "01_fin002_zero_runoff": {
+  "multiperiod": {
+   "n_periods": 2,
+   "loan_runoff_rate": 0.0,
+   "deposit_runoff_rate": 0.0,
+   "discount_rate": 0.0
+  },
+  "npv": 17762578.11,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37,
+    "components": {
+     "loan_interest_income": 31568485.71,
+     "expected_credit_loss": 3438163.91,
+     "capital_charge": 2141965.1,
+     "deposit_interest_cost": 13320584.21,
+     "wholesale_funding_cost": 6700269.98,
+     "funding_shortfall_penalty": 46643.14,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 2591285.73,
+     "total_active_loan_volume": 509991691.6,
+     "total_active_deposit_volume": 328903313.81
+    }
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 5920859.37,
+    "period_contribution_undiscounted": 11841718.74,
+    "discounted_contribution": 11841718.74,
+    "components": {
+     "loan_interest_income": 63136971.42,
+     "expected_credit_loss": 6876327.81,
+     "capital_charge": 4283930.21,
+     "deposit_interest_cost": 26641168.42,
+     "wholesale_funding_cost": 13400539.96,
+     "funding_shortfall_penalty": 93286.29,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 5182571.46,
+     "total_active_loan_volume": 1019983383.21,
+     "total_active_deposit_volume": 657806627.63
+    }
+   }
+  ]
+ },
+ "02_full_runoff": {
+  "multiperiod": {
+   "n_periods": 2,
+   "loan_runoff_rate": 1.0,
+   "deposit_runoff_rate": 1.0,
+   "discount_rate": 0.0
+  },
+  "npv": 11841718.74,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37,
+    "components": {
+     "loan_interest_income": 31568485.71,
+     "expected_credit_loss": 3438163.91,
+     "capital_charge": 2141965.1,
+     "deposit_interest_cost": 13320584.21,
+     "wholesale_funding_cost": 6700269.98,
+     "funding_shortfall_penalty": 46643.14,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 2591285.73,
+     "total_active_loan_volume": 509991691.6,
+     "total_active_deposit_volume": 328903313.81
+    }
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37,
+    "components": {
+     "loan_interest_income": 31568485.71,
+     "expected_credit_loss": 3438163.91,
+     "capital_charge": 2141965.1,
+     "deposit_interest_cost": 13320584.21,
+     "wholesale_funding_cost": 6700269.98,
+     "funding_shortfall_penalty": 46643.14,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 2591285.73,
+     "total_active_loan_volume": 509991691.6,
+     "total_active_deposit_volume": 328903313.81
+    }
+   }
+  ]
+ },
+ "03_loan_runoff_gt_deposit": {
+  "multiperiod": {
+   "n_periods": 3,
+   "loan_runoff_rate": 0.5,
+   "deposit_runoff_rate": 0.1,
+   "discount_rate": 0.0
+  },
+  "npv": 23749662.76,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37,
+    "components": {
+     "loan_interest_income": 31568485.71,
+     "expected_credit_loss": 3438163.91,
+     "capital_charge": 2141965.1,
+     "deposit_interest_cost": 13320584.21,
+     "wholesale_funding_cost": 6700269.98,
+     "funding_shortfall_penalty": 46643.14,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 2591285.73,
+     "total_active_loan_volume": 509991691.6,
+     "total_active_deposit_volume": 328903313.81
+    }
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 2569929.76,
+    "period_contribution_undiscounted": 8490789.13,
+    "discounted_contribution": 8490789.13,
+    "components": {
+     "loan_interest_income": 47352728.57,
+     "expected_credit_loss": 5157245.86,
+     "capital_charge": 3212947.66,
+     "deposit_interest_cost": 25309110.0,
+     "wholesale_funding_cost": 5182635.92,
+     "funding_shortfall_penalty": 0.0,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 0.0,
+     "total_active_loan_volume": 764987537.41,
+     "total_active_deposit_volume": 624916296.24
+    }
+   },
+   {
+    "period": 2,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 3417154.89,
+    "period_contribution_undiscounted": 9338014.26,
+    "discounted_contribution": 9338014.26,
+    "components": {
+     "loan_interest_income": 55244849.99,
+     "expected_credit_loss": 6016786.84,
+     "capital_charge": 3748438.93,
+     "deposit_interest_cost": 36098783.21,
+     "wholesale_funding_cost": 42826.76,
+     "funding_shortfall_penalty": 0.0,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 0.0,
+     "total_active_loan_volume": 892485460.31,
+     "total_active_deposit_volume": 891327980.43
+    }
+   }
+  ]
+ },
+ "04_deposit_runoff_gt_loan": {
+  "multiperiod": {
+   "n_periods": 3,
+   "loan_runoff_rate": 0.1,
+   "deposit_runoff_rate": 0.5,
+   "discount_rate": 0.0
+  },
+  "npv": 26730047.71,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37,
+    "components": {
+     "loan_interest_income": 31568485.71,
+     "expected_credit_loss": 3438163.91,
+     "capital_charge": 2141965.1,
+     "deposit_interest_cost": 13320584.21,
+     "wholesale_funding_cost": 6700269.98,
+     "funding_shortfall_penalty": 46643.14,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 2591285.73,
+     "total_active_loan_volume": 509991691.6,
+     "total_active_deposit_volume": 328903313.81
+    }
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 3421134.21,
+    "period_contribution_undiscounted": 9341993.58,
+    "discounted_contribution": 9341993.58,
+    "components": {
+     "loan_interest_income": 59980122.85,
+     "expected_credit_loss": 6532511.42,
+     "capital_charge": 4069733.7,
+     "deposit_interest_cost": 19980876.31,
+     "wholesale_funding_cost": 17598282.0,
+     "funding_shortfall_penalty": 2456725.83,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 136484768.41,
+     "total_active_loan_volume": 968984214.05,
+     "total_active_deposit_volume": 493354970.72
+    }
+   },
+   {
+    "period": 2,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 5546335.39,
+    "period_contribution_undiscounted": 11467194.76,
+    "discounted_contribution": 11467194.76,
+    "components": {
+     "loan_interest_income": 85550596.28,
+     "expected_credit_loss": 9317424.19,
+     "capital_charge": 5804725.43,
+     "deposit_interest_cost": 23311022.37,
+     "wholesale_funding_cost": 29840377.35,
+     "funding_shortfall_penalty": 5809852.18,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 322769565.59,
+     "total_active_loan_volume": 1382077484.25,
+     "total_active_deposit_volume": 575580799.17
+    }
+   }
+  ]
+ },
+ "05_rising_rates": {
+  "multiperiod": {
+   "n_periods": 3,
+   "loan_runoff_rate": 0.3,
+   "deposit_runoff_rate": 0.5,
+   "discount_rate": 0.0,
+   "market_cash_rate_drift_bps": 50,
+   "competitor_loan_rate_drift_bps": 50,
+   "competitor_deposit_rate_drift_bps": 50
+  },
+  "npv": 20288590.95,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37,
+    "components": {
+     "loan_interest_income": 31568485.71,
+     "expected_credit_loss": 3438163.91,
+     "capital_charge": 2141965.1,
+     "deposit_interest_cost": 13320584.21,
+     "wholesale_funding_cost": 6700269.98,
+     "funding_shortfall_penalty": 46643.14,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 2591285.73,
+     "total_active_loan_volume": 509991691.6,
+     "total_active_deposit_volume": 328903313.81
+    }
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0644,
+    "deposit_rate": 0.042,
+    "new_business_objective": 5389681.82,
+    "implied_back_book": 2228069.31,
+    "period_contribution_undiscounted": 7617751.13,
+    "discounted_contribution": 7617751.13,
+    "components": {
+     "loan_interest_income": 52442465.9,
+     "expected_credit_loss": 5573335.45,
+     "capital_charge": 3478366.39,
+     "deposit_interest_cost": 19478642.27,
+     "wholesale_funding_cost": 15058344.17,
+     "funding_shortfall_penalty": 1236026.48,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 68668138.05,
+     "total_active_loan_volume": 828182474.51,
+     "total_active_deposit_volume": 469650470.38
+    }
+   },
+   {
+    "period": 2,
+    "loan_rate": 0.0664,
+    "deposit_rate": 0.0445,
+    "new_business_objective": 4882144.34,
+    "implied_back_book": 1867836.11,
+    "period_contribution_undiscounted": 6749980.46,
+    "discounted_contribution": 6749980.46,
+    "components": {
+     "loan_interest_income": 69265450.98,
+     "expected_credit_loss": 7201480.79,
+     "capital_charge": 4494104.13,
+     "deposit_interest_cost": 23775816.36,
+     "wholesale_funding_cost": 24429316.86,
+     "funding_shortfall_penalty": 2614752.39,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 145264021.49,
+     "total_active_loan_volume": 1070024793.24,
+     "total_active_deposit_volume": 550252094.11
+    }
+   }
+  ]
+ },
+ "06_falling_rates": {
+  "multiperiod": {
+   "n_periods": 3,
+   "loan_runoff_rate": 0.3,
+   "deposit_runoff_rate": 0.5,
+   "discount_rate": 0.0,
+   "market_cash_rate_drift_bps": -50,
+   "competitor_loan_rate_drift_bps": -50,
+   "competitor_deposit_rate_drift_bps": -50
+  },
+  "npv": 32317701.38,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37,
+    "components": {
+     "loan_interest_income": 31568485.71,
+     "expected_credit_loss": 3438163.91,
+     "capital_charge": 2141965.1,
+     "deposit_interest_cost": 13320584.21,
+     "wholesale_funding_cost": 6700269.98,
+     "funding_shortfall_penalty": 46643.14,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 2591285.73,
+     "total_active_loan_volume": 509991691.6,
+     "total_active_deposit_volume": 328903313.81
+    }
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0594,
+    "deposit_rate": 0.039,
+    "new_business_objective": 6480978.97,
+    "implied_back_book": 4153494.58,
+    "period_contribution_undiscounted": 10634473.56,
+    "discounted_contribution": 10634473.56,
+    "components": {
+     "loan_interest_income": 54836474.57,
+     "expected_credit_loss": 6134638.94,
+     "capital_charge": 3814221.45,
+     "deposit_interest_cost": 20383451.51,
+     "wholesale_funding_cost": 12538253.63,
+     "funding_shortfall_penalty": 1331435.49,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 73968638.19,
+     "total_active_loan_volume": 908147964.87,
+     "total_active_deposit_volume": 516327538.97
+    }
+   },
+   {
+    "period": 2,
+    "loan_rate": 0.0554,
+    "deposit_rate": 0.0355,
+    "new_business_objective": 7517123.02,
+    "implied_back_book": 8245245.43,
+    "period_contribution_undiscounted": 15762368.45,
+    "discounted_contribution": 15762368.45,
+    "components": {
+     "loan_interest_income": 83794227.51,
+     "expected_credit_loss": 9954636.46,
+     "capital_charge": 6112491.48,
+     "deposit_interest_cost": 21147653.43,
+     "wholesale_funding_cost": 23991488.94,
+     "funding_shortfall_penalty": 6825588.74,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 379199374.31,
+     "total_active_loan_volume": 1455355115.2,
+     "total_active_deposit_volume": 566781450.57
+    }
+   }
+  ]
+ },
+ "07_funding_shortfall": {
+  "multiperiod": {
+   "n_periods": 3,
+   "loan_runoff_rate": 0.0,
+   "deposit_runoff_rate": 1.0,
+   "discount_rate": 0.0
+  },
+  "npv": 21217862.06,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37,
+    "components": {
+     "loan_interest_income": 31568485.71,
+     "expected_credit_loss": 3438163.91,
+     "capital_charge": 2141965.1,
+     "deposit_interest_cost": 13320584.21,
+     "wholesale_funding_cost": 6700269.98,
+     "funding_shortfall_penalty": 46643.14,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 2591285.73,
+     "total_active_loan_volume": 509991691.6,
+     "total_active_deposit_volume": 328903313.81
+    }
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 1151761.32,
+    "period_contribution_undiscounted": 7072620.69,
+    "discounted_contribution": 7072620.69,
+    "components": {
+     "loan_interest_income": 63136971.42,
+     "expected_credit_loss": 6876327.81,
+     "capital_charge": 4283930.21,
+     "deposit_interest_cost": 13320584.21,
+     "wholesale_funding_cost": 25569962.57,
+     "funding_shortfall_penalty": 6013545.93,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 334085885.27,
+     "total_active_loan_volume": 1019983383.21,
+     "total_active_deposit_volume": 328903313.81
+    }
+   },
+   {
+    "period": 2,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 2303522.64,
+    "period_contribution_undiscounted": 8224382.01,
+    "discounted_contribution": 8224382.01,
+    "components": {
+     "loan_interest_income": 94705457.13,
+     "expected_credit_loss": 10314491.72,
+     "capital_charge": 6425895.31,
+     "deposit_interest_cost": 13320584.21,
+     "wholesale_funding_cost": 44439655.16,
+     "funding_shortfall_penalty": 11980448.73,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 665580484.82,
+     "total_active_loan_volume": 1529975074.81,
+     "total_active_deposit_volume": 328903313.81
+    }
+   }
+  ]
+ },
+ "08_excess_deposits": {
+  "multiperiod": {
+   "n_periods": 4,
+   "loan_runoff_rate": 1.0,
+   "deposit_runoff_rate": 0.0,
+   "discount_rate": 0.0
+  },
+  "npv": -245459.68,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37,
+    "components": {
+     "loan_interest_income": 31568485.71,
+     "expected_credit_loss": 3438163.91,
+     "capital_charge": 2141965.1,
+     "deposit_interest_cost": 13320584.21,
+     "wholesale_funding_cost": 6700269.98,
+     "funding_shortfall_penalty": 46643.14,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 2591285.73,
+     "total_active_loan_volume": 509991691.6,
+     "total_active_deposit_volume": 328903313.81
+    }
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": -2878297.69,
+    "period_contribution_undiscounted": 3042561.68,
+    "discounted_contribution": 3042561.68,
+    "components": {
+     "loan_interest_income": 31568485.71,
+     "expected_credit_loss": 3438163.91,
+     "capital_charge": 2141965.1,
+     "deposit_interest_cost": 26641168.42,
+     "wholesale_funding_cost": 0.0,
+     "funding_shortfall_penalty": 0.0,
+     "excess_deposit_income": 3695373.4,
+     "funding_shortfall": 0.0,
+     "total_active_loan_volume": 509991691.6,
+     "total_active_deposit_volume": 657806627.63
+    }
+   },
+   {
+    "period": 2,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": -7976299.05,
+    "period_contribution_undiscounted": -2055439.68,
+    "discounted_contribution": -2055439.68,
+    "components": {
+     "loan_interest_income": 31568485.71,
+     "expected_credit_loss": 3438163.91,
+     "capital_charge": 2141965.1,
+     "deposit_interest_cost": 39961752.63,
+     "wholesale_funding_cost": 0.0,
+     "funding_shortfall_penalty": 0.0,
+     "excess_deposit_income": 11917956.25,
+     "funding_shortfall": 0.0,
+     "total_active_loan_volume": 509991691.6,
+     "total_active_deposit_volume": 986709941.44
+    }
+   },
+   {
+    "period": 3,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": -13074300.42,
+    "period_contribution_undiscounted": -7153441.05,
+    "discounted_contribution": -7153441.05,
+    "components": {
+     "loan_interest_income": 31568485.71,
+     "expected_credit_loss": 3438163.91,
+     "capital_charge": 2141965.1,
+     "deposit_interest_cost": 53282336.84,
+     "wholesale_funding_cost": 0.0,
+     "funding_shortfall_penalty": 0.0,
+     "excess_deposit_income": 20140539.09,
+     "funding_shortfall": 0.0,
+     "total_active_loan_volume": 509991691.6,
+     "total_active_deposit_volume": 1315613255.25
+    }
+   }
+  ]
+ },
+ "09_four_vintages": {
+  "multiperiod": {
+   "n_periods": 4,
+   "loan_runoff_rate": 0.3,
+   "deposit_runoff_rate": 0.5,
+   "discount_rate": 0.0
+  },
+  "npv": 37760249.82,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5920859.37,
+    "components": {
+     "loan_interest_income": 31568485.71,
+     "expected_credit_loss": 3438163.91,
+     "capital_charge": 2141965.1,
+     "deposit_interest_cost": 13320584.21,
+     "wholesale_funding_cost": 6700269.98,
+     "funding_shortfall_penalty": 46643.14,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 2591285.73,
+     "total_active_loan_volume": 509991691.6,
+     "total_active_deposit_volume": 328903313.81
+    }
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 3190781.95,
+    "period_contribution_undiscounted": 9111641.32,
+    "discounted_contribution": 9111641.32,
+    "components": {
+     "loan_interest_income": 53666425.71,
+     "expected_credit_loss": 5844878.64,
+     "capital_charge": 3641340.68,
+     "deposit_interest_cost": 19980876.31,
+     "wholesale_funding_cost": 13824343.49,
+     "funding_shortfall_penalty": 1263345.27,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 70185848.5,
+     "total_active_loan_volume": 866985875.73,
+     "total_active_deposit_volume": 493354970.72
+    }
+   },
+   {
+    "period": 2,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 4947419.51,
+    "period_contribution_undiscounted": 10868278.88,
+    "discounted_contribution": 10868278.88,
+    "components": {
+     "loan_interest_income": 69134983.71,
+     "expected_credit_loss": 7529578.95,
+     "capital_charge": 4690903.58,
+     "deposit_interest_cost": 23311022.37,
+     "wholesale_funding_cost": 20028137.2,
+     "funding_shortfall_penalty": 2707062.73,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 150392373.83,
+     "total_active_loan_volume": 1116881804.61,
+     "total_active_deposit_volume": 575580799.17
+    }
+   },
+   {
+    "period": 3,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 5938610.9,
+    "period_contribution_undiscounted": 11859470.26,
+    "discounted_contribution": 11859470.26,
+    "components": {
+     "loan_interest_income": 79962974.3,
+     "expected_credit_loss": 8708869.17,
+     "capital_charge": 5425597.61,
+     "deposit_interest_cost": 24976095.39,
+     "wholesale_funding_cost": 24979263.93,
+     "funding_shortfall_penalty": 4013677.93,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 222982107.24,
+     "total_active_loan_volume": 1291808954.84,
+     "total_active_deposit_volume": 616693713.4
+    }
+   }
+  ]
+ },
+ "10_positive_discount": {
+  "multiperiod": {
+   "n_periods": 3,
+   "loan_runoff_rate": 0.3,
+   "deposit_runoff_rate": 0.5,
+   "discount_rate": 0.08
+  },
+  "npv": 21921631.19,
+  "periods": [
+   {
+    "period": 0,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": -0.0,
+    "period_contribution_undiscounted": 5920859.37,
+    "discounted_contribution": 5482277.19,
+    "components": {
+     "loan_interest_income": 31568485.71,
+     "expected_credit_loss": 3438163.91,
+     "capital_charge": 2141965.1,
+     "deposit_interest_cost": 13320584.21,
+     "wholesale_funding_cost": 6700269.98,
+     "funding_shortfall_penalty": 46643.14,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 2591285.73,
+     "total_active_loan_volume": 509991691.6,
+     "total_active_deposit_volume": 328903313.81
+    }
+   },
+   {
+    "period": 1,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 3190781.95,
+    "period_contribution_undiscounted": 9111641.32,
+    "discounted_contribution": 7811763.82,
+    "components": {
+     "loan_interest_income": 53666425.71,
+     "expected_credit_loss": 5844878.64,
+     "capital_charge": 3641340.68,
+     "deposit_interest_cost": 19980876.31,
+     "wholesale_funding_cost": 13824343.49,
+     "funding_shortfall_penalty": 1263345.27,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 70185848.5,
+     "total_active_loan_volume": 866985875.73,
+     "total_active_deposit_volume": 493354970.72
+    }
+   },
+   {
+    "period": 2,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "new_business_objective": 5920859.37,
+    "implied_back_book": 4947419.51,
+    "period_contribution_undiscounted": 10868278.88,
+    "discounted_contribution": 8627590.18,
+    "components": {
+     "loan_interest_income": 69134983.71,
+     "expected_credit_loss": 7529578.95,
+     "capital_charge": 4690903.58,
+     "deposit_interest_cost": 23311022.37,
+     "wholesale_funding_cost": 20028137.2,
+     "funding_shortfall_penalty": 2707062.73,
+     "excess_deposit_income": 0.0,
+     "funding_shortfall": 150392373.83,
+     "total_active_loan_volume": 1116881804.61,
+     "total_active_deposit_volume": 575580799.17
+    }
+   }
+  ]
+ }
+}
