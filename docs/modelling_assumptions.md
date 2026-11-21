@@ -103,15 +103,20 @@ and the funding and capital terms are applied by the canonical `pricing/` functi
 candidate arrays elementwise with identical arithmetic). Then:
 
 - *Exact search* enumerates every tier combination when the count is at most
-  `SolverSettings.exact_search_max_combinations` (default 2,000,000; hard ceiling 10,000,000), in
-  250,000-candidate blocks. One tier per side is always exact. The result is the proven optimum on
-  the tier grids (`optimality_proven: true`).
+  `SolverSettings.exact_search_max_combinations` (default 2,000,000; hard ceiling 10,000,000). The
+  per-side combination totals are built in full; pairings are evaluated in blocks of about 250,000
+  loan-by-deposit candidates, but a block always holds every deposit-side combination, so when
+  those alone exceed the block size the bound is one row of the deposit side (at most the exact
+  threshold). One tier per side is always exact and is not enumerated twice. The result is the
+  proven optimum on the tier grids (`optimality_proven: true`).
 - *Coordinate descent* is used above the threshold. Each pass revisits every loan tier, then every
   deposit tier, evaluating all of that tier's rates against the complete objective with the other
   tiers fixed (so a loan candidate sees the current total deposit volume, and the shortfall penalty
   is recomputed for every candidate). A move is accepted only if it improves the objective by more
   than `max(objective_tolerance, 1e-12 * |objective|)` (default `objective_tolerance` $1e-6), or
-  if it newly meets the ROE floor. The objective therefore never decreases, no state can repeat, and
+  if it newly meets the ROE floor. The (meets ROE floor, objective) key therefore never decreases;
+  without a floor the objective never decreases, but a move that first meets the floor may lower
+  it. No state can repeat, and
   the search stops when a full pass makes no move (converged) or at `max_iterations` passes
   (default 100; `iteration_limit_reached: true`, `solver_converged: false`). A fixed point is a
   local optimum only: on the benchmark fixtures descent finished 0.2-0.3% below the exact optimum,
@@ -124,19 +129,27 @@ candidate arrays elementwise with identical arithmetic). Then:
 
 **Uniform baseline safeguard.** When a loan rate appears in every loan-tier grid and a deposit rate
 appears in every deposit-tier grid, the best such uniform portfolio is evaluated on the same
-customers and parameters, reported as `uniform_baseline_objective`, and used as a descent start, so
-the segmented result is never below it. When the grids share no rate, no uniform comparator exists
-and `uniform_baseline_feasible` is false; no dominance claim is made.
+customers and parameters, reported as `uniform_baseline_objective`, used as a descent start and kept
+as a final candidate even if `max_starts` truncates the start list. Without an ROE floor the
+segmented objective is therefore never below it; with a floor the guarantee is on the
+(meets floor, objective) key, so a qualifying segmented result may sit below a non-qualifying
+uniform one. When the grids share no rate, no uniform comparator exists and
+`uniform_baseline_feasible` is false; no dominance claim is made.
 
 **Selection and ties.** Candidates meeting `min_return_on_equity` (portfolio ROE, the joint
 definition) are preferred; then higher objective, lower funding shortfall, smaller summed absolute
-spread to the market reference rates, then enumeration order (first tier slowest). This matches
+spread to the market reference rates (undefined, so skipped, unless both reference rates are set),
+then enumeration order (first tier slowest). Resolving a large exact tie on distance costs one
+Python call per tied candidate; ties that large need degenerate inputs. This matches
 `select_best_result_with_disclosure`, so one catch-all tier per side reproduces the joint optimiser
 exactly, including ROE-floor selection.
 
 **Boundary expansion.** Each expanded round is re-optimised on the full objective. The previous
 round's tier rates are added to their tiers' candidate sets and seed descent, so an enlarged search
-never returns a lower best-known objective. Boundary warnings, `policy_band_breached` and expansion
+never returns a worse result on the (meets floor, objective) key; without a floor, never a lower
+objective. This matters because an expanded grid need not contain the old rates: a 5.00-6.20%
+tier grid in 0.5% steps appends 6.20% off-lattice, and its expansion (5.00, 5.50, ..., 7.00,
+7.40%) drops it. Boundary warnings, `policy_band_breached` and expansion
 counts keep their meaning; convergence never clears a boundary warning.
 
 **Diagnostics.** `summary.json` gains an additive `segmented_solver` object: `solver_method`

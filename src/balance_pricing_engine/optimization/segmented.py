@@ -987,12 +987,18 @@ def solve_segmented_portfolio(
         # One tier per side is the joint grid search, which is always exhaustive.
         use_exact = single_tier or space <= settings.exact_search_max_combinations
 
-    uniform_choice, uniform_evaluations = _uniform_baseline(problem, settings)
-    evaluations = uniform_evaluations
     start_objectives: tuple[tuple[float, float], ...] = ()
+    if use_exact and single_tier:
+        # With one tier per side every portfolio is uniform: the exhaustive optimum is
+        # the uniform baseline, so enumerate once.
+        choice, evaluations = _exhaustive_search(problem, settings)
+        uniform_choice = choice
+    else:
+        uniform_choice, evaluations = _uniform_baseline(problem, settings)
     if use_exact:
-        choice, exact_evaluations = _exhaustive_search(problem, settings)
-        evaluations += exact_evaluations
+        if not single_tier:
+            choice, exact_evaluations = _exhaustive_search(problem, settings)
+            evaluations += exact_evaluations
         method, converged, iterations, n_starts = SOLVER_EXACT, True, 0, 0
         limit_reached = cycle = False
     else:
@@ -1016,6 +1022,11 @@ def solve_segmented_portfolio(
             key=lambda i: problem.key((runs[i].loan_indices, runs[i].deposit_indices), i),
         )
         choice = (runs[best_run].loan_indices, runs[best_run].deposit_indices)
+        # The uniform baseline stays admissible even if max_starts truncated its start.
+        if uniform_choice is not None and problem.key(uniform_choice, -1) > problem.key(
+            choice, best_run
+        ):
+            choice = uniform_choice
         evaluations += sum(run.candidate_evaluations for run in runs)
         method = SOLVER_COORDINATE_DESCENT
         converged = all(run.converged for run in runs)

@@ -251,10 +251,9 @@ def test_single_tier_segmented_matches_joint_optimiser(case):
     seg = run_baseline_diagnostics(segmented, max_boundary_expansions=0)
     jnt = run_baseline_diagnostics(joint, max_boundary_expansions=0)
 
+    # Same customers, grid and arithmetic order: every component is bit-identical.
     for field in EQUIVALENCE_FIELDS:
-        assert getattr(seg.best_result, field) == pytest.approx(
-            getattr(jnt.best_result, field), rel=1e-12, abs=1e-9
-        ), field
+        assert getattr(seg.best_result, field) == getattr(jnt.best_result, field), field
     assert seg.selected_return_on_equity == pytest.approx(jnt.selected_return_on_equity)
     assert seg.segmented_solver["solver_method"] == "EXACT"
     assert seg.segmented_solver["optimality_proven"] is True
@@ -461,6 +460,23 @@ def test_coordinate_descent_converges_to_global_optimum_on_separable_problem():
     assert descent.diagnostics.converged is True
     assert descent.diagnostics.optimality_proven is False
     assert descent.result.total_objective == pytest.approx(exact.result.total_objective)
+
+
+def test_coordinate_descent_under_roe_floor_never_lowers_the_lexicographic_key():
+    loans, deposits, params = _roe_fixture()
+    small = evaluate_segmented_portfolio([loans[0].choice(1)], [deposits[0].choice(0)], params)
+    large = evaluate_segmented_portfolio([loans[0].choice(0)], [deposits[0].choice(0)], params)
+    floor = (small.return_on_equity + large.return_on_equity) / 2
+
+    run = run_coordinate_descent(
+        loans, deposits, params, start=((0,), (0,)), settings=DESCENT,
+        min_return_on_equity=floor,
+    )
+
+    # Gaining the floor is accepted at a lower objective; the (meets, objective) key rises.
+    assert run.loan_indices == (1,)
+    assert run.meets_roe_floor is True
+    assert run.accepted_objectives == (large.total_objective, small.total_objective)
 
 
 def test_coordinate_descent_respects_iteration_cap_and_reports_non_convergence():
@@ -726,6 +742,69 @@ def test_ties_break_on_lower_shortfall_then_enumeration_order():
     assert first_wins.loan_indices == (0,)
 
 
+def test_exact_ties_break_on_distance_to_market_reference_rates():
+    # Identical economics at 5% and 6%; the 6% loan rate is nearer the 6.1% reference.
+    params = _params(capital_hurdle_rate=0.0)
+    loans = [
+        LoanTierCandidates(
+            tier_name="a",
+            rates=np.array([0.05, 0.06]),
+            volume=np.array([1000.0, 1000.0]),
+            interest_income=np.array([50.0, 50.0]),
+            credit_loss=np.array([0.0, 0.0]),
+        )
+    ]
+    deposits = [_deposit("d", [0.03], [1000.0])]
+
+    near_high = solve_segmented_portfolio(
+        loans, deposits, params, settings=EXACT,
+        home_loan_reference_rate=0.061, term_deposit_reference_rate=0.03,
+    )
+    near_low = solve_segmented_portfolio(
+        loans, deposits, params, settings=EXACT,
+        home_loan_reference_rate=0.049, term_deposit_reference_rate=0.03,
+    )
+    descent = solve_segmented_portfolio(
+        loans, deposits, params, settings=DESCENT,
+        home_loan_reference_rate=0.061, term_deposit_reference_rate=0.03,
+    )
+
+    assert near_high.loan_indices == (1,)
+    assert near_low.loan_indices == (0,)
+    assert descent.result.total_objective == near_high.result.total_objective
+    # Without a deposit reference the distance is undefined (NaN), exactly as in the joint
+    # optimiser, so the tie falls through to enumeration order.
+    undefined = solve_segmented_portfolio(
+        loans, deposits, params, settings=EXACT, home_loan_reference_rate=0.061
+    )
+    assert undefined.loan_indices == (0,)
+
+
+def test_uniform_baseline_dominance_survives_start_truncation():
+    loan_tiers, deposit_tiers, params = _customer_tiers(shared=True)
+
+    solved = solve_segmented_portfolio(
+        loan_tiers,
+        deposit_tiers,
+        params,
+        settings=SolverSettings(method="coordinate_descent", max_starts=1),
+        starts=[((0, 0), (1, 0))],  # stalls at a local optimum below uniform
+    )
+
+    assert solved.diagnostics.starts == 1
+    assert solved.result.total_objective >= solved.diagnostics.uniform_baseline_objective
+
+
+def test_single_tier_exact_search_does_not_repeat_uniform_enumeration():
+    loans = [_loan("a", np.linspace(0.04, 0.07, 7), np.linspace(900.0, 300.0, 7))]
+    deposits = [_deposit("d", np.linspace(0.02, 0.05, 5), np.linspace(200.0, 900.0, 5))]
+
+    solved = solve_segmented_portfolio(loans, deposits, _params())
+
+    assert solved.diagnostics.candidate_evaluations == solved.diagnostics.search_space_size == 35
+    assert solved.diagnostics.uniform_baseline_objective == solved.result.total_objective
+
+
 # ---------------------------------------------------------- T31-T33 ROE and governance
 
 
@@ -812,7 +891,7 @@ def test_negative_segmented_objective_triggers_objective_positive_warning():
 def test_boundary_expansion_never_lowers_best_known_objective():
     raw = _two_tier_raw_config()
     for tier in raw["segmented_pricing"]["loan_tiers"]:
-        tier["rate_grid"] = {"start": 0.044, "stop": 0.052, "step": 0.003}
+        tier["rate_grid"] = {"start": 0.050, "stop": 0.062, "step": 0.005}
     config = EngineConfig.model_validate(raw)
 
     initial = run_baseline_diagnostics(config, max_boundary_expansions=0)
@@ -821,6 +900,39 @@ def test_boundary_expansion_never_lowers_best_known_objective():
     assert initial.boundary_diagnostics.has_warning
     assert expanded.expansion_rounds >= 1
     assert expanded.best_result.total_objective >= initial.best_result.total_objective
+
+
+def test_expansion_incumbent_survives_off_lattice_and_is_needed():
+    # 5.00-6.20% in 0.5% steps appends 6.20% off-lattice; expanding the stop to 7.40%
+    # gives 5.00, 5.50, ..., 7.00, 7.40, so the previous winner (6.20%) leaves the grid.
+    from balance_pricing_engine.scenarios.runner import (
+        _expand_segmented_config_for_boundary,
+        _tier_rates,
+    )
+
+    raw = _two_tier_raw_config()
+    for tier in raw["segmented_pricing"]["loan_tiers"]:
+        tier["rate_grid"] = {"start": 0.050, "stop": 0.062, "step": 0.005}
+    config = EngineConfig.model_validate(raw)
+    rng = np.random.default_rng(config.random_seed)
+    loans, deposits = generate_loan_customers(300, rng), generate_deposit_customers(300, rng)
+    kwargs = _optimizer_kwargs(config)
+    kwargs.pop("config")
+
+    first = optimize_segmented_rates(loans, deposits, config=config.segmented_pricing, **kwargs)
+    expanded, did_expand = _expand_segmented_config_for_boundary(first, config.segmented_pricing)
+    without = optimize_segmented_rates(loans, deposits, config=expanded, **kwargs)
+    with_incumbent = optimize_segmented_rates(
+        loans, deposits, config=expanded, incumbent_tier_rates=_tier_rates(first), **kwargs
+    )
+
+    assert did_expand
+    assert _tier_rates(first)["loan_tiers"] == {"standard": 0.062, "high_lvr": 0.062}
+    assert without.total_objective < first.total_objective
+    assert with_incumbent.total_objective >= first.total_objective
+    standard_grid = with_incumbent.candidate_rates["loan_tiers"]["standard"]
+    assert standard_grid.count(0.062) == 1
+    assert 0.062 not in without.candidate_rates["loan_tiers"]["standard"]
 
 
 def test_expansion_win_outside_initial_band_sets_policy_band_breach():
@@ -869,7 +981,8 @@ def test_segmented_artifacts_keep_contract_and_add_solver_diagnostics(tmp_path):
     assert solver["solver_method"] == "EXACT"
     assert solver["solver_converged"] is True
     assert solver["optimality_proven"] is True
-    assert solver["solver_starts"] >= 0
+    assert solver["solver_starts"] == 0
+    assert solver["solver_iterations"] == 0
     assert solver["candidate_evaluations"] >= solver["search_space_size"]
     assert solver["best_known_objective"] == pytest.approx(summary["objective_value"])
     assert "uniform_baseline_objective" in solver
