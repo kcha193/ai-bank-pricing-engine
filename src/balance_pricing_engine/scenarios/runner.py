@@ -30,6 +30,8 @@ from balance_pricing_engine.diagnostics import (
 )
 from balance_pricing_engine.optimization.grid_search import (
     GRID_RESULT_COLUMNS,
+    SUPPLY_RESULT_COLUMNS,
+    DepositSupplyOptimizationResult,
     OptimizationResult,
 )
 from balance_pricing_engine.optimization.segmented import (
@@ -38,6 +40,7 @@ from balance_pricing_engine.optimization.segmented import (
     optimize_segmented_rates,
 )
 from balance_pricing_engine.pricing.credit_loss import SYNTHETIC_LABEL, CreditLossProfile
+from balance_pricing_engine.pricing.deposit_supply import DepositMarketProfile, DepositSupply
 from balance_pricing_engine.pricing.profit import (
     maturity_adjusted_rwa_weight,
     portfolio_return_on_equity,
@@ -84,6 +87,7 @@ class ScenarioDiagnostics:
     # Segmented runs only: how the tier-rate search was performed (additive, OPT-002).
     segmented_solver: dict[str, object] | None = None
     credit_loss_profile: CreditLossProfile | None = None
+    deposit_supply_profile: DepositMarketProfile | None = None
 
     def top_results(self, n: int = 5) -> pd.DataFrame:
         """Return the top objective rows for reporting."""
@@ -95,6 +99,9 @@ class ScenarioDiagnostics:
 
     def counterfactual_decompositions(self, top_n: int = 3) -> list[ObjectiveDecomposition]:
         """Return one-axis counterfactual decompositions for top pricing candidates."""
+        if self.deposit_supply_profile is not None and self.segmented_tier_rates is not None:
+            # Tier summaries are not comparable one-axis portfolio alternatives.
+            return []
         decompositions: list[ObjectiveDecomposition] = []
         top_rows = self.top_results(top_n)
         for _, row in top_rows.iterrows():
@@ -188,6 +195,12 @@ class ScenarioDiagnostics:
                 "review_required": True,
                 "profile": self.credit_loss_profile.model_dump(mode="json"),
             }
+        if self.deposit_supply_profile is not None:
+            summary["deposit_supply_simulation"] = {
+                "review_required": True,
+                "profile": self.deposit_supply_profile.model_dump(mode="json"),
+                **{name: getattr(self.best_result, name) for name in SUPPLY_RESULT_COLUMNS},
+            }
         (path / "summary.json").write_text(
             json.dumps(summary, indent=2, sort_keys=True),
             encoding="utf-8",
@@ -212,7 +225,8 @@ class ScenarioDiagnostics:
 
     def _has_cohort_context(self) -> bool:
         return not (
-            self.loan_customers is None
+            self.deposit_supply_profile is not None
+            or self.loan_customers is None
             or self.deposit_customers is None
             or self.market is None
             or self.loan_rate_elasticity is None
@@ -255,6 +269,8 @@ def _evaluate_pricing_population(
     *,
     max_boundary_expansions: int,
     registry: object | None = None,
+    deposit_supply: DepositSupply | None = None,
+    fixed_rates: tuple[float, float] | None = None,
 ) -> ScenarioDiagnostics:
     market = MarketState(**config.market.model_dump())
 
@@ -265,6 +281,7 @@ def _evaluate_pricing_population(
             deposit_customers=deposit_customers,
             market=market,
             max_boundary_expansions=max_boundary_expansions,
+            deposit_supply=deposit_supply,
         )
 
     loan_grid, deposit_grid = build_configured_rate_grids(config)
@@ -325,6 +342,8 @@ def _evaluate_pricing_population(
         min_return_on_equity=config.balance_sheet.min_return_on_equity,
         loan_response_fn=loan_response_fn,
         deposit_response_fn=deposit_response_fn,
+        deposit_supply=deposit_supply,
+        fixed_rates=fixed_rates,
     )
 
     return ScenarioDiagnostics(
@@ -354,6 +373,7 @@ def _evaluate_adaptive_segmented_rates(
     deposit_customers: pd.DataFrame,
     market: MarketState,
     max_boundary_expansions: int,
+    deposit_supply: DepositSupply | None = None,
 ) -> ScenarioDiagnostics:
     segmented_config = config.segmented_pricing
     if segmented_config is None:
@@ -390,6 +410,7 @@ def _evaluate_adaptive_segmented_rates(
             term_deposit_reference_rate=config.market.term_deposit_reference_rate,
             solver_settings=SEGMENTED_SOLVER_SETTINGS,
             incumbent_tier_rates=incumbent_tier_rates,
+            deposit_supply=deposit_supply,
         )
         diagnostics = _segmented_diagnostics(
             result,
@@ -658,7 +679,12 @@ def _expand_tier_grid_for_selected_rate(
 def _optimization_result_from_segmented_result(
     result: SegmentedOptimizationResult,
 ) -> OptimizationResult:
-    return OptimizationResult(
+    result_type = OptimizationResult
+    supply_terms = {}
+    if result.usable_deposit_funding is not None:
+        result_type = DepositSupplyOptimizationResult
+        supply_terms = {name: getattr(result, name) for name in SUPPLY_RESULT_COLUMNS}
+    return result_type(
         loan_rate=_volume_weighted_average_rate(result.loan_tiers),
         deposit_rate=_volume_weighted_average_rate(result.deposit_tiers),
         loan_interest_income=result.total_loan_interest_income,
@@ -672,6 +698,7 @@ def _optimization_result_from_segmented_result(
         expected_loan_volume=result.total_loan_volume,
         expected_deposit_volume=result.total_deposit_volume,
         funding_shortfall=result.funding_shortfall,
+        **supply_terms,
     )
 
 
@@ -681,6 +708,12 @@ def _grid_results_from_segmented_result(
     *,
     loan_rwa_weight: float,
 ) -> pd.DataFrame:
+    if isinstance(result, DepositSupplyOptimizationResult):
+        # The opening position and concentration costs are portfolio-level terms.
+        return pd.DataFrame(
+            [{**asdict(result), "return_on_equity": segmented_result.return_on_equity}],
+            columns=[*GRID_RESULT_COLUMNS, *SUPPLY_RESULT_COLUMNS],
+        )
     # Segmented grid rows are synthetic decomposition rows, not independent alternatives.
     # total_objective is always the actual portfolio value so rows never dominate the winner.
     rows: list[dict[str, float]] = []

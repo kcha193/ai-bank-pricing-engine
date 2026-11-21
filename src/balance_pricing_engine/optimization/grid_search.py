@@ -16,6 +16,7 @@ from balance_pricing_engine.market import (
 from balance_pricing_engine.config import ResponseCoefficientsConfig
 from balance_pricing_engine.optimization.response_fn import ResponseFn
 from balance_pricing_engine.pricing.balance_sheet import calculate_funding_result
+from balance_pricing_engine.pricing.deposit_supply import DepositSupply
 from balance_pricing_engine.pricing.profit import (
     expected_capital_charge,
     expected_credit_loss,
@@ -73,6 +74,15 @@ class OptimizationResult:
         return self.funding_shortfall_penalty
 
 
+@dataclass(frozen=True)
+class DepositSupplyOptimizationResult(OptimizationResult):
+    """Additional portfolio economics for an explicitly simulated supply model."""
+
+    usable_deposit_funding: float = 0.0
+    deposit_acquisition_cost: float = 0.0
+    deposit_concentration_penalty: float = 0.0
+
+
 GRID_RESULT_COLUMNS = [
     "loan_rate",
     "deposit_rate",
@@ -91,6 +101,13 @@ GRID_RESULT_COLUMNS = [
     "funding_shortfall",
     "return_on_equity",
 ]
+
+
+SUPPLY_RESULT_COLUMNS = (
+    "usable_deposit_funding",
+    "deposit_acquisition_cost",
+    "deposit_concentration_penalty",
+)
 
 
 def build_rate_grid(start: float, stop: float, step: float) -> np.ndarray:
@@ -117,10 +134,12 @@ def evaluate_joint_rate_grid(
     response_coefficients: ResponseCoefficientsConfig | None = None,
     loan_response_fn: ResponseFn | None = None,
     deposit_response_fn: ResponseFn | None = None,
+    *,
+    deposit_supply: DepositSupply | None = None,
 ) -> pd.DataFrame:
     """Evaluate every loan and deposit rate pair in the joint pricing grid."""
     rows: list[dict[str, float]] = []
-    deposit_precomputes: list[tuple[float, float, float, float]] = []
+    deposit_precomputes: list[tuple[float, float, float, float, float, float, float]] = []
     response_coefficients = response_coefficients or ResponseCoefficientsConfig()
 
     for deposit_rate in deposit_rate_grid:
@@ -139,22 +158,32 @@ def evaluate_joint_rate_grid(
                 deposit_competitor_gap_elasticity,
                 coefficients=response_coefficients.deposit,
             )
-        deposit_volume = expected_deposit_volume(deposit_customers, deposit_probs)
-        deposit_cost = expected_deposit_cost(
-            deposit_customers,
-            deposit_probs,
-            float(deposit_rate),
-        )
-        term_deposit_spread_to_market_bps = _spread_to_market_bps(
-            float(deposit_rate),
-            term_deposit_reference_rate,
-        )
+        acquisition_cost = concentration_penalty = 0.0
+        if deposit_supply is None:
+            deposit_volume = expected_deposit_volume(deposit_customers, deposit_probs)
+            usable_funding = deposit_volume
+            deposit_cost = expected_deposit_cost(
+                deposit_customers, deposit_probs, float(deposit_rate)
+            )
+        else:
+            offer = deposit_supply.offer(deposit_customers, deposit_probs, float(deposit_rate))
+            position = deposit_supply.portfolio(
+                offer.gross, offer.incremental, offer.interest_cost, offer.acquisition_cost
+            )
+            deposit_volume = float(position.gross)
+            usable_funding = float(position.usable_funding)
+            deposit_cost = float(position.deposit_cost)
+            acquisition_cost = float(position.acquisition_cost)
+            concentration_penalty = float(position.concentration_penalty)
         deposit_precomputes.append(
             (
                 float(deposit_rate),
                 deposit_volume,
                 deposit_cost,
-                term_deposit_spread_to_market_bps,
+                _spread_to_market_bps(float(deposit_rate), term_deposit_reference_rate),
+                usable_funding,
+                acquisition_cost,
+                concentration_penalty,
             )
         )
 
@@ -196,20 +225,23 @@ def evaluate_joint_rate_grid(
             deposit_volume,
             deposit_cost,
             term_deposit_spread_to_market_bps,
+            usable_funding,
+            acquisition_cost,
+            concentration_penalty,
         ) in deposit_precomputes:
             wholesale_funding_cost = expected_wholesale_funding_cost(
                 loan_volume,
-                deposit_volume,
+                usable_funding,
                 market.wholesale_funding_rate,
             )
             excess_deposit_income = expected_excess_deposit_income(
                 loan_volume,
-                deposit_volume,
+                usable_funding,
                 market.cash_rate,
             )
             funding = calculate_funding_result(
                 loan_volume,
-                deposit_volume,
+                usable_funding,
                 required_deposit_funding_ratio,
                 funding_shortfall_penalty_rate,
             )
@@ -221,6 +253,8 @@ def evaluate_joint_rate_grid(
                 - wholesale_funding_cost
                 - funding.funding_penalty
                 + excess_deposit_income
+                - acquisition_cost
+                - concentration_penalty
             )
             return_on_equity = portfolio_return_on_equity(
                 loan_interest_income,
@@ -231,6 +265,8 @@ def evaluate_joint_rate_grid(
                 excess_deposit_income,
                 loan_volume,
                 rwa_weight,
+                acquisition_cost=acquisition_cost,
+                concentration_penalty=concentration_penalty,
             )
 
             rows.append(
@@ -254,14 +290,29 @@ def evaluate_joint_rate_grid(
                 }
             )
 
+            if deposit_supply is not None:
+                rows[-1].update(
+                    usable_deposit_funding=usable_funding,
+                    deposit_acquisition_cost=acquisition_cost,
+                    deposit_concentration_penalty=concentration_penalty,
+                )
+
     if not rows:
         raise ValueError("At least one loan rate and one deposit rate are required.")
-    return pd.DataFrame(rows, columns=GRID_RESULT_COLUMNS)
+    columns = GRID_RESULT_COLUMNS
+    if deposit_supply is not None:
+        columns = [*columns, *SUPPLY_RESULT_COLUMNS]
+    return pd.DataFrame(rows, columns=columns)
 
 
 def optimization_result_from_row(row: pd.Series) -> OptimizationResult:
     """Convert a grid result row into the public optimization result dataclass."""
-    return OptimizationResult(
+    result_type = OptimizationResult
+    supply_terms = {}
+    if "usable_deposit_funding" in row:
+        result_type = DepositSupplyOptimizationResult
+        supply_terms = {name: float(row[name]) for name in SUPPLY_RESULT_COLUMNS}
+    return result_type(
         loan_rate=float(row["loan_rate"]),
         deposit_rate=float(row["deposit_rate"]),
         home_loan_spread_to_market_bps=float(row["home_loan_spread_to_market_bps"]),
@@ -277,6 +328,7 @@ def optimization_result_from_row(row: pd.Series) -> OptimizationResult:
         expected_loan_volume=float(row["expected_loan_volume"]),
         expected_deposit_volume=float(row["expected_deposit_volume"]),
         funding_shortfall=float(row["funding_shortfall"]),
+        **supply_terms,
     )
 
 
@@ -333,7 +385,12 @@ def select_best_result_with_disclosure(
             )
             roe_constraint_relaxed = not bool(finite_qualifying.any())
             if return_on_equity.notna().any():
-                qualified = grid_results[return_on_equity >= min_return_on_equity]
+                qualifying = (
+                    finite_qualifying
+                    if "usable_deposit_funding" in grid_results
+                    else return_on_equity >= min_return_on_equity
+                )
+                qualified = grid_results[qualifying]
                 if not qualified.empty:
                     candidates = qualified
 

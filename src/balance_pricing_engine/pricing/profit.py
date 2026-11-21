@@ -147,6 +147,9 @@ def portfolio_return_on_equity(
     loan_volume: FloatOrArray,
     rwa_weight: float,
     tier1_capital_ratio: float = TIER1_CAPITAL_RATIO,
+    *,
+    acquisition_cost: FloatOrArray = 0.0,
+    concentration_penalty: FloatOrArray = 0.0,
 ) -> FloatOrArray:
     """Return profit before the capital charge over required tier-1 capital.
 
@@ -160,6 +163,8 @@ def portfolio_return_on_equity(
         - wholesale_funding_cost
         - funding_shortfall_penalty
         + excess_deposit_income
+        - acquisition_cost
+        - concentration_penalty
     )
     if np.ndim(required_capital) == 0 and np.ndim(profit_before_capital) == 0:
         return profit_before_capital / required_capital if required_capital > 0 else 0.0
