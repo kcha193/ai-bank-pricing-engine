@@ -25,6 +25,7 @@ from balance_pricing_engine.pricing.profit import (
     expected_loan_interest_income,
     expected_loan_volume,
     expected_wholesale_funding_cost,
+    portfolio_return_on_equity,
 )
 from balance_pricing_engine.synthetic.market import MarketState
 from balance_pricing_engine.synthetic.response import (
@@ -221,20 +222,15 @@ def evaluate_joint_rate_grid(
                 - funding.funding_penalty
                 + excess_deposit_income
             )
-            tier1_capital_ratio = 0.10
-            required_capital = loan_volume * rwa_weight * tier1_capital_ratio
-            return_on_equity = (
-                (
-                    loan_interest_income
-                    - credit_loss
-                    - deposit_cost
-                    - wholesale_funding_cost
-                    - funding.funding_penalty
-                    + excess_deposit_income
-                )
-                / required_capital
-                if required_capital > 0
-                else 0.0
+            return_on_equity = portfolio_return_on_equity(
+                loan_interest_income,
+                credit_loss,
+                deposit_cost,
+                wholesale_funding_cost,
+                funding.funding_penalty,
+                excess_deposit_income,
+                loan_volume,
+                rwa_weight,
             )
 
             rows.append(

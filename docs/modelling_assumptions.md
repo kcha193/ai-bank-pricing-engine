@@ -58,8 +58,10 @@ authorise no automatic pricing action.
   unconstrained objective ranking. That fallback is disclosed, not silent: `roe_constraint_relaxed`
   is true on `ScenarioDiagnostics` and in `summary.json`, and the `ROE_FLOOR_MET` governance gate
   WARNs. The flag describes the final grid after adaptive boundary expansion, so a floor that the
-  initial grid cannot meet but the expanded grid can is not relaxed. The segmented optimiser has no
-  constrained alternative, so a segmented result below the floor is always relaxed.
+  initial grid cannot meet but the expanded grid can is not relaxed. The segmented optimiser applies
+  the same floor at portfolio level (never per tier): it is relaxed only when no evaluated tier
+  combination qualifies. Under exhaustive search that means none exists; under coordinate descent
+  it means none was found (see "Segmented tier pricing" below).
 - The optimizer chooses one portfolio-level home loan rate and one portfolio-level term deposit rate.
 - ML response models are trained on synthetic observed outcomes generated from the explicit
   response functions. By default, scenario runs use the deterministic synthetic response functions.
@@ -74,6 +76,95 @@ authorise no automatic pricing action.
   back-book economics, apply `reinvestment_spread_bps` to surviving loan balances, discount period
   contributions with `discount_rate`, and can shift future cash rates with
   `market_cash_rate_drift_bps`.
+
+## Segmented tier pricing (OPT-002, Phase 3a, 2026-11-21)
+
+Segmented pricing sets one loan rate per LVR tier and one deposit rate per balance tier. Every
+combination is judged on the full portfolio objective, the same formula as the joint grid search:
+
+```text
+objective = loan interest income - expected credit loss - capital charge
+          - deposit interest expense - wholesale funding cost
+          - funding shortfall penalty + excess deposit income
+```
+
+**Why the old optimiser was wrong.** It chose each loan tier as if every loan were wholesale funded
+and no shortfall penalty applied, then chose deposit tiers one at a time against the loans already
+fixed, crediting each deposit tier with a funding benefit that depended on the deposit tiers
+before it. The full objective was computed only after the rates were set. The funding terms couple
+every tier: a loan-tier rate moves total loan volume, which moves required deposits, the shortfall
+penalty, wholesale cost and excess-deposit income, so the best loan rate depends on the deposit
+rates and vice versa. On the November 13 audit grid (one catch-all tier, loans 3-9%, deposits 2-6%,
+5 bp steps) the old optimiser chose 5.65% with a $552m shortfall and an objective of -$0.27m, while
+the joint optimiser on the same grid chose 6.15% for +$5.90m.
+
+**Search.** Each tier is scored once per candidate rate. Portfolio totals are summed in tier order,
+and the funding and capital terms are applied by the canonical `pricing/` functions (which accept
+candidate arrays elementwise with identical arithmetic). Then:
+
+- *Exact search* enumerates every tier combination when the count is at most
+  `SolverSettings.exact_search_max_combinations` (default 2,000,000; hard ceiling 10,000,000). The
+  per-side combination totals are built in full; pairings are evaluated in blocks of about 250,000
+  loan-by-deposit candidates, but a block always holds every deposit-side combination, so when
+  those alone exceed the block size the bound is one row of the deposit side (at most the exact
+  threshold). One tier per side is always exact and is not enumerated twice. The result is the
+  proven optimum on the tier grids (`optimality_proven: true`).
+- *Coordinate descent* is used above the threshold. Each pass revisits every loan tier, then every
+  deposit tier, evaluating all of that tier's rates against the complete objective with the other
+  tiers fixed (so a loan candidate sees the current total deposit volume, and the shortfall penalty
+  is recomputed for every candidate). A move is accepted only if it improves the objective by more
+  than `max(objective_tolerance, 1e-12 * |objective|)` (default `objective_tolerance` $1e-6), or
+  if it newly meets the ROE floor. The (meets ROE floor, objective) key therefore never decreases;
+  without a floor the objective never decreases, but a move that first meets the floor may lower
+  it. No state can repeat, and
+  the search stops when a full pass makes no move (converged) or at `max_iterations` passes
+  (default 100; `iteration_limit_reached: true`, `solver_converged: false`). A fixed point is a
+  local optimum only: on the benchmark fixtures descent finished 0.2-0.3% below the exact optimum,
+  which is why exact search is preferred wherever it is affordable.
+- *Multi-start.* Descent runs from up to `max_starts` (default 8) deterministic, de-duplicated
+  starts: the previous expansion round's winner, the best uniform-price portfolio, a tier-local
+  start (each loan tier at its wholesale-funded margin optimum, each deposit tier at its wholesale
+  displacement optimum), the lowest, highest and middle grid rates, and the rates nearest the market
+  reference rates. No randomness is used. The best final state across starts is reported.
+
+**Uniform baseline safeguard.** When a loan rate appears in every loan-tier grid and a deposit rate
+appears in every deposit-tier grid, the best such uniform portfolio is evaluated on the same
+customers and parameters, reported as `uniform_baseline_objective`, used as a descent start and kept
+as a final candidate even if `max_starts` truncates the start list. Without an ROE floor the
+segmented objective is therefore never below it; with a floor the guarantee is on the
+(meets floor, objective) key, so a qualifying segmented result may sit below a non-qualifying
+uniform one. When the grids share no rate, no uniform comparator exists and
+`uniform_baseline_feasible` is false; no dominance claim is made.
+
+**Selection and ties.** Candidates meeting `min_return_on_equity` (portfolio ROE, the joint
+definition) are preferred; then higher objective, lower funding shortfall, smaller summed absolute
+spread to the market reference rates (undefined, so skipped, unless both reference rates are set),
+then enumeration order (first tier slowest). Resolving a large exact tie on distance costs one
+Python call per tied candidate; ties that large need degenerate inputs. This matches
+`select_best_result_with_disclosure`, so one catch-all tier per side reproduces the joint optimiser
+exactly, including ROE-floor selection.
+
+**Boundary expansion.** Each expanded round is re-optimised on the full objective. The previous
+round's tier rates are added to their tiers' candidate sets and seed descent, so an enlarged search
+never returns a worse result on the (meets floor, objective) key; without a floor, never a lower
+objective. This matters because an expanded grid need not contain the old rates: a 5.00-6.20%
+tier grid in 0.5% steps appends 6.20% off-lattice, and its expansion (5.00, 5.50, ..., 7.00,
+7.40%) drops it. Boundary warnings, `policy_band_breached` and expansion
+counts keep their meaning; convergence never clears a boundary warning.
+
+**Diagnostics.** `summary.json` gains an additive `segmented_solver` object: `solver_method`
+(`EXACT` or `COORDINATE_DESCENT`), `solver_converged`, `solver_iterations`, `solver_starts`,
+`candidate_evaluations` (including the uniform-baseline evaluations), `best_known_objective`,
+`optimality_proven`, `search_space_size`, `uniform_baseline_feasible`,
+`uniform_baseline_objective`, `iteration_limit_reached` and `cycle_detected`. Segmented
+`grid_results.csv` rows remain tier decomposition rows, not alternative portfolios.
+
+**Runtime.** Response scoring is O(sum of tier grid sizes x customers), as before. Exact search is
+O(product of tier grid sizes) in vectorised blocks (about 0.03 s and an 80 MB peak at two million
+combinations on Apple arm64). Each descent pass costs O(sum of tier grid sizes).
+
+**Unchanged.** Elasticities, ECL, funding-rate and capital calibration, the single-period economic
+formula, and the joint optimiser are unchanged; calibration remains Phase 4 work.
 
 ## Deliberate simplifications
 

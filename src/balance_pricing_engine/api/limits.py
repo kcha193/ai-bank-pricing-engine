@@ -203,7 +203,10 @@ def validate_workload(
             [_dimension_counts(grid.start, grid.stop, grid.step, limits) for grid in grids]
             for grids in (loan_grids, deposit_grids)
         ]
-        # A product of sums safely exceeds the sequential tier optimiser's work.
+        # A product of sums bounds the per-tier response scoring (each tier rate is
+        # scored once). The joint portfolio search over tier combinations is capped
+        # separately by the segmented SolverSettings ceilings: exhaustive search up to
+        # MAX_EXACT_SEARCH_COMBINATIONS, otherwise bounded multi-start coordinate descent.
         loan_counts, deposit_counts = [
             [
                 sum(counts[round_] for counts in grids)

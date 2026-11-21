@@ -18,8 +18,12 @@ from balance_pricing_engine.pricing.profit import (
     maturity_adjusted_rwa_weight,
 )
 from balance_pricing_engine.optimization.segmented import (
-    _optimize_deposit_tier,
+    LoanTierCandidates,
+    PortfolioParameters,
+    SolverSettings,
     optimize_segmented_rates,
+    precompute_deposit_tier_candidates,
+    solve_segmented_portfolio,
     segment_deposit_customers,
     segment_loan_customers,
 )
@@ -214,7 +218,8 @@ def test_segmented_total_objective_matches_component_decomposition():
     )
 
 
-def test_deposit_tier_optimizes_net_funding_contribution_not_volume():
+def _single_deposit_choice(funding_shortfall_penalty_rate: float) -> float:
+    """Deposit rate chosen jointly against a fixed 500k loan book (one 100k depositor)."""
     customers = pd.DataFrame(
         {
             "deposit_amount": [100_000.0],
@@ -223,71 +228,53 @@ def test_deposit_tier_optimizes_net_funding_contribution_not_volume():
             "digital_engagement": [0.0],
         }
     )
-    tier = DepositTierConfig(
-        name="test",
-        rate_grid=GridConfig(start=0.01, stop=0.10, step=0.09),
-    )
     market = MarketState(
         cash_rate=0.04,
         wholesale_funding_spread=0.01,
         competitor_loan_rate=0.06,
         competitor_deposit_rate=0.04,
     )
-
-    result = _optimize_deposit_tier(
-        customers=customers,
-        tier=tier,
+    tier = DepositTierConfig(
+        name="test",
+        rate_grid=GridConfig(start=0.01, stop=0.10, step=0.09),
+    )
+    deposits = precompute_deposit_tier_candidates(
+        customers,
+        tier_name=tier.name,
+        rates=np.array([tier.rate_grid.start, tier.rate_grid.stop]),
         market=market,
         deposit_rate_elasticity=50.0,
         deposit_competitor_gap_elasticity=0.0,
-        wholesale_funding_rate=market.wholesale_funding_rate,
-        cash_rate=market.cash_rate,
-        total_loan_volume=500_000.0,
-        accumulated_deposit_volume=0.0,
-        required_deposit_funding_ratio=0.65,
-        funding_shortfall_penalty_rate=0.0,
         response_coefficients=ResponseCoefficientsConfig(),
     )
+    loans = LoanTierCandidates(
+        tier_name="book",
+        rates=np.array([0.06]),
+        volume=np.array([500_000.0]),
+        interest_income=np.array([30_000.0]),
+        credit_loss=np.array([0.0]),
+    )
+    parameters = PortfolioParameters.from_market(
+        market,
+        required_deposit_funding_ratio=0.65,
+        funding_shortfall_penalty_rate=funding_shortfall_penalty_rate,
+        loan_rwa_weight=0.35,
+        capital_hurdle_rate=0.12,
+    )
+    solved = solve_segmented_portfolio(
+        [loans], [deposits], parameters, settings=SolverSettings(method="exact")
+    )
+    return solved.result.deposit_tiers[0].rate
 
-    assert result.rate == pytest.approx(0.01)
+
+def test_deposit_tier_optimizes_net_funding_contribution_not_volume():
+    # Paying 10% to displace 5% wholesale funding destroys value without a penalty.
+    assert _single_deposit_choice(funding_shortfall_penalty_rate=0.0) == pytest.approx(0.01)
 
 
 def test_deposit_tier_values_funding_penalty_relief_before_required_deposits():
-    customers = pd.DataFrame(
-        {
-            "deposit_amount": [100_000.0],
-            "rate_sensitivity": [0.0],
-            "relationship_years": [0.0],
-            "digital_engagement": [0.0],
-        }
-    )
-    tier = DepositTierConfig(
-        name="test",
-        rate_grid=GridConfig(start=0.01, stop=0.10, step=0.09),
-    )
-    market = MarketState(
-        cash_rate=0.04,
-        wholesale_funding_spread=0.01,
-        competitor_loan_rate=0.06,
-        competitor_deposit_rate=0.04,
-    )
-
-    result = _optimize_deposit_tier(
-        customers=customers,
-        tier=tier,
-        market=market,
-        deposit_rate_elasticity=50.0,
-        deposit_competitor_gap_elasticity=0.0,
-        wholesale_funding_rate=market.wholesale_funding_rate,
-        cash_rate=market.cash_rate,
-        total_loan_volume=500_000.0,
-        accumulated_deposit_volume=0.0,
-        required_deposit_funding_ratio=0.65,
-        funding_shortfall_penalty_rate=0.07,
-        response_coefficients=ResponseCoefficientsConfig(),
-    )
-
-    assert result.rate == pytest.approx(0.10)
+    # Wholesale displacement (5%) plus shortfall-penalty relief (7%) exceeds 10%.
+    assert _single_deposit_choice(funding_shortfall_penalty_rate=0.07) == pytest.approx(0.10)
 
 
 def test_segmented_scenario_writes_tier_rate_artifact(tmp_path):

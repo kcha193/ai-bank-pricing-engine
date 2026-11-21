@@ -1,0 +1,274 @@
+{
+ "A_audit_joint_reference": {
+  "deposit_rate": 0.0415,
+  "funding_shortfall": 2363489,
+  "loan_rate": 0.0615,
+  "total_objective": 5904280
+ },
+ "A_audit_one_tier": {
+  "boundary_warning": false,
+  "capital_charge": 6004502,
+  "credit_loss": 10315051,
+  "deposit_interest_expense": 15828158,
+  "deposit_rate": 0.042,
+  "deposit_volume": 376860894,
+  "excess_deposit_income": 0,
+  "expansion_rounds": 0,
+  "funding_shortfall": 552407254,
+  "funding_shortfall_penalty": 9943331,
+  "governance_status": "REVIEW_REQUIRED",
+  "loan_interest_income": 80774847,
+  "loan_rate": 0.0565,
+  "loan_volume": 1429643304,
+  "policy_band_breached": false,
+  "roe": 0.11462116134946931,
+  "roe_constraint_relaxed": false,
+  "tier_rates": {
+   "deposit_tiers": {
+    "all": 0.042
+   },
+   "loan_tiers": {
+    "all": 0.0565
+   }
+  },
+  "total_objective": -269144,
+  "warn_gates": [
+   "FUNDING_SHORTFALL",
+   "LINEAGE_COMPLETE",
+   "OBJECTIVE_POSITIVE"
+  ],
+  "wholesale_funding_cost": 38952949
+ },
+ "B_two_by_two": {
+  "boundary_warning": true,
+  "capital_charge": 5995754,
+  "credit_loss": 9829571,
+  "deposit_interest_expense": 15940689,
+  "deposit_rate": 0.0422473344980912,
+  "deposit_volume": 377318228,
+  "excess_deposit_income": 0,
+  "expansion_rounds": 0,
+  "funding_shortfall": 550596062,
+  "funding_shortfall_penalty": 9910729,
+  "governance_status": "REVIEW_REQUIRED",
+  "loan_interest_income": 79389568,
+  "loan_rate": 0.055612053323399684,
+  "loan_volume": 1427560446,
+  "policy_band_breached": false,
+  "roe": 0.09706101089077146,
+  "roe_constraint_relaxed": false,
+  "tier_rates": {
+   "deposit_tiers": {
+    "large": 0.043,
+    "small": 0.04
+   },
+   "loan_tiers": {
+    "high_lvr": 0.06,
+    "standard": 0.055
+   }
+  },
+  "total_objective": -1146138,
+  "warn_gates": [
+   "BOUNDARY_WARNING",
+   "EXPANSION_CAPPED",
+   "FUNDING_SHORTFALL",
+   "LINEAGE_COMPLETE",
+   "OBJECTIVE_POSITIVE"
+  ],
+  "wholesale_funding_cost": 38858962
+ },
+ "C_production_fixture": {
+  "boundary_warning": true,
+  "capital_charge": 2678366,
+  "credit_loss": 4056076,
+  "deposit_interest_expense": 16687276,
+  "deposit_rate": 0.042656612351183835,
+  "deposit_volume": 391200226,
+  "excess_deposit_income": 0,
+  "expansion_rounds": 0,
+  "funding_shortfall": 23308730,
+  "funding_shortfall_penalty": 419557,
+  "governance_status": "REVIEW_REQUIRED",
+  "loan_interest_income": 38457771,
+  "loan_rate": 0.06030641997137994,
+  "loan_volume": 637706088,
+  "policy_band_breached": false,
+  "roe": 0.3662298388658586,
+  "roe_constraint_relaxed": false,
+  "tier_rates": {
+   "deposit_tiers": {
+    "mid": 0.042,
+    "retail": 0.04,
+    "wholesale": 0.044
+   },
+   "loan_tiers": {
+    "high_lvr": 0.065,
+    "standard": 0.06,
+    "very_high_lvr": 0.07
+   }
+  },
+  "total_objective": 5495779,
+  "warn_gates": [
+   "BOUNDARY_WARNING",
+   "EXPANSION_CAPPED",
+   "FUNDING_SHORTFALL",
+   "LINEAGE_COMPLETE"
+  ],
+  "wholesale_funding_cost": 9120717
+ },
+ "D_high_penalty": {
+  "boundary_warning": true,
+  "capital_charge": 2678366,
+  "credit_loss": 4056076,
+  "deposit_interest_expense": 26930849,
+  "deposit_rate": 0.052971559023661435,
+  "deposit_volume": 508402049,
+  "excess_deposit_income": 0,
+  "expansion_rounds": 0,
+  "funding_shortfall": 0,
+  "funding_shortfall_penalty": 0,
+  "governance_status": "REVIEW_REQUIRED",
+  "loan_interest_income": 38457771,
+  "loan_rate": 0.06030641997137994,
+  "loan_volume": 637706088,
+  "policy_band_breached": false,
+  "roe": 0.12036878584960874,
+  "roe_constraint_relaxed": false,
+  "tier_rates": {
+   "deposit_tiers": {
+    "mid": 0.057,
+    "retail": 0.055,
+    "wholesale": 0.044
+   },
+   "loan_tiers": {
+    "high_lvr": 0.065,
+    "standard": 0.06,
+    "very_high_lvr": 0.07
+   }
+  },
+  "total_objective": 8231,
+  "warn_gates": [
+   "BOUNDARY_WARNING",
+   "EXPANSION_CAPPED",
+   "LINEAGE_COMPLETE"
+  ],
+  "wholesale_funding_cost": 4784249
+ },
+ "E_low_deposit_supply": {
+  "boundary_warning": true,
+  "capital_charge": 2678366,
+  "credit_loss": 4056076,
+  "deposit_interest_expense": 3393605,
+  "deposit_rate": 0.04265314097410076,
+  "deposit_volume": 79562834,
+  "excess_deposit_income": 0,
+  "expansion_rounds": 0,
+  "funding_shortfall": 334946123,
+  "funding_shortfall_penalty": 6029030,
+  "governance_status": "REVIEW_REQUIRED",
+  "loan_interest_income": 38457771,
+  "loan_rate": 0.06030641997137994,
+  "loan_volume": 637706088,
+  "policy_band_breached": false,
+  "roe": 0.19389854854306793,
+  "roe_constraint_relaxed": false,
+  "tier_rates": {
+   "deposit_tiers": {
+    "mid": 0.042,
+    "retail": 0.04,
+    "wholesale": 0.044
+   },
+   "loan_tiers": {
+    "high_lvr": 0.065,
+    "standard": 0.06,
+    "very_high_lvr": 0.07
+   }
+  },
+  "total_objective": 1649394,
+  "warn_gates": [
+   "BOUNDARY_WARNING",
+   "EXPANSION_CAPPED",
+   "FUNDING_SHORTFALL",
+   "LINEAGE_COMPLETE"
+  ],
+  "wholesale_funding_cost": 20651300
+ },
+ "F_excess_deposits": {
+  "boundary_warning": true,
+  "capital_charge": 2678366,
+  "credit_loss": 4056076,
+  "deposit_interest_expense": 134186822,
+  "deposit_rate": 0.04264472733409865,
+  "deposit_volume": 3146621655,
+  "excess_deposit_income": 62722889,
+  "expansion_rounds": 0,
+  "funding_shortfall": 0,
+  "funding_shortfall_penalty": 0,
+  "governance_status": "REVIEW_REQUIRED",
+  "loan_interest_income": 38457771,
+  "loan_rate": 0.06030641997137994,
+  "loan_volume": 637706088,
+  "policy_band_breached": false,
+  "roe": -1.6605158794201105,
+  "roe_constraint_relaxed": false,
+  "tier_rates": {
+   "deposit_tiers": {
+    "mid": 0.042,
+    "retail": 0.04,
+    "wholesale": 0.044
+   },
+   "loan_tiers": {
+    "high_lvr": 0.065,
+    "standard": 0.06,
+    "very_high_lvr": 0.07
+   }
+  },
+  "total_objective": -39740604,
+  "warn_gates": [
+   "BOUNDARY_WARNING",
+   "EXPANSION_CAPPED",
+   "LINEAGE_COMPLETE",
+   "OBJECTIVE_POSITIVE"
+  ],
+  "wholesale_funding_cost": 0
+ },
+ "G_adaptive_expansion": {
+  "boundary_warning": false,
+  "capital_charge": 7269505,
+  "credit_loss": 12746920,
+  "deposit_interest_expense": 16148161,
+  "deposit_rate": 0.04225247109639687,
+  "deposit_volume": 382182646,
+  "excess_deposit_income": 0,
+  "expansion_rounds": 1,
+  "funding_shortfall": 742859842,
+  "funding_shortfall_penalty": 13371477,
+  "governance_status": "REVIEW_REQUIRED",
+  "loan_interest_income": 95195903,
+  "loan_rate": 0.055,
+  "loan_volume": 1730834597,
+  "policy_band_breached": true,
+  "roe": 0.05000432181893024,
+  "roe_constraint_relaxed": false,
+  "tier_rates": {
+   "deposit_tiers": {
+    "mid": 0.042,
+    "retail": 0.04,
+    "wholesale": 0.043
+   },
+   "loan_tiers": {
+    "high_lvr": 0.055,
+    "standard": 0.055,
+    "very_high_lvr": 0.055
+   }
+  },
+  "total_objective": -4240283,
+  "warn_gates": [
+   "FUNDING_SHORTFALL",
+   "LINEAGE_COMPLETE",
+   "OBJECTIVE_POSITIVE",
+   "POLICY_BAND_BREACH"
+  ],
+  "wholesale_funding_cost": 49900122
+ }
+}
