@@ -1,0 +1,2204 @@
+{
+  "schema_version": 1,
+  "classification": "SYNTHETIC / UNCALIBRATED",
+  "production_economic_calibration_applied": false,
+  "calibration_approved": false,
+  "config_hash_basis": "effective_config_canonical_json_sha256",
+  "source_config_file_sha256": "da6bfe40235799a08f66fbf458d7a5b9334fa7d3f72007be123ead9473c56fda",
+  "random_seed": 42,
+  "response_source": "deterministic_synthetic",
+  "tier1_capital_ratio": 0.1,
+  "policy_spread_bps": {
+    "home_loan_spread_bps": {
+      "min": -50.0,
+      "max": 50.0,
+      "step": 5.0
+    },
+    "term_deposit_spread_bps": {
+      "min": -40.0,
+      "max": 40.0,
+      "step": 5.0
+    }
+  },
+  "baseline": {
+    "scenario_id": "baseline",
+    "mode": "adaptive_search",
+    "assumption_source": "Canonical synthetic config and engine code",
+    "perturbations": {},
+    "config_hash": "cf725ba53fd0be8f2f9afef254f890c47fba044c33513deba33853fa956e7ac3",
+    "n_loan_customers": 5000,
+    "n_deposit_customers": 5000,
+    "home_loan_reference_rate": 0.0499,
+    "term_deposit_reference_rate": 0.039,
+    "home_loan_policy_band": [
+      0.0449,
+      0.0549
+    ],
+    "term_deposit_policy_band": [
+      0.035,
+      0.043
+    ],
+    "wholesale_funding_rate": 0.037000000000000005,
+    "required_deposit_funding_ratio": 0.65,
+    "required_deposits": 331494599.54313976,
+    "required_tier1_capital": 17849709.206169065,
+    "loan_rate": 0.0619,
+    "deposit_rate": 0.0405,
+    "loan_interest_income": 31568485.710339,
+    "expected_credit_loss": 3438163.9061083416,
+    "deposit_interest_cost": 13320584.209421102,
+    "wholesale_funding_cost": 6700269.978302658,
+    "excess_deposit_income": 0.0,
+    "funding_shortfall_penalty": 46643.14314491522,
+    "total_objective": 5920859.368621694,
+    "expected_loan_volume": 509991691.6048304,
+    "expected_deposit_volume": 328903313.8128667,
+    "funding_shortfall": 2591285.730273068,
+    "home_loan_spread_to_market_bps": 120.0,
+    "term_deposit_spread_to_market_bps": 15.0,
+    "capital_charge": 2141965.1047402876,
+    "ecl_as_fraction_of_loan_volume": 0.0067416076824491095,
+    "return_on_equity": 0.45170620878100226,
+    "governance_status": "REVIEW_REQUIRED",
+    "nonpassing_gate_codes": [
+      "POLICY_BAND_BREACH",
+      "FUNDING_SHORTFALL"
+    ],
+    "policy_band_breached": true,
+    "roe_constraint_relaxed": false,
+    "initial_grid_size": 357,
+    "final_grid_size": 697,
+    "initial_boundary_warning_flag": true,
+    "boundary_warning_flag": false,
+    "expansion_rounds": 1,
+    "expansion_capped": false,
+    "delta_objective_nzd": 0.0,
+    "delta_loan_rate_bps": 0.0,
+    "delta_deposit_rate_bps": 0.0
+  },
+  "in_band_best": {
+    "loan_rate": 0.0549,
+    "deposit_rate": 0.042,
+    "total_objective": -4508278.788019592
+  },
+  "ecl": {
+    "prospect_rate_distribution": {
+      "min": 0.0016762846034524236,
+      "p05": 0.0037511064406776126,
+      "median": 0.0077079627152425705,
+      "p95": 0.012634921559941555,
+      "max": 0.017414584294778802,
+      "mean": 0.007878386772855912
+    },
+    "loan_opportunity_volume": 2936644188.9837227,
+    "opportunity_balance_weighted_ecl_rate": 0.007983321131449254,
+    "booked_balance_weighted_ecl_rate": 0.006741607682449114,
+    "lvr_bands": [
+      {
+        "lower_lvr_inclusive": 0.0,
+        "upper_lvr": 0.6,
+        "upper_lvr_inclusive": false,
+        "prospect_count": 1164,
+        "loan_opportunity_volume": 685818479.4281912,
+        "expected_loan_volume": 189863053.91867438,
+        "expected_credit_loss": 960716.1225206966,
+        "opportunity_balance_weighted_ecl_rate": 0.005569327114598248,
+        "booked_balance_weighted_ecl_rate": 0.005060047769653005
+      },
+      {
+        "lower_lvr_inclusive": 0.6,
+        "upper_lvr": 0.8,
+        "upper_lvr_inclusive": false,
+        "prospect_count": 2095,
+        "loan_opportunity_volume": 1230839279.763617,
+        "expected_loan_volume": 212303251.1675783,
+        "expected_credit_loss": 1492553.4498392567,
+        "opportunity_balance_weighted_ecl_rate": 0.0076865282939407665,
+        "booked_balance_weighted_ecl_rate": 0.00703029012335347
+      },
+      {
+        "lower_lvr_inclusive": 0.8,
+        "upper_lvr": 0.9,
+        "upper_lvr_inclusive": false,
+        "prospect_count": 1148,
+        "loan_opportunity_volume": 674353792.4052528,
+        "expected_loan_volume": 77672045.189126,
+        "expected_credit_loss": 682687.9697074889,
+        "opportunity_balance_weighted_ecl_rate": 0.009508229097356035,
+        "booked_balance_weighted_ecl_rate": 0.008789365183383436
+      },
+      {
+        "lower_lvr_inclusive": 0.9,
+        "upper_lvr": 1.0,
+        "upper_lvr_inclusive": true,
+        "prospect_count": 593,
+        "loan_opportunity_volume": 345632637.38666177,
+        "expected_loan_volume": 30153341.32945168,
+        "expected_credit_loss": 302206.3640408999,
+        "opportunity_balance_weighted_ecl_rate": 0.010854978524598956,
+        "booked_balance_weighted_ecl_rate": 0.010022317617773452
+      }
+    ]
+  },
+  "deposit_supply": {
+    "opportunity_volume": 556487049.0173755,
+    "top_ten_prospect_balance_share": 0.015229034553333902,
+    "model_best": {
+      "offer_rate": 0.0405,
+      "prospect_mean_conversion": 0.5908115271290689,
+      "expected_deposit_volume": 328903313.8128667,
+      "balance_weighted_conversion": 0.5910349834621168,
+      "top_ten_expected_balance_share": 0.01547932974139151
+    },
+    "reference_offer": {
+      "offer_rate": 0.039,
+      "prospect_mean_conversion": 0.4986885845924512,
+      "expected_deposit_volume": 277640791.53407526,
+      "balance_weighted_conversion": 0.4989168966723004,
+      "top_ten_expected_balance_share": 0.0155753269282084
+    },
+    "opportunity_as_fraction_of_loan_opportunity": 0.1894976078834929
+  },
+  "illustrative_ftp_curve": {
+    "classification": "ILLUSTRATIVE SENSITIVITY ONLY",
+    "tenor_months": [
+      6,
+      12,
+      24
+    ],
+    "reference_rates": [
+      0.03,
+      0.032,
+      0.034
+    ],
+    "liquidity_premium": 0.01,
+    "selected_tenor_months": 12,
+    "selected_total_rate": 0.042,
+    "treatment": "12m point affects wholesale cost; OCR and TD expense formula held fixed"
+  },
+  "scenarios": [
+    {
+      "scenario_id": "ecl_half",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "ecl_multiplier": {
+          "base": 1.0,
+          "case": 0.5
+        }
+      },
+      "config_hash": "cf725ba53fd0be8f2f9afef254f890c47fba044c33513deba33853fa956e7ac3",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 416400807.02688795,
+      "required_tier1_capital": 22421581.91683243,
+      "loan_rate": 0.0609,
+      "deposit_rate": 0.042,
+      "loan_interest_income": 39013552.53528842,
+      "expected_credit_loss": 2181854.903995537,
+      "deposit_interest_cost": 15828157.53445831,
+      "wholesale_funding_cost": 9758962.103152439,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 711718.4402875645,
+      "total_objective": 7842269.7233746825,
+      "expected_loan_volume": 640616626.1952122,
+      "expected_deposit_volume": 376860893.6775788,
+      "funding_shortfall": 39539913.34930915,
+      "home_loan_spread_to_market_bps": 110.0,
+      "term_deposit_spread_to_market_bps": 30.0,
+      "capital_charge": 2690589.8300198913,
+      "ecl_as_fraction_of_loan_volume": 0.0034058668082877237,
+      "return_on_equity": 0.46976433654252114,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 697,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": 1921410.3547529886,
+      "delta_loan_rate_bps": -10.0,
+      "delta_deposit_rate_bps": 15.0
+    },
+    {
+      "scenario_id": "ecl_150pct",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "ecl_multiplier": {
+          "base": 1.0,
+          "case": 1.5
+        }
+      },
+      "config_hash": "cf725ba53fd0be8f2f9afef254f890c47fba044c33513deba33853fa956e7ac3",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 294229243.2573002,
+      "required_tier1_capital": 15843113.09847001,
+      "loan_rate": 0.0624,
+      "deposit_rate": 0.0395,
+      "loan_interest_income": 28246007.352700815,
+      "expected_credit_loss": 4556279.47985418,
+      "deposit_interest_cost": 11648443.470413929,
+      "wholesale_funding_cost": 5837233.634161218,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 0.0,
+      "total_objective": 4302877.196455087,
+      "expected_loan_volume": 452660374.2420003,
+      "expected_deposit_volume": 294897303.04845387,
+      "funding_shortfall": 0.0,
+      "home_loan_spread_to_market_bps": 125.0,
+      "term_deposit_spread_to_market_bps": 5.0,
+      "capital_charge": 1901173.571816401,
+      "ecl_as_fraction_of_loan_volume": 0.010065558505057727,
+      "return_on_equity": 0.3915929104154801,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 697,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": -1617982.1721666073,
+      "delta_loan_rate_bps": 5.0,
+      "delta_deposit_rate_bps": -10.0
+    },
+    {
+      "scenario_id": "prospects_10000",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative prospect counts reproduced from the November 13 audit, FIN-001",
+      "perturbations": {
+        "simulation.n_deposit_customers": {
+          "base": 5000,
+          "case": 10000
+        }
+      },
+      "config_hash": "c475c24462ad8a9d4b56e0d7e1d5e770e0627176a29ed77c7e9316d0f0da30ea",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 10000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 515053117.4509771,
+      "required_tier1_capital": 27733629.40120646,
+      "loan_rate": 0.0599,
+      "deposit_rate": 0.0385,
+      "loan_interest_income": 47464125.7466362,
+      "expected_credit_loss": 5460869.13592268,
+      "deposit_interest_cost": 20058408.707142882,
+      "wholesale_funding_cost": 10041495.960125096,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 0.0,
+      "total_objective": 8575316.415300764,
+      "expected_loan_volume": 792389411.4630417,
+      "expected_deposit_volume": 520997628.756958,
+      "funding_shortfall": 0.0,
+      "home_loan_spread_to_market_bps": 100.0,
+      "term_deposit_spread_to_market_bps": -5.0,
+      "capital_charge": 3328035.528144775,
+      "ecl_as_fraction_of_loan_volume": 0.006891648294289939,
+      "return_on_equity": 0.42920281984180997,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 697,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": 2654457.04667907,
+      "delta_loan_rate_bps": -20.0,
+      "delta_deposit_rate_bps": -20.0
+    },
+    {
+      "scenario_id": "prospects_25000",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative prospect counts reproduced from the November 13 audit, FIN-001",
+      "perturbations": {
+        "simulation.n_deposit_customers": {
+          "base": 5000,
+          "case": 25000
+        }
+      },
+      "config_hash": "b1a6963a23f904d1bc9956fe7dbc71f1a0c4b89728ef6117078ed6bd1d786b33",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 25000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 748083762.4220734,
+      "required_tier1_capital": 40281433.36118856,
+      "loan_rate": 0.0579,
+      "deposit_rate": 0.035,
+      "loan_interest_income": 66636999.76036622,
+      "expected_credit_loss": 8143093.1649056785,
+      "deposit_interest_cost": 26328317.808906887,
+      "wholesale_funding_cost": 14750436.440983485,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 0.0,
+      "total_objective": 12581380.342227533,
+      "expected_loan_volume": 1150898096.033959,
+      "expected_deposit_volume": 752237651.683054,
+      "funding_shortfall": 0.0,
+      "home_loan_spread_to_market_bps": 80.0,
+      "term_deposit_spread_to_market_bps": -40.0,
+      "capital_charge": 4833772.003342628,
+      "ecl_as_fraction_of_loan_volume": 0.0070754250032797035,
+      "return_on_equity": 0.43233695756094376,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 1353,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 2,
+      "expansion_capped": false,
+      "delta_objective_nzd": 6660520.97360584,
+      "delta_loan_rate_bps": -40.0,
+      "delta_deposit_rate_bps": -55.0
+    },
+    {
+      "scenario_id": "deposit_market_half",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "deposit_balance_multiplier": {
+          "base": 1.0,
+          "case": 0.5
+        }
+      },
+      "config_hash": "cf725ba53fd0be8f2f9afef254f890c47fba044c33513deba33853fa956e7ac3",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 229649769.70130754,
+      "required_tier1_capital": 12365756.830070406,
+      "loan_rate": 0.0634,
+      "deposit_rate": 0.042,
+      "loan_interest_income": 22399685.229327537,
+      "expected_credit_loss": 2351434.226807315,
+      "deposit_interest_cost": 7914078.767229155,
+      "wholesale_funding_cost": 6100444.973039222,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 741947.8115253263,
+      "total_objective": 3807888.6311180694,
+      "expected_loan_volume": 353307338.0020116,
+      "expected_deposit_volume": 188430446.8387894,
+      "funding_shortfall": 41219322.86251813,
+      "home_loan_spread_to_market_bps": 135.0,
+      "term_deposit_spread_to_market_bps": 30.0,
+      "capital_charge": 1483890.8196084488,
+      "ecl_as_fraction_of_loan_volume": 0.006655492184523852,
+      "return_on_equity": 0.42793817826485514,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 697,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": -2112970.7375036245,
+      "delta_loan_rate_bps": 15.0,
+      "delta_deposit_rate_bps": 15.0
+    },
+    {
+      "scenario_id": "deposit_market_double",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "deposit_balance_multiplier": {
+          "base": 1.0,
+          "case": 2.0
+        }
+      },
+      "config_hash": "cf725ba53fd0be8f2f9afef254f890c47fba044c33513deba33853fa956e7ac3",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 515053117.4509771,
+      "required_tier1_capital": 27733629.40120646,
+      "loan_rate": 0.0599,
+      "deposit_rate": 0.0385,
+      "loan_interest_income": 47464125.7466362,
+      "expected_credit_loss": 5460869.13592268,
+      "deposit_interest_cost": 20049973.28185599,
+      "wholesale_funding_cost": 10049602.732478734,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 0.0,
+      "total_objective": 8575645.068234019,
+      "expected_loan_volume": 792389411.4630417,
+      "expected_deposit_volume": 520778526.8014543,
+      "funding_shortfall": 0.0,
+      "home_loan_spread_to_market_bps": 100.0,
+      "term_deposit_spread_to_market_bps": -5.0,
+      "capital_charge": 3328035.528144775,
+      "ecl_as_fraction_of_loan_volume": 0.006891648294289939,
+      "return_on_equity": 0.4292146701816447,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 697,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": 2654785.699612325,
+      "delta_loan_rate_bps": -20.0,
+      "delta_deposit_rate_bps": -20.0
+    },
+    {
+      "scenario_id": "conversion_low",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "response.coefficients.deposit.intercept": {
+          "base": -0.44,
+          "case": -0.94
+        }
+      },
+      "config_hash": "a6c573380a10f1d84e2625c73a16a502470138d8e9f8816e224ff1cfaa4226b6",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 331494599.54313976,
+      "required_tier1_capital": 17849709.206169065,
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.0425,
+      "loan_interest_income": 31568485.710339,
+      "expected_credit_loss": 3438163.9061083416,
+      "deposit_interest_cost": 13978390.83704684,
+      "wholesale_funding_cost": 6700269.978302656,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 46643.143144914146,
+      "total_objective": 5263052.740995959,
+      "expected_loan_volume": 509991691.6048304,
+      "expected_deposit_volume": 328903313.81286675,
+      "funding_shortfall": 2591285.7302730083,
+      "home_loan_spread_to_market_bps": 120.0,
+      "term_deposit_spread_to_market_bps": 35.0,
+      "capital_charge": 2141965.1047402876,
+      "ecl_as_fraction_of_loan_volume": 0.0067416076824491095,
+      "return_on_equity": 0.4148536965059906,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 1353,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": -657806.6276257345,
+      "delta_loan_rate_bps": 0.0,
+      "delta_deposit_rate_bps": 20.0
+    },
+    {
+      "scenario_id": "conversion_high",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "response.coefficients.deposit.intercept": {
+          "base": -0.44,
+          "case": 0.06
+        }
+      },
+      "config_hash": "d66eb51567ed25f6c1743699a9d69142999778942cdb0bf1f3c5ddf92fb9186d",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 372207093.7422775,
+      "required_tier1_capital": 20041920.43227648,
+      "loan_rate": 0.0614,
+      "deposit_rate": 0.0395,
+      "loan_interest_income": 35159254.701193586,
+      "expected_credit_loss": 3879774.5932063237,
+      "deposit_interest_cost": 14276203.179933641,
+      "wholesale_funding_cost": 7814527.011759861,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 194116.11169503126,
+      "total_objective": 6589603.352725552,
+      "expected_loan_volume": 572626298.0650423,
+      "expected_deposit_volume": 361422865.31477576,
+      "funding_shortfall": 10784228.427501738,
+      "home_loan_spread_to_market_bps": 115.0,
+      "term_deposit_spread_to_market_bps": 5.0,
+      "capital_charge": 2405030.4518731777,
+      "ecl_as_fraction_of_loan_volume": 0.006775404144581631,
+      "return_on_equity": 0.4487910145633217,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 697,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": 668743.9841038585,
+      "delta_loan_rate_bps": -5.0,
+      "delta_deposit_rate_bps": -10.0
+    },
+    {
+      "scenario_id": "funding_ratio_zero",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative prospect counts reproduced from the November 13 audit, FIN-001",
+      "perturbations": {
+        "balance_sheet.required_deposit_funding_ratio": {
+          "base": 0.65,
+          "case": 0
+        }
+      },
+      "config_hash": "5abcd4c0c167ad226ddec62bb3b63dab2656e57e1db2a9b72d4a84cae372cb57",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.0,
+      "required_deposits": 0.0,
+      "required_tier1_capital": 50746087.20934858,
+      "loan_rate": 0.0564,
+      "deposit_rate": 0.032,
+      "loan_interest_income": 81773694.8173503,
+      "expected_credit_loss": 10475733.94533604,
+      "deposit_interest_cost": 2647914.013830567,
+      "wholesale_funding_cost": 50584213.042819776,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 0.0,
+      "total_objective": 11976303.350242086,
+      "expected_loan_volume": 1449888205.981388,
+      "expected_deposit_volume": 82747312.9322052,
+      "funding_shortfall": 0.0,
+      "home_loan_spread_to_market_bps": 65.0,
+      "term_deposit_spread_to_market_bps": -70.0,
+      "capital_charge": 6089530.46512183,
+      "ecl_as_fraction_of_loan_volume": 0.007225201158350904,
+      "return_on_equity": 0.356004468695978,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 1353,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": 6055443.981620392,
+      "delta_loan_rate_bps": -55.0,
+      "delta_deposit_rate_bps": -85.0
+    },
+    {
+      "scenario_id": "funding_ratio_high",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "balance_sheet.required_deposit_funding_ratio": {
+          "base": 0.65,
+          "case": 0.8
+        }
+      },
+      "config_hash": "5459fe9a75b48cac3686e364d31df0d6f6e47ef772171f2835288ea1141eeeab",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.8,
+      "required_deposits": 320399085.9692356,
+      "required_tier1_capital": 14017460.01115406,
+      "loan_rate": 0.0629,
+      "deposit_rate": 0.04,
+      "loan_interest_income": 25191378.134331144,
+      "expected_credit_loss": 2676006.8888226207,
+      "deposit_interest_cost": 12481094.571970657,
+      "wholesale_funding_cost": 3273445.2470042887,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 150690.99005944454,
+      "total_objective": 4928045.235135643,
+      "expected_loan_volume": 400498857.4615445,
+      "expected_deposit_volume": 312027364.29926646,
+      "funding_shortfall": 8371721.6699691415,
+      "home_loan_spread_to_market_bps": 130.0,
+      "term_deposit_spread_to_market_bps": 10.0,
+      "capital_charge": 1682095.201338487,
+      "ecl_as_fraction_of_loan_volume": 0.006681684202006914,
+      "return_on_equity": 0.47156477929769514,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 697,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": -992814.1334860511,
+      "delta_loan_rate_bps": 10.0,
+      "delta_deposit_rate_bps": -5.0
+    },
+    {
+      "scenario_id": "wholesale_low",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "market.wholesale_funding_spread": {
+          "base": 0.012,
+          "case": 0.007
+        }
+      },
+      "config_hash": "79cba7e0ffad97141bea14e092e21eaa38c07dc906e8cf281074c1ed90ee6514",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.032,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 515053117.4509771,
+      "required_tier1_capital": 27733629.40120646,
+      "loan_rate": 0.0599,
+      "deposit_rate": 0.0405,
+      "loan_interest_income": 47464125.7466362,
+      "expected_credit_loss": 5460869.13592268,
+      "deposit_interest_cost": 13320584.209421102,
+      "wholesale_funding_cost": 14831555.1248056,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 3350696.465485987,
+      "total_objective": 7172385.282856055,
+      "expected_loan_volume": 792389411.4630417,
+      "expected_deposit_volume": 328903313.8128667,
+      "funding_shortfall": 186149803.6381104,
+      "home_loan_spread_to_market_bps": 100.0,
+      "term_deposit_spread_to_market_bps": 15.0,
+      "capital_charge": 3328035.528144775,
+      "ecl_as_fraction_of_loan_volume": 0.006891648294289939,
+      "return_on_equity": 0.3786169007704432,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 697,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": 1251525.9142343607,
+      "delta_loan_rate_bps": -20.0,
+      "delta_deposit_rate_bps": 0.0
+    },
+    {
+      "scenario_id": "wholesale_high",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "market.wholesale_funding_spread": {
+          "base": 0.012,
+          "case": 0.022
+        }
+      },
+      "config_hash": "dd097ff97136dcf714e40a7e7fd3798f0523498ddf1a385890677d7a1160b5e6",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.047,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 294229243.2573002,
+      "required_tier1_capital": 15843113.09847001,
+      "loan_rate": 0.0624,
+      "deposit_rate": 0.0395,
+      "loan_interest_income": 28246007.352700815,
+      "expected_credit_loss": 3037519.65323612,
+      "deposit_interest_cost": 11648443.470413929,
+      "wholesale_funding_cost": 7414864.346096681,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 0.0,
+      "total_objective": 4244006.311137684,
+      "expected_loan_volume": 452660374.2420003,
+      "expected_deposit_volume": 294897303.04845387,
+      "funding_shortfall": 0.0,
+      "home_loan_spread_to_market_bps": 125.0,
+      "term_deposit_spread_to_market_bps": 5.0,
+      "capital_charge": 1901173.571816401,
+      "ecl_as_fraction_of_loan_volume": 0.006710372336705152,
+      "return_on_equity": 0.38787704441417714,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 1353,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": -1676853.0574840102,
+      "delta_loan_rate_bps": 5.0,
+      "delta_deposit_rate_bps": -10.0
+    },
+    {
+      "scenario_id": "ftp_12m",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative 12m curve point plus liquidity premium; see illustrative_ftp_curve",
+      "perturbations": {
+        "market.wholesale_funding_spread": {
+          "base": 0.012,
+          "case": 0.017
+        }
+      },
+      "config_hash": "b2aa3ee47b7db915e84f52423de6c0d41fca8b53339792423aab08441d171e5d",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.042,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 294229243.2573002,
+      "required_tier1_capital": 15843113.09847001,
+      "loan_rate": 0.0624,
+      "deposit_rate": 0.0395,
+      "loan_interest_income": 28246007.352700815,
+      "expected_credit_loss": 3037519.65323612,
+      "deposit_interest_cost": 11648443.470413929,
+      "wholesale_funding_cost": 6626048.99012895,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 0.0,
+      "total_objective": 5032821.667105415,
+      "expected_loan_volume": 452660374.2420003,
+      "expected_deposit_volume": 294897303.04845387,
+      "funding_shortfall": 0.0,
+      "home_loan_spread_to_market_bps": 125.0,
+      "term_deposit_spread_to_market_bps": 5.0,
+      "capital_charge": 1901173.571816401,
+      "ecl_as_fraction_of_loan_volume": 0.006710372336705152,
+      "return_on_equity": 0.437666208391294,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 1353,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": -888037.701516279,
+      "delta_loan_rate_bps": 5.0,
+      "delta_deposit_rate_bps": -10.0
+    },
+    {
+      "scenario_id": "rwa_low",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "balance_sheet.loan_rwa_weight": {
+          "base": 0.35,
+          "case": 0.25
+        }
+      },
+      "config_hash": "01f97e4ec56cc5c9ca50d324fc884cf495113d14d97efd4735b1a78bb6eb4d48",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 372207093.7422775,
+      "required_tier1_capital": 14315657.451626057,
+      "loan_rate": 0.0614,
+      "deposit_rate": 0.0415,
+      "loan_interest_income": 35159254.701193586,
+      "expected_credit_loss": 3879774.5932063237,
+      "deposit_interest_cost": 14999048.910563197,
+      "wholesale_funding_cost": 7814527.011759861,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 194116.11169503126,
+      "total_objective": 6553909.179774044,
+      "expected_loan_volume": 572626298.0650423,
+      "expected_deposit_volume": 361422865.31477576,
+      "funding_shortfall": 10784228.427501738,
+      "home_loan_spread_to_market_bps": 115.0,
+      "term_deposit_spread_to_market_bps": 25.0,
+      "capital_charge": 1717878.8941951268,
+      "ecl_as_fraction_of_loan_volume": 0.006775404144581631,
+      "return_on_equity": 0.5778140544309834,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 697,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": 633049.8111523502,
+      "delta_loan_rate_bps": -5.0,
+      "delta_deposit_rate_bps": 10.0
+    },
+    {
+      "scenario_id": "rwa_high",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "balance_sheet.loan_rwa_weight": {
+          "base": 0.35,
+          "case": 0.45
+        }
+      },
+      "config_hash": "71a5c9605360c54e9eec43509b2f880b468ee9d822c7e43fc2588cb3a89d8c02",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 331494599.54313976,
+      "required_tier1_capital": 22949626.122217372,
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.0405,
+      "loan_interest_income": 31568485.710339,
+      "expected_credit_loss": 3438163.9061083416,
+      "deposit_interest_cost": 13320584.209421102,
+      "wholesale_funding_cost": 6700269.978302658,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 46643.14314491522,
+      "total_objective": 5308869.338695897,
+      "expected_loan_volume": 509991691.6048304,
+      "expected_deposit_volume": 328903313.8128667,
+      "funding_shortfall": 2591285.730273068,
+      "home_loan_spread_to_market_bps": 120.0,
+      "term_deposit_spread_to_market_bps": 15.0,
+      "capital_charge": 2753955.134666085,
+      "ecl_as_fraction_of_loan_volume": 0.0067416076824491095,
+      "return_on_equity": 0.35132705127411284,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 697,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": -611990.0299257971,
+      "delta_loan_rate_bps": 0.0,
+      "delta_deposit_rate_bps": 0.0
+    },
+    {
+      "scenario_id": "capital_hurdle_low",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "balance_sheet.capital_hurdle_rate": {
+          "base": 0.12,
+          "case": 0.08
+        }
+      },
+      "config_hash": "a94adf1ef3d0047a94e217d94606f38b36baf57a2c0603cb194ad84323544470",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 372207093.7422775,
+      "required_tier1_capital": 20041920.43227648,
+      "loan_rate": 0.0614,
+      "deposit_rate": 0.0415,
+      "loan_interest_income": 35159254.701193586,
+      "expected_credit_loss": 3879774.5932063237,
+      "deposit_interest_cost": 14999048.910563197,
+      "wholesale_funding_cost": 7814527.011759861,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 194116.11169503126,
+      "total_objective": 6668434.439387055,
+      "expected_loan_volume": 572626298.0650423,
+      "expected_deposit_volume": 361422865.31477576,
+      "funding_shortfall": 10784228.427501738,
+      "home_loan_spread_to_market_bps": 115.0,
+      "term_deposit_spread_to_market_bps": 25.0,
+      "capital_charge": 1603353.6345821184,
+      "ecl_as_fraction_of_loan_volume": 0.006775404144581631,
+      "return_on_equity": 0.41272432459355957,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 697,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": 747575.0707653612,
+      "delta_loan_rate_bps": -5.0,
+      "delta_deposit_rate_bps": 10.0
+    },
+    {
+      "scenario_id": "capital_hurdle_high",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "balance_sheet.capital_hurdle_rate": {
+          "base": 0.12,
+          "case": 0.16
+        }
+      },
+      "config_hash": "d50aa0d70cbe290f9e2df96dc79c6ce4e92d5e043c80801387494a625391423c",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 331494599.54313976,
+      "required_tier1_capital": 17849709.206169065,
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.0405,
+      "loan_interest_income": 31568485.710339,
+      "expected_credit_loss": 3438163.9061083416,
+      "deposit_interest_cost": 13320584.209421102,
+      "wholesale_funding_cost": 6700269.978302658,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 46643.14314491522,
+      "total_objective": 5206871.00037493,
+      "expected_loan_volume": 509991691.6048304,
+      "expected_deposit_volume": 328903313.8128667,
+      "funding_shortfall": 2591285.730273068,
+      "home_loan_spread_to_market_bps": 120.0,
+      "term_deposit_spread_to_market_bps": 15.0,
+      "capital_charge": 2855953.4729870507,
+      "ecl_as_fraction_of_loan_volume": 0.0067416076824491095,
+      "return_on_equity": 0.45170620878100226,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 697,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": -713988.368246764,
+      "delta_loan_rate_bps": 0.0,
+      "delta_deposit_rate_bps": 0.0
+    },
+    {
+      "scenario_id": "loan_benchmark_down",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "market.competitor_loan_rate": {
+          "base": 0.0499,
+          "case": 0.0449
+        },
+        "market.home_loan_reference_rate": {
+          "base": 0.0499,
+          "case": 0.0449
+        }
+      },
+      "config_hash": "f27b5ba4ddc6a128c79f0db4694a7b6a05ee7e92a50a6d0411ab93d575974eb5",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0449,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0399,
+        0.0499
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 318693089.7039189,
+      "required_tier1_capital": 17160397.137903325,
+      "loan_rate": 0.0599,
+      "deposit_rate": 0.04,
+      "loan_interest_income": 29368793.95886883,
+      "expected_credit_loss": 3300145.978059995,
+      "deposit_interest_cost": 12481094.571970657,
+      "wholesale_funding_cost": 6595978.780996371,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 119983.05728374349,
+      "total_objective": 4812343.914009665,
+      "expected_loan_volume": 490297061.08295214,
+      "expected_deposit_volume": 312027364.29926646,
+      "funding_shortfall": 6665725.404652417,
+      "home_loan_spread_to_market_bps": 150.0,
+      "term_deposit_spread_to_market_bps": 10.0,
+      "capital_charge": 2059247.656548399,
+      "ecl_as_fraction_of_loan_volume": 0.006730911196511642,
+      "return_on_equity": 0.4004331318988135,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 1377,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 2,
+      "expansion_capped": false,
+      "delta_objective_nzd": -1108515.4546120288,
+      "delta_loan_rate_bps": -20.0,
+      "delta_deposit_rate_bps": -5.0
+    },
+    {
+      "scenario_id": "loan_benchmark_up",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "market.competitor_loan_rate": {
+          "base": 0.0499,
+          "case": 0.0549
+        },
+        "market.home_loan_reference_rate": {
+          "base": 0.0499,
+          "case": 0.0549
+        }
+      },
+      "config_hash": "ed816c7da1d1d278ca891c16c8e8b9f60c9fed35315f5c2171c441054597d1ad",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0549,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0499,
+        0.0599
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 386551540.05302703,
+      "required_tier1_capital": 20814313.695162993,
+      "loan_rate": 0.0634,
+      "deposit_rate": 0.042,
+      "loan_interest_income": 37703642.52209525,
+      "expected_credit_loss": 4036332.6446797815,
+      "deposit_interest_cost": 15828157.53445831,
+      "wholesale_funding_cost": 8059849.983101891,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 174431.63475806807,
+      "total_objective": 7107153.081677634,
+      "expected_loan_volume": 594694677.0046569,
+      "expected_deposit_volume": 376860893.6775788,
+      "funding_shortfall": 9690646.375448227,
+      "home_loan_spread_to_market_bps": 85.0,
+      "term_deposit_spread_to_market_bps": 30.0,
+      "capital_charge": 2497717.643419559,
+      "ecl_as_fraction_of_loan_volume": 0.006787235199430201,
+      "return_on_equity": 0.4614550768171259,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 697,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": 1186293.7130559403,
+      "delta_loan_rate_bps": 15.0,
+      "delta_deposit_rate_bps": 15.0
+    },
+    {
+      "scenario_id": "deposit_benchmark_down",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "market.competitor_deposit_rate": {
+          "base": 0.039,
+          "case": 0.034
+        },
+        "market.term_deposit_reference_rate": {
+          "base": 0.039,
+          "case": 0.034
+        }
+      },
+      "config_hash": "a996a72c163f680779089ab519f9468a32c631a40f548bb6b97eafe9de99ac04",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.034,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.03,
+        0.038
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 372207093.7422775,
+      "required_tier1_capital": 20041920.43227648,
+      "loan_rate": 0.0614,
+      "deposit_rate": 0.0395,
+      "loan_interest_income": 35159254.701193586,
+      "expected_credit_loss": 3879774.5932063237,
+      "deposit_interest_cost": 14523065.627956742,
+      "wholesale_funding_cost": 7583288.769307844,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 81621.8315832392,
+      "total_objective": 6686473.427266261,
+      "expected_loan_volume": 572626298.0650423,
+      "expected_deposit_volume": 367672547.54320866,
+      "funding_shortfall": 4534546.199068844,
+      "home_loan_spread_to_market_bps": 115.0,
+      "term_deposit_spread_to_market_bps": 55.0,
+      "capital_charge": 2405030.4518731777,
+      "ecl_as_fraction_of_loan_volume": 0.006775404144581631,
+      "return_on_equity": 0.4536243874363476,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 1353,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": 765614.0586445667,
+      "delta_loan_rate_bps": -5.0,
+      "delta_deposit_rate_bps": -10.0
+    },
+    {
+      "scenario_id": "deposit_benchmark_up",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "market.competitor_deposit_rate": {
+          "base": 0.039,
+          "case": 0.044
+        },
+        "market.term_deposit_reference_rate": {
+          "base": 0.039,
+          "case": 0.044
+        }
+      },
+      "config_hash": "7a04f24eba085d867a884e1a9d713bc6e6a2072199dd26e15dfa624adca5413b",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.044,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.04,
+        0.048
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 331494599.54313976,
+      "required_tier1_capital": 17849709.206169065,
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.0425,
+      "loan_interest_income": 31568485.710339,
+      "expected_credit_loss": 3438163.9061083416,
+      "deposit_interest_cost": 13693131.404056309,
+      "wholesale_funding_cost": 6948613.484670881,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 167458.90299972653,
+      "total_objective": 5179152.907763452,
+      "expected_loan_volume": 509991691.6048304,
+      "expected_deposit_volume": 322191327.15426606,
+      "funding_shortfall": 9303272.388873696,
+      "home_loan_spread_to_market_bps": 120.0,
+      "term_deposit_spread_to_market_bps": -15.0,
+      "capital_charge": 2141965.1047402876,
+      "ecl_as_fraction_of_loan_volume": 0.0067416076824491095,
+      "return_on_equity": 0.4101533491634406,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 697,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": -741706.4608582417,
+      "delta_loan_rate_bps": 0.0,
+      "delta_deposit_rate_bps": 20.0
+    },
+    {
+      "scenario_id": "ecl_half_wholesale_high",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "market.wholesale_funding_spread": {
+          "base": 0.012,
+          "case": 0.022
+        },
+        "ecl_multiplier": {
+          "base": 1.0,
+          "case": 0.5
+        }
+      },
+      "config_hash": "dd097ff97136dcf714e40a7e7fd3798f0523498ddf1a385890677d7a1160b5e6",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.047,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 331494599.54313976,
+      "required_tier1_capital": 17849709.206169065,
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.0405,
+      "loan_interest_income": 31568485.710339,
+      "expected_credit_loss": 1719081.9530541708,
+      "deposit_interest_cost": 13320584.209421102,
+      "wholesale_funding_cost": 8511153.756222295,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 46643.14314491522,
+      "total_objective": 5829057.543756228,
+      "expected_loan_volume": 509991691.6048304,
+      "expected_deposit_volume": 328903313.8128667,
+      "funding_shortfall": 2591285.730273068,
+      "home_loan_spread_to_market_bps": 120.0,
+      "term_deposit_spread_to_market_bps": 15.0,
+      "capital_charge": 2141965.1047402876,
+      "ecl_as_fraction_of_loan_volume": 0.0033708038412245548,
+      "return_on_equity": 0.4465631656196191,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 1353,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": -91801.82486546598,
+      "delta_loan_rate_bps": 0.0,
+      "delta_deposit_rate_bps": 0.0
+    },
+    {
+      "scenario_id": "deposit_market_double_funding_high",
+      "mode": "adaptive_search",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "balance_sheet.required_deposit_funding_ratio": {
+          "base": 0.65,
+          "case": 0.8
+        },
+        "deposit_balance_multiplier": {
+          "base": 1.0,
+          "case": 2.0
+        }
+      },
+      "config_hash": "5459fe9a75b48cac3686e364d31df0d6f6e47ef772171f2835288ea1141eeeab",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.8,
+      "required_deposits": 512493300.95616984,
+      "required_tier1_capital": 22421581.91683243,
+      "loan_rate": 0.0609,
+      "deposit_rate": 0.0385,
+      "loan_interest_income": 39013552.53528842,
+      "expected_credit_loss": 4363709.807991074,
+      "deposit_interest_cost": 20049973.28185599,
+      "wholesale_funding_cost": 4434009.677569045,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 0.0,
+      "total_objective": 7475269.9378524255,
+      "expected_loan_volume": 640616626.1952122,
+      "expected_deposit_volume": 520778526.8014543,
+      "funding_shortfall": 0.0,
+      "home_loan_spread_to_market_bps": 110.0,
+      "term_deposit_spread_to_market_bps": -5.0,
+      "capital_charge": 2690589.8300198913,
+      "ecl_as_fraction_of_loan_volume": 0.006811733616575447,
+      "return_on_equity": 0.45339618790414415,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": false,
+      "initial_grid_size": 357,
+      "final_grid_size": 697,
+      "initial_boundary_warning_flag": true,
+      "boundary_warning_flag": false,
+      "expansion_rounds": 1,
+      "expansion_capped": false,
+      "delta_objective_nzd": 1554410.5692307316,
+      "delta_loan_rate_bps": -10.0,
+      "delta_deposit_rate_bps": -20.0
+    },
+    {
+      "scenario_id": "fixed_base",
+      "mode": "fixed_offers",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {},
+      "config_hash": "cf725ba53fd0be8f2f9afef254f890c47fba044c33513deba33853fa956e7ac3",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 331494599.54313976,
+      "required_tier1_capital": 17849709.206169065,
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.0405,
+      "loan_interest_income": 31568485.710339,
+      "expected_credit_loss": 3438163.9061083416,
+      "deposit_interest_cost": 13320584.209421102,
+      "wholesale_funding_cost": 6700269.978302658,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 46643.14314491522,
+      "total_objective": 5920859.368621694,
+      "expected_loan_volume": 509991691.6048304,
+      "expected_deposit_volume": 328903313.8128667,
+      "funding_shortfall": 2591285.730273068,
+      "home_loan_spread_to_market_bps": 120.0,
+      "term_deposit_spread_to_market_bps": 15.0,
+      "capital_charge": 2141965.1047402876,
+      "ecl_as_fraction_of_loan_volume": 0.0067416076824491095,
+      "return_on_equity": 0.45170620878100226,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": null,
+      "initial_grid_size": null,
+      "final_grid_size": 1,
+      "initial_boundary_warning_flag": null,
+      "boundary_warning_flag": null,
+      "expansion_rounds": null,
+      "expansion_capped": null,
+      "delta_objective_nzd": 0.0,
+      "delta_loan_rate_bps": 0.0,
+      "delta_deposit_rate_bps": 0.0
+    },
+    {
+      "scenario_id": "fixed_lower_mortgage",
+      "mode": "fixed_offers",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "loan_rate": {
+          "base": 0.0619,
+          "case": 0.0594
+        }
+      },
+      "config_hash": "cf725ba53fd0be8f2f9afef254f890c47fba044c33513deba33853fa956e7ac3",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 569244549.7798452,
+      "required_tier1_capital": 30651629.603530124,
+      "loan_rate": 0.0594,
+      "deposit_rate": 0.0405,
+      "loan_interest_income": 52020194.2414197,
+      "expected_credit_loss": 6073349.992250647,
+      "deposit_interest_cost": 13320584.209421102,
+      "wholesale_funding_cost": 20233728.684084352,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 4326142.247405614,
+      "total_objective": 4388193.5558343725,
+      "expected_loan_volume": 875760845.8151464,
+      "expected_deposit_volume": 328903313.8128667,
+      "funding_shortfall": 240341235.96697855,
+      "home_loan_spread_to_market_bps": 95.0,
+      "term_deposit_spread_to_market_bps": 15.0,
+      "capital_charge": 3678195.5524236145,
+      "ecl_as_fraction_of_loan_volume": 0.006934941224276423,
+      "return_on_equity": 0.26316346675835417,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": null,
+      "initial_grid_size": null,
+      "final_grid_size": 1,
+      "initial_boundary_warning_flag": null,
+      "boundary_warning_flag": null,
+      "expansion_rounds": null,
+      "expansion_capped": null,
+      "delta_objective_nzd": -1532665.8127873214,
+      "delta_loan_rate_bps": -25.0,
+      "delta_deposit_rate_bps": 0.0
+    },
+    {
+      "scenario_id": "fixed_higher_deposit",
+      "mode": "fixed_offers",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "deposit_rate": {
+          "base": 0.0405,
+          "case": 0.042
+        }
+      },
+      "config_hash": "cf725ba53fd0be8f2f9afef254f890c47fba044c33513deba33853fa956e7ac3",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 331494599.54313976,
+      "required_tier1_capital": 17849709.206169065,
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.042,
+      "loan_interest_income": 31568485.710339,
+      "expected_credit_loss": 3438163.9061083416,
+      "deposit_interest_cost": 15828157.53445831,
+      "wholesale_funding_cost": 4925839.523308309,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 0.0,
+      "total_objective": 5234359.64172375,
+      "expected_loan_volume": 509991691.6048304,
+      "expected_deposit_volume": 376860893.6775788,
+      "funding_shortfall": 0.0,
+      "home_loan_spread_to_market_bps": 120.0,
+      "term_deposit_spread_to_market_bps": 30.0,
+      "capital_charge": 2141965.1047402876,
+      "ecl_as_fraction_of_loan_volume": 0.0067416076824491095,
+      "return_on_equity": 0.41324621377667575,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": null,
+      "initial_grid_size": null,
+      "final_grid_size": 1,
+      "initial_boundary_warning_flag": null,
+      "boundary_warning_flag": null,
+      "expansion_rounds": null,
+      "expansion_capped": null,
+      "delta_objective_nzd": -686499.7268979438,
+      "delta_loan_rate_bps": 0.0,
+      "delta_deposit_rate_bps": 15.0
+    },
+    {
+      "scenario_id": "fixed_deposit_market_double",
+      "mode": "fixed_offers",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "deposit_balance_multiplier": {
+          "base": 1.0,
+          "case": 2.0
+        }
+      },
+      "config_hash": "cf725ba53fd0be8f2f9afef254f890c47fba044c33513deba33853fa956e7ac3",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 331494599.54313976,
+      "required_tier1_capital": 17849709.206169065,
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.0405,
+      "loan_interest_income": 31568485.710339,
+      "expected_credit_loss": 3438163.9061083416,
+      "deposit_interest_cost": 26641168.418842204,
+      "wholesale_funding_cost": 0.0,
+      "excess_deposit_income": 3695373.400522575,
+      "funding_shortfall_penalty": 0.0,
+      "total_objective": 3042561.6811707392,
+      "expected_loan_volume": 509991691.6048304,
+      "expected_deposit_volume": 657806627.6257334,
+      "funding_shortfall": 0.0,
+      "home_loan_spread_to_market_bps": 120.0,
+      "term_deposit_spread_to_market_bps": 15.0,
+      "capital_charge": 2141965.1047402876,
+      "ecl_as_fraction_of_loan_volume": 0.0067416076824491095,
+      "return_on_equity": 0.290454411667345,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": null,
+      "initial_grid_size": null,
+      "final_grid_size": 1,
+      "initial_boundary_warning_flag": null,
+      "boundary_warning_flag": null,
+      "expansion_rounds": null,
+      "expansion_capped": null,
+      "delta_objective_nzd": -2878297.6874509547,
+      "delta_loan_rate_bps": 0.0,
+      "delta_deposit_rate_bps": 0.0
+    },
+    {
+      "scenario_id": "fixed_deposit_supply_lower_mortgage",
+      "mode": "fixed_offers",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "deposit_balance_multiplier": {
+          "base": 1.0,
+          "case": 2.0
+        },
+        "loan_rate": {
+          "base": 0.0619,
+          "case": 0.0594
+        }
+      },
+      "config_hash": "cf725ba53fd0be8f2f9afef254f890c47fba044c33513deba33853fa956e7ac3",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 569244549.7798452,
+      "required_tier1_capital": 30651629.603530124,
+      "loan_rate": 0.0594,
+      "deposit_rate": 0.0405,
+      "loan_interest_income": 52020194.2414197,
+      "expected_credit_loss": 6073349.992250647,
+      "deposit_interest_cost": 26641168.418842204,
+      "wholesale_funding_cost": 8064306.073008285,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 0.0,
+      "total_objective": 7563174.204894952,
+      "expected_loan_volume": 875760845.8151464,
+      "expected_deposit_volume": 657806627.6257334,
+      "funding_shortfall": 0.0,
+      "home_loan_spread_to_market_bps": 95.0,
+      "term_deposit_spread_to_market_bps": 15.0,
+      "capital_charge": 3678195.5524236145,
+      "ecl_as_fraction_of_loan_volume": 0.006934941224276423,
+      "return_on_equity": 0.3667462351177539,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": null,
+      "initial_grid_size": null,
+      "final_grid_size": 1,
+      "initial_boundary_warning_flag": null,
+      "boundary_warning_flag": null,
+      "expansion_rounds": null,
+      "expansion_capped": null,
+      "delta_objective_nzd": 1642314.8362732576,
+      "delta_loan_rate_bps": -25.0,
+      "delta_deposit_rate_bps": 0.0
+    },
+    {
+      "scenario_id": "fixed_ftp_12m",
+      "mode": "fixed_offers",
+      "assumption_source": "Illustrative 12m curve point plus liquidity premium; see illustrative_ftp_curve",
+      "perturbations": {
+        "market.wholesale_funding_spread": {
+          "base": 0.012,
+          "case": 0.017
+        }
+      },
+      "config_hash": "b2aa3ee47b7db915e84f52423de6c0d41fca8b53339792423aab08441d171e5d",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.042,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 331494599.54313976,
+      "required_tier1_capital": 17849709.206169065,
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.0405,
+      "loan_interest_income": 31568485.710339,
+      "expected_credit_loss": 3438163.9061083416,
+      "deposit_interest_cost": 13320584.209421102,
+      "wholesale_funding_cost": 7605711.867262476,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 46643.14314491522,
+      "total_objective": 5015417.479661875,
+      "expected_loan_volume": 509991691.6048304,
+      "expected_deposit_volume": 328903313.8128667,
+      "funding_shortfall": 2591285.730273068,
+      "home_loan_spread_to_market_bps": 120.0,
+      "term_deposit_spread_to_market_bps": 15.0,
+      "capital_charge": 2141965.1047402876,
+      "ecl_as_fraction_of_loan_volume": 0.0067416076824491095,
+      "return_on_equity": 0.4009803466113885,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": null,
+      "initial_grid_size": null,
+      "final_grid_size": 1,
+      "initial_boundary_warning_flag": null,
+      "boundary_warning_flag": null,
+      "expansion_rounds": null,
+      "expansion_capped": null,
+      "delta_objective_nzd": -905441.8889598185,
+      "delta_loan_rate_bps": 0.0,
+      "delta_deposit_rate_bps": 0.0
+    },
+    {
+      "scenario_id": "fixed_ftp_higher_deposit",
+      "mode": "fixed_offers",
+      "assumption_source": "Illustrative 12m curve point plus liquidity premium; see illustrative_ftp_curve",
+      "perturbations": {
+        "market.wholesale_funding_spread": {
+          "base": 0.012,
+          "case": 0.017
+        },
+        "deposit_rate": {
+          "base": 0.0405,
+          "case": 0.042
+        }
+      },
+      "config_hash": "b2aa3ee47b7db915e84f52423de6c0d41fca8b53339792423aab08441d171e5d",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.042,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 331494599.54313976,
+      "required_tier1_capital": 17849709.206169065,
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.042,
+      "loan_interest_income": 31568485.710339,
+      "expected_credit_loss": 3438163.9061083416,
+      "deposit_interest_cost": 15828157.53445831,
+      "wholesale_funding_cost": 5591493.512944567,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 0.0,
+      "total_objective": 4568705.652087492,
+      "expected_loan_volume": 509991691.6048304,
+      "expected_deposit_volume": 376860893.6775788,
+      "funding_shortfall": 0.0,
+      "home_loan_spread_to_market_bps": 120.0,
+      "term_deposit_spread_to_market_bps": 30.0,
+      "capital_charge": 2141965.1047402876,
+      "ecl_as_fraction_of_loan_volume": 0.0067416076824491095,
+      "return_on_equity": 0.3759540662157395,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": null,
+      "initial_grid_size": null,
+      "final_grid_size": 1,
+      "initial_boundary_warning_flag": null,
+      "boundary_warning_flag": null,
+      "expansion_rounds": null,
+      "expansion_capped": null,
+      "delta_objective_nzd": -1352153.716534202,
+      "delta_loan_rate_bps": 0.0,
+      "delta_deposit_rate_bps": 15.0
+    },
+    {
+      "scenario_id": "fixed_rwa_high",
+      "mode": "fixed_offers",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "balance_sheet.loan_rwa_weight": {
+          "base": 0.35,
+          "case": 0.45
+        }
+      },
+      "config_hash": "71a5c9605360c54e9eec43509b2f880b468ee9d822c7e43fc2588cb3a89d8c02",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 331494599.54313976,
+      "required_tier1_capital": 22949626.122217372,
+      "loan_rate": 0.0619,
+      "deposit_rate": 0.0405,
+      "loan_interest_income": 31568485.710339,
+      "expected_credit_loss": 3438163.9061083416,
+      "deposit_interest_cost": 13320584.209421102,
+      "wholesale_funding_cost": 6700269.978302658,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 46643.14314491522,
+      "total_objective": 5308869.338695897,
+      "expected_loan_volume": 509991691.6048304,
+      "expected_deposit_volume": 328903313.8128667,
+      "funding_shortfall": 2591285.730273068,
+      "home_loan_spread_to_market_bps": 120.0,
+      "term_deposit_spread_to_market_bps": 15.0,
+      "capital_charge": 2753955.134666085,
+      "ecl_as_fraction_of_loan_volume": 0.0067416076824491095,
+      "return_on_equity": 0.35132705127411284,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": null,
+      "initial_grid_size": null,
+      "final_grid_size": 1,
+      "initial_boundary_warning_flag": null,
+      "boundary_warning_flag": null,
+      "expansion_rounds": null,
+      "expansion_capped": null,
+      "delta_objective_nzd": -611990.0299257971,
+      "delta_loan_rate_bps": 0.0,
+      "delta_deposit_rate_bps": 0.0
+    },
+    {
+      "scenario_id": "fixed_capital_lower_mortgage",
+      "mode": "fixed_offers",
+      "assumption_source": "Illustrative Phase 4A sensitivity; no empirical input",
+      "perturbations": {
+        "balance_sheet.loan_rwa_weight": {
+          "base": 0.35,
+          "case": 0.45
+        },
+        "loan_rate": {
+          "base": 0.0619,
+          "case": 0.0594
+        }
+      },
+      "config_hash": "71a5c9605360c54e9eec43509b2f880b468ee9d822c7e43fc2588cb3a89d8c02",
+      "n_loan_customers": 5000,
+      "n_deposit_customers": 5000,
+      "home_loan_reference_rate": 0.0499,
+      "term_deposit_reference_rate": 0.039,
+      "home_loan_policy_band": [
+        0.0449,
+        0.0549
+      ],
+      "term_deposit_policy_band": [
+        0.035,
+        0.043
+      ],
+      "wholesale_funding_rate": 0.037000000000000005,
+      "required_deposit_funding_ratio": 0.65,
+      "required_deposits": 569244549.7798452,
+      "required_tier1_capital": 39409238.06168159,
+      "loan_rate": 0.0594,
+      "deposit_rate": 0.0405,
+      "loan_interest_income": 52020194.2414197,
+      "expected_credit_loss": 6073349.992250647,
+      "deposit_interest_cost": 13320584.209421102,
+      "wholesale_funding_cost": 20233728.684084352,
+      "excess_deposit_income": 0.0,
+      "funding_shortfall_penalty": 4326142.247405614,
+      "total_objective": 3337280.5408561947,
+      "expected_loan_volume": 875760845.8151464,
+      "expected_deposit_volume": 328903313.8128667,
+      "funding_shortfall": 240341235.96697855,
+      "home_loan_spread_to_market_bps": 95.0,
+      "term_deposit_spread_to_market_bps": 15.0,
+      "capital_charge": 4729108.567401791,
+      "ecl_as_fraction_of_loan_volume": 0.006934941224276423,
+      "return_on_equity": 0.20468269636760877,
+      "governance_status": "REVIEW_REQUIRED",
+      "nonpassing_gate_codes": [
+        "POLICY_BAND_BREACH",
+        "FUNDING_SHORTFALL"
+      ],
+      "policy_band_breached": true,
+      "roe_constraint_relaxed": null,
+      "initial_grid_size": null,
+      "final_grid_size": 1,
+      "initial_boundary_warning_flag": null,
+      "boundary_warning_flag": null,
+      "expansion_rounds": null,
+      "expansion_capped": null,
+      "delta_objective_nzd": -2583578.8277654992,
+      "delta_loan_rate_bps": -25.0,
+      "delta_deposit_rate_bps": 0.0
+    }
+  ],
+  "interactions": [
+    {
+      "interaction_id": "ecl_x_funding_cost",
+      "cell_ids": [
+        "baseline",
+        "ecl_half",
+        "wholesale_high",
+        "ecl_half_wholesale_high"
+      ],
+      "objective_interaction_nzd": -336359.1221344443
+    },
+    {
+      "interaction_id": "deposit_supply_x_funding_requirement",
+      "cell_ids": [
+        "baseline",
+        "deposit_market_double",
+        "funding_ratio_high",
+        "deposit_market_double_funding_high"
+      ],
+      "objective_interaction_nzd": -107560.99689554237
+    },
+    {
+      "interaction_id": "deposit_supply_x_mortgage_rate",
+      "cell_ids": [
+        "fixed_base",
+        "fixed_deposit_market_double",
+        "fixed_lower_mortgage",
+        "fixed_deposit_supply_lower_mortgage"
+      ],
+      "objective_interaction_nzd": 6053278.336511534
+    },
+    {
+      "interaction_id": "ftp_x_deposit_pricing",
+      "cell_ids": [
+        "fixed_base",
+        "fixed_ftp_12m",
+        "fixed_higher_deposit",
+        "fixed_ftp_higher_deposit"
+      ],
+      "objective_interaction_nzd": 239787.8993235603
+    },
+    {
+      "interaction_id": "capital_x_mortgage_rate",
+      "cell_ids": [
+        "fixed_base",
+        "fixed_rwa_high",
+        "fixed_lower_mortgage",
+        "fixed_capital_lower_mortgage"
+      ],
+      "objective_interaction_nzd": -438922.9850523807
+    }
+  ]
+}

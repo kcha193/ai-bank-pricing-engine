@@ -75,6 +75,10 @@ Invariant tests to add in 3c:
 
 ## Phase 4 — Calibration and economic representation (needs subject-matter validation)
 
+Phase 4a records the [synthetic calibration baseline](2026-11-21-phase-4a-calibration-baseline.md),
+the evidence gaps, and [proposed Phases 4b–4f](phase_4a_evidence/methodology.md#proposed-phase-4b4f-roadmap).
+Revised economics depend on evidence and SME approval.
+
 These items are judgemental. **Do not tune elasticities until the recommendation matches the
 market** (`modelling_assumptions.md` already warns against this).
 
