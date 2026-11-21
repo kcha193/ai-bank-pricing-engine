@@ -1,0 +1,127 @@
+{
+  "python": "3.12.13",
+  "revisions": {
+    "audit_62b81d2": {
+      "defect_detected": true,
+      "expected_assertion": "OPT-001 undisclosed relaxation",
+      "expected_failing_anchor": "test_a1_opt001_roe_floor_is_met_or_its_relaxation_is_disclosed",
+      "package_imported_from": "audit_62b81d2/src/balance_pricing_engine/__init__.py",
+      "purpose": "OPT-001 baseline (November audit SHA)",
+      "pytest_exit_code": 1,
+      "revision": "62b81d2",
+      "stdout_tail": [
+        "FAILED tests/unit/test_invariants_historical_anchors.py::test_a2_opt002_single_tier_segmented_equals_joint_grid_search",
+        "FAILED tests/unit/test_invariants_historical_anchors.py::test_a3_fin002_unrun_back_book_doubles_the_period_zero_contribution",
+        "3 failed, 1 warning in 4.71s"
+      ],
+      "tests": {
+        "test_a1_opt001_roe_floor_is_met_or_its_relaxation_is_disclosed": {
+          "evidence": [],
+          "message": "AssertionError: OPT-001 undisclosed relaxation: floor 1.618065273690769 (max ROE 0.618065273690769), flag None, winner ROE 0.26867842620309446",
+          "status": "failed"
+        },
+        "test_a2_opt002_single_tier_segmented_equals_joint_grid_search": {
+          "evidence": [],
+          "message": "AssertionError: OPT-002 segmented/joint mismatch: {'segmented': (0.0499, 0.039, -1922874.8470037226), 'joint': (0.0504, 0.039, -1868034.7829375444)}",
+          "status": "failed"
+        },
+        "test_a3_fin002_unrun_back_book_doubles_the_period_zero_contribution": {
+          "evidence": [],
+          "message": "AssertionError: FIN-002 back-book mismatch: {'period_zero_objective': 2462490.304130542, 'contributions': [2462490.304130542, 2420511.3672441095]}",
+          "status": "failed"
+        }
+      }
+    },
+    "current_HEAD": {
+      "all_anchors_pass": true,
+      "package_imported_from": "current_HEAD/src/balance_pricing_engine/__init__.py",
+      "purpose": "current branch (all anchors must pass)",
+      "pytest_exit_code": 0,
+      "revision": "cf8ffe2",
+      "stdout_tail": [
+        "",
+        "-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html",
+        "3 passed, 1 warning in 2.12s"
+      ],
+      "tests": {
+        "test_a1_opt001_roe_floor_is_met_or_its_relaxation_is_disclosed": {
+          "evidence": [],
+          "message": "",
+          "status": "passed"
+        },
+        "test_a2_opt002_single_tier_segmented_equals_joint_grid_search": {
+          "evidence": [],
+          "message": "",
+          "status": "passed"
+        },
+        "test_a3_fin002_unrun_back_book_doubles_the_period_zero_contribution": {
+          "evidence": [],
+          "message": "",
+          "status": "passed"
+        }
+      }
+    },
+    "pre_3a_3304b20": {
+      "defect_detected": true,
+      "expected_assertion": "OPT-002 segmented/joint mismatch",
+      "expected_failing_anchor": "test_a2_opt002_single_tier_segmented_equals_joint_grid_search",
+      "package_imported_from": "pre_3a_3304b20/src/balance_pricing_engine/__init__.py",
+      "purpose": "OPT-002 baseline (master before PR #78)",
+      "pytest_exit_code": 1,
+      "revision": "3304b20",
+      "stdout_tail": [
+        "FAILED tests/unit/test_invariants_historical_anchors.py::test_a2_opt002_single_tier_segmented_equals_joint_grid_search",
+        "FAILED tests/unit/test_invariants_historical_anchors.py::test_a3_fin002_unrun_back_book_doubles_the_period_zero_contribution",
+        "2 failed, 1 passed, 1 warning in 5.63s"
+      ],
+      "tests": {
+        "test_a1_opt001_roe_floor_is_met_or_its_relaxation_is_disclosed": {
+          "evidence": [],
+          "message": "",
+          "status": "passed"
+        },
+        "test_a2_opt002_single_tier_segmented_equals_joint_grid_search": {
+          "evidence": [],
+          "message": "AssertionError: OPT-002 segmented/joint mismatch: {'segmented': (0.0499, 0.039, -1922874.8470037226), 'joint': (0.0504, 0.039, -1868034.7829375444)}",
+          "status": "failed"
+        },
+        "test_a3_fin002_unrun_back_book_doubles_the_period_zero_contribution": {
+          "evidence": [],
+          "message": "AssertionError: FIN-002 back-book mismatch: {'period_zero_objective': 2462490.304130542, 'contributions': [2462490.304130542, 2420511.3672441095]}",
+          "status": "failed"
+        }
+      }
+    },
+    "pre_3b_5141833": {
+      "defect_detected": true,
+      "expected_assertion": "FIN-002 back-book mismatch",
+      "expected_failing_anchor": "test_a3_fin002_unrun_back_book_doubles_the_period_zero_contribution",
+      "package_imported_from": "pre_3b_5141833/src/balance_pricing_engine/__init__.py",
+      "purpose": "FIN-002 baseline (master before PR #79)",
+      "pytest_exit_code": 1,
+      "revision": "5141833",
+      "stdout_tail": [
+        "=========================== short test summary info ============================",
+        "FAILED tests/unit/test_invariants_historical_anchors.py::test_a3_fin002_unrun_back_book_doubles_the_period_zero_contribution",
+        "1 failed, 2 passed, 1 warning in 4.43s"
+      ],
+      "tests": {
+        "test_a1_opt001_roe_floor_is_met_or_its_relaxation_is_disclosed": {
+          "evidence": [],
+          "message": "",
+          "status": "passed"
+        },
+        "test_a2_opt002_single_tier_segmented_equals_joint_grid_search": {
+          "evidence": [],
+          "message": "",
+          "status": "passed"
+        },
+        "test_a3_fin002_unrun_back_book_doubles_the_period_zero_contribution": {
+          "evidence": [],
+          "message": "AssertionError: FIN-002 back-book mismatch: {'period_zero_objective': 2462490.304130542, 'contributions': [2462490.304130542, 2420511.3672441095]}",
+          "status": "failed"
+        }
+      }
+    }
+  }
+}

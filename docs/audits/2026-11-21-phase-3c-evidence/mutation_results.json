@@ -1,0 +1,272 @@
+{
+  "clean": {
+    "exit_code": 0,
+    "failed_tests": [],
+    "other_failures": [],
+    "seconds": 13.6,
+    "summary": [
+      "69 passed in 13.16s"
+    ]
+  },
+  "mutants": {
+    "back_book_ecl_omitted": {
+      "exit_code": 1,
+      "expected_detectors": [
+        "test_m10_m11_m17_active_book_equals_hand_objective_on_aggregate_balances",
+        "test_a3_fin002_unrun_back_book_doubles_the_period_zero_contribution"
+      ],
+      "expected_detectors_missed": [],
+      "failed_tests": [
+        "test_a3_fin002_unrun_back_book_doubles_the_period_zero_contribution",
+        "test_m06_to_m09_surviving_cohort_carries_booked_terms_pro_rata",
+        "test_m10_m11_m17_active_book_equals_hand_objective_on_aggregate_balances",
+        "test_m12_identical_unrun_cohorts_double_every_term"
+      ],
+      "killed": true,
+      "other_failures": [],
+      "seconds": 11.9,
+      "summary": [
+        "4 failed, 65 passed in 10.26s"
+      ]
+    },
+    "funding_summed_per_cohort": {
+      "exit_code": 1,
+      "expected_detectors": [
+        "test_m10_m11_m17_active_book_equals_hand_objective_on_aggregate_balances"
+      ],
+      "expected_detectors_missed": [],
+      "failed_tests": [
+        "test_m10_m11_m17_active_book_equals_hand_objective_on_aggregate_balances"
+      ],
+      "killed": true,
+      "other_failures": [],
+      "seconds": 12.8,
+      "summary": [
+        "1 failed, 68 passed in 11.10s"
+      ]
+    },
+    "loan_competitor_gap_sign_flipped": {
+      "exit_code": 1,
+      "expected_detectors": [
+        "test_r_l02_higher_competitor_loan_rate_never_lowers_acceptance",
+        "test_o01_o10_joint_grid_matches_independent_end_to_end_objective"
+      ],
+      "expected_detectors_missed": [],
+      "failed_tests": [
+        "test_o01_o10_joint_grid_matches_independent_end_to_end_objective",
+        "test_r_l01_higher_loan_rate_never_raises_acceptance",
+        "test_r_l02_higher_competitor_loan_rate_never_lowers_acceptance",
+        "test_r_l04_loan_probability_matches_independent_reference_and_is_finite"
+      ],
+      "killed": true,
+      "other_failures": [],
+      "seconds": 10.4,
+      "summary": [
+        "4 failed, 65 passed in 8.98s"
+      ]
+    },
+    "loan_search_drops_shortfall_penalty": {
+      "exit_code": 1,
+      "expected_detectors": [
+        "test_d01_single_tier_segmented_equals_joint_optimiser",
+        "test_s01_s02_s03_s05_exact_search_matches_independent_brute_force",
+        "test_a2_opt002_single_tier_segmented_equals_joint_grid_search"
+      ],
+      "expected_detectors_missed": [],
+      "failed_tests": [
+        "test_a2_opt002_single_tier_segmented_equals_joint_grid_search",
+        "test_d01_single_tier_segmented_equals_joint_optimiser",
+        "test_s01_s02_s03_s05_exact_search_matches_independent_brute_force",
+        "test_s04_segmented_is_never_worse_than_a_feasible_uniform_price",
+        "test_s06_s11_coordinate_descent_moves_never_worsen_the_ranking_key",
+        "test_s09_enlarging_an_exact_search_space_never_lowers_the_best_key"
+      ],
+      "killed": true,
+      "other_failures": [],
+      "seconds": 10.7,
+      "summary": [
+        "6 failed, 63 passed in 9.33s"
+      ]
+    },
+    "negative_objective_gate_passes": {
+      "exit_code": 1,
+      "expected_detectors": [
+        "test_g04_g06_to_g12_gate_statuses_follow_the_documented_policy"
+      ],
+      "expected_detectors_missed": [],
+      "failed_tests": [
+        "test_g04_g06_to_g12_gate_statuses_follow_the_documented_policy"
+      ],
+      "killed": true,
+      "other_failures": [],
+      "seconds": 10.6,
+      "summary": [
+        "1 failed, 68 passed in 8.78s"
+      ]
+    },
+    "policy_band_breach_reported_compliant": {
+      "exit_code": 1,
+      "expected_detectors": [
+        "test_p01_to_p09_adaptive_grid_discloses_band_breach_boundary_and_cap",
+        "test_p10_band_and_boundary_evidence_survive_summary_json"
+      ],
+      "expected_detectors_missed": [],
+      "failed_tests": [
+        "test_p01_to_p09_adaptive_grid_discloses_band_breach_boundary_and_cap",
+        "test_p10_band_and_boundary_evidence_survive_summary_json",
+        "test_p_canonical_config_band_position_is_disclosed"
+      ],
+      "killed": true,
+      "other_failures": [],
+      "seconds": 10.4,
+      "summary": [
+        "3 failed, 66 passed in 8.99s"
+      ]
+    },
+    "portfolio_funding_penalty_omitted": {
+      "exit_code": 1,
+      "expected_detectors": [
+        "test_m10_m11_m17_active_book_equals_hand_objective_on_aggregate_balances"
+      ],
+      "expected_detectors_missed": [],
+      "failed_tests": [
+        "test_m10_m11_m17_active_book_equals_hand_objective_on_aggregate_balances"
+      ],
+      "killed": true,
+      "other_failures": [
+        "test_a3_fin002_unrun_back_book_doubles_the_period_zero_contribution",
+        "test_m19_m20_drift_and_reinvestment_never_reprice_booked_contracts"
+      ],
+      "seconds": 12.6,
+      "summary": [
+        "3 failed, 66 passed in 10.94s"
+      ]
+    },
+    "relaxed_roe_gate_passes": {
+      "exit_code": 1,
+      "expected_detectors": [
+        "test_g04_g06_to_g12_gate_statuses_follow_the_documented_policy"
+      ],
+      "expected_detectors_missed": [],
+      "failed_tests": [
+        "test_g02_to_g05_g11_engine_roe_floor_is_met_or_disclosed",
+        "test_g04_g06_to_g12_gate_statuses_follow_the_documented_policy"
+      ],
+      "killed": true,
+      "other_failures": [],
+      "seconds": 13.9,
+      "summary": [
+        "2 failed, 67 passed in 12.25s"
+      ]
+    },
+    "roe_floor_ignored_silently": {
+      "exit_code": 1,
+      "expected_detectors": [
+        "test_g01_g02_g03_g05_selection_follows_constraint_first_ranking",
+        "test_a1_opt001_roe_floor_is_met_or_its_relaxation_is_disclosed"
+      ],
+      "expected_detectors_missed": [],
+      "failed_tests": [
+        "test_a1_opt001_roe_floor_is_met_or_its_relaxation_is_disclosed",
+        "test_d01_single_tier_segmented_equals_joint_optimiser",
+        "test_g01_g02_g03_g05_selection_follows_constraint_first_ranking",
+        "test_g02_to_g05_g11_engine_roe_floor_is_met_or_disclosed",
+        "test_p01_to_p09_adaptive_grid_discloses_band_breach_boundary_and_cap",
+        "test_p10_band_and_boundary_evidence_survive_summary_json"
+      ],
+      "killed": true,
+      "other_failures": [],
+      "seconds": 9.4,
+      "summary": [
+        "6 failed, 63 passed in 7.72s"
+      ]
+    },
+    "segmented_search_drops_capital_charge": {
+      "exit_code": 1,
+      "expected_detectors": [
+        "test_s01_s02_s03_s05_exact_search_matches_independent_brute_force"
+      ],
+      "expected_detectors_missed": [],
+      "failed_tests": [
+        "test_a2_opt002_single_tier_segmented_equals_joint_grid_search",
+        "test_s01_s02_s03_s05_exact_search_matches_independent_brute_force",
+        "test_s04_segmented_is_never_worse_than_a_feasible_uniform_price"
+      ],
+      "killed": true,
+      "other_failures": [],
+      "seconds": 11.2,
+      "summary": [
+        "3 failed, 66 passed in 9.79s"
+      ]
+    },
+    "survival_linear_not_geometric": {
+      "exit_code": 1,
+      "expected_detectors": [
+        "test_m01_to_m05_m18_survival_is_geometric_bounded_and_independent"
+      ],
+      "expected_detectors_missed": [],
+      "failed_tests": [
+        "test_m01_to_m05_m18_survival_is_geometric_bounded_and_independent",
+        "test_m04_survival_ratio_between_consecutive_periods_is_one_minus_runoff",
+        "test_m06_to_m09_surviving_cohort_carries_booked_terms_pro_rata",
+        "test_m10_m11_m17_active_book_equals_hand_objective_on_aggregate_balances"
+      ],
+      "killed": true,
+      "other_failures": [],
+      "seconds": 10.8,
+      "summary": [
+        "4 failed, 65 passed in 9.36s"
+      ]
+    },
+    "surviving_loans_earn_cash_rate": {
+      "exit_code": 1,
+      "expected_detectors": [
+        "test_m12_identical_unrun_cohorts_double_every_term",
+        "test_a3_fin002_unrun_back_book_doubles_the_period_zero_contribution"
+      ],
+      "expected_detectors_missed": [],
+      "failed_tests": [
+        "test_a3_fin002_unrun_back_book_doubles_the_period_zero_contribution",
+        "test_m06_m07_m20_market_moves_change_only_funding_terms",
+        "test_m10_m11_m17_active_book_equals_hand_objective_on_aggregate_balances",
+        "test_m12_identical_unrun_cohorts_double_every_term"
+      ],
+      "killed": true,
+      "other_failures": [],
+      "seconds": 12.2,
+      "summary": [
+        "4 failed, 65 passed in 10.51s"
+      ]
+    },
+    "wholesale_cost_not_floored": {
+      "exit_code": 1,
+      "expected_detectors": [
+        "test_f01_to_f06_funding_terms_match_hand_formulas_and_signs"
+      ],
+      "expected_detectors_missed": [],
+      "failed_tests": [
+        "test_f01_to_f06_funding_terms_match_hand_formulas_and_signs",
+        "test_m10_m11_m17_active_book_equals_hand_objective_on_aggregate_balances",
+        "test_o01_o10_joint_grid_matches_independent_end_to_end_objective",
+        "test_o02_segmented_portfolio_reconciles_to_tier_sums_and_reference",
+        "test_s01_s02_s03_s05_exact_search_matches_independent_brute_force",
+        "test_s06_s11_coordinate_descent_moves_never_worsen_the_ranking_key"
+      ],
+      "killed": true,
+      "other_failures": [],
+      "seconds": 12.3,
+      "summary": [
+        "6 failed, 63 passed in 10.61s"
+      ]
+    }
+  },
+  "suite": [
+    "tests/unit/test_invariants_funding_objective.py",
+    "tests/unit/test_invariants_governance.py",
+    "tests/unit/test_invariants_historical_anchors.py",
+    "tests/unit/test_invariants_multiperiod.py",
+    "tests/unit/test_invariants_optimisation.py",
+    "tests/unit/test_invariants_response.py",
+    "tests/unit/test_invariants_validation.py"
+  ]
+}

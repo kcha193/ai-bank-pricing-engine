@@ -42,6 +42,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
     "live_rates: opt-in tests that fetch current official bank rate pages",
+    "economic_invariants: TEST-002 property and metamorphic economic-invariant suite (docs/economic_invariant_testing.md)",
 ]
 
 [tool.ruff]
