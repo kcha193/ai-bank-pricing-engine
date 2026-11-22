@@ -10,7 +10,7 @@ scenario projection, not a globally optimised lifetime NPV and not a calibrated 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Callable
 import warnings
 
 import pandas as pd
@@ -252,7 +252,13 @@ def _roll_portfolio(
     *,
     max_boundary_expansions: int,
     profiles: tuple[CreditLossProfile, ...] | None = None,
+    evaluate_period: Callable[[EngineConfig, int], ScenarioDiagnostics] | None = None,
+    period_market: Callable[[EngineConfig, int], MarketState] | None = None,
 ) -> MultiPeriodDiagnostics:
+    """Roll the book forward. The optional hooks let an opt-in simulation price a period
+    and its aggregate funding with another market (for example a dated FTP curve); the
+    same market then prices both the new business and the whole active book.
+    """
     mp = config.multiperiod
     if mp is None:
         raise ValueError("config.multiperiod is required for multi-period diagnostics.")
@@ -277,8 +283,14 @@ def _roll_portfolio(
 
     for period in range(mp.n_periods):
         scenario_config = _build_period_config(config, period)
-        market = MarketState(**scenario_config.market.model_dump())
-        if profiles is None:
+        market = (
+            MarketState(**scenario_config.market.model_dump())
+            if period_market is None
+            else period_market(scenario_config, period)
+        )
+        if evaluate_period is not None:
+            diagnostics = evaluate_period(scenario_config, period)
+        elif profiles is None:
             diagnostics = run_baseline_diagnostics(
                 scenario_config, max_boundary_expansions=max_boundary_expansions
             )

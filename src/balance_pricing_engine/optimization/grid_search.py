@@ -237,7 +237,7 @@ def evaluate_joint_rate_grid(
             excess_deposit_income = expected_excess_deposit_income(
                 loan_volume,
                 usable_funding,
-                market.cash_rate,
+                market.surplus_reinvestment_rate,
             )
             funding = calculate_funding_result(
                 loan_volume,

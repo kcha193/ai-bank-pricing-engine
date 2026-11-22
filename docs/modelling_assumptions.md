@@ -303,6 +303,27 @@ prospect-based economics still operate in the governed pricing path.
 The supply profile applies to a single horizon. Product-level opening-book
 and maturity data would be needed for a reconciled annual roll.
 
+## Term-matched FTP and economic ROE (Phase 4d, FIN-003)
+
+The [FTP simulation](funds_transfer_pricing.md) replaces the scalar
+`cash_rate + wholesale_funding_spread` with external rates from a dated
+illustrative curve, in an opt-in request only. The aggregate residual deficit
+pays the reference plus liquidity premium plus adjustments at the wholesale
+tenor. Surplus earns the reference at the reinvestment tenor plus an explicit
+spread. Rates are annual simple (ACT/365F). Lookups are exact unless the curve
+allows linear interpolation in tenor months. Extrapolation, stale curves and
+look-ahead quotes are rejected.
+
+Loan FTP uses the repricing-tenor reference plus a weighted liquidity
+premium over illustrative funding buckets. Deposit FTP uses the contractual
+maturity only. These internal rates cancel against Treasury and never enter
+the objective. Economic ROE adds back the shortfall and concentration
+steering penalties. It is pre-tax and pre-opex and is reported only. The
+model ROE and ROE floor are unchanged. Multi-period FTP locks each cohort's
+FTP at origination and prices aggregate external funding at each period's
+curve. Deposit supply cannot be rolled. A scalar-equivalent curve reproduces
+the canonical single-period and Phase 3b results exactly.
+
 ## Deliberate simplifications
 
 Economic inputs must be finite: NaN and ±infinity are rejected in YAML, direct models, copy

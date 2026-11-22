@@ -116,6 +116,28 @@ covers the Phase 4a replay and Phase 3b and 4b continuity checks. The
 Phase 4c profile applies to one horizon. The existing cohort tests check
 vintage survival and full runoff on their own synthetic funding basis.
 
+## FTP and economic ROE verification (FIN-003, Phase 4d)
+
+`test_ftp_curve.py` covers curve validation and lookup (F01-F12, T01-T12),
+including a Hypothesis bound on interpolation. `test_ftp_attribution.py`
+checks funding reconciliation, aggregate-before-nonlinear funding, one-time
+liquidity premium and deposit interest, and transfer elimination under
+Hypothesis: internal allocations sum to exactly zero and loan + deposit +
+Treasury equals the external economic contribution. It also checks the
+economic ROE bridge, the unchanged model ROE and the zero-capital
+`None`. `test_ftp_simulation.py` covers joint reconciliation, one-tier
+segmented parity, multi-tier exact search against independent enumeration
+at FTP rates, fixed-offer funding-only changes, boundary flags, governance
+binding at the runner seam and Phase 4b/4c composition.
+`test_ftp_multiperiod.py` checks locked FTP, booked coupons, aggregate
+funding once, discounted reconciliation and lineage. A scalar-equivalent
+curve must reproduce the canonical result and the Phase 3b roll exactly.
+
+```bash
+python -m pytest -q tests/unit/test_ftp_*.py
+python -m examples.compare_ftp --output /tmp/phase-4d-comparison.json
+```
+
 ## Known limitations
 
 - `portfolio_return_on_equity` overflows to `inf` when 0 < required capital < ~1e-290

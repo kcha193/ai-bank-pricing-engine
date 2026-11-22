@@ -392,6 +392,11 @@ class DepositSupply:
         )
 
     @property
+    def profile(self) -> DepositMarketProfile:
+        """The validated profile this supply was built from (bound to diagnostics)."""
+        return self._profile
+
+    @property
     def eligible_opportunity(self) -> float:
         return self._eligible_opportunity
 
