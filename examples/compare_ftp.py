@@ -35,7 +35,7 @@ from balance_pricing_engine.scenarios.runner import run_baseline_diagnostics
 from examples.compare_deposit_supply import illustrative_profiles
 
 BASE_CONFIG = Path(__file__).resolve().parents[1] / "configs/base.yaml"
-#: Fixed synthetic dates, so the evidence is reproducible byte for byte.
+#: Fixed synthetic curve and valuation dates for reproducible scenario inputs.
 CURVE_AS_OF = datetime(2026, 11, 20, 17, 0, tzinfo=timezone.utc)
 VALUATION_TIME = datetime(2026, 11, 21, 9, 0, tzinfo=timezone.utc)
 LEGACY_OFFER = (0.0619, 0.0405)

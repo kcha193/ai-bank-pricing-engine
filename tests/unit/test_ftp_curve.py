@@ -15,6 +15,7 @@ from balance_pricing_engine.pricing.funds_transfer_pricing import (
     FTPCurve,
     FTPCurvePoint,
     FTPLiquidityBucket,
+    ILLUSTRATIVE_TENORS_MONTHS,
     Interpolation,
     RateUnit,
     illustrative_curve,
@@ -316,9 +317,34 @@ def test_profile_tenors_must_be_resolvable_on_the_curve():
         profile.rates(illustrative_curve(AS_OF))
 
 
-def test_scalar_equivalent_curve_reproduces_the_legacy_rates_exactly():
-    curve = scalar_equivalent_curve(cash_rate=0.025, wholesale_funding_spread=0.012, as_of=AS_OF)
+@pytest.mark.parametrize("spread", [0.012, 0.0, -0.001])
+def test_scalar_equivalent_curve_reproduces_the_legacy_rates_exactly(spread):
+    curve = scalar_equivalent_curve(cash_rate=0.025, wholesale_funding_spread=spread, as_of=AS_OF)
     rates = illustrative_funding_profile().rates(curve)
-    assert rates.wholesale_funding_rate == 0.025 + 0.012
+    assert rates.wholesale_funding_rate == 0.025 + spread
     assert rates.surplus_reinvestment_rate == 0.025
     assert curve.source_classification == "SYNTHETIC / UNCALIBRATED"
+    assert curve.allow_negative_rates is False
+    assert tuple(point.tenor_months for point in curve.points) == ILLUSTRATIVE_TENORS_MONTHS
+    for point in curve.points:
+        assert curve.quote(point.tenor_months).all_in_rate == 0.025 + spread
+        assert point.liquidity_premium == max(spread, 0.0)
+        if spread < 0:
+            (adjustment,) = point.adjustments
+            assert adjustment.name == "legacy_negative_wholesale_spread"
+            assert adjustment.value == spread
+            assert adjustment.rationale
+        else:
+            assert point.adjustments == ()
+
+
+def test_scalar_equivalent_curve_explicitly_allows_a_negative_cash_reference():
+    curve = scalar_equivalent_curve(cash_rate=-0.005, wholesale_funding_spread=-0.001, as_of=AS_OF)
+    assert curve.allow_negative_rates is True
+    assert curve.quote(12).all_in_rate == -0.005 - 0.001
+
+
+@pytest.mark.parametrize("spread", [math.nan, math.inf, -math.inf])
+def test_scalar_equivalent_curve_rejects_nonfinite_spreads(spread):
+    with pytest.raises(ValidationError, match="finite"):
+        scalar_equivalent_curve(cash_rate=0.025, wholesale_funding_spread=spread, as_of=AS_OF)

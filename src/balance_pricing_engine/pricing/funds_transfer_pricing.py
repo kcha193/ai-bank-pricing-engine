@@ -507,10 +507,23 @@ def scalar_equivalent_curve(
 ) -> FTPCurve:
     """A flat curve that reproduces the legacy scalar funding rates exactly.
 
-    Every tenor quotes ``cash_rate`` as the reference and the legacy spread as the
-    liquidity premium, so the wholesale rate is ``cash_rate + spread`` and surplus earns
-    ``cash_rate`` (with a zero reinvestment spread), whatever tenors a profile selects.
+    Every tenor quotes ``cash_rate`` as the reference. A non-negative legacy spread is the
+    liquidity premium. A negative spread is a signed adjustment with a zero premium.
+    The wholesale rate is ``cash_rate + spread`` and surplus earns ``cash_rate``
+    (with a zero reinvestment spread), whatever supported tenors a profile selects.
     """
+    liquidity_premium = wholesale_funding_spread
+    adjustments = ()
+    if wholesale_funding_spread < 0:
+        liquidity_premium = 0.0
+        adjustments = (
+            FTPAdjustment(
+                name="legacy_negative_wholesale_spread",
+                value=wholesale_funding_spread,
+                rationale="Signed adjustment from the configured scalar wholesale funding spread",
+            ),
+        )
+
     return FTPCurve(
         curve_id="legacy-scalar-equivalent",
         version="1.0.0",
@@ -527,7 +540,8 @@ def scalar_equivalent_curve(
             FTPCurvePoint(
                 tenor_months=tenor,
                 reference_rate=cash_rate,
-                liquidity_premium=wholesale_funding_spread,
+                liquidity_premium=liquidity_premium,
+                adjustments=adjustments,
             )
             for tenor in ILLUSTRATIVE_TENORS_MONTHS
         ),

@@ -236,7 +236,11 @@ Phase 3b roll exactly.
 0.75%, 0.95%, 1.20%, 1.40%, 1.70%). The 12-month all-in rate equals the legacy
 scalar (3.70%), so the term structure, not the level, drives differences.
 Shocks scale the slope or the premium. No quote is an observed NZ market rate.
-`scalar_equivalent_curve` reproduces the legacy funding rates exactly.
+`scalar_equivalent_curve` reproduces the legacy funding rates exactly. It
+records a negative wholesale spread as the signed
+`legacy_negative_wholesale_spread` adjustment at each tenor, with a zero
+liquidity premium. A negative cash reference still requires
+`allow_negative_rates`.
 
 ## Evidence dependencies
 
@@ -253,5 +257,9 @@ commercial and customer rate implications.
 ```bash
 python -m pytest -q tests/unit/test_ftp_*.py
 python -m examples.compare_ftp --output /tmp/phase-4d-comparison.json
-cmp docs/audits/phase_4d_evidence/comparison.json /tmp/phase-4d-comparison.json
 ```
+
+The FTP comparison test checks the regenerated report against the committed
+evidence. Calculated values allow floating-point rounding within explicit
+tolerances. Selected rates, identities, governance and report structure
+must match exactly.
