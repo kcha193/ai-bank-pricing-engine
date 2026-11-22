@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import math
 from pathlib import Path
@@ -41,6 +41,7 @@ from balance_pricing_engine.optimization.segmented import (
 )
 from balance_pricing_engine.pricing.credit_loss import SYNTHETIC_LABEL, CreditLossProfile
 from balance_pricing_engine.pricing.deposit_supply import DepositMarketProfile, DepositSupply
+from balance_pricing_engine.pricing.funds_transfer_pricing import FTPMarketState
 from balance_pricing_engine.pricing.profit import (
     maturity_adjusted_rwa_weight,
     portfolio_return_on_equity,
@@ -88,6 +89,8 @@ class ScenarioDiagnostics:
     segmented_solver: dict[str, object] | None = None
     credit_loss_profile: CreditLossProfile | None = None
     deposit_supply_profile: DepositMarketProfile | None = None
+    # Set whenever the search priced funding from an FTP curve (FIN-003, Phase 4d).
+    ftp_market: FTPMarketState | None = None
 
     def top_results(self, n: int = 5) -> pd.DataFrame:
         """Return the top objective rows for reporting."""
@@ -201,6 +204,14 @@ class ScenarioDiagnostics:
                 "profile": self.deposit_supply_profile.model_dump(mode="json"),
                 **{name: getattr(self.best_result, name) for name in SUPPLY_RESULT_COLUMNS},
             }
+        if self.ftp_market is not None:
+            summary["ftp_simulation"] = {
+                "review_required": True,
+                "curve_key": self.ftp_market.ftp_curve_key,
+                "profile_key": self.ftp_market.ftp_profile_key,
+                "wholesale_funding_rate": self.ftp_market.wholesale_funding_rate,
+                "surplus_reinvestment_rate": self.ftp_market.surplus_reinvestment_rate,
+            }
         (path / "summary.json").write_text(
             json.dumps(summary, indent=2, sort_keys=True),
             encoding="utf-8",
@@ -271,9 +282,55 @@ def _evaluate_pricing_population(
     registry: object | None = None,
     deposit_supply: DepositSupply | None = None,
     fixed_rates: tuple[float, float] | None = None,
+    market: MarketState | None = None,
 ) -> ScenarioDiagnostics:
-    market = MarketState(**config.market.model_dump())
+    """Evaluate one population and bind any simulation inputs to the diagnostics.
 
+    The supply profile and FTP market that priced the search are attached here, at the one
+    seam every pricing simulation uses, so their simulation-only governance warnings cannot
+    be skipped by a caller that forgets to attach them afterwards.
+    """
+    market = market if market is not None else MarketState(**config.market.model_dump())
+    return _bind_simulation_inputs(
+        _evaluate_market(
+            config,
+            loan_customers,
+            deposit_customers,
+            market,
+            max_boundary_expansions=max_boundary_expansions,
+            registry=registry,
+            deposit_supply=deposit_supply,
+            fixed_rates=fixed_rates,
+        ),
+        market,
+        deposit_supply,
+    )
+
+
+def _bind_simulation_inputs(
+    diagnostics: ScenarioDiagnostics,
+    market: MarketState,
+    deposit_supply: DepositSupply | None,
+) -> ScenarioDiagnostics:
+    updates: dict[str, object] = {}
+    if deposit_supply is not None:
+        updates["deposit_supply_profile"] = deposit_supply.profile
+    if isinstance(market, FTPMarketState):
+        updates["ftp_market"] = market
+    return replace(diagnostics, **updates) if updates else diagnostics
+
+
+def _evaluate_market(
+    config: EngineConfig,
+    loan_customers: pd.DataFrame,
+    deposit_customers: pd.DataFrame,
+    market: MarketState,
+    *,
+    max_boundary_expansions: int,
+    registry: object | None,
+    deposit_supply: DepositSupply | None,
+    fixed_rates: tuple[float, float] | None,
+) -> ScenarioDiagnostics:
     if config.segmented_pricing is not None:
         return _evaluate_adaptive_segmented_rates(
             config=config,

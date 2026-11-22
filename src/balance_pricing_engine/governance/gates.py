@@ -129,6 +129,28 @@ def evaluate_gates(
                 remediation="Obtain Treasury/ALM, Deposits, Pricing and Model Risk approval.",
             )
         )
+    ftp_market = getattr(diagnostics, "ftp_market", None)
+    if ftp_market is not None:
+        gates.append(
+            GateResult(
+                code="FTP_SIMULATION_ONLY",
+                status=GateStatus.WARN,
+                message=(
+                    "Term-matched FTP curve, tenor matching and liquidity premiums are "
+                    "synthetic and uncalibrated."
+                ),
+                severity="warning",
+                evidence={
+                    "curve_key": ftp_market.ftp_curve_key,
+                    "profile_key": ftp_market.ftp_profile_key,
+                    "wholesale_funding_rate": ftp_market.wholesale_funding_rate,
+                    "surplus_reinvestment_rate": ftp_market.surplus_reinvestment_rate,
+                },
+                remediation=(
+                    "Obtain Treasury/ALM, Finance, Capital and Model Risk review and approval."
+                ),
+            )
+        )
     return gates
 
 

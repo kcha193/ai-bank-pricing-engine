@@ -159,6 +159,28 @@ review, subject to existing blocking gates. The governed service and
 delivery paths continue to consume `EngineConfig` alone. The profile covers
 one horizon and has no annual roll entry point.
 
+## Term-matched FTP simulation (Phase 4d, FIN-003)
+
+The [FTP model](funds_transfer_pricing.md) enters through
+`scenarios.ftp_simulation.run_ftp_simulation` and
+`run_ftp_multiperiod_simulation`, with validated requests separate from
+`EngineConfig`. A dated `FTPCurve` and an `FTPFundingProfile` resolve the
+external wholesale and surplus reinvestment rates. `FTPMarketState` carries
+them into the existing joint and segmented searches through
+`MarketState.wholesale_funding_rate` and `surplus_reinvestment_rate`. The
+canonical `MarketState` returns `cash_rate` from the latter, so the governed
+path is unchanged.
+
+`runner._evaluate_pricing_population` binds the supply profile and any FTP
+market to the diagnostics, so the `DEPOSIT_SUPPLY_SIMULATION_ONLY` and
+`FTP_SIMULATION_ONLY` gates fire for every caller of that seam. After the
+search, `FTPAllocationLedger` attributes the selected result to loan,
+deposit and Treasury books and checks transfer elimination. `EconomicROEBridge`
+reports the pre-steering economic ROE beside the unchanged model ROE. The
+multi-period request reuses the Phase 3b roll through two optional hooks
+(`evaluate_period`, `period_market`) and locks each cohort's FTP rates at
+origination.
+
 ## Extension Boundaries
 
 `EngineConfig` is the validated input contract for scenario intent. It should remain a boundary for
@@ -433,6 +455,17 @@ distinct-bank coverage checks remain at the existing resolver boundaries.
   across prospects and reconciles deposit flows, expense and eligible funding.
   [scenarios/deposit_supply_simulation.py](../src/balance_pricing_engine/scenarios/deposit_supply_simulation.py)
   owns the opt-in request, flow evidence, lineage and simulation governance.
+- [pricing/funds_transfer_pricing.py](../src/balance_pricing_engine/pricing/funds_transfer_pricing.py)
+  validates dated NZD FTP curves (units, compounding, staleness, look-ahead,
+  required tenors, no extrapolation), resolves tenor-matched rates and owns the
+  `FTPMarketState` and the loan/deposit/Treasury `FTPAllocationLedger`.
+  [pricing/economic_roe.py](../src/balance_pricing_engine/pricing/economic_roe.py)
+  is the reporting-only economic ROE bridge.
+  [scenarios/ftp_simulation.py](../src/balance_pricing_engine/scenarios/ftp_simulation.py)
+  owns the opt-in single-horizon and multi-period requests. Internal FTP
+  transfers never enter the objective; only the external wholesale and
+  reinvestment rates do, once on the aggregate position. Don't route the ROE
+  floor through the economic ROE without a separate approval.
 - [optimization/grid_search.py](../src/balance_pricing_engine/optimization/grid_search.py) — `evaluate_joint_rate_grid`, `select_best_result` (and `select_best_result_with_disclosure` → `SelectionResult`, which reports `roe_constraint_relaxed` when no row meets `min_return_on_equity` and selection falls back), `optimize_joint_rates`, `optimize_joint_market_relative_rates`. Returns `OptimizationResult` dataclass with backward-compat aliases (`objective_value`, `deposit_cost`, `funding_penalty`, `loan_income_after_losses`). Accepts optional `loan_response_fn` / `deposit_response_fn` callables so an approved ML champion can drive acceptance/uptake instead of the synthetic response.
 - [optimization/segmented.py](../src/balance_pricing_engine/optimization/segmented.py) — segmented (tier) pricing, jointly optimised against the full portfolio objective (OPT-002, Phase 3a). `precompute_loan_tier_candidates` / `precompute_deposit_tier_candidates` score each tier once per rate; `evaluate_segmented_portfolio` is the canonical full decomposition for one tier-rate combination (it calls the `pricing/` functions, which accept scalars or candidate arrays); `solve_segmented_portfolio` searches exhaustively up to `SolverSettings.exact_search_max_combinations` (default 2,000,000; always for one tier per side, so a single catch-all tier reproduces `optimize_joint_rates` exactly) and otherwise runs deterministic multi-start coordinate descent (`run_coordinate_descent`), which reports a best-known, never proven, optimum. Selection order matches `select_best_result_with_disclosure`: ROE-floor qualifiers first, then objective, lower shortfall, smaller market-spread distance, enumeration order. `SolverDiagnostics` reaches `summary.json` as the additive `segmented_solver` key. Don't reintroduce a per-tier objective, a sequential deposit benefit, or a per-tier ROE floor.
 - [optimization/response_fn.py](../src/balance_pricing_engine/optimization/response_fn.py) — pluggable response interface that decouples the optimiser from the response source: `ResponseFn` Protocol, `SyntheticLoanResponseFn` / `SyntheticDepositResponseFn` adapters, `MLResponseFnAdapter` (wraps a scored ML model), and the governance guards `GovernanceError` / `require_approved`.

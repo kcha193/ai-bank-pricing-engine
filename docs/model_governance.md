@@ -39,6 +39,26 @@ illustrative. Approval would have to bind the reviewed profile and its
 permitted use. The [evidence matrix](audits/phase_4c_evidence/evidence-matrix.csv)
 records the outstanding evidence and review owners.
 
+## Term-matched FTP and economic ROE simulation (FIN-003)
+
+The [Phase 4d simulation](funds_transfer_pricing.md) accepts a dated
+synthetic FTP curve and funding profile in a separate request. The governed
+service, API, collectors, dashboard and LLM patch schemas carry no FTP field.
+Every FTP diagnostics carries `FTP_SIMULATION_ONLY` at WARN level, bound at
+the runner seam that priced it. It requires `REVIEW_REQUIRED` unless an
+existing gate yields `BLOCKED`. The full request, including curve,
+conventions, valuation time, tenors, liquidity and reinvestment assumptions
+and any supply or loss profile, determines the config hash.
+
+The economic ROE is a reporting measure. `ROE_FLOOR_MET`,
+`min_return_on_equity` and selection keep the model ROE, so a steering
+add-back can never create a floor pass. Moving the floor to another metric
+needs a separate Finance, Capital and Model Risk decision and change request.
+Treasury/ALM approval of curve instruments, tenor matching, liquidity basis
+and transfer elimination is outstanding. Synthetic numerical verification is
+not empirical calibration. The [evidence matrix](audits/phase_4d_evidence/evidence-matrix.csv)
+records the outstanding evidence and review owners.
+
 ## Financial inputs and LLM scenario patches (OPT-003, GOV-007)
 
 Economic configuration rejects NaN and both infinities, including rates, response coefficients,
@@ -508,6 +528,11 @@ deposit-funding ratio. It represents management's risk appetite for deposit-fund
 be interpreted as a liquidity, franchise, or balance-sheet steering penalty. It does not replace
 the wholesale funding cost unless a future model version explicitly changes the objective and
 documents that policy choice.
+
+The Phase 4d FTP simulation keeps this objective. It only substitutes dated, term-matched
+external rates for the scalar wholesale rate and the surplus rate, in an opt-in request. Its
+economic ROE adds back the steering penalty for disclosure; the model ROE and floor are
+unchanged.
 
 ## Deposit Funding Ratio — Soft Signal vs Hard Constraint
 

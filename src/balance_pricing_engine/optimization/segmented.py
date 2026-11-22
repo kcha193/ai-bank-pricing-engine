@@ -200,6 +200,8 @@ class PortfolioParameters:
     loan_rwa_weight: float
     capital_hurdle_rate: float
     wholesale_funding_rate: float
+    # Rate credited on surplus funds: the policy cash rate unless an FTP market sets a
+    # term-matched reinvestment rate (``MarketState.surplus_reinvestment_rate``).
     cash_rate: float
     deposit_supply: DepositSupply | None = None
 
@@ -220,7 +222,7 @@ class PortfolioParameters:
             loan_rwa_weight=loan_rwa_weight,
             capital_hurdle_rate=capital_hurdle_rate,
             wholesale_funding_rate=market.wholesale_funding_rate,
-            cash_rate=market.cash_rate,
+            cash_rate=market.surplus_reinvestment_rate,
             deposit_supply=deposit_supply,
         )
 

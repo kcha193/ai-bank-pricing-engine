@@ -18,3 +18,8 @@ class MarketState:
     def wholesale_funding_rate(self) -> float:
         """Wholesale funding rate used when deposits do not fully fund lending."""
         return self.cash_rate + self.wholesale_funding_spread
+
+    @property
+    def surplus_reinvestment_rate(self) -> float:
+        """Rate earned on deposits raised above loan volume (the policy cash rate)."""
+        return self.cash_rate

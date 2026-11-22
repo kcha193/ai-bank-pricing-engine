@@ -274,7 +274,7 @@ def evaluate_active_portfolio(
         loan_volume, deposit_volume, market.wholesale_funding_rate
     )
     excess_deposit_income = expected_excess_deposit_income(
-        loan_volume, deposit_volume, market.cash_rate
+        loan_volume, deposit_volume, market.surplus_reinvestment_rate
     )
     funding = calculate_funding_result(
         loan_volume,
