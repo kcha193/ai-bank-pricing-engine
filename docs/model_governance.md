@@ -20,6 +20,25 @@ activation requires verifiable Credit Risk, Model Risk and authorised Pricing
 approvals bound to the reviewed version and scope. Phase 4a recorded no such
 approvals, and Phase 4b supports synthetic use only.
 
+## Deposit supply simulation (FIN-001)
+
+The [Phase 4c simulation](deposit_supply_model.md) accepts versioned synthetic
+market opportunity, flow attribution and concentration assumptions in a
+separate request. The entire envelope determines its config hash. The
+profile is outside the governed service, API, alerts and LLM patch schemas.
+The simulation uses the existing governance gates and adds
+`DEPOSIT_SUPPLY_SIMULATION_ONLY` at WARN level. It requires
+`REVIEW_REQUIRED` unless an existing gate yields `BLOCKED`.
+
+Fixed opportunity and arithmetic checks establish synthetic numerical
+behaviour. Treasury/ALM, Deposits, Pricing and independent Model Risk
+approvals require reconciled opening balances and flows, evidence of
+incremental funding and approved validation across offer and maturity
+vintages. Hard, soft and diagnostic concentration settings remain
+illustrative. Approval would have to bind the reviewed profile and its
+permitted use. The [evidence matrix](audits/phase_4c_evidence/evidence-matrix.csv)
+records the outstanding evidence and review owners.
+
 ## Financial inputs and LLM scenario patches (OPT-003, GOV-007)
 
 Economic configuration rejects NaN and both infinities, including rates, response coefficients,

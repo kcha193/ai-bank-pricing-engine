@@ -114,6 +114,21 @@ def evaluate_gates(
                 remediation="Obtain independent Credit Risk and Model Risk review and approval.",
             )
         )
+    supply_profile = getattr(diagnostics, "deposit_supply_profile", None)
+    if supply_profile is not None:
+        gates.append(
+            GateResult(
+                code="DEPOSIT_SUPPLY_SIMULATION_ONLY",
+                status=GateStatus.WARN,
+                message="Deposit opportunity and funding assumptions are synthetic and uncalibrated.",
+                severity="warning",
+                evidence={
+                    "profile_id": supply_profile.profile_id,
+                    "profile_version": supply_profile.version,
+                },
+                remediation="Obtain Treasury/ALM, Deposits, Pricing and Model Risk approval.",
+            )
+        )
     return gates
 
 

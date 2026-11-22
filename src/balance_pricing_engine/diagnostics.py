@@ -11,11 +11,14 @@ import pandas as pd
 from balance_pricing_engine.config import EngineConfig, ResponseCoefficientsConfig
 from balance_pricing_engine.grid_utils import build_inclusive_numeric_grid
 from balance_pricing_engine.optimization.grid_search import (
+    DepositSupplyOptimizationResult,
     OptimizationResult,
     evaluate_joint_rate_grid,
+    optimization_result_from_row,
     select_best_result_with_disclosure,
 )
 from balance_pricing_engine.optimization.response_fn import ResponseFn
+from balance_pricing_engine.pricing.deposit_supply import DepositSupply
 from balance_pricing_engine.pricing.profit import maturity_adjusted_rwa_weight
 from balance_pricing_engine.rate_grids import build_configured_rate_grids
 from balance_pricing_engine.synthetic.customers import (
@@ -110,6 +113,23 @@ class ObjectiveDecomposition:
 
 
 @dataclass(frozen=True)
+class DepositSupplyObjectiveDecomposition(ObjectiveDecomposition):
+    """Reconcile the simulation objective including separately reported expenses."""
+
+    usable_deposit_funding: float = 0.0
+    deposit_acquisition_cost: float = 0.0
+    deposit_concentration_penalty: float = 0.0
+
+    @property
+    def reconciled_total_objective(self) -> float:
+        return (
+            super().reconciled_total_objective
+            - self.deposit_acquisition_cost
+            - self.deposit_concentration_penalty
+        )
+
+
+@dataclass(frozen=True)
 class BoundaryDiagnostics:
     warnings: tuple[str, ...]
 
@@ -151,7 +171,16 @@ class AdaptiveGridResult:
 
 def objective_decomposition_from_result(result: OptimizationResult) -> ObjectiveDecomposition:
     """Build an objective decomposition for the selected pricing result."""
-    return ObjectiveDecomposition(
+    decomposition = ObjectiveDecomposition
+    supply_terms = {}
+    if isinstance(result, DepositSupplyOptimizationResult):
+        decomposition = DepositSupplyObjectiveDecomposition
+        supply_terms = {
+            "usable_deposit_funding": result.usable_deposit_funding,
+            "deposit_acquisition_cost": result.deposit_acquisition_cost,
+            "deposit_concentration_penalty": result.deposit_concentration_penalty,
+        }
+    return decomposition(
         loan_interest_income=result.loan_interest_income,
         expected_credit_loss=result.expected_credit_loss,
         deposit_interest_cost=result.deposit_interest_cost,
@@ -163,11 +192,14 @@ def objective_decomposition_from_result(result: OptimizationResult) -> Objective
         expected_deposit_volume=result.expected_deposit_volume,
         funding_shortfall=result.funding_shortfall,
         capital_charge=result.capital_charge,
+        **supply_terms,
     )
 
 
 def objective_decomposition_from_row(row: pd.Series) -> ObjectiveDecomposition:
     """Build an objective decomposition from one evaluated grid row."""
+    if "usable_deposit_funding" in row:
+        return objective_decomposition_from_result(optimization_result_from_row(row))
     return ObjectiveDecomposition(
         loan_interest_income=float(row["loan_interest_income"]),
         expected_credit_loss=float(row["expected_credit_loss"]),
@@ -290,12 +322,19 @@ def evaluate_adaptive_joint_rate_grid(
     min_return_on_equity: float | None = None,
     loan_response_fn: ResponseFn | None = None,
     deposit_response_fn: ResponseFn | None = None,
+    *,
+    deposit_supply: DepositSupply | None = None,
+    fixed_rates: tuple[float, float] | None = None,
 ) -> AdaptiveGridResult:
     """Evaluate a joint grid, expanding boundaries before accepting edge optima."""
     initial_boundary_diagnostics: BoundaryDiagnostics | None = None
     original_loan_rate_grid = np.array(loan_rate_grid, dtype=float)
     original_deposit_rate_grid = np.array(deposit_rate_grid, dtype=float)
     expansion_rounds = 0
+    supply_options = {} if deposit_supply is None else {"deposit_supply": deposit_supply}
+    if fixed_rates is not None:
+        loan_rate_grid = np.array([fixed_rates[0]])
+        deposit_rate_grid = np.array([fixed_rates[1]])
 
     while True:
         grid_results = evaluate_joint_rate_grid(
@@ -317,6 +356,7 @@ def evaluate_adaptive_joint_rate_grid(
             response_coefficients=response_coefficients,
             loan_response_fn=loan_response_fn,
             deposit_response_fn=deposit_response_fn,
+            **supply_options,
         )
         selection = select_best_result_with_disclosure(
             grid_results,
@@ -325,13 +365,17 @@ def evaluate_adaptive_joint_rate_grid(
         best_result = selection.best_result
         boundary_diagnostics = evaluate_boundary_diagnostics(
             best_result,
-            loan_rate_grid,
-            deposit_rate_grid,
+            loan_rate_grid if fixed_rates is None else original_loan_rate_grid,
+            deposit_rate_grid if fixed_rates is None else original_deposit_rate_grid,
             market=market,
         )
         if initial_boundary_diagnostics is None:
             initial_boundary_diagnostics = boundary_diagnostics
-        if not boundary_diagnostics.has_warning or expansion_rounds >= max_boundary_expansions:
+        if (
+            fixed_rates is not None
+            or not boundary_diagnostics.has_warning
+            or expansion_rounds >= max_boundary_expansions
+        ):
             break
 
         span_multiplier = _boundary_expansion_span_multiplier(max_boundary_expansions)
@@ -352,7 +396,8 @@ def evaluate_adaptive_joint_rate_grid(
         initial_boundary_diagnostics=initial_boundary_diagnostics,
         expansion_rounds=expansion_rounds,
         expansion_capped=(
-            boundary_diagnostics.has_warning
+            fixed_rates is None
+            and boundary_diagnostics.has_warning
             and expansion_rounds >= max_boundary_expansions
         ),
         policy_band_breached=_policy_band_breached(

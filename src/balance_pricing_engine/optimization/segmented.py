@@ -39,6 +39,7 @@ from balance_pricing_engine.config import (
 )
 from balance_pricing_engine.optimization.grid_search import _spread_to_market_bps
 from balance_pricing_engine.pricing.balance_sheet import calculate_funding_result
+from balance_pricing_engine.pricing.deposit_supply import DepositSupply
 from balance_pricing_engine.pricing.profit import (
     expected_capital_charge,
     expected_credit_loss,
@@ -89,6 +90,8 @@ class TierResult:
     credit_loss: float
     interest_cost: float
     capital_charge: float = 0.0
+    eligible_incremental_funding: float = 0.0
+    acquisition_cost: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -183,6 +186,9 @@ class SegmentedOptimizationResult:
     roe_constraint_relaxed: bool = False
     solver: Optional[SolverDiagnostics] = None
     candidate_rates: Optional[dict[str, dict[str, tuple[float, ...]]]] = None
+    usable_deposit_funding: float | None = None
+    deposit_acquisition_cost: float = 0.0
+    deposit_concentration_penalty: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -195,6 +201,7 @@ class PortfolioParameters:
     capital_hurdle_rate: float
     wholesale_funding_rate: float
     cash_rate: float
+    deposit_supply: DepositSupply | None = None
 
     @classmethod
     def from_market(
@@ -205,6 +212,7 @@ class PortfolioParameters:
         funding_shortfall_penalty_rate: float,
         loan_rwa_weight: float,
         capital_hurdle_rate: float,
+        deposit_supply: DepositSupply | None = None,
     ) -> "PortfolioParameters":
         return cls(
             required_deposit_funding_ratio=required_deposit_funding_ratio,
@@ -213,6 +221,7 @@ class PortfolioParameters:
             capital_hurdle_rate=capital_hurdle_rate,
             wholesale_funding_rate=market.wholesale_funding_rate,
             cash_rate=market.cash_rate,
+            deposit_supply=deposit_supply,
         )
 
 
@@ -262,14 +271,22 @@ class DepositTierCandidates:
     rates: np.ndarray
     volume: np.ndarray
     interest_cost: np.ndarray
+    eligible_incremental_funding: np.ndarray | None = None
+    acquisition_cost: np.ndarray | None = None
 
     def __post_init__(self) -> None:
-        for name in ("rates", "volume", "interest_cost"):
-            object.__setattr__(self, name, _as_vector(getattr(self, name), name))
-        if not self.rates.size == self.volume.size == self.interest_cost.size:
-            raise ValueError(
-                f"Deposit tier {self.tier_name!r} candidate arrays differ in length."
-            )
+        object.__setattr__(self, "rates", _as_vector(self.rates, "rates"))
+        names = ("volume", "interest_cost", "eligible_incremental_funding", "acquisition_cost")
+        for name in names:
+            values = getattr(self, name)
+            if values is None:
+                values = np.zeros(self.rates.size)
+            array = _as_vector(values, name)
+            if array.size != self.rates.size:
+                raise ValueError(
+                    f"Deposit tier {self.tier_name!r} candidate arrays differ in length."
+                )
+            object.__setattr__(self, name, array)
 
     def choice(self, index: int) -> TierResult:
         return TierResult(
@@ -279,6 +296,8 @@ class DepositTierCandidates:
             interest_income=0.0,
             credit_loss=0.0,
             interest_cost=float(self.interest_cost[index]),
+            eligible_incremental_funding=float(self.eligible_incremental_funding[index]),
+            acquisition_cost=float(self.acquisition_cost[index]),
         )
 
 
@@ -410,11 +429,12 @@ def precompute_deposit_tier_candidates(
     deposit_rate_elasticity: float,
     deposit_competitor_gap_elasticity: float,
     response_coefficients: ResponseCoefficientsConfig | None = None,
+    deposit_supply: DepositSupply | None = None,
 ) -> DepositTierCandidates:
     """Score a deposit tier once per candidate rate with the synthetic response model."""
     coefficients = (response_coefficients or ResponseCoefficientsConfig()).deposit
     rates = _as_vector(rates, "rates")
-    volume, cost = [], []
+    volume, cost, incremental, acquisition = [], [], [], []
     for rate in rates:
         probabilities = deposit_uptake_probability(
             customers,
@@ -424,9 +444,18 @@ def precompute_deposit_tier_candidates(
             deposit_competitor_gap_elasticity,
             coefficients=coefficients,
         )
-        volume.append(expected_deposit_volume(customers, probabilities))
-        cost.append(expected_deposit_cost(customers, probabilities, float(rate)))
-    return DepositTierCandidates(tier_name, rates, volume, cost)
+        if deposit_supply is None:
+            volume.append(expected_deposit_volume(customers, probabilities))
+            cost.append(expected_deposit_cost(customers, probabilities, float(rate)))
+        else:
+            offer = deposit_supply.offer(customers, probabilities, float(rate))
+            volume.append(offer.gross)
+            cost.append(offer.interest_cost)
+            incremental.append(offer.incremental)
+            acquisition.append(offer.acquisition_cost)
+    return DepositTierCandidates(
+        tier_name, rates, volume, cost, incremental or None, acquisition or None
+    )
 
 
 # ---------------------------------------- B/C. aggregation and canonical evaluation
@@ -452,6 +481,8 @@ def evaluate_segmented_portfolio(
         total_deposit_volume,
         total_deposit_interest_cost,
         parameters,
+        sum(tier.eligible_incremental_funding for tier in deposit_tier_choices),
+        sum(tier.acquisition_cost for tier in deposit_tier_choices),
     )
     loan_tiers = [
         replace(
@@ -466,17 +497,20 @@ def evaluate_segmented_portfolio(
         loan_tiers=loan_tiers,
         deposit_tiers=list(deposit_tier_choices),
         total_loan_volume=total_loan_volume,
-        total_deposit_volume=total_deposit_volume,
+        total_deposit_volume=terms["deposit_volume"],
         total_loan_interest_income=total_loan_interest_income,
         total_credit_loss=total_credit_loss,
         capital_charge=terms["capital_charge"],
-        total_deposit_interest_cost=total_deposit_interest_cost,
+        total_deposit_interest_cost=terms["deposit_interest_cost"],
         wholesale_funding_cost=terms["wholesale_funding_cost"],
         excess_deposit_income=terms["excess_deposit_income"],
         funding_shortfall_penalty=terms["funding_shortfall_penalty"],
         funding_shortfall=terms["funding_shortfall"],
         total_objective=terms["total_objective"],
         return_on_equity=terms["return_on_equity"],
+        usable_deposit_funding=terms["usable_deposit_funding"],
+        deposit_acquisition_cost=terms["deposit_acquisition_cost"],
+        deposit_concentration_penalty=terms["deposit_concentration_penalty"],
     )
 
 
@@ -487,24 +521,37 @@ def _portfolio_terms(
     deposit_volume,
     deposit_interest_cost,
     parameters: PortfolioParameters,
+    eligible_incremental_funding=0.0,
+    acquisition_cost=0.0,
 ) -> dict[str, Any]:
     """Canonical objective terms for scalars or broadcastable arrays of portfolios.
 
     The arithmetic order matches ``grid_search.evaluate_joint_rate_grid`` exactly, so a
     single loan and deposit tier reproduces the joint optimiser bit for bit.
     """
+    usable_funding = deposit_volume
+    concentration_penalty = 0.0
+    if parameters.deposit_supply is not None:
+        position = parameters.deposit_supply.portfolio(
+            deposit_volume, eligible_incremental_funding, deposit_interest_cost, acquisition_cost
+        )
+        deposit_volume = position.gross
+        usable_funding = position.usable_funding
+        deposit_interest_cost = position.deposit_cost
+        acquisition_cost = position.acquisition_cost
+        concentration_penalty = position.concentration_penalty
     capital_charge = expected_capital_charge(
         loan_volume, parameters.loan_rwa_weight, parameters.capital_hurdle_rate
     )
     wholesale_funding_cost = expected_wholesale_funding_cost(
-        loan_volume, deposit_volume, parameters.wholesale_funding_rate
+        loan_volume, usable_funding, parameters.wholesale_funding_rate
     )
     excess_deposit_income = expected_excess_deposit_income(
-        loan_volume, deposit_volume, parameters.cash_rate
+        loan_volume, usable_funding, parameters.cash_rate
     )
     funding = calculate_funding_result(
         loan_volume,
-        deposit_volume,
+        usable_funding,
         parameters.required_deposit_funding_ratio,
         parameters.funding_shortfall_penalty_rate,
     )
@@ -516,6 +563,8 @@ def _portfolio_terms(
         - wholesale_funding_cost
         - funding.funding_penalty
         + excess_deposit_income
+        - acquisition_cost
+        - concentration_penalty
     )
     return_on_equity = portfolio_return_on_equity(
         loan_interest_income,
@@ -526,8 +575,15 @@ def _portfolio_terms(
         excess_deposit_income,
         loan_volume,
         parameters.loan_rwa_weight,
+        acquisition_cost=acquisition_cost,
+        concentration_penalty=concentration_penalty,
     )
     return {
+        "usable_deposit_funding": None if parameters.deposit_supply is None else usable_funding,
+        "deposit_volume": deposit_volume,
+        "deposit_interest_cost": deposit_interest_cost,
+        "deposit_acquisition_cost": acquisition_cost,
+        "deposit_concentration_penalty": concentration_penalty,
         "capital_charge": capital_charge,
         "wholesale_funding_cost": wholesale_funding_cost,
         "excess_deposit_income": excess_deposit_income,
@@ -558,6 +614,9 @@ class _Problem:
         self.loan_tiers = list(loan_tiers)
         self.deposit_tiers = list(deposit_tiers)
         self.parameters = parameters
+        self.deposit_terms = ("volume", "interest_cost")
+        if parameters.deposit_supply is not None:
+            self.deposit_terms += ("eligible_incremental_funding", "acquisition_cost")
         self.min_return_on_equity = min_return_on_equity
         self.loan_distance = [
             _abs_spreads(t.rates, home_loan_reference_rate) for t in self.loan_tiers
@@ -575,14 +634,18 @@ class _Problem:
     def evaluate(self, loan_totals, deposit_totals) -> tuple[np.ndarray, np.ndarray, Any]:
         """Objective, shortfall and ROE-floor flags for arrays of portfolio totals."""
         volume, income, loss = loan_totals
-        deposit_volume, cost = deposit_totals
-        terms = _portfolio_terms(volume, income, loss, deposit_volume, cost, self.parameters)
+        deposit_volume, cost, *supply_terms = deposit_totals
+        terms = _portfolio_terms(
+            volume, income, loss, deposit_volume, cost, self.parameters, *supply_terms
+        )
         objective = np.asarray(terms["total_objective"], dtype=float)
         shortfall = np.broadcast_to(np.asarray(terms["funding_shortfall"]), objective.shape)
         qualifies = None
         if self.min_return_on_equity is not None:
             roe = np.broadcast_to(np.asarray(terms["return_on_equity"]), objective.shape)
             qualifies = roe >= self.min_return_on_equity
+            if self.parameters.deposit_supply is not None:
+                qualifies &= np.isfinite(roe)
         return objective, shortfall, qualifies
 
     def distance(self, loan_indices: Sequence[int], deposit_indices: Sequence[int]) -> float:
@@ -609,7 +672,7 @@ class _Problem:
                 getattr(tier, name) if position == replace_tier else getattr(tier, name)[index]
                 for position, (tier, index) in enumerate(zip(self.deposit_tiers, indices))
             )
-            for name in ("volume", "interest_cost")
+            for name in self.deposit_terms
         )
 
     def score(self, choice: Choice) -> tuple[float, float, bool]:
@@ -680,7 +743,7 @@ def _exhaustive_search(
 ) -> tuple[Choice, int]:
     """Evaluate every tier combination (``itertools.product`` order) in bounded blocks."""
     loan_totals = _combine(problem.loan_tiers, ("volume", "interest_income", "credit_loss"))
-    deposit_totals = _combine(problem.deposit_tiers, ("volume", "interest_cost"))
+    deposit_totals = _combine(problem.deposit_tiers, problem.deposit_terms)
 
     def choice_of(loan_row: int, deposit_row: int) -> Choice:
         return (
@@ -704,8 +767,7 @@ def _cross_search(
     pair back to tier indices. Candidates meeting the ROE floor win when any exists.
     """
     loan_volume, loan_income, loan_loss = loan_totals
-    deposit_volume, deposit_cost = deposit_totals
-    n_deposit = deposit_volume.size
+    n_deposit = deposit_totals[0].size
     rows_per_block = max(1, settings.evaluation_block_size // n_deposit)
 
     def flat_choice(flat: int) -> Choice:
@@ -717,7 +779,7 @@ def _cross_search(
         rows = slice(start, start + rows_per_block)
         objective, shortfall, qualifies = problem.evaluate(
             (loan_volume[rows, None], loan_income[rows, None], loan_loss[rows, None]),
-            (deposit_volume[None, :], deposit_cost[None, :]),
+            tuple(term[None, :] for term in deposit_totals),
         )
         objective, shortfall = objective.ravel(), shortfall.ravel()
         evaluations += objective.size
@@ -884,7 +946,7 @@ def _uniform_baseline(
         _ordered_sum(
             getattr(t, name)[deposit_rows[:, i]] for i, t in enumerate(problem.deposit_tiers)
         )
-        for name in ("volume", "interest_cost")
+        for name in problem.deposit_terms
     ]
 
     def choice_of(loan_row: int, deposit_row: int) -> Choice:
@@ -1091,6 +1153,7 @@ def optimize_segmented_rates(
     term_deposit_reference_rate: float | None = None,
     solver_settings: SolverSettings | None = None,
     incumbent_tier_rates: dict[str, dict[str, float]] | None = None,
+    deposit_supply: DepositSupply | None = None,
 ) -> SegmentedOptimizationResult:
     """Choose tier rates jointly against the full portfolio objective.
 
@@ -1127,6 +1190,7 @@ def optimize_segmented_rates(
             deposit_rate_elasticity=deposit_rate_elasticity,
             deposit_competitor_gap_elasticity=deposit_competitor_gap_elasticity,
             response_coefficients=response_coefficients,
+            deposit_supply=deposit_supply,
         )
         for tier in config.deposit_tiers
     ]
@@ -1136,6 +1200,7 @@ def optimize_segmented_rates(
         funding_shortfall_penalty_rate=funding_shortfall_penalty_rate,
         loan_rwa_weight=loan_rwa_weight,
         capital_hurdle_rate=capital_hurdle_rate,
+        deposit_supply=deposit_supply,
     )
     starts: list[Choice] = []
     if all(t.tier_name in loan_incumbent for t in loan_tiers) and all(

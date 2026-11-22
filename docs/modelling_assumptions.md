@@ -284,6 +284,25 @@ The [matched comparison](audits/phase_4b_evidence/comparison.json) reports both 
 and reoptimised results. Canonical pricing retains the Phase 4a legacy formula and
 configuration. The Phase 4a methodology and descriptive LVR bands remain historical evidence.
 
+## Fixed deposit opportunity simulation (Phase 4c, FIN-001)
+
+The [deposit supply model](deposit_supply_model.md) holds NZD of eligible
+opportunity fixed over one 12-month horizon. It normalises sample weights
+within disjoint segments and scores uptake on the original prospect features.
+The raw amount still assigns an individual balance tier. Gross bookings
+can include new money, retained maturities, internal transfers and existing
+balances. Only eligible new money and explicit avoided runoff can add
+usable funding. The opening book funds assets outside the new-business
+horizon. It is disclosed but never offset against new loans.
+
+Joint and segmented simulation pricing use the recognised incremental
+funding once for wholesale cost, surplus income and shortfall steering. Offered
+interest, displaced source interest, acquisition costs and any concentration
+penalty are reported separately. The Phase 4a canonical configuration and
+prospect-based economics still operate in the governed pricing path.
+The supply profile applies to a single horizon. Product-level opening-book
+and maturity data would be needed for a reconciled annual roll.
+
 ## Deliberate simplifications
 
 Economic inputs must be finite: NaN and ±infinity are rejected in YAML, direct models, copy

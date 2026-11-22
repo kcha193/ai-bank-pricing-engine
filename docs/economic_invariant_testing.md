@@ -91,6 +91,31 @@ cmp /tmp/phase-4b-comparison.json docs/audits/phase_4b_evidence/comparison.json
 See the [model documentation](credit_loss_model.md) for the validation
 population, metric definitions and approval requirements.
 
+## Deposit supply verification (FIN-001, Phase 4c)
+
+The deposit supply tests reconcile eligible segment capacity, raw balance
+tiers, sample opportunity weights and expected bookings. They cover zero
+and full conversion, replicated samples, independent draws and invalid
+market profiles. Hand-calculated cases check that opening funds stay out
+of new-loan funding (a change in the opening balance cannot move the
+selected offer), retention counterfactuals, internal migration, incremental costs, concentration
+controls and portfolio funding. Joint and catch-all tier pricing share
+the same objective, and small multi-tier grids are checked against
+independent enumeration. Audit comparisons hold the loan population and
+loss assumptions constant and report Monte Carlo deposit variation apart
+from market opportunity shocks.
+
+```bash
+python -m pytest -q tests/unit/test_deposit_supply*.py
+python -m examples.compare_deposit_supply --output /tmp/phase-4c-comparison.json
+python -m pytest -q -m economic_invariants
+```
+
+The [verification report](audits/2026-11-22-phase-4c-deposit-supply-verification.md)
+covers the Phase 4a replay and Phase 3b and 4b continuity checks. The
+Phase 4c profile applies to one horizon. The existing cohort tests check
+vintage survival and full runoff on their own synthetic funding basis.
+
 ## Known limitations
 
 - `portfolio_return_on_equity` overflows to `inf` when 0 < required capital < ~1e-290
